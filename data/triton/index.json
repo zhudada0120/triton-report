@@ -1,0 +1,719 @@
+{
+  "repo": "triton",
+  "source_repo": "triton-lang/triton",
+  "built_at": "2026-08-21T17:27:18.175637+08:00",
+  "total_dates": 1,
+  "date_range": [
+    "2026-08-20",
+    "2026-08-20"
+  ],
+  "analysis_dates": [
+    "2026-08-20"
+  ],
+  "available_data": {
+    "architecture_context": false,
+    "analysis_files": true,
+    "adaptation_status": true
+  },
+  "architecture_version": {},
+  "architecture_deltas": {},
+  "tags_index": {
+    "bugfix": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3",
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "feature": [
+      "bacc8126cc1a8992a224faed053ee80f51b96284",
+      "cda4229558c5dca7f7c4734bedd3e596ebcae0b8",
+      "d90b234d462a2949db75e3abe092c8099f38bd96"
+    ]
+  },
+  "modules_index": {},
+  "architecture_impact_index": {},
+  "keyword_index": {
+    "nvidia": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "declaration": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "description": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "nvws": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "case": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "change": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "bar": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "running": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "default": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3",
+      "d90b234d462a2949db75e3abe092c8099f38bd96"
+    ],
+    "memory": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "tests": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3",
+      "bacc8126cc1a8992a224faed053ee80f51b96284"
+    ],
+    "cache": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "switch-loop": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "conversion": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "entry": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "partition": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3",
+      "d90b234d462a2949db75e3abe092c8099f38bd96"
+    ],
+    "shared": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "plus": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "backends": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "emits": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "generated": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "cta": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "instructions": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "llvm": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "follows": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "usually": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "getting_started": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "select": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "warp_yield": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "noise": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "rocdl": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "making": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "run": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "fresh": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "corpus": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "touched": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "gives": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "comment": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "inside": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "written": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "these": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "idle": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "matmul_tma_ws_kernel": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "unassigned": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "conservative": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "lands": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "they": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "measurable": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "build": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "per": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "one": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "failures": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "second": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "compiling": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "leaving": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "to-ref": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "testingguide": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "sync": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "python": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3",
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "skipped": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "goes": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "named": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "block": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "lit": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3",
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "test-membar": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "entry-side": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "typo": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "end-to-end": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "treat": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "none": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "patch": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "two": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3",
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "trivial": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "org": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "independent": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "best": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "from-ref": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "nvvm": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "lowerwarpspecializecommon": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "assigned": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "git-commit": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "h100": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "wall-clock": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "unittest": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "membar": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "analysis": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "warp_return": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "practices": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "redundant": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3",
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "rule": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "section": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "whenever": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "into": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "needs": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "need": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "warp": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3",
+      "d90b234d462a2949db75e3abe092c8099f38bd96"
+    ],
+    "three": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "executes": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "regions": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "barrier": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "code": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "language": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "follow": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "lowerwarpspecializebarriers": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "pre-commit": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "main": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "cbea": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "in-tree": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "pairs": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "group": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "filecheck-best-practices": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "time": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "ttg": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "timed": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "warp_specialize": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "passed": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3",
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "mlir": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3",
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "deltas": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "across": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "entering": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "difference": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "faster": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "amd": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3",
+      "bacc8126cc1a8992a224faed053ee80f51b96284",
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "yield": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "rebase": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "terminators": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "model": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "fill": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "runs": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "rendezvous": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "warp-group": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "emitted": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "points": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "tritonnvidiagpu": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "unlike": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "rules": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "new": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "effects": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "inserted": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "configurations": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "pre-existing": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "test_warp_specialization": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "generates": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "tritongpu": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "over": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "unit": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "range": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3",
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "takes": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "ordered": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "origin": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "whichever": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "test": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3",
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "kernels": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3",
+      "bacc8126cc1a8992a224faed053ee80f51b96284"
+    ],
+    "else": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "https": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "seven": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "rewritten": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "head": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "why-not-how": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "minimal": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "cta-wide": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "contributor": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "overlaps": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "region": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "lowerwarpspecialize": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "exactly": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "path": [
+      "37a4b78fc965fb9647aa7114a5324ce6badbe0c3"
+    ],
+    "folded": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "fromsigned": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "cmpi": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "inference": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "histogram": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "int_max": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "comparison": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "remove": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "unsigned": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "max": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "xffffffff": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "calls": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "intended": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "sext": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "test_histogram_compare_mask": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "cover": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "produced": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "false": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "comparisons": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "signed": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "rangeanalysis": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "apint": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "tritonamdfoldtruecmpi": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "empty": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "verifying": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "arith": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "histogramop": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "bound": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "produce": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "same-width": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "used": [
+      "cda4229558c5dca7f7c4734bedd3e596ebcae0b8",
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "upper": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "hist": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "complement": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "inferresultrangesmaxnonnegsigned": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "getsignedmaxvalue": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "constant-fold": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "getmaxvalue": [
+      "f893845b9b91599ebd3b7a9c7f28164f39c7ed94"
+    ],
+    "assigning": [
+      "d90b234d462a2949db75e3abe092c8099f38bd96"
+    ],
+    "specialization": [
+      "d90b234d462a2949db75e3abe092c8099f38bd96"
+    ],
+    "ops": [
+      "d90b234d462a2949db75e3abe092c8099f38bd96"
+    ],
+    "accidentally": [
+      "d90b234d462a2949db75e3abe092c8099f38bd96"
+    ],
+    "mixtral": [
+      "cda4229558c5dca7f7c4734bedd3e596ebcae0b8"
+    ],
+    "bench": [
+      "cda4229558c5dca7f7c4734bedd3e596ebcae0b8"
+    ],
+    "family": [
+      "cda4229558c5dca7f7c4734bedd3e596ebcae0b8"
+    ],
+    "moe": [
+      "cda4229558c5dca7f7c4734bedd3e596ebcae0b8"
+    ],
+    "renormalize": [
+      "cda4229558c5dca7f7c4734bedd3e596ebcae0b8"
+    ],
+    "routing": [
+      "cda4229558c5dca7f7c4734bedd3e596ebcae0b8"
+    ],
+    "qwen": [
+      "cda4229558c5dca7f7c4734bedd3e596ebcae0b8"
+    ],
+    "knob": [
+      "cda4229558c5dca7f7c4734bedd3e596ebcae0b8"
+    ],
+    "kernel": [
+      "cda4229558c5dca7f7c4734bedd3e596ebcae0b8"
+    ],
+    "passing": [
+      "bacc8126cc1a8992a224faed053ee80f51b96284"
+    ],
+    "gfx942": [
+      "bacc8126cc1a8992a224faed053ee80f51b96284"
+    ]
+  },
+  "adaptation_baseline": {
+    "mode": "history-scan",
+    "detection": "upstream SHA in ascend git history OR cherry-pick marker",
+    "ascend_repo_sha": "e362aa31f842d045f09bc0a03a359bb435795187",
+    "tracking_start_date": "",
+    "detected_at": "2026-08-21T17:27:17.968949+08:00",
+    "note": "triton-ascend 无 baseline 文件（人工 cherry-pick 回合）。无标记的人工回合请用 `mark` 命令手动更新。"
+  }
+}

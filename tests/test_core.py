@@ -153,7 +153,13 @@ class TestSourceRepo(unittest.TestCase):
 
 class TestCleanStaleData(unittest.TestCase):
     def test_clean_stale_no_analysis_dir(self):
-        from data.clean_stale_data import clean_stale_data
+        # clean_stale_data.py lives in .github/scripts/ (CI 专用脚本)
+        scripts_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            ".github", "scripts",
+        )
+        sys.path.insert(0, scripts_dir)
+        from clean_stale_data import clean_stale_data
 
         tmpdir = tempfile.mkdtemp()
         repo_dir = os.path.join(tmpdir, "triton")

@@ -1,0 +1,72 @@
+{
+  "date": "2026-08-20",
+  "repo": "triton-lang/triton",
+  "daily_summary": "fixture",
+  "commits": [
+    {
+      "sha": "37a4b78fc965fb9647aa7114a5324ce6badbe0c3",
+      "message": "[Membar] Treat the warp_specialize terminators as CTA sync points (#11324)\n\n`lowerWarpSpecializeCommon` emits a CTA-wide barrier at every\n`ttg.warp_yield`, and every partition executes one at `ttg.warp_return`\nwith the same barrier id, so the two are a rendezvous: shared memory\neffects inside the regions are ordered before the code that follows the\nop. Membar did not model that, so it inserted a redundant `ttg.barrier`\nafter a `warp_specialize` whenever the code after it touched shared\nmemory that the region had touched.\n\nUnlike the entry-side rule in #11323, this one does change generated\ncode. Compiling `python/test/unit/language/test_warp_specialization.py`\non an H100, one fresh cache per build, across the same 75 kernels with\n145 passed / 1432 skipped every time: 2016 `bar.sync` on `main`, 1956\nwith this patch. On the membar corpus, `test/Analysis/test-membar.mlir`\ngoes from 127 to 126 emitted `ttg.barrier`.\n\nThere is no measurable wall-clock difference: I timed\n`matmul_tma_ws_kernel` at 4096^3 over seven configurations and the\ndeltas range from -0.38% to +0.25%, which is noise. The case for this\nchange is that the analysis is more conservative than it needs to be,\nnot that kernels get faster.\n\nThe barrier is CTA-wide on both in-tree backends\n(`llvm.nvvm.barrier.cta.sync.all` on NVIDIA, `rocdl.barrier` on AMD) and\n`lowerWarpSpecializeBarriers` runs before `lowerWarpSpecialize`, so it\nis not rewritten into a warp-group named barrier. Every path through one\n`warp_specialize` executes exactly three of these: the default warp\ngroup takes the two on entry plus the one at the yield, a warp assigned\nto a partition takes the switch-loop head, the partition entry, and the\none at `warp_return`, and an unassigned warp takes the head plus the two\nin the idle block. That is what pairs `warp_return` with `warp_yield`.\n\n`lit` over `test/Analysis`, `test/TritonGPU`, `test/Conversion`,\n`test/TritonNvidiaGPU` and `test/NVWS` gives the same result before and\nafter: the same 14 pre-existing failures in both runs, none of them a\nmembar test.\n\nThis overlaps #11323 in the same `if`/`else`, so whichever lands second\nneeds a trivial rebase. They are independent: that one is about entering\nthe default region, this one about leaving it.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [ ] I have not added any `lit` tests.\n- [x] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)",
+      "tags": [
+        "bugfix"
+      ],
+      "ascend_impact": {
+        "ascend_affected": true,
+        "functionality": "test fixture",
+        "testing": "",
+        "needs_test_update": false
+      }
+    },
+    {
+      "sha": "f893845b9b91599ebd3b7a9c7f28164f39c7ed94",
+      "message": "[AMD] Fix empty range inference for HistogramOp in RangeAnalysis (#11246)\n\ninferResultRangesMaxNonNegSigned used APInt::getMaxValue (unsigned max,\n0xFFFFFFFF) as the signed upper bound passed to fromSigned, which is -1\nin two's complement. This produced an empty range [0, -1], causing\nTritonAMDFoldTrueCmpI to constant-fold any comparison on histogram\nresults (e.g. hist > 0) to false.\n\nFix by using APInt::getSignedMaxValue to produce the intended [0,\nINT_MAX] range. Also remove redundant same-width .sext() calls.\n\nAdd test_histogram_compare_mask to cover comparisons on histogram\nresults in Python, and a MLIR lit test verifying that arith.cmpi on\ntt.histogram results is not folded by TritonAMDFoldTrueCmpI.",
+      "tags": [
+        "bugfix"
+      ],
+      "ascend_impact": {
+        "ascend_affected": true,
+        "functionality": "test fixture",
+        "testing": "",
+        "needs_test_update": false
+      }
+    },
+    {
+      "sha": "d90b234d462a2949db75e3abe092c8099f38bd96",
+      "message": "[Warp Specialization] Fix accidentally assigning ops to default partition (#6777)",
+      "tags": [
+        "feature"
+      ],
+      "ascend_impact": {
+        "ascend_affected": true,
+        "functionality": "test fixture",
+        "testing": "",
+        "needs_test_update": false
+      }
+    },
+    {
+      "sha": "cda4229558c5dca7f7c4734bedd3e596ebcae0b8",
+      "message": "[BENCH] add renormalize knob in routing, so that the kernel can be used for qwen and mixtral moe family (#6896)",
+      "tags": [
+        "feature"
+      ],
+      "ascend_impact": {
+        "ascend_affected": true,
+        "functionality": "test fixture",
+        "testing": "",
+        "needs_test_update": false
+      }
+    },
+    {
+      "sha": "bacc8126cc1a8992a224faed053ee80f51b96284",
+      "message": "[Tests][Kernels] Enable passing tests for AMD GFX942 (#7365)",
+      "tags": [
+        "feature"
+      ],
+      "ascend_impact": {
+        "ascend_affected": true,
+        "functionality": "test fixture",
+        "testing": "",
+        "needs_test_update": false
+      }
+    }
+  ]
+}

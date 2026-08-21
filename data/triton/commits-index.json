@@ -1,0 +1,22 @@
+{
+  "37a4b78fc965fb9647aa7114a5324ce6badbe0c3": {
+    "date": "2026-08-20",
+    "msg": "[Membar] Treat the warp_specialize terminators as CTA sync points (#11324)"
+  },
+  "f893845b9b91599ebd3b7a9c7f28164f39c7ed94": {
+    "date": "2026-08-20",
+    "msg": "[AMD] Fix empty range inference for HistogramOp in RangeAnalysis (#11246)"
+  },
+  "d90b234d462a2949db75e3abe092c8099f38bd96": {
+    "date": "2026-08-20",
+    "msg": "[Warp Specialization] Fix accidentally assigning ops to default partition (#6777)"
+  },
+  "cda4229558c5dca7f7c4734bedd3e596ebcae0b8": {
+    "date": "2026-08-20",
+    "msg": "[BENCH] add renormalize knob in routing, so that the kernel can be used for qwen and mixtral moe family (#6896)"
+  },
+  "bacc8126cc1a8992a224faed053ee80f51b96284": {
+    "date": "2026-08-20",
+    "msg": "[Tests][Kernels] Enable passing tests for AMD GFX942 (#7365)"
+  }
+}
