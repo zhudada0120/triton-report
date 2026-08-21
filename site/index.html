@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>vLLM Commit Monitor</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+  <header class="header">
+    <div class="header-inner">
+      <div class="logo">vLLM Commit Monitor</div>
+      <div class="repo-tabs">
+        <button class="repo-tab active" data-repo="vllm-project/vllm">vllm</button>
+        <button class="repo-tab" data-repo="vllm-project/vllm-ascend">vllm-ascend</button>
+      </div>
+      <div class="controls">
+        <div class="export-group">
+          <input type="date" id="rangeStart" class="date-input" title="Start date">
+          <span class="date-separator">~</span>
+          <input type="date" id="rangeEnd" class="date-input" title="End date">
+          <button id="exportBtn" class="export-btn">Export Excel</button>
+        </div>
+        <a href="https://github.com/vllm-ascend/vllm-report" target="_blank" class="github-link" title="Source Code on GitHub">
+          <svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+          </svg>
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <div id="baselineBar" class="baseline-bar" style="display:none;">
+    <div class="baseline-inner">
+      <span class="baseline-icon" id="baselineIcon"></span>
+      <span class="baseline-text" id="baselineText">Loading baseline...</span>
+    </div>
+  </div>
+
+  <div class="page-layout">
+    <div class="page-main">
+      <div class="date-section">
+        <div class="date-card">
+          <div class="date-bar" id="dateBar"></div>
+        </div>
+        <div class="date-sidebar" id="dateSidebar">
+          <div class="sidebar-section">
+            <div class="sidebar-label">Analysis Coverage</div>
+            <div class="coverage-bar" id="sideCoverageBar"></div>
+          </div>
+          <div class="sidebar-section" id="heatmapSection" style="display:none;">
+            <div class="sidebar-label">Module Heatmap</div>
+            <div class="heatmap-bar" id="heatmapBar"></div>
+          </div>
+        </div>
+      </div>
+
+      <main class="main">
+        <div id="dailySummary" class="daily-summary" style="display:none;">
+          <div class="label">AI Summary</div>
+          <div class="text" id="summaryText"></div>
+        </div>
+
+        <div class="stats-row" id="statsRow">
+          <div class="stat-card">
+            <div class="stat-value" id="statCommits">--</div>
+            <div class="stat-label">Commits</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" id="statAdditions">--</div>
+            <div class="stat-label">Additions</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" id="statDeletions">--</div>
+            <div class="stat-label">Deletions</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" id="statFiles">--</div>
+            <div class="stat-label">Files Changed</div>
+          </div>
+        </div>
+
+        <div class="filter-bar" id="commitFilterBar">
+          <span class="filter-chip" data-filter="all">All</span>
+          <span class="filter-chip" data-filter="needs-test">Needs Test</span>
+          <span class="filter-chip" data-filter="affects-ascend">Affects Ascend</span>
+          <span class="filter-chip" data-filter="high-risk">High Risk</span>
+          <span class="filter-chip" data-filter="feature">Feature</span>
+          <span class="filter-chip" data-filter="bugfix">Bugfix</span>
+          <span class="filter-chip" data-filter="refactor">Refactor</span>
+          <span class="filter-chip" data-filter="performance">Performance</span>
+          <div class="search-box">
+            <input type="text" id="searchInput" placeholder="Search commits...">
+            <button class="search-clear" id="searchClear" style="display:none;" title="Clear search">×</button>
+          </div>
+        </div>
+
+        <div id="loading" class="loading" style="display:none;">
+          <div class="spinner"></div>
+          <span>Loading...</span>
+        </div>
+
+        <div id="emptyState" class="empty-state" style="display:none;">
+          <div class="icon">◇</div>
+          <div class="title">No commits found</div>
+          <div class="subtitle">Try selecting a different date or repository</div>
+        </div>
+
+        <div class="commit-list" id="commitList"></div>
+      </main>
+    </div>
+
+    </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

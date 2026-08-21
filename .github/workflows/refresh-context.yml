@@ -1,0 +1,99 @@
+name: Refresh Architecture Context
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    env:
+      OPENCODE_AUTH_TOKEN: ${{ secrets.OPENCODE_AUTH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Setup Node.js (for opencode)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install opencode
+        run: npm install -g opencode-ai
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Configure opencode
+        run: |
+          mkdir -p ~/.config/opencode
+          cat > ~/.config/opencode/opencode.json << 'EOF'
+          {
+            "$schema": "https://opencode.ai/config.json",
+            "model": "deepseek/deepseek-v4-flash",
+            "provider": {
+              "deepseek": {
+                "npm": "@ai-sdk/openai-compatible",
+                "name": "DeepSeek",
+                "options": {
+                  "baseURL": "https://ark.cn-beijing.volces.com/api/coding/v3",
+                  "apiKey": "{env:OPENCODE_AUTH_TOKEN}"
+                },
+                "models": {
+                  "deepseek-v4-flash": {
+                    "name": "deepseek-chat"
+                  }
+                }
+              }
+            }
+          }
+          EOF
+
+      - name: Add MCP Server for opencode
+        run: |
+          opencode mcp add vllm-report \
+            -- python -m src.mcp_server_app \
+            --data-dir "${{ github.workspace }}/data" \
+            --ascend-repo-path "${{ github.workspace }}/repos/vllm-ascend"
+
+      - name: Checkout vllm source
+        uses: actions/checkout@v4
+        with:
+          repository: vllm-project/vllm
+          path: repos/vllm
+          fetch-depth: 0
+
+      - name: Checkout vllm-ascend source
+        uses: actions/checkout@v4
+        with:
+          repository: vllm-project/vllm-ascend
+          path: repos/vllm-ascend
+          fetch-depth: 0
+
+      - name: Generate vllm architecture context
+        run: python src/data/generate_context.py --repo vllm-project/vllm --force --data-dir data --local-repo repos/vllm
+
+      - name: Generate vllm-ascend architecture context
+        run: python src/data/generate_context.py --repo vllm-project/vllm-ascend --force --data-dir data --local-repo repos/vllm-ascend
+
+      - name: Cross-reference vllm vs vllm-ascend
+        run: python src/data/generate_context.py --cross-reference --force --data-dir data
+
+      - name: Rebuild search index
+        run: python src/data/build_index.py --data-dir data
+
+      - name: Track adaptation
+        run: python src/data/track_adaptation.py init --ascend-repo-path repos/vllm-ascend --data-dir data --local-repo repos/vllm --force
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          git diff --staged --quiet || (git commit -m "chore: update architecture context $(TZ=Asia/Shanghai date +%Y-%m-%d)" && git push)
