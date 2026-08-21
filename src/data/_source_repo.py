@@ -6,24 +6,25 @@ import shutil
 REPO_CLONE_DIR = "repos"
 
 KNOWN_REPOS = {
-    "vllm-project/vllm": {
-        "dir_name": "vllm",
-        "url": "https://github.com/vllm-project/vllm.git",
+    "triton-lang/triton": {
+        "dir_name": "triton",
+        "url": "https://github.com/triton-lang/triton.git",
         "common_paths": [
-            os.path.expanduser("~/code/vllm"),
-            os.path.expanduser("~/projects/vllm"),
-            os.path.expanduser("~/vllm"),
-            os.path.join(os.getcwd(), "repos", "vllm"),
+            os.path.expanduser("~/code/triton"),
+            os.path.expanduser("~/projects/triton"),
+            os.path.expanduser("~/triton"),
+            os.path.join(os.getcwd(), "repos", "triton"),
         ],
     },
-    "vllm-project/vllm-ascend": {
-        "dir_name": "vllm-ascend",
-        "url": "https://github.com/vllm-project/vllm-ascend.git",
+    "triton-lang/triton-ascend": {
+        "dir_name": "triton-ascend",
+        "url": "https://github.com/triton-lang/triton-ascend.git",
+        # 国内镜像: https://gitee.com/ascend/triton-ascend.git
         "common_paths": [
-            os.path.expanduser("~/code/vllm-ascend"),
-            os.path.expanduser("~/projects/vllm-ascend"),
-            os.path.expanduser("~/vllm-ascend"),
-            os.path.join(os.getcwd(), "repos", "vllm-ascend"),
+            os.path.expanduser("~/code/triton-ascend"),
+            os.path.expanduser("~/projects/triton-ascend"),
+            os.path.expanduser("~/triton-ascend"),
+            os.path.join(os.getcwd(), "repos", "triton-ascend"),
         ],
     },
 }

@@ -4,8 +4,8 @@
 
 用法：
   python src/data/fetch_commits.py \
-      --repo vllm-project/vllm \
-      --local-repo ~/code/vllm \
+      --repo triton-lang/triton \
+      --local-repo ~/code/triton \
       --date 2026-07-27
 
 执行流程：

@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
-生成 vllm / vllm-ascend 项目的架构知识库（architecture.json）。
+生成 triton / triton-ascend 项目的架构知识库（architecture.json）。
 
 用法：
-  # 生成 vllm 架构基线（锚定指定 commit）
+  # 生成 triton 架构基线（锚定指定 commit）
   python src/data/generate_context.py \
-      --repo vllm-project/vllm \
-      --local-repo ~/code/vllm \
+      --repo triton-lang/triton \
+      --local-repo ~/code/triton \
       --checkout <baseline_sha> \
       --force
 
-  # 生成 vllm-ascend 架构知识（基于最新 main 代码）
+  # 生成 triton-ascend 架构知识（基于最新 main 代码）
   python src/data/generate_context.py \
-      --repo vllm-project/vllm-ascend \
-      --local-repo ~/code/vllm-ascend \
+      --repo triton-lang/triton-ascend \
+      --local-repo ~/code/triton-ascend \
       --force
 
   # 生成交叉引用（基于两个架构文件生成跨项目关系）
@@ -29,7 +29,7 @@
   4. 遍历本地源码目录，构建目录树
   5. 调用 opencode（agent 模式），读取关键接口文件，生成结构化架构摘要
   6. 保存架构摘要到 data/{repo}/context/architecture.json
-  7. 如果是 vllm 仓库，重置 arch_deltas.json（新基线，增量清空）
+  7. 如果是 triton 仓库，重置 arch_deltas.json（新基线，增量清空）
   8. 交叉引用模式：读取两个架构文件，调用 opencode 分析跨项目关系
   9. 将 cross_project_relationship 写入两个架构文件
 """
@@ -59,8 +59,8 @@ IGNORE_DIRS = {
 # Reading these gives the AI the core architecture without walking every file.
 
 REPO_SOURCE_DIRS = {
-    "vllm-project/vllm": "vllm",
-    "vllm-project/vllm-ascend": "vllm_ascend",
+    "triton-lang/triton": ".",
+    "triton-lang/triton-ascend": ".",
 }
 
 def build_knowledge_base_template():
@@ -74,101 +74,91 @@ def build_knowledge_base_template():
     """
     kb = {
         "development_workflows": {
-            "vllm": [
+            "triton": [
                 {
-                    "topic": "添加新模型",
+                    "topic": "添加新算子/语言特性",
                     "steps": [
-                        "在 vllm/model_executor/models/ 下创建模型文件",
-                        "在 vllm/model_executor/models/registry.py 中注册",
-                        "在 vllm/config/model.py 中添加架构默认值（如需要）",
-                        "添加测试：tests/models/",
+                        "在 python/triton/language/ 中定义 Python API（语义约定 + 类型签名）",
+                        "在 include/ 中声明 IR op，在 lib/Dialect/Triton*/ 中实现（builder、verifier、canonicalization）",
+                        "必要时在 python/src/ 和 lib/Conversion/ 中添加 lowering pass",
+                        "添加 lit 测试：test/ 下对应目录",
                     ],
                 },
                 {
-                    "topic": "添加配置项",
+                    "topic": "添加编译器 pass",
                     "steps": [
-                        "在 vllm/config/ 对应配置类中添加字段（使用 @dataclass + config 元数据）",
-                        "在 vllm/engine/arg_utils.py 中添加 CLI 参数（映射到配置字段）",
-                        "添加测试",
+                        "在 lib/Dialect/Triton*/Transforms/ 中实现 pass（Passes.td 中注册）",
+                        "在 python/triton/compiler/ 的编译流水线中插入",
+                        "添加 lit 测试验证 IR 变换",
                     ],
                 },
                 {
-                    "topic": "添加平台后端",
+                    "topic": "添加新硬件后端",
                     "steps": [
-                        "在 vllm/platforms/ 中创建新的 Platform 子类",
-                        "通过 vllm.platform_plugins entry point 注册",
-                        "实现平台特定的 attention、worker、通信等",
+                        "在 python/triton/backends/ 下实现 BaseBackend/DriverBase 子类",
+                        "通过 importlib.metadata entry_points 注册（backends/__init__.py 中的 _find_concrete_subclasses 发现机制）",
+                        "第三方后端代码放在 third_party/<vendor>/",
+                        "实现 lib/ 中的 target 相关 lowering",
                     ],
                 },
             ],
-            "vllm-ascend": [
+            "triton-ascend": [
                 {
-                    "topic": "添加 Platform Patch",
+                    "topic": "Ascend 后端开发",
                     "steps": [
-                        "在 vllm_ascend/patch/platform/ 中创建 patch 文件",
-                        "实现 monkey-patch 逻辑（修改上游 vLLM 的类/函数）",
-                        "在 vllm_ascend/patch/__init__.py 中添加文档（what/why/how/related PR/future plan）",
-                        "Patch 会被 adapt_patch(is_global_patch=True) 自动发现和加载",
+                        "在 third_party/ascend/backend/ 中实现 AscendBackend（compiler.py）、AscendDriver（driver.py）",
+                        "通过 third_party/ascend/backend/backend_register.py 完成注册",
+                        "NPU 相关 lowering/优化在 third_party/ascend/lib/、third_party/ascend/language/ 中",
+                        "添加测试：third_party/ascend/unittest/ 或 unittest/",
                     ],
                 },
                 {
-                    "topic": "添加 Worker Patch",
+                    "topic": "回合上游 triton 代码",
                     "steps": [
-                        "在 vllm_ascend/patch/worker/ 中创建 patch 文件",
-                        "实现 monkey-patch 逻辑",
-                        "在 vllm_ascend/patch/__init__.py 中添加文档（同上）",
-                        "Patch 会被 adapt_patch(is_global_patch=False) 自动发现和加载",
+                        "人工 cherry-pick 上游 commit（目前无 main2main 同步机制）",
+                        "建议在 commit message 或 PR 描述中记录对应的上游 SHA/PR（便于后续跟踪适配状态）",
+                        "冲突较大时，在 third_party/ascend/patch/ 中维护整体 patch 文件（triton-ascend-<version>.patch）",
+                        "回合后运行 Ascend CI 验证",
                     ],
                 },
                 {
-                    "topic": "适配新模型到 NPU",
+                    "topic": "添加算子支持",
                     "steps": [
-                        "评估是否需要 patch：attention 替换 → worker patch；修改 forward → worker patch；结构差异大 → 在 vllm_ascend/models/ 中创建 NPU 特有实现",
-                        "添加 worker patch（如 patch_<model_name>.py）",
-                        "在 vllm_ascend/patch/__init__.py 中记录",
-                        "添加测试：tests/e2e/models/",
+                        "在 third_party/ascend/language/ 中扩展 DSL 支持（如需要 Ascend 特有语义）",
+                        "或复用上游 python/triton/language/ API，在 third_party/ascend/lib/ 中实现 lowering",
+                        "costmodel 调优：third_party/ascend/costmodel/",
+                        "添加单测和算子示例",
                     ],
                 },
                 {
-                    "topic": "添加环境变量",
+                    "topic": "维护 patch 文件",
                     "steps": [
-                        "在 vllm_ascend/envs.py 的 env_variables 字典中添加",
-                        "命名遵循 VLLM_ASCEND_* 规范",
-                        "添加文档注释（默认值、有效范围、是否敏感）",
-                        "在代码中通过 from vllm_ascend import envs 引用，禁止硬编码环境变量名",
-                    ],
-                },
-                {
-                    "topic": "添加 Attention 后端",
-                    "steps": [
-                        "在 vllm_ascend/attention/ 中创建新的 attention 实现",
-                        "继承 vllm_ascend/attention/abstract.py 中的基类",
-                        "在 vllm_ascend/attention/__init__.py 中注册",
+                        "third_party/ascend/patch/ 下为整体式 .patch 文件（triton-ascend-<version>.patch、dev 版本、llvm_patch_<sha>.patch）",
+                        "版本发布时更新 release patch；日常开发维护 dev patch",
+                        "patch 文件由构建流程应用（setup_ascend.py / CMakeLists.txt 引用）",
                     ],
                 },
             ],
         },
         "testing_guide": {
-            "vllm": {
-                "environment_setup": "cd ~/code/vllm && source .venv/bin/activate && uv pip install -r requirements/test/cuda.txt",
+            "triton": {
+                "environment_setup": "cd ~/code/triton && pip install -e python（需要 CUDA 环境）",
                 "test_commands": [
-                    ".venv/bin/python -m pytest tests/path/to/test_file.py -v",
-                    ".venv/bin/python -m pytest tests/models/ -v",
+                    "pytest python/test/ -v",
+                    "cd python && pytest -v test/language/",
                 ],
                 "lint_commands": [
                     "pre-commit run --all-files",
-                    "pre-commit run ruff-check --all-files",
                 ],
             },
-            "vllm-ascend": {
-                "environment_setup": "cd ~/code/vllm-ascend && pip install -e .[dev]",
+            "triton-ascend": {
+                "environment_setup": "需要 CANN 环境 + torch_npu；cd ~/code/triton-ascend && pip install -e .（详见 README_zh.md 安装章节）",
                 "test_commands": [
-                    "pytest -sv tests/ut/",
-                    "pytest -sv tests/e2e/pull_request/one_card/",
+                    "pytest -sv unittest/",
+                    "pytest -sv third_party/ascend/unittest/",
                 ],
                 "lint_commands": [
-                    "ruff check vllm_ascend/",
-                    "bash format.sh ci",
+                    "pre-commit run --all-files",
                 ],
             },
         },
@@ -293,7 +283,7 @@ def _build_cross_ref_schema():
     return {
         "type": "object",
         "properties": {
-            "vllm_to_ascend_map": {
+            "triton_to_ascend_map": {
                 "type": "object",
                 "additionalProperties": {"type": ["string", "null"]},
             },
@@ -315,7 +305,7 @@ def _build_cross_ref_schema():
                 "additionalProperties": {"type": "string"},
             },
         },
-        "required": ["vllm_to_ascend_map", "ascend_only_components", "impact_judgment_rules", "patch_impact_map"],
+        "required": ["triton_to_ascend_map", "ascend_only_components", "impact_judgment_rules", "patch_impact_map"],
     }
 
 
@@ -340,27 +330,24 @@ CONTEXT_PROMPT_TEMPLATE = """你是一个资深代码架构分析师。请根据
 
 ## 关键接口文件
 源码位于 {local_repo}，请使用 Read 工具读取关键接口文件来理解项目架构。从目录树中重点关注：
-- 平台抽象层（platform/）
-- 引擎核心（engine/）
-- Worker/Model Runner（worker/）
-- Attention 后端（attention/）
-- Scheduler 和 KV Cache（core/sched/、kv_cache_interface.py）
-- Config（config/）
-- Model Executor（model_executor/）
-- Compilation（compilation/）
-- Sampling（sample/）
-- Distributed（distributed/）
-- Patch（patch/，仅 vllm-ascend）
+- 前端语言层（python/triton/language/、python/triton/experimental/）
+- 编译器流水线（python/triton/compiler/）
+- 后端抽象（python/triton/backends/：BaseBackend、DriverBase、entry_points 注册）
+- Runtime（python/triton/runtime/、python/triton/_C/）
+- IR/编译器实现（include/、lib/Dialect/Triton*/、lib/Conversion/）
+- Python 绑定（python/src/）
+- 第三方后端（third_party/amd、third_party/nvidia；triton-ascend 为 third_party/ascend/）
+- Patch（third_party/ascend/patch/，仅 triton-ascend）
 
 ## 分析要求
 请基于以上信息，分析以下内容：
 
 1. **项目概述**：项目是什么、解决什么问题
-2. **核心模块**：列出主要模块/目录及其职责，对于有技术深度的模块（如 Attention、Worker、Compilation、Distributed），请在描述中包含 **实现原理**（这个模块怎么工作、为什么这样设计）
+2. **核心模块**：列出主要模块/目录及其职责，对于有技术深度的模块（如 Compiler、Backends、Language frontend、Runtime），请在描述中包含 **实现原理**（这个模块怎么工作、为什么这样设计）
 3. **关键抽象**：核心类/接口，要求包含：
-   - inherits_from：该类/接口继承自哪个基类（如果是扩展 vllm 的抽象，标注出来）
+   - inherits_from：该类/接口继承自哪个基类（如果是扩展 triton 的抽象，标注出来）
    - key_methods：列出关键方法及其签名，简要说明作用
-   - ascend_implementations：如果 vllm-ascend 实现了此接口，列出对应的 ascend 类名（vllm 仓库时填写）
+   - ascend_implementations：如果 triton-ascend 实现了此接口，列出对应的 ascend 类名（triton 仓库时填写）
 4. **实现原理**：针对核心模块/技术，描述其实现原理和技术细节，包括：
    - 它解决了什么问题
    - 核心工作流程（用文字描述即可，不要写代码）
@@ -369,53 +356,52 @@ CONTEXT_PROMPT_TEMPLATE = """你是一个资深代码架构分析师。请根据
 {extra_context}
 5. **模块依赖关系**：模块间如何调用和依赖
 6. **硬件适配层**：与硬件相关的抽象层，哪些是平台无关的接口，哪些是平台特定的实现
-7. **接口面**（interface_surface）——非常重要：列出所有被外部平台插件（如 vllm-ascend）继承/复写的核心接口：
+7. **接口面**（interface_surface）——非常重要：列出所有被外部平台后端（如 triton-ascend）继承/复写的核心接口：
    - 对每个接口，说明：基类位置、ascend 实现类名、关键方法签名、影响规则（签名/行为变更的后果）
-   - 同时列出 **不被 vllm-ascend 使用** 的模块/路径（如 flashinfer、cuda.py、rocm.py 等纯平台特定代码）
+   - 同时列出 **不被 triton-ascend 使用** 的模块/路径（如纯 NVIDIA/AMD 特定代码、纯 CUDA kernel 等）
 
 ## 附加要求：生成 knowledge_base 字段
 请在 JSON 输出中增加 `knowledge_base` 字段，包含以下内容：
 
-1. **patch_catalog**: 从 patch/__init__.py 中提取的 patch 信息（如果你能看到该文件内容）。包含 targets（修改的目标类/函数）、why、how、related_pr、future_plan。
+1. **patch_catalog**: 从 third_party/ascend/patch/ 目录中的 .patch 文件提取的信息（如果你能看到该目录）。包含 patch 文件名、版本、覆盖的目标文件（从 diffstat 提取）、用途说明。
 2. **development_workflows**: 请参考以下固定模板，嵌入到 knowledge_base 中。这些模板是固定的，不需要修改。
 ```json
 {knowledge_base_template}
 ```"""
 
-VLLM_EXTRA_CONTEXT = """
-8. **与 vllm-ascend 的关系**：
-   - 特别关注哪些模块/接口是 vllm-ascend 必须继承或复写的
+TRITON_EXTRA_CONTEXT = """
+8. **与 triton-ascend 的关系**：
+   - 特别关注哪些模块/接口是 triton-ascend 必须继承或复写的
    - interface_surface 字段需要非常详尽，这是后续 commit 分析判断 ascend_impact 的核心依据
-   - not_used_by_ascend 需要包含所有绝对不影响 vllm-ascend 的路径（如纯 CUDA kernel、纯 ROCm 代码、纯 FlashInfer 后端等）
+   - not_used_by_ascend 需要包含所有绝对不影响 triton-ascend 的路径（如纯 NVIDIA/AMD 后端代码、纯 CUDA kernel、特定平台 tools 等）
    - 实现原理示例主题：
-     * EngineCore 调度循环：如何从 Scheduler 取 batch → Executor 分发到 Worker → 收集结果 → 输出处理
-     * GPUModelRunner 前向传播：execute_model() 的完整流程，哪些步骤是可以用子类 override 的
-     * Platform 插件加载机制：__init__.py 中的 auto-detect 流程，OOT 平台如何通过 entry_points 注入
-     * AttentionBackend 注册与选择：get_attn_backend_cls() 的缓存和 fallback 逻辑
-     * torch.compile 集成：CompilerInterface → InductorAdaptor → CUDAGraph 的编译流水线
-     * KV Cache 管理：block_pool → scheduler → attention backend 的数据流"""
+     * 编译流水线：frontend AST → Triton IR → TritonGPU IR → LLVM/NPU IR 的 pass 顺序
+     * 后端注册机制：python/triton/backends/__init__.py 的 entry_points 发现、BaseBackend/DriverBase 接口
+     * Language frontend：@jit 装饰器、kernel 参数语义分析、JITFunction 缓存
+     * Runtime 启动流程：launch kernel 的 driver 交互、缓存命中路径
+     * IR 结构：include/ 中的 op 定义、lib/Dialect/Triton*/ 的 builder/verifier 分工
+     * 第三方后端扩展点：third_party/ 下各后端如何接入编译流水线"""
 
 ASCEND_EXTRA_CONTEXT = """
-8. **作为 vLLM 的 Ascend 适配层**：
-   - 分析 vllm-ascend 如何扩展 vllm 的每个抽象接口
-   - interface_surface 中的 inheritable_interfaces 需要说明基类来自 vLLM 的哪个文件
+8. **作为 triton 的 Ascend 后端实现**：
+   - 分析 triton-ascend 如何扩展 triton 的每个抽象接口（BaseBackend、DriverBase 等）
+   - interface_surface 中的 inheritable_interfaces 需要说明基类来自 triton 的哪个文件
    - 实现原理示例主题：
-     * NPUPlatform 注册流程：从 vllm_ascend/__init__.py register() → vLLM 插件系统 → NPUPlatform 实例化
-     * NPUModelRunner 与 GPUModelRunner 的差异：哪些方法被 override、哪些是新增的
-     * ACL Graph 机制：与 CUDA Graph 的差异（API 不同、NZ 格式、capture 流程差异）
-     * AscendAttentionBackend 的 NZ 格式处理：KV cache shape 差异、get_kv_cache_shape 返回格式
-     * Patch 机制：adapt_patch() 的执行时机、platform 级 vs worker 级的区别
-     * EPLB 负载均衡：expert 路由权重分配的工作流程
-     * CaMem 分配器：与 PyTorch 默认分配器的差异"""
+     * AscendBackend 注册流程：third_party/ascend/backend/backend_register.py → entry_points → _find_concrete_subclasses 实例化
+     * AscendDriver 与 DriverBase 的差异：NPU 设备管理、内存分配、kernel launch 的 CANN API 映射
+     * Ascend 编译流水线：TritonGPU IR → AscendNPU IR（AscendNPU-IR）→ CANN 的 lowering 过程
+     * 上游代码回合方式：人工 cherry-pick、third_party/ascend/patch/*.patch 的维护时机
+     * Ascend costmodel：third_party/ascend/costmodel/ 的调优策略
+     * 与 CUDA 后端的架构差异：NZ 格式、Ascend IR 特殊 pass、CANN 算子库对接"""
 
 CROSS_REFERENCE_PROMPT = """你是一个资深代码架构分析师。以下是将两个项目的架构摘要合并，请你分析两者之间的继承/复写/依赖关系。
 
-## vllm 架构摘要
+## triton 架构摘要
 ```json
-{vllm_context_json}
+{triton_context_json}
 ```
 
-## vllm-ascend 架构摘要
+## triton-ascend 架构摘要
 ```json
 {ascend_context_json}
 ```
@@ -423,40 +409,40 @@ CROSS_REFERENCE_PROMPT = """你是一个资深代码架构分析师。以下是�
 ## 分析要求
 请基于以上两份架构摘要，输出跨项目关系分析。重点关注：
 
-1. **类/接口映射**：vLLM 中的每个 interface_surface.inheritable_interfaces 在 vllm-ascend 中对应的实现类
-2. **Ascend 独有组件**：vllm-ascend 中哪些组件没有对应的 vLLM 基类（如 ACLGraphWrapper、CaMemAllocator 等）
+1. **类/接口映射**：triton 中的每个 interface_surface.inheritable_interfaces 在 triton-ascend 中对应的实现类
+2. **Ascend 独有组件**：triton-ascend 中哪些组件没有对应的 triton 基类（如 AscendNPU-IR 相关、CANN 对接层等）
 3. **影响判断规则**：基于接口面分析，给出一套具体的 ascend_impact 判断规则：
-   - 哪些 vLLM 文件/路径的变更 **必然** 影响 vllm-ascend（如 platform/__init__.py、worker_base.py 签名变更）
-   - 哪些 vLLM 文件/路径的变更 **可能** 影响 vllm-ascend（如 engine/core.py、config/ 的行为变更）
-   - 哪些 vLLM 文件/路径的变更 **绝不** 影响 vllm-ascend（如 flashinfer、cuda.py、rocm.py）
-4. **Patch 影响面**：vllm-ascend 通过 patch 机制修改了 vLLM 的哪些模块，这些模块的变更如何影响 ascend
+   - 哪些 triton 文件/路径的变更 **必然** 影响 triton-ascend（如 python/triton/backends/ 接口签名变更、IR op 定义变更）
+   - 哪些 triton 文件/路径的变更 **可能** 影响 triton-ascend（如编译流水线、language frontend 的行为变更）
+   - 哪些 triton 文件/路径的变更 **绝不** 影响 triton-ascend（如 third_party/nvidia、third_party/amd 等纯平台特定代码）
+4. **Patch 影响面**：triton-ascend 通过 third_party/ascend/patch/*.patch 修改了 triton 的哪些模块，这些模块的变更如何影响 ascend
 
 ## 输出格式
 输出 JSON 格式，不要输出其他内容：
 ```json
 {{
-  "vllm_to_ascend_map": {{
-    "<vLLM 类全限定名或文件路径>": "<对应 vllm-ascend 类名或文件路径，无实现则标注 null>"
+  "triton_to_ascend_map": {{
+    "<triton 类全限定名或文件路径>": "<对应 triton-ascend 类名或文件路径，无实现则标注 null>"
   }},
   "ascend_only_components": [
-    "<没有 vLLM 基类的 vllm-ascend 组件>"
+    "<没有 triton 基类的 triton-ascend 组件>"
   ],
   "impact_judgment_rules": {{
     "definitely_affected_paths": [
-      "<vLLM 文件/路径模式">,
+      "<triton 文件/路径模式">,
       "<说明：为什么必然影响>"
     ],
     "potentially_affected_paths": [
-      "<vLLM 文件/路径模式">,
+      "<triton 文件/路径模式">,
       "<说明：什么条件下会影响>"
     ],
     "never_affected_paths": [
-      "<vLLM 文件/路径模式">,
+      "<triton 文件/路径模式">,
       "<说明：为什么不影响>"
     ]
   }},
   "patch_impact_map": {{
-    "<vLLM 被 patch 的模块路径>": "<对应的 vllm-ascend patch 文件>"
+    "<triton 被 patch 的模块路径>": "<对应的 triton-ascend patch 文件>"
   }}
 }}
 ```"""
@@ -556,7 +542,7 @@ def generate_context(repo, data_dir, force, local_repo=None, checkout_sha=None):
             print(f"  Warning: pull failed: {e}")
 
     source_dir = REPO_SOURCE_DIRS.get(repo, repo_dir_name(repo))
-    is_vllm = "vllm-ascend" not in repo
+    is_upstream = "triton-ascend" not in repo
 
     orig_head = None
     try:
@@ -567,7 +553,7 @@ def generate_context(repo, data_dir, force, local_repo=None, checkout_sha=None):
         tree = build_tree(local_repo, source_dir)
         print(f"  -> {len(tree.split(chr(10)))} entries")
 
-        extra = VLLM_EXTRA_CONTEXT if is_vllm else ASCEND_EXTRA_CONTEXT
+        extra = TRITON_EXTRA_CONTEXT if is_upstream else ASCEND_EXTRA_CONTEXT
         commit_sha = get_current_sha(local_repo) or "unknown"
 
         knowledge_base_template = build_knowledge_base_template()
@@ -633,30 +619,30 @@ def generate_context(repo, data_dir, force, local_repo=None, checkout_sha=None):
             _restore_head(local_repo, orig_head)
 
 
-def generate_cross_reference(data_dir, force, vllm_local=None, ascend_local=None):
-    """Phase 2: Cross-reference vllm and vllm-ascend architectures.
+def generate_cross_reference(data_dir, force, triton_local=None, ascend_local=None):
+    """Phase 2: Cross-reference triton and triton-ascend architectures.
 
     Reads both architecture.json files, sends them to the LLM along with
     local repo paths (if available) so opencode can read source files
     for more accurate impact judgment rules.
     """
-    vllm_dir = os.path.join(data_dir, repo_dir_name("vllm-project/vllm"))
-    ascend_dir = os.path.join(data_dir, repo_dir_name("vllm-project/vllm-ascend"))
-    vllm_path = os.path.join(vllm_dir, "context", "architecture.json")
+    triton_dir = os.path.join(data_dir, repo_dir_name("triton-lang/triton"))
+    ascend_dir = os.path.join(data_dir, repo_dir_name("triton-lang/triton-ascend"))
+    triton_path = os.path.join(triton_dir, "context", "architecture.json")
     ascend_path = os.path.join(ascend_dir, "context", "architecture.json")
 
-    vllm_ctx = load_json(vllm_path)
+    triton_ctx = load_json(triton_path)
     ascend_ctx = load_json(ascend_path)
 
-    if not vllm_ctx:
-        print("Error: vllm architecture.json not found. Run phase 1 first.")
+    if not triton_ctx:
+        print("Error: triton architecture.json not found. Run phase 1 first.")
         return False
     if not ascend_ctx:
-        print("Error: vllm-ascend architecture.json not found. Run phase 1 first.")
+        print("Error: triton-ascend architecture.json not found. Run phase 1 first.")
         return False
 
     # Check if cross reference already exists
-    if (vllm_ctx.get("cross_project_relationship") and
+    if (triton_ctx.get("cross_project_relationship") and
             ascend_ctx.get("cross_project_relationship") and
             not force):
         print("Cross reference already exists, use --force to regenerate")
@@ -683,11 +669,11 @@ def generate_cross_reference(data_dir, force, vllm_local=None, ascend_local=None
             "interface_surface": ctx.get("interface_surface"),
         }
 
-    vllm_json = json.dumps(slim_ctx(vllm_ctx), ensure_ascii=False, indent=2)
+    triton_json = json.dumps(slim_ctx(triton_ctx), ensure_ascii=False, indent=2)
     ascend_json = json.dumps(slim_ctx(ascend_ctx), ensure_ascii=False, indent=2)
 
     prompt = CROSS_REFERENCE_PROMPT.format(
-        vllm_context_json=vllm_json,
+        triton_context_json=triton_json,
         ascend_context_json=ascend_json,
     )
 
@@ -697,14 +683,14 @@ def generate_cross_reference(data_dir, force, vllm_local=None, ascend_local=None
     cross_ref = call_opencode(
         prompt=prompt,
         json_schema=cross_ref_schema,
-        add_dirs=[d for d in [vllm_local, ascend_local] if d],
+        add_dirs=[d for d in [triton_local, ascend_local] if d],
     )
     if cross_ref is None:
         print("Failed to get cross-reference from opencode")
         return False
 
     # Write cross_project_relationship into both architecture files
-    for ctx, path in [(vllm_ctx, vllm_path), (ascend_ctx, ascend_path)]:
+    for ctx, path in [(triton_ctx, triton_path), (ascend_ctx, ascend_path)]:
         ctx["cross_project_relationship"] = cross_ref
         ctx["generated_at"] = datetime.now(TZ_CN).isoformat()
         save_json_atomic(path, ctx)
@@ -773,27 +759,27 @@ def main():
 
     if args.cross_reference:
         # Auto-discover both repos from KNOWN_REPOS
-        cross_repos = ["vllm-project/vllm", "vllm-project/vllm-ascend"]
-        vllm_local = None
+        cross_repos = ["triton-lang/triton", "triton-lang/triton-ascend"]
+        triton_local = None
         ascend_local = None
         for repo in cross_repos:
             local = ensure_repo(repo, args.local_repo, project_dir, skip_pull=True)
-            if "vllm-ascend" in repo:
+            if "triton-ascend" in repo:
                 ascend_local = local
             else:
-                vllm_local = local
+                triton_local = local
 
-        # Temporarily checkout vllm to baseline if specified
+        # Temporarily checkout triton to baseline if specified
         orig_head = None
         try:
-            if args.checkout and vllm_local:
-                orig_head = _checkout_and_restore(vllm_local, args.checkout)
+            if args.checkout and triton_local:
+                orig_head = _checkout_and_restore(triton_local, args.checkout)
             result = generate_cross_reference(args.data_dir, args.force,
-                                              vllm_local=vllm_local,
+                                              triton_local=triton_local,
                                               ascend_local=ascend_local)
         finally:
-            if orig_head and vllm_local:
-                _restore_head(vllm_local, orig_head)
+            if orig_head and triton_local:
+                _restore_head(triton_local, orig_head)
         sys.exit(0 if result else 1)
 
     if not args.repo:

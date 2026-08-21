@@ -4,19 +4,19 @@ Phase 2: 用 opencode agent 深度分析 ascend_affected 的 commit。
 
 用法：
   python src/data/deep_analyze_commits.py \
-      --repo vllm-project/vllm \
+      --repo triton-lang/triton \
       --date 2026-07-27 \
-      --local-repo ~/code/vllm \
+      --local-repo ~/code/triton \
       --data-dir data
 
 执行流程：
   1. 读取 Phase 1 的分析结果，找出 ascend_affected=true 且尚未深度分析的 commit
   2. 对每个 commit：
-     a. 临时 checkout vllm 源码到该 commit 的父 commit（还原分析时的代码状态）
+     a. 临时 checkout triton 源码到该 commit 的父 commit（还原分析时的代码状态）
      b. 调用 opencode（agent 模式），读取架构文件和实际源码
      c. 获取深度分析结果（affected_interfaces、adaptation_effort、adaptation_guide、risk）
      d. 写回 deep_analysis 字段到分析文件（每个 commit 完成后即时保存）
-     e. 恢复 vllm 源码到原来的 HEAD
+     e. 恢复 triton 源码到原来的 HEAD
   3. 全部完成后打印总结
 """
 import argparse
@@ -114,7 +114,7 @@ def deep_analyze_commits(repo, date, data_dir, local_repo):
             )
             parent_sha = sha if parent_result.returncode != 0 else parent_result.stdout.strip()
 
-            print(f"    Checking out vllm source at {parent_sha[:12]} (parent of {sha_short})...")
+            print(f"    Checking out triton source at {parent_sha[:12]} (parent of {sha_short})...")
             subprocess.run(
                 ["git", "checkout", "--force", parent_sha],
                 cwd=local_repo, capture_output=True, text=True, timeout=60,
@@ -161,19 +161,19 @@ def deep_analyze_commits(repo, date, data_dir, local_repo):
                 )
 
             msg = (commit_info.get('message', '') or '').split('\n')[0][:120]
-            prompt = f"""You are analyzing vllm commit {sha_short} that may affect vllm-ascend. Provide deep analysis.
+            prompt = f"""You are analyzing triton commit {sha_short} that may affect triton-ascend. Provide deep analysis.
 
 ## Repository
-- vllm: {repo}
-- vllm-ascend: vllm-project/vllm-ascend
+- triton: {repo}
+- triton-ascend: triton-lang/triton-ascend
 - Date: {date}
 - Commit: {sha_short}
 - Commit message: {msg}
 
 ## Architecture Context
 Read the architecture.json files for both projects at:
-- {data_dir_abs}/vllm/context/architecture.json
-- {data_dir_abs}/vllm-ascend/context/architecture.json
+- {data_dir_abs}/triton/context/architecture.json
+- {data_dir_abs}/triton-ascend/context/architecture.json
 
 IMPORTANT: architecture.json is a **baseline snapshot**. It was generated at an earlier commit.
 The actual code checked out below is at the PARENT of this commit, so it reflects the code
@@ -183,7 +183,7 @@ but the source code is the ground truth for what exists at this point in time.
 Focus on the interface_surface and cross_project_relationship fields to understand impact rules,
 but ALWAYS verify against the actual source code checked out at {local_repo}.
 
-The vllm source code is checked out at: {local_repo}
+The triton source code is checked out at: {local_repo}
 IMPORTANT: The source code is at the commit just BEFORE this commit ({parent_sha[:12]}).
 This is the correct state for analyzing what this commit changes.
 Read relevant source files to understand the code and interfaces that this commit modifies.
@@ -197,10 +197,10 @@ Patch summary:
 {patch_summary}
 
 ## Analysis Requirements
-1. ascend_affected_confirmed: Is this commit a TRUE positive? Set to false if it doesn't actually require any adaptation in vllm-ascend (Phase 1 false positive).
-2. affected_interfaces: Which specific interfaces/classes in vllm-ascend are affected (empty array if ascend_affected_confirmed is false)
+1. ascend_affected_confirmed: Is this commit a TRUE positive? Set to false if it doesn't actually require any adaptation in triton-ascend (Phase 1 false positive).
+2. affected_interfaces: Which specific interfaces/classes in triton-ascend are affected (empty array if ascend_affected_confirmed is false)
 3. adaptation_effort: How much adaptation work is needed (low/medium/high). Set to "low" if ascend_affected_confirmed is false.
-4. adaptation_guide: What needs to be adapted in vllm-ascend (be specific about files and methods). Empty string if ascend_affected_confirmed is false.
+4. adaptation_guide: What needs to be adapted in triton-ascend (be specific about files and methods). Empty string if ascend_affected_confirmed is false.
 5. risk: Risk assessment of the adaptation. Empty string if ascend_affected_confirmed is false.
 """
 
@@ -209,7 +209,7 @@ Patch summary:
                 "properties": {
                     "ascend_affected_confirmed": {
                         "type": "boolean",
-                        "description": "Whether this commit truly requires adaptation in vllm-ascend. Set to false if Phase 1 was a false positive.",
+                        "description": "Whether this commit truly requires adaptation in triton-ascend. Set to false if Phase 1 was a false positive.",
                     },
                     "affected_interfaces": {
                         "type": "array",
@@ -221,7 +221,7 @@ Patch summary:
                     },
                     "adaptation_guide": {
                         "type": "string",
-                        "description": "What needs to be adapted in vllm-ascend",
+                        "description": "What needs to be adapted in triton-ascend",
                     },
                     "risk": {"type": "string"},
                 },
@@ -271,7 +271,7 @@ Patch summary:
 
         finally:
             if original_head:
-                print(f"    Restoring vllm source to original HEAD ({original_head[:12]})...")
+                print(f"    Restoring triton source to original HEAD ({original_head[:12]})...")
                 subprocess.run(
                     ["git", "checkout", "--force", original_head],
                     cwd=local_repo, capture_output=True, text=True, timeout=60,

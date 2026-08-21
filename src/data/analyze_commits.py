@@ -4,9 +4,9 @@ Phase 1: 调用 DeepSeek 批量分析 commit，标记 ascend_affected。
 
 用法：
   python src/data/analyze_commits.py \
-      --repo vllm-project/vllm \
+      --repo triton-lang/triton \
       --date 2026-07-27 \
-      --local-repo ~/code/vllm \
+      --local-repo ~/code/triton \
       --force
 
 执行流程：
@@ -97,38 +97,38 @@ PROMPT_TEMPLATE = """你是一个代码变更分析专家。请对以下 commit 
 
 
 
-VLLM_ASCEND_REQUIREMENT = """**ascend_impact**（仅 vllm 仓库需要填写）：评估对 vllm-ascend 项目的影响。
+TRITON_ASCEND_REQUIREMENT = """**ascend_impact**（仅 triton 仓库需要填写）：评估对 triton-ascend 项目的影响。
    请基于上面架构上下文中的"接口面"、"跨项目影响判断规则"、"实现原理"来判断，不要凭感觉猜测。
 
    判断流程：
    1. 先看变更文件是否命中"必然影响"路径列表 → ascend_affected = true
    2. 再看变更文件是否命中"可能影响"路径列表 → 结合变更内容判断
-   3. 纯平台特定代码（flashinfer/cuda/rocm 等）→ ascend_affected = false
+   3. 纯平台特定代码（third_party/nvidia、third_party/amd 等）→ ascend_affected = false
    4. 纯 docs/tests/ci/build → ascend_affected = false
 
    输出字段：
-   - ascend_affected：该 commit 是否影响 vllm-ascend（布尔值，影响则 true，不影响则 false）
+   - ascend_affected：该 commit 是否影响 triton-ascend（布尔值，影响则 true，不影响则 false）
    - functionality：功能层面的影响（具体说明影响哪个接口/类，如何影响，不要写"可能""也许"等模糊词）
    - testing：测试层面的影响
-   - needs_test_update：vllm-ascend 是否因此变更需要新增、删除或更新测试用例（布尔值）
+   - needs_test_update：triton-ascend 是否因此变更需要新增、删除或更新测试用例（布尔值）
    - suggested_test_areas：如果 needs_test_update 为 true，建议变更的文件或模块（列表）
-   - 如果该 commit 不影响 vllm-ascend，则 ascend_affected 填 false，functionality 和 testing 填写"无影响"，needs_test_update 填 false"""
+   - 如果该 commit 不影响 triton-ascend，则 ascend_affected 填 false，functionality 和 testing 填写"无影响"，needs_test_update 填 false"""
 ASCEND_ASCEND_REQUIREMENT = ""
 
-VLLM_TEST_REQUIREMENT = ""
-ASCEND_TEST_REQUIREMENT = """**test_impact**：测试影响评估（vllm-ascend 仓库）
+TRITON_TEST_REQUIREMENT = ""
+ASCEND_TEST_REQUIREMENT = """**test_impact**：测试影响评估（triton-ascend 仓库）
    - needs_test_update：是否需要新增、删除或更新测试用例（布尔值）
    - reason：判断理由（基于对变更内容的理解，不要硬猜）
    - suggested_test_areas：建议变更的文件或模块（列表）"""
 
-VLLM_TEST_SUMMARY_DESC = ""
+TRITON_TEST_SUMMARY_DESC = ""
 ASCEND_TEST_SUMMARY_DESC = "**test_impact_summary**：一段话重点总结当日变更对测试看护的影响（是否引入需要看护的测试点、现有测试是否足以覆盖等），不要仅重复每个 commit 的 test_impact.reason，而是综合评估测试策略层面的影响"
 
-VLLM_TEST_SUMMARY_FIELD = ""
+TRITON_TEST_SUMMARY_FIELD = ""
 ASCEND_TEST_SUMMARY_FIELD = '''"test_impact_summary": "<测试看护影响总结>",
 '''
 
-VLLM_TEST_COMMIT_FIELD = ""
+TRITON_TEST_COMMIT_FIELD = ""
 ASCEND_TEST_COMMIT_FIELD = ''',
       "test_impact": {
         "needs_test_update": true,
@@ -136,14 +136,14 @@ ASCEND_TEST_COMMIT_FIELD = ''',
         "suggested_test_areas": ["<area1>"]
       }'''
 
-VLLM_ASCEND_SUMMARY_DESC = "（仅 vllm 项目）**ascend_impact_summary**：一段话总结当日 vllm 变更对 vllm-ascend 项目的影响（从 ascend_impact 字段中提炼）"
+TRITON_ASCEND_SUMMARY_DESC = "（仅 triton 项目）**ascend_impact_summary**：一段话总结当日 triton 变更对 triton-ascend 项目的影响（从 ascend_impact 字段中提炼）"
 ASCEND_ASCEND_SUMMARY_DESC = ""
 
-VLLM_ASCEND_SUMMARY_FIELD = '''"ascend_impact_summary": "<对 vllm-ascend 的影响总结>",
+TRITON_ASCEND_SUMMARY_FIELD = '''"ascend_impact_summary": "<对 triton-ascend 的影响总结>",
 '''
 ASCEND_ASCEND_SUMMARY_FIELD = ""
 
-VLLM_ASCEND_COMMIT_FIELD = ''',
+TRITON_ASCEND_COMMIT_FIELD = ''',
       "ascend_impact": {
         "ascend_affected": true,
         "functionality": "<功能影响>",
@@ -369,18 +369,18 @@ _not_used_by_ascend_cache = None
 
 
 def _load_not_used_by_ascend(data_dir):
-    """Load the not_used_by_ascend list from vllm architecture.json.
+    """Load the not_used_by_ascend list from triton architecture.json.
 
     This is generated weekly by the LLM and reflects the current codebase.
     Returns a set of file/directory prefixes that are definitely not used
-    by vllm-ascend.
+    by triton-ascend.
     """
     global _not_used_by_ascend_cache
     if _not_used_by_ascend_cache is not None:
         return _not_used_by_ascend_cache
 
-    vllm_dir = os.path.join(data_dir, "vllm")
-    context_path = os.path.join(vllm_dir, "context", "architecture.json")
+    triton_dir = os.path.join(data_dir, "triton")
+    context_path = os.path.join(triton_dir, "context", "architecture.json")
     context = load_json(context_path)
     if context is None:
         _not_used_by_ascend_cache = set()
@@ -407,7 +407,7 @@ def _is_auto_false_path(filename, not_used_set):
 
 
 def triage_ascend(commit, not_used_set):
-    """Check if a commit definitely does NOT affect vllm-ascend.
+    """Check if a commit definitely does NOT affect triton-ascend.
 
     Returns True if every changed file is in a non-ascend-relevant path,
     meaning the commit can be auto-marked as ascend_affected=false.
@@ -435,14 +435,14 @@ def auto_analyze_commit(commit, repo):
     else:
         tags = ["chore"]
 
-    is_vllm = "vllm-ascend" not in repo
+    is_upstream = "triton-ascend" not in repo
     result = {
         "sha": commit["sha"],
         "message": commit.get("message", ""),
-        "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 vllm-ascend。",
+        "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 triton-ascend。",
         "tags": tags,
     }
-    if is_vllm:
+    if is_upstream:
         result["ascend_impact"] = {
             "ascend_affected": False,
             "functionality": "无影响",
@@ -453,25 +453,25 @@ def auto_analyze_commit(commit, repo):
     else:
         result["test_impact"] = {
             "needs_test_update": False,
-            "reason": "（自动判定）该 commit 不涉及 vllm-ascend 核心逻辑变更。",
+            "reason": "（自动判定）该 commit 不涉及 triton-ascend 核心逻辑变更。",
             "suggested_test_areas": [],
         }
     return result
 
 
 def build_prompt(repo, date, commits_data, data_dir, local_repo=None, commit_subset=None):
-    is_vllm = "vllm-ascend" not in repo
+    is_upstream = "triton-ascend" not in repo
     repo_short = repo_dir_name(repo)
 
-    if is_vllm:
-        test_requirement = VLLM_TEST_REQUIREMENT
-        test_summary_desc = VLLM_TEST_SUMMARY_DESC
-        test_summary_field = VLLM_TEST_SUMMARY_FIELD
-        test_commit_field = VLLM_TEST_COMMIT_FIELD
-        ascend_requirement = VLLM_ASCEND_REQUIREMENT
-        ascend_summary_desc = VLLM_ASCEND_SUMMARY_DESC
-        ascend_summary_field = VLLM_ASCEND_SUMMARY_FIELD
-        ascend_commit_field = VLLM_ASCEND_COMMIT_FIELD
+    if is_upstream:
+        test_requirement = TRITON_TEST_REQUIREMENT
+        test_summary_desc = TRITON_TEST_SUMMARY_DESC
+        test_summary_field = TRITON_TEST_SUMMARY_FIELD
+        test_commit_field = TRITON_TEST_COMMIT_FIELD
+        ascend_requirement = TRITON_ASCEND_REQUIREMENT
+        ascend_summary_desc = TRITON_ASCEND_SUMMARY_DESC
+        ascend_summary_field = TRITON_ASCEND_SUMMARY_FIELD
+        ascend_commit_field = TRITON_ASCEND_COMMIT_FIELD
     else:
         test_requirement = ASCEND_TEST_REQUIREMENT
         test_summary_desc = ASCEND_TEST_SUMMARY_DESC
@@ -486,13 +486,13 @@ def build_prompt(repo, date, commits_data, data_dir, local_repo=None, commit_sub
     deltas_up_to_sha = None
     context_section = build_context_section(context, data_dir, repo_short, deltas_up_to_sha)
 
-    # When analyzing vllm commits, also load vllm-ascend architecture
+    # When analyzing triton commits, also load triton-ascend architecture
     # as a reference so the AI can make precise ascend impact judgments.
-    if is_vllm:
-        ascend_context = load_context(data_dir, "vllm-project/vllm-ascend")
+    if is_upstream:
+        ascend_context = load_context(data_dir, "triton-lang/triton-ascend")
         if ascend_context:
             ascend_section = build_context_section(ascend_context)
-            context_section += "\n\n## vllm-ascend 架构参考（用于评估 ascend_impact）\n" + ascend_section
+            context_section += "\n\n## triton-ascend 架构参考（用于评估 ascend_impact）\n" + ascend_section
 
     if local_repo:
         source_section = (
@@ -699,7 +699,7 @@ def validate_analysis(analysis, commits_data, repo):
         return errors
 
     commit_shas = {c["sha"] for c in commits_data.get("commits", [])}
-    is_vllm = "vllm-ascend" not in repo
+    is_upstream = "triton-ascend" not in repo
 
     for ac in analysis.get("commits", []):
         if "sha" not in ac:
@@ -713,12 +713,12 @@ def validate_analysis(analysis, commits_data, repo):
         if "tags" not in ac:
             errors.append(f"Commit {ac['sha'][:8]} missing field: tags")
 
-        if is_vllm:
+        if is_upstream:
             if "ascend_impact" not in ac:
-                errors.append(f"Commit {ac['sha'][:8]} missing ascend_impact (required for vllm repo)")
+                errors.append(f"Commit {ac['sha'][:8]} missing ascend_impact (required for triton repo)")
         else:
             if "test_impact" not in ac:
-                errors.append(f"Commit {ac['sha'][:8]} missing test_impact (required for vllm-ascend repo)")
+                errors.append(f"Commit {ac['sha'][:8]} missing test_impact (required for triton-ascend repo)")
             ti = ac.get("test_impact")
             if ti is not None:
                 if "needs_test_update" not in ti:
@@ -748,15 +748,15 @@ def merge_commits(all_commits, auto_analysis, llm_commits):
 
 
 def display_analysis(analysis):
-    is_vllm = "vllm-ascend" not in analysis.get("repo", "")
+    is_upstream = "triton-ascend" not in analysis.get("repo", "")
     print("\n" + "=" * 60)
     print(f"Date: {analysis.get('date', 'N/A')}")
     print(f"Repo: {analysis.get('repo', 'N/A')}")
     print(f"\n📋 当日总结\n{analysis.get('daily_summary', 'N/A')}")
-    if is_vllm:
+    if is_upstream:
         ai_summary = analysis.get("ascend_impact_summary")
         if ai_summary:
-            print(f"\n⬆ vllm-ascend 影响\n{ai_summary}")
+            print(f"\n⬆ triton-ascend 影响\n{ai_summary}")
     else:
         print(f"\n🧪 测试看护影响\n{analysis.get('test_impact_summary', 'N/A')}")
     print(f"\nCommits analyzed: {len(analysis.get('commits', []))}")
@@ -820,14 +820,14 @@ def analyze_commits(repo, date, data_dir, confirm, force, local_repo=None):
     MAX_COMMITS_PER_BATCH = 15
 
     # Load not_used_by_ascend from architecture.json for triage
-    is_vllm = "vllm-ascend" not in repo
-    not_used_set = _load_not_used_by_ascend(data_dir) if is_vllm else set()
+    is_upstream = "triton-ascend" not in repo
+    not_used_set = _load_not_used_by_ascend(data_dir) if is_upstream else set()
 
     # Phase 1: triage — path-based pre-filter
     llm_shas = []
     auto_analysis = []
     for c in all_commits:
-        if is_vllm and triage_ascend(c, not_used_set):
+        if is_upstream and triage_ascend(c, not_used_set):
             auto_analysis.append(auto_analyze_commit(c, repo))
         else:
             llm_shas.append(c["sha"])
@@ -977,7 +977,7 @@ def analyze_commits(repo, date, data_dir, confirm, force, local_repo=None):
         v_analysis = dict(analysis)
         v_commits_shas = {ac["sha"] for ac in llm_commits}
         # Only validate LLM-analyzed commits, not auto triaged ones
-        all_llm_shas = {c["sha"] for c in all_commits if not is_vllm or not triage_ascend(c, not_used_set)}
+        all_llm_shas = {c["sha"] for c in all_commits if not is_upstream or not triage_ascend(c, not_used_set)}
         # Filter v_commits to only those that were sent to LLM
         v_analysis["commits"] = [ac for ac in llm_commits if ac["sha"] in all_llm_shas]
         errors = validate_analysis(v_analysis, commits_data, repo)
@@ -1019,16 +1019,16 @@ def analyze_commits(repo, date, data_dir, confirm, force, local_repo=None):
             })
 
     # Build the final analysis object
-    is_vllm = "vllm-ascend" not in repo
+    is_upstream = "triton-ascend" not in repo
     if analysis is None:
         # All auto — build a minimal analysis structure
         analysis = {
             "date": date,
             "repo": repo,
-            "daily_summary": f"当日 {len(auto_analysis)} 条 commit 均不涉及 vllm-ascend。",
+            "daily_summary": f"当日 {len(auto_analysis)} 条 commit 均不涉及 triton-ascend。",
         }
-        if is_vllm:
-            analysis["ascend_impact_summary"] = "当日所有变更均为 tests / docs / CI / 平台特化代码，对 vllm-ascend 无影响。"
+        if is_upstream:
+            analysis["ascend_impact_summary"] = "当日所有变更均为 tests / docs / CI / 平台特化代码，对 triton-ascend 无影响。"
     else:
         analysis["date"] = date
         analysis["repo"] = repo

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Architecture delta tracking for vllm-report.
+Architecture delta tracking for triton-report.
 
 Tracks per-commit changes to the architecture knowledge base.
 When architecture.json is regenerated (user-initiated), deltas are reset.

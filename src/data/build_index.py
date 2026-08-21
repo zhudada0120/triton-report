@@ -11,7 +11,7 @@ multiple index entries (which caused index.json to grow to ~1MB+).
 
 Usage:
   python src/data/build_index.py --data-dir data
-  python src/data/build_index.py --data-dir data --ascend-repo-path /path/to/vllm-ascend
+  python src/data/build_index.py --data-dir data --ascend-repo-path /path/to/triton-ascend
 """
 import argparse
 import json
@@ -28,8 +28,8 @@ from data._track_arch_delta import load_deltas, delta_count, get_affected_commit
 TZ_CN = timezone(timedelta(hours=8))
 
 REPO_MAP = {
-    "vllm": "vllm-project/vllm",
-    "vllm-ascend": "vllm-project/vllm-ascend",
+    "triton": "triton-lang/triton",
+    "triton-ascend": "triton-lang/triton-ascend",
 }
 
 # Tags that are NOT module tags (these are type/risk indicators)
@@ -225,22 +225,14 @@ def build_index(data_dir, repo_dir_name_val, ascend_repo_path=None):
     # Check available data
     context_path = os.path.join(repo_dir, "context", "architecture.json")
     arch_exists = os.path.exists(context_path)
-    has_adaptation = os.path.exists(os.path.join(data_dir, "vllm-ascend", "adaptation-status.json"))
+    has_adaptation = os.path.exists(os.path.join(data_dir, "triton-ascend", "adaptation-status.json"))
 
-    # Build adaptation_baseline reference (from vllm-ascend source files)
-    adaptation_baseline = {
-        "source": "vllm-ascend/.github/vllm-main-verified.commit",
-        "release_tag_source": "vllm-ascend/.github/vllm-release-tag.commit",
-    }
-    if ascend_repo_path:
-        main_verified = os.path.join(ascend_repo_path, ".github", "vllm-main-verified.commit")
-        release_tag = os.path.join(ascend_repo_path, ".github", "vllm-release-tag.commit")
-        if os.path.exists(main_verified):
-            with open(main_verified, "r") as f:
-                adaptation_baseline["current_sha"] = f.read().strip()
-        if os.path.exists(release_tag):
-            with open(release_tag, "r") as f:
-                adaptation_baseline["current_release_tag"] = f.read().strip()
+    # Build adaptation_baseline reference (from adaptation-status.json)
+    adaptation_baseline = {}
+    if has_adaptation:
+        adaptation = load_json(os.path.join(data_dir, "triton-ascend", "adaptation-status.json"))
+        if adaptation and adaptation.get("baseline"):
+            adaptation_baseline = adaptation["baseline"]
 
     # Record architecture version info
     context_path = os.path.join(repo_dir, "context", "architecture.json")
@@ -309,7 +301,7 @@ def build_index(data_dir, repo_dir_name_val, ascend_repo_path=None):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Build search index for vllm-report data"
+        description="Build search index for triton-report data"
     )
     parser.add_argument(
         "--data-dir", default="data",
@@ -317,11 +309,11 @@ def main():
     )
     parser.add_argument(
         "--ascend-repo-path", default=None,
-        help="Path to vllm-ascend repository (for baseline tracking)"
+        help="Path to triton-ascend repository (for adaptation detection)"
     )
     args = parser.parse_args()
 
-    repos = [("vllm-project/vllm", "vllm"), ("vllm-project/vllm-ascend", "vllm-ascend")]
+    repos = [("triton-lang/triton", "triton"), ("triton-lang/triton-ascend", "triton-ascend")]
     success = True
 
     for repo_full, repo_short in repos:

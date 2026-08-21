@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-vllm-report MCP Server
+triton-report MCP Server
 
-Provides 14 tools for AI agents to query vllm-report's knowledge base.
+Provides 14 tools for AI agents to query triton-report's knowledge base.
 
 Usage:
-  python -m src.mcp_server_app --data-dir /path/to/vllm-report/data --ascend-repo-path /path/to/vllm-ascend
+  python -m src.mcp_server_app --data-dir /path/to/triton-report/data --ascend-repo-path /path/to/triton-ascend
 
 opencode config (~/.config/opencode/opencode.jsonc):
   {
     "mcp": {
-      "vllm-report": {
+      "triton-report": {
         "type": "local",
-        "command": ["python", "-m", "src.mcp_server_app", "--data-dir", "/path/to/vllm-report/data", "--ascend-repo-path", "/path/to/vllm-ascend"],
+        "command": ["python", "-m", "src.mcp_server_app", "--data-dir", "/path/to/triton-report/data", "--ascend-repo-path", "/path/to/triton-ascend"],
         "enabled": true
       }
     }
@@ -66,7 +66,7 @@ def save_json_atomic(filepath: str, data: dict) -> None:
 
 def repo_dir_name(repo_short: str) -> str:
     """Map short repo name to directory name in data/."""
-    if repo_short in ("vllm", "vllm-ascend"):
+    if repo_short in ("triton", "triton-ascend"):
         return repo_short
     # Fallback: try as-is
     return repo_short
@@ -90,21 +90,7 @@ def get_commits_index_path(data_dir: str, repo: str) -> str:
 
 
 def get_adaptation_status_path(data_dir: str) -> str:
-    return os.path.join(data_dir, "vllm-ascend", "adaptation-status.json")
-
-
-def get_baseline_file(ascend_repo_path: str, filename: str) -> Optional[str]:
-    """Read a baseline file from vllm-ascend repo."""
-    if not ascend_repo_path:
-        return None
-    filepath = os.path.join(ascend_repo_path, ".github", filename)
-    if not os.path.exists(filepath):
-        return None
-    try:
-        with open(filepath, "r") as f:
-            return f.read().strip()
-    except IOError:
-        return None
+    return os.path.join(data_dir, "triton-ascend", "adaptation-status.json")
 
 
 def find_sha_date(data_dir: str, repo: str, sha: str) -> Optional[str]:
@@ -130,14 +116,14 @@ def find_sha_date(data_dir: str, repo: str, sha: str) -> Optional[str]:
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
-server = Server("vllm-report")
+server = Server("triton-report")
 
 
 # ── Tool implementations ──────────────────────────────────────────
 
 def _repo_dir_name(repo: str) -> str:
-    """Convert 'vllm' or 'vllm-ascend' to data directory name."""
-    if repo in ("vllm", "vllm-ascend"):
+    """Convert 'triton' or 'triton-ascend' to data directory name."""
+    if repo in ("triton", "triton-ascend"):
         return repo
     return repo.replace("/", "-")
 
@@ -456,9 +442,9 @@ async def tool_get_ascend_impact_summary(repo: str, date_from: Optional[str] = N
 
 
 async def tool_get_cross_project_mapping() -> str:
-    """返回 vllm↔ascend 跨项目映射"""
+    """返回 triton↔ascend 跨项目映射"""
     # Read ascend arch.json for cross_project_relationship
-    arch_path = get_arch_path(data_dir, "vllm-ascend")
+    arch_path = get_arch_path(data_dir, "triton-ascend")
     arch = load_json(arch_path)
     if arch is None:
         return json.dumps({"error": "Architecture context not found"}, ensure_ascii=False)
@@ -467,8 +453,8 @@ async def tool_get_cross_project_mapping() -> str:
 
 
 async def tool_get_patch_catalog(category: Optional[str] = None) -> str:
-    """返回 ascend 的 patch 目录"""
-    arch_path = get_arch_path(data_dir, "vllm-ascend")
+    """返回 ascend 的 patch 文件清单（third_party/ascend/patch/*.patch 的 diffstat）"""
+    arch_path = get_arch_path(data_dir, "triton-ascend")
     arch = load_json(arch_path)
     if arch is None:
         return json.dumps({"error": "Architecture context not found"}, ensure_ascii=False)
@@ -476,21 +462,21 @@ async def tool_get_patch_catalog(category: Optional[str] = None) -> str:
     kb = arch.get("knowledge_base", {})
     catalog = kb.get("patch_catalog", {})
 
-    if category == "platform":
-        return json.dumps(catalog.get("platform_patches", []), ensure_ascii=False, indent=2)
-    elif category == "worker":
-        worker = catalog.get("worker_patches", [])
-        v2 = catalog.get("v2_worker_patches", [])
-        return json.dumps({"worker_patches": worker, "v2_worker_patches": v2}, ensure_ascii=False, indent=2)
-    else:
-        return json.dumps(catalog, ensure_ascii=False, indent=2)
+    patch_files = catalog.get("patch_files", [])
+    if category:
+        # category = patch 文件名（支持前缀匹配）
+        matched = [p for p in patch_files if p.get("name", "").startswith(category)]
+        if not matched:
+            return json.dumps({"error": f"No patch file matching '{category}'"}, ensure_ascii=False)
+        return json.dumps(matched, ensure_ascii=False, indent=2)
+    return json.dumps(catalog, ensure_ascii=False, indent=2)
 
 
 async def tool_get_architecture_freshness() -> str:
     """返回 arch.json 的时效性状态"""
     result = {}
 
-    for repo_name in ["vllm", "vllm-ascend"]:
+    for repo_name in ["triton", "triton-ascend"]:
         arch_path = get_arch_path(data_dir, repo_name)
         arch = load_json(arch_path)
         if arch is None:
@@ -530,22 +516,14 @@ async def tool_get_architecture_freshness() -> str:
             info["first_version_at"] = arch_history[0].get("generated_at", "")
             info["latest_version_sha"] = arch_history[-1].get("commit_sha", "")[:12]
 
-        # Compare with ascend baseline if available
-        if ascend_repo_path and repo_name == "vllm":
-            main_sha = get_baseline_file(ascend_repo_path, "vllm-main-verified.commit")
-            if main_sha and commit_sha != "unknown":
-                info["baseline_sha"] = main_sha[:12]
-                # Check if baseline is covered by any architecture version
-                matches_baseline = any(
-                    h.get("commit_sha", "")[:12] == main_sha[:12]
-                    for h in arch_history
-                ) or commit_sha[:12] == main_sha[:12]
-                info["matches_baseline"] = matches_baseline
-                if not matches_baseline and arch_history:
-                    info["warning"] = (
-                        f"Architecture context does not cover baseline commit {main_sha[:12]}. "
-                        "The arch knowledge may be outdated relative to the verified baseline."
-                    )
+        # Compare with adaptation tracking state if available
+        if repo_name == "triton":
+            adaptation = load_json(get_adaptation_status_path(data_dir))
+            if adaptation and adaptation.get("baseline"):
+                b = adaptation["baseline"]
+                info["adaptation_mode"] = b.get("mode", "history-scan")
+                info["tracking_start_date"] = b.get("tracking_start_date", "")
+                info["adaptation_stats"] = adaptation.get("stats", {})
 
         result[repo_name] = info
 
@@ -553,59 +531,22 @@ async def tool_get_architecture_freshness() -> str:
 
 
 async def tool_get_adaptation_baseline() -> str:
-    """返回 vllm-ascend 当前已验证的 vllm 基线"""
-    if not ascend_repo_path:
-        return json.dumps({"error": "ascend-repo-path not configured, cannot read baseline files"}, ensure_ascii=False)
+    """返回 triton-ascend 适配跟踪状态（无 baseline 文件，基于 git 历史扫描）"""
+    adaptation_path = get_adaptation_status_path(data_dir)
+    adaptation = load_json(adaptation_path)
+    if adaptation is None:
+        return json.dumps({"error": "adaptation-status.json not found. Run track_adaptation.py init first."}, ensure_ascii=False)
 
-    main_sha = get_baseline_file(ascend_repo_path, "vllm-main-verified.commit")
-    release_tag = get_baseline_file(ascend_repo_path, "vllm-release-tag.commit")
-
-    if not main_sha and not release_tag:
-        return json.dumps({"error": "Baseline files not found in ascend repository"}, ensure_ascii=False)
-
-    result = {
-        "main_verified_sha": main_sha or "not_found",
-        "release_tag": release_tag or "not_found",
-    }
-
-    # Count commits after baseline in analysis data
-    index_path = get_index_path(data_dir, "vllm")
-    index = load_json(index_path)
-    if index and main_sha:
-        # Find the date of this SHA in analysis data
-        baseline_date = None
-        for date in index.get("analysis_dates", []):
-            analysis_path = get_analysis_path(data_dir, "vllm", date)
-            analysis = load_json(analysis_path)
-            if analysis:
-                for commit in analysis.get("commits", []):
-                    if commit.get("sha", "")[:12] == main_sha[:12]:
-                        baseline_date = date
-                        break
-            if baseline_date:
-                break
-
-        if baseline_date:
-            result["baseline_date"] = baseline_date
-            # Count affected commits after baseline
-            # tags_index now stores SHA lists, so we need commits-index for dates
-            affected = index.get("tags_index", {}).get("ascend_affected", [])
-            commits_index_path = get_commits_index_path(data_dir, "vllm")
-            commits_index = load_json(commits_index_path) or {}
-            after_baseline = 0
-            for sha in affected:
-                info = commits_index.get(sha)
-                if isinstance(info, dict) and info.get("date", "") >= baseline_date:
-                    after_baseline += 1
-            result["affected_after_baseline"] = after_baseline
-
-            # Read adaptation status for adapted/pending counts
-            adaptation_path = get_adaptation_status_path(data_dir)
-            adaptation = load_json(adaptation_path)
-            if adaptation:
-                result["adaptation_stats"] = adaptation.get("stats", {})
-
-    return json.dumps(result, ensure_ascii=False, indent=2)
+    baseline = adaptation.get("baseline", {})
+    return json.dumps({
+        "mode": baseline.get("mode", "history-scan"),
+        "detection": baseline.get("detection", ""),
+        "tracking_start_date": baseline.get("tracking_start_date", ""),
+        "ascend_repo_sha": baseline.get("ascend_repo_sha", "")[:12],
+        "detected_at": baseline.get("detected_at", ""),
+        "note": baseline.get("note", ""),
+        "adaptation_stats": adaptation.get("stats", {}),
+    }, ensure_ascii=False, indent=2)
 
 
 async def tool_get_commit_diff(repo: str, sha: str) -> str:
@@ -652,7 +593,7 @@ async def tool_get_commit_diff(repo: str, sha: str) -> str:
     try:
         import urllib.request
         # Map short repo name to owner/repo format for GitHub API
-        repo_map = {"vllm": "vllm-project/vllm", "vllm-ascend": "vllm-project/vllm-ascend"}
+        repo_map = {"triton": "triton-lang/triton", "triton-ascend": "triton-lang/triton-ascend"}
         gh_repo = repo_map.get(repo, repo)
         api_url = f"https://api.github.com/repos/{gh_repo}/commits/{sha}"
         req = urllib.request.Request(api_url, headers={"Accept": "application/vnd.github.v3.diff"})
@@ -680,7 +621,7 @@ async def tool_get_commit_impact_batch(shas: list[str]) -> str:
     if not shas:
         return json.dumps({"results": []}, ensure_ascii=False, indent=2)
 
-    commits_index_path = get_commits_index_path(data_dir, "vllm")
+    commits_index_path = get_commits_index_path(data_dir, "triton")
     commits_index = load_json(commits_index_path) or {}
 
     # 按 date 分桶, 一次只读需要的日期文件
@@ -695,7 +636,7 @@ async def tool_get_commit_impact_batch(shas: list[str]) -> str:
     # 读对应日期的 analysis 文件, 建 sha → impact 映射
     impacts: dict[str, dict] = {}
     for date, date_shas in by_date.items():
-        analysis_path = get_analysis_path(data_dir, "vllm", date)
+        analysis_path = get_analysis_path(data_dir, "triton", date)
         analysis = load_json(analysis_path)
         if not analysis:
             continue
@@ -729,7 +670,7 @@ async def tool_get_commit_impact_batch(shas: list[str]) -> str:
 async def tool_get_adaptation_guide(sha: str) -> str:
     """返回某个 commit 的适配指南（markdown 格式）"""
     # Search for this SHA across all analysis files
-    for repo in ["vllm"]:
+    for repo in ["triton"]:
         index_path = get_index_path(data_dir, repo)
         index = load_json(index_path)
         if not index:
@@ -762,7 +703,7 @@ async def tool_get_adaptation_guide(sha: str) -> str:
 
                     if ascend_impact and ascend_impact.get("ascend_affected"):
                         lines.extend([
-                            "## 对 vllm-ascend 的影响",
+                            "## 对 triton-ascend 的影响",
                             f"- 功能影响：{ascend_impact.get('functionality', '无')}",
                             f"- 测试影响：{ascend_impact.get('testing', '无')}",
                             "",
@@ -815,7 +756,7 @@ async def tool_get_pending_adaptations() -> str:
 
 def get_lessons_dir(data_dir: str) -> str:
     """Directory holding adaptation-lesson files, one JSON per date."""
-    return os.path.join(data_dir, "vllm-ascend", "lessons")
+    return os.path.join(data_dir, "triton-ascend", "lessons")
 
 
 def load_all_lessons(data_dir: str) -> list[dict]:
@@ -892,7 +833,7 @@ def _persist_lesson_to_remote() -> str:
     """Commit + push the lessons change to the remote (best-effort).
 
     The MCP server usually runs from a short-lived clone (e.g. the main2main
-    flow re-creates its vllm-report clone every run), so a lesson that is
+    flow re-creates its triton-report clone every run), so a lesson that is
     only saved locally would be lost.  Commit with an explicit identity (the
     fresh clone has none — a bare ``git commit`` fails with "Author identity
     unknown") and push with a token-embedded URL when ``GH_TOKEN`` /
@@ -912,8 +853,8 @@ def _persist_lesson_to_remote() -> str:
         r = _run("status", "--short")
         if r.returncode != 0 or not r.stdout.strip():
             return ""  # nothing to commit
-        identity = ("-c", "user.name=vllm-report-bot",
-                    "-c", "user.email=vllm-report-bot@users.noreply.github.com")
+        identity = ("-c", "user.name=triton-report-bot",
+                    "-c", "user.email=triton-report-bot@users.noreply.github.com")
         r = _run("add", "-A")
         if r.returncode != 0:
             return f"git add failed: {r.stderr.strip()[:200]}"
@@ -926,10 +867,10 @@ def _persist_lesson_to_remote() -> str:
         if token:
             targets.append(
                 "https://x-access-token:{token}@gh-proxy.test.osinfra.cn/"
-                "https://github.com/vllm-ascend/vllm-report.git".format(token=token))
+                "https://github.com/triton-ascend/triton-report.git".format(token=token))
             targets.append(
                 "https://x-access-token:{token}@github.com/"
-                "vllm-ascend/vllm-report.git".format(token=token))
+                "triton-ascend/triton-report.git".format(token=token))
         targets.append("origin")
         # Rebase onto the remote before pushing: the daily data-update bot
         # commits to main between our clone and this submit, so a bare push
@@ -1046,60 +987,53 @@ async def tool_update_adaptation_status(sha: str, status: str, notes: Optional[s
             stats[s] += 1
     adaptation["stats"] = stats
 
-    async def tool_advance_baseline(new_sha: str, message: Optional[str] = None) -> str:
-        """推进基线，更新 vllm-ascend 的 vllm-main-verified.commit"""
+    async def tool_detect_adaptation() -> str:
+        """在 triton-ascend git 历史中检测已适配的上游 commit（pending → adapted）
+
+        triton-ascend 无 baseline 文件。适配检测方式：
+        1. 上游 SHA 原样存在于 ascend git 历史（早期 merge 时期）
+        2. commit message 含 "(cherry picked from commit <sha>)" 标记
+        只提升 pending → adapted，从不降级（手动标记会被保留）。
+        """
         if not ascend_repo_path:
-            return json.dumps({"error": "ascend-repo-path not configured. Cannot advance baseline."}, ensure_ascii=False)
+            return json.dumps({"error": "ascend-repo-path not configured. Cannot detect adaptation."}, ensure_ascii=False)
 
-        baseline_file = os.path.join(ascend_repo_path, ".github", "vllm-main-verified.commit")
-        if not os.path.exists(baseline_file):
-            return json.dumps({"error": f"Baseline file not found: {baseline_file}"}, ensure_ascii=False)
+        adaptation_path = get_adaptation_status_path(data_dir)
+        adaptation = load_json(adaptation_path)
+        if adaptation is None:
+            return json.dumps({"error": "adaptation-status.json not found. Run track_adaptation.py init first."}, ensure_ascii=False)
 
-        try:
-            # Read current
-            with open(baseline_file, "r") as f:
-                current = f.read().strip()
+        from data.track_adaptation import detect_adapted_shas
+        pending_shas = [c["sha"] for c in adaptation.get("commits", []) if c.get("status") == "pending"]
+        adapted_shas = detect_adapted_shas(ascend_repo_path, pending_shas)
 
-            # Write new SHA
-            with open(baseline_file, "w") as f:
-                f.write(new_sha.strip() + "\n")
+        promoted = 0
+        for commit in adaptation.get("commits", []):
+            if commit.get("status") == "pending" and commit["sha"] in adapted_shas:
+                commit["status"] = "adapted"
+                commit["adapted_at"] = datetime.now(TZ_CN).isoformat()
+                commit["adapted_by"] = "history-scan"
+                promoted += 1
 
-            # Auto-mark newly-covered commits as adapted in adaptation-status.json
-            adaptation_path = get_adaptation_status_path(data_dir)
-            adaptation = load_json(adaptation_path)
-            updated_count = 0
-            if adaptation:
-                new_baseline_date = find_sha_date(data_dir, "vllm", new_sha)
-                for commit in adaptation.get("commits", []):
-                    if commit.get("status") == "pending" and new_baseline_date:
-                        if commit.get("upstream_date", "") <= new_baseline_date:
-                            commit["status"] = "adapted"
-                            commit["adapted_at"] = datetime.now(TZ_CN).isoformat()
-                            updated_count += 1
-                if updated_count > 0:
-                    stats = {"total": 0, "pending": 0, "adapted": 0}
-                    for commit in adaptation.get("commits", []):
-                        stats["total"] += 1
-                        s = commit.get("status", "pending")
-                        if s in stats:
-                            stats[s] += 1
-                    adaptation["stats"] = stats
-                    adaptation["baseline"]["main_sha"] = new_sha
-                    adaptation["baseline"]["baseline_date"] = new_baseline_date or ""
-                    save_json_atomic(adaptation_path, adaptation)
+        if promoted:
+            stats = {"total": 0, "pending": 0, "adapted": 0}
+            for commit in adaptation.get("commits", []):
+                stats["total"] += 1
+                s = commit.get("status", "pending")
+                if s in stats:
+                    stats[s] += 1
+            adaptation["stats"] = stats
+            if adaptation.get("baseline"):
+                adaptation["baseline"]["detected_at"] = datetime.now(TZ_CN).isoformat()
+            save_json_atomic(adaptation_path, adaptation)
 
-            msg = message or f"Advance baseline from {current[:12]} to {new_sha[:12]}"
-            return json.dumps({
-                "success": True,
-                "previous_sha": current,
-                "new_sha": new_sha,
-                "file_updated": baseline_file,
-                "commits_auto_adapted": updated_count,
-                "message": msg,
-                "note": "File updated locally. Please commit and push to vllm-ascend repository."
-            }, ensure_ascii=False, indent=2)
-        except IOError as e:
-            return json.dumps({"error": f"Failed to update baseline: {str(e)}"}, ensure_ascii=False)
+        return json.dumps({
+            "success": True,
+            "checked": len(pending_shas),
+            "commits_auto_adapted": promoted,
+            "stats": adaptation.get("stats", {}),
+            "note": "无标记的人工 cherry-pick 无法自动检测，请用 update_adaptation_status 手动标记。",
+        }, ensure_ascii=False, indent=2)
 
 
 # ── Architecture Delta Tools ──────────────────────────────────────
@@ -1213,7 +1147,7 @@ async def tool_get_adaptation_roadmap(repo: str, sha_from: str, sha_to: str) -> 
 
     # Fetch adaptation status for these commits
     adaptation_status = {}
-    adaptation_path = os.path.join(data_dir, "vllm-ascend", "adaptation-status.json")
+    adaptation_path = os.path.join(data_dir, "triton-ascend", "adaptation-status.json")
     adapt_data = load_json(adaptation_path)
     if adapt_data:
         for ac in adapt_data.get("commits", []):
@@ -1258,7 +1192,7 @@ TOOLS = [
             "properties": {
                 "repo": {
                     "type": "string",
-                    "enum": ["vllm", "vllm-ascend"],
+                    "enum": ["triton", "triton-ascend"],
                     "description": "Repository name",
                 }
             },
@@ -1273,7 +1207,7 @@ TOOLS = [
             "properties": {
                 "repo": {
                     "type": "string",
-                    "enum": ["vllm", "vllm-ascend"],
+                    "enum": ["triton", "triton-ascend"],
                     "description": "Repository name",
                 }
             },
@@ -1288,7 +1222,7 @@ TOOLS = [
             "properties": {
                 "repo": {
                     "type": "string",
-                    "enum": ["vllm", "vllm-ascend"],
+                    "enum": ["triton", "triton-ascend"],
                     "description": "Repository name",
                 },
                 "module_name": {
@@ -1307,7 +1241,7 @@ TOOLS = [
             "properties": {
                 "repo": {
                     "type": "string",
-                    "enum": ["vllm", "vllm-ascend"],
+                    "enum": ["triton", "triton-ascend"],
                     "description": "Repository name",
                 }
             },
@@ -1322,7 +1256,7 @@ TOOLS = [
             "properties": {
                 "repo": {
                     "type": "string",
-                    "enum": ["vllm", "vllm-ascend"],
+                    "enum": ["triton", "triton-ascend"],
                     "description": "Repository name",
                 }
             },
@@ -1337,7 +1271,7 @@ TOOLS = [
             "properties": {
                 "repo": {
                     "type": "string",
-                    "enum": ["vllm", "vllm-ascend"],
+                    "enum": ["triton", "triton-ascend"],
                     "description": "Repository name",
                 }
             },
@@ -1352,7 +1286,7 @@ TOOLS = [
             "properties": {
                 "repo": {
                     "type": "string",
-                    "enum": ["vllm", "vllm-ascend"],
+                    "enum": ["triton", "triton-ascend"],
                     "description": "Repository name",
                 }
             },
@@ -1367,7 +1301,7 @@ TOOLS = [
             "properties": {
                 "repo": {
                     "type": "string",
-                    "enum": ["vllm", "vllm-ascend"],
+                    "enum": ["triton", "triton-ascend"],
                     "description": "Repository name",
                 }
             },
@@ -1376,13 +1310,13 @@ TOOLS = [
     ),
     Tool(
         name="get_testing_guide",
-        description="[Progressive] Return testing guide with test commands, environment setup, and lint commands for both vllm and vllm-ascend.",
+        description="[Progressive] Return testing guide with test commands, environment setup, and lint commands for both triton and triton-ascend.",
         inputSchema={
             "type": "object",
             "properties": {
                 "repo": {
                     "type": "string",
-                    "enum": ["vllm", "vllm-ascend"],
+                    "enum": ["triton", "triton-ascend"],
                     "description": "Repository name",
                 }
             },
@@ -1397,7 +1331,7 @@ TOOLS = [
             "properties": {
                 "repo": {
                     "type": "string",
-                    "enum": ["vllm", "vllm-ascend"],
+                    "enum": ["triton", "triton-ascend"],
                     "description": "Repository name",
                 },
                 "date": {
@@ -1417,7 +1351,7 @@ TOOLS = [
             "properties": {
                 "repo": {
                     "type": "string",
-                    "enum": ["vllm", "vllm-ascend"],
+                    "enum": ["triton", "triton-ascend"],
                     "description": "Repository name",
                 },
                 "keywords": {
@@ -1457,7 +1391,7 @@ TOOLS = [
             "properties": {
                 "repo": {
                     "type": "string",
-                    "enum": ["vllm", "vllm-ascend"],
+                    "enum": ["triton", "triton-ascend"],
                     "description": "Repository name",
                 },
                 "module_name": {
@@ -1475,13 +1409,13 @@ TOOLS = [
     ),
     Tool(
         name="get_ascend_impact_summary",
-        description="Summary of commits that affect vllm-ascend",
+        description="Summary of commits that affect triton-ascend",
         inputSchema={
             "type": "object",
             "properties": {
                 "repo": {
                     "type": "string",
-                    "enum": ["vllm", "vllm-ascend"],
+                    "enum": ["triton", "triton-ascend"],
                     "description": "Repository name",
                 },
                 "date_from": {
@@ -1500,19 +1434,18 @@ TOOLS = [
     ),
     Tool(
         name="get_cross_project_mapping",
-        description="Return vllm ↔ vllm-ascend cross-project mapping",
+        description="Return triton ↔ triton-ascend cross-project mapping",
         inputSchema={"type": "object", "properties": {}},
     ),
     Tool(
         name="get_patch_catalog",
-        description="Return vllm-ascend patch catalog (all patches or filtered by category)",
+        description="Return triton-ascend patch file inventory (third_party/ascend/patch/*.patch diffstat)",
         inputSchema={
             "type": "object",
             "properties": {
                 "category": {
                     "type": "string",
-                    "enum": ["platform", "worker"],
-                    "description": "Filter by patch category (optional)",
+                    "description": "Filter by patch file name prefix, e.g. 'triton-ascend-3.6.0' (optional)",
                 }
             },
         },
@@ -1524,7 +1457,7 @@ TOOLS = [
     ),
     Tool(
         name="get_adaptation_baseline",
-        description="Return current vllm baseline verified by vllm-ascend",
+        description="Return triton-ascend adaptation tracking state (history-scan mode, no baseline file)",
         inputSchema={"type": "object", "properties": {}},
     ),
     Tool(
@@ -1535,7 +1468,7 @@ TOOLS = [
             "properties": {
                 "repo": {
                     "type": "string",
-                    "enum": ["vllm", "vllm-ascend"],
+                    "enum": ["triton", "triton-ascend"],
                     "description": "Repository name",
                 },
                 "sha": {
@@ -1562,14 +1495,14 @@ TOOLS = [
     ),
     Tool(
         name="get_commit_impact_batch",
-        description="Batch query ascend-impact analysis for a list of vllm commits (JSON, structured). Used by plan_steps for deterministic routing.",
+        description="Batch query ascend-impact analysis for a list of triton commits (JSON, structured). Used by plan_steps for deterministic routing.",
         inputSchema={
             "type": "object",
             "properties": {
                 "shas": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Full vllm commit SHAs to query",
+                    "description": "Full triton commit SHAs to query",
                 }
             },
             "required": ["shas"],
@@ -1581,22 +1514,9 @@ TOOLS = [
         inputSchema={"type": "object", "properties": {}},
     ),
     Tool(
-        name="advance_baseline",
-        description="Advance the vllm baseline (update vllm-main-verified.commit)",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "new_sha": {
-                    "type": "string",
-                    "description": "New vllm commit SHA to set as verified baseline",
-                },
-                "message": {
-                    "type": "string",
-                    "description": "Optional commit message for the baseline update",
-                },
-            },
-            "required": ["new_sha"],
-        },
+        name="detect_adaptation",
+        description="在 triton-ascend git 历史中检测已适配的上游 commit（pending → adapted）。无标记的人工 cherry-pick 请用 update_adaptation_status 手动标记。",
+        inputSchema={"type": "object", "properties": {}},
     ),
     # ── Architecture Delta Tools ────────────────────────────────
     Tool(
@@ -1607,7 +1527,7 @@ TOOLS = [
             "properties": {
                 "repo": {
                     "type": "string",
-                    "enum": ["vllm", "vllm-ascend"],
+                    "enum": ["triton", "triton-ascend"],
                     "description": "Repository name",
                 },
                 "sha": {
@@ -1626,7 +1546,7 @@ TOOLS = [
             "properties": {
                 "repo": {
                     "type": "string",
-                    "enum": ["vllm", "vllm-ascend"],
+                    "enum": ["triton", "triton-ascend"],
                     "description": "Repository name",
                 },
                 "sha_from": {
@@ -1649,7 +1569,7 @@ TOOLS = [
             "properties": {
                 "repo": {
                     "type": "string",
-                    "enum": ["vllm", "vllm-ascend"],
+                    "enum": ["triton", "triton-ascend"],
                     "description": "Repository name",
                 },
                 "sha_from": {
@@ -1672,7 +1592,7 @@ TOOLS = [
             "properties": {
                 "repo": {
                     "type": "string",
-                    "enum": ["vllm", "vllm-ascend"],
+                    "enum": ["triton", "triton-ascend"],
                     "description": "Repository name",
                 },
                 "sha": {
@@ -1820,8 +1740,8 @@ async def handle_call_tool(ctx, params: CallToolRequestParams) -> CallToolResult
             result = await tool_get_adaptation_guide(args["sha"])
         elif name == "get_pending_adaptations":
             result = await tool_get_pending_adaptations()
-        elif name == "advance_baseline":
-            result = await tool_advance_baseline(args["new_sha"], args.get("message"))
+        elif name == "detect_adaptation":
+            result = await tool_detect_adaptation()
         elif name == "get_architecture_at_commit":
             result = await tool_get_architecture_at_commit(args["repo"], args["sha"])
         elif name == "get_architecture_diff":
@@ -1850,14 +1770,14 @@ async def handle_call_tool(ctx, params: CallToolRequestParams) -> CallToolResult
 
 def main():
     global data_dir, ascend_repo_path
-    parser = argparse.ArgumentParser(description="vllm-report MCP Server")
+    parser = argparse.ArgumentParser(description="triton-report MCP Server")
     parser.add_argument(
         "--data-dir", required=True,
-        help="Path to vllm-report data directory"
+        help="Path to triton-report data directory"
     )
     parser.add_argument(
         "--ascend-repo-path", default=None,
-        help="Path to vllm-ascend repository (for baseline tracking)"
+        help="Path to triton-ascend repository (for baseline tracking)"
     )
     args = parser.parse_args()
 
