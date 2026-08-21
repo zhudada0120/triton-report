@@ -1,7 +1,7 @@
-# vllm-report 数据规范
+# triton-report 数据规范
 
 > 定义所有数据文件的路径、格式、字段说明、兼容性保证。
-> 第三方工具通过本文档了解如何读取 vllm-report 的数据。
+> 第三方工具通过本文档了解如何读取 triton-report 的数据。
 
 ---
 
@@ -10,7 +10,7 @@
 ```
 data/
 ├── README.json                      # 项目入口引导文件
-├── vllm/                            # vllm 项目数据
+├── triton/                            # triton 项目数据
 │   ├── analysis/                    # 每日 commit 分析（按日期）
 │   │   ├── 2026-07-30.json
 │   │   └── ...
@@ -25,7 +25,7 @@ data/
 │   ├── index.json                   # 检索索引（标签/模块/关键词 → SHA 列表）
 │   ├── commits-index.json           # SHA → {date, message} 查找表（配合 index.json 使用）
 │   └── meta.json                    # 仓库元数据
-├── vllm-ascend/                     # vllm-ascend 项目数据
+├── triton-ascend/                     # triton-ascend 项目数据
 │   ├── analysis/
 │   ├── commits/
 │   ├── lessons/                     # 适配经验（main2main 实战沉淀，按日期）
@@ -34,7 +34,7 @@ data/
 │   │   └── arch_deltas.json
 │   ├── index.json
 │   ├── commits-index.json
-│   ├── adaptation-status.json       # 适配状态跟踪（仅 vllm-ascend）
+│   ├── adaptation-status.json       # 适配状态跟踪（仅 triton-ascend）
 │   └── meta.json
 └── ... (更多仓库)
 ```
@@ -79,7 +79,7 @@ data/
 | `hardware_abstraction` | object | 硬件适配层描述 |
 | `interface_surface` | object | 接口面（被外部平台继承的接口） |
 | `test_structure` | object | 测试结构 |
-| `cross_project_relationship` | object | 跨项目关系（vllm ↔ vllm-ascend） |
+| `cross_project_relationship` | object | 跨项目关系（triton ↔ triton-ascend） |
 | `knowledge_base` | object (可选) | 知识库（patch_catalog、development_workflows、testing_guide） |
 | `architecture_history` | object[] (可选) | 历史架构快照列表（`commit_sha` + `generated_at`），累积用于计算增量 |
 
@@ -104,8 +104,8 @@ data/
 | `repo` | string | 仓库名称 |
 | `generated_at` | string (ISO 8601) | 生成时间 |
 | `daily_summary` | string | 当日变更总结 |
-| `ascend_impact_summary` | string (可选) | 对 vllm-ascend 的影响总结（仅 vllm 仓库） |
-| `test_impact_summary` | string (可选) | 测试看护影响总结（仅 vllm-ascend 仓库） |
+| `ascend_impact_summary` | string (可选) | 对 triton-ascend 的影响总结（仅 triton 仓库） |
+| `test_impact_summary` | string (可选) | 测试看护影响总结（仅 triton-ascend 仓库） |
 | `architecture_based_on_sha` | string (可选) | 分析时使用的架构基于的 commit SHA |
 | `architecture_generated_at` | string (可选) | 分析时使用的架构生成时间 |
 | `commits` | object[] | commit 分析列表 |
@@ -117,15 +117,15 @@ data/
 | `sha` | string | commit SHA |
 | `comment` | string | 分析评论 |
 | `tags` | string[] | 分类标签（类型/风险/模块） |
-| `ascend_impact` | object (可选) | 对 ascend 的影响评估（仅 vllm） |
-| `test_impact` | object (可选) | 测试影响评估（仅 vllm-ascend） |
+| `ascend_impact` | object (可选) | 对 ascend 的影响评估（仅 triton） |
+| `test_impact` | object (可选) | 测试影响评估（仅 triton-ascend） |
 | `architecture_impact` | object (可选) | 架构影响标记（修改了关键接口文件时出现） |
 
 **ascend_impact 字段：**
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `ascend_affected` | boolean | 是否影响 vllm-ascend |
+| `ascend_affected` | boolean | 是否影响 triton-ascend |
 | `functionality` | string | 功能影响描述 |
 | `testing` | string | 测试影响描述 |
 | `needs_test_update` | boolean | 是否需要更新测试 |
@@ -143,7 +143,7 @@ data/
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `affected_interfaces` | string[] | 具体受影响的 vllm-ascend 接口/类 |
+| `affected_interfaces` | string[] | 具体受影响的 triton-ascend 接口/类 |
 | `adaptation_effort` | string | 适配工作量评估：low / medium / high |
 | `adaptation_guide` | string | 适配指南（具体需要修改哪些文件） |
 | `risk` | string | 风险评估 |
@@ -191,8 +191,8 @@ data/
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `source` | string | vllm-main-verified.commit 文件路径（相对 vllm-ascend 项目根） |
-| `release_tag_source` | string | vllm-release-tag.commit 文件路径 |
+| `source` | string | triton-main-verified.commit 文件路径（相对 triton-ascend 项目根） |
+| `release_tag_source` | string | triton-release-tag.commit 文件路径 |
 | `current_sha` | string (可选) | 当前基线 SHA（运行时从源文件读取） |
 | `current_release_tag` | string (可选) | 当前 release tag（运行时从源文件读取） |
 
@@ -224,9 +224,9 @@ data/
 
 ---
 
-### 6. `data/vllm-ascend/adaptation-status.json`
+### 6. `data/triton-ascend/adaptation-status.json`
 
-**作用：** 记录 vllm-ascend 的 main2main 适配进度。由 `track_adaptation.py init` 自动生成，仅维护两种状态。
+**作用：** 记录 triton-ascend 的 main2main 适配进度。由 `track_adaptation.py init` 自动生成，仅维护两种状态。
 
 **关键字段：**
 
@@ -240,8 +240,8 @@ data/
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `source` | string | vllm-main-verified.commit 文件路径 |
-| `release_tag_source` | string | vllm-release-tag.commit 文件路径 |
+| `source` | string | triton-main-verified.commit 文件路径 |
+| `release_tag_source` | string | triton-release-tag.commit 文件路径 |
 | `main_sha` | string | 当前基线 SHA |
 | `release_tag` | string | 当前 release tag |
 | `tracking_start_date` | string | 开始跟踪的日期 |
@@ -251,9 +251,9 @@ data/
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `sha` | string | vllm commit SHA |
-| `upstream_date` | string | vllm 上游 commit 日期 |
-| `upstream_sha` | string | vllm 上游 commit SHA |
+| `sha` | string | triton commit SHA |
+| `upstream_date` | string | triton 上游 commit 日期 |
+| `upstream_sha` | string | triton 上游 commit SHA |
 | `message` | string | commit 消息（截断到 120 字符） |
 | `status` | string | 状态：`pending`（待适配）或 `adapted`（已适配） |
 | `tags` | string[] | 标签 |
@@ -300,7 +300,7 @@ data/
 | `affected_interfaces` | string[] | 受影响的接口名 |
 | `interface_changes` | string | 接口变更描述 |
 | `change_summary` | string | commit 标题（第一行） |
-| `ascend_impact` | boolean | 是否影响 vllm-ascend |
+| `ascend_impact` | boolean | 是否影响 triton-ascend |
 
 **兼容性：** 实验性。2026-08 新增，用于支持架构知识时间旅行。
 

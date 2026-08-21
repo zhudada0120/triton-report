@@ -2,7 +2,7 @@
 """
 triton-report MCP Server
 
-Provides 14 tools for AI agents to query triton-report's knowledge base.
+Provides 29 tools for AI agents to query triton-report's knowledge base.
 
 Usage:
   python -m src.mcp_server_app --data-dir /path/to/triton-report/data --ascend-repo-path /path/to/triton-ascend
@@ -1518,6 +1518,29 @@ TOOLS = [
         description="在 triton-ascend git 历史中检测已适配的上游 commit（pending → adapted）。无标记的人工 cherry-pick 请用 update_adaptation_status 手动标记。",
         inputSchema={"type": "object", "properties": {}},
     ),
+    Tool(
+        name="update_adaptation_status",
+        description="手动更新某个上游 commit 的适配状态（pending / adapted），用于无 cherry-pick 标记的人工回合。可选填写 notes 记录回合 PR 等信息。",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "sha": {
+                    "type": "string",
+                    "description": "Upstream triton commit SHA",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["pending", "adapted"],
+                    "description": "Target adaptation status",
+                },
+                "notes": {
+                    "type": "string",
+                    "description": "Optional adaptation note (e.g. ported PR number)",
+                },
+            },
+            "required": ["sha", "status"],
+        },
+    ),
     # ── Architecture Delta Tools ────────────────────────────────
     Tool(
         name="get_architecture_at_commit",
@@ -1742,6 +1765,8 @@ async def handle_call_tool(ctx, params: CallToolRequestParams) -> CallToolResult
             result = await tool_get_pending_adaptations()
         elif name == "detect_adaptation":
             result = await tool_detect_adaptation()
+        elif name == "update_adaptation_status":
+            result = await tool_update_adaptation_status(args["sha"], args["status"], args.get("notes"))
         elif name == "get_architecture_at_commit":
             result = await tool_get_architecture_at_commit(args["repo"], args["sha"])
         elif name == "get_architecture_diff":

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
-# vllm-report 完整流水线脚本
+# triton-report 完整流水线脚本
 # 将 daily-commit.yml 中所有步骤整合为一个可在本地执行的脚本。
 # 需要先准备好：
-#   1. vllm 和 vllm-ascend 的本地仓库（或让脚本自动 clone）
+#   1. triton 和 triton-ascend 的本地仓库（或让脚本自动 clone）
 #   2. Python 3.11+ 环境，已安装 requirements.txt
 #   3. 环境变量 LLM_API_KEY（用于 Phase 1 分析）
 #   4. opencode CLI（用于 Phase 2 深度分析，可选）
@@ -14,11 +14,11 @@ set -euo pipefail
 # ---------- 默认配置 ----------
 DATA_DIR="${DATA_DIR:-$(pwd)/data}"
 REPOS_DIR="${REPOS_DIR:-$(pwd)/repos}"
-VLLM_REPO_PATH="${VLLM_REPO_PATH:-${REPOS_DIR}/vllm}"
-ASCEND_REPO_PATH="${ASCEND_REPO_PATH:-${REPOS_DIR}/vllm-ascend}"
+TRITON_REPO_PATH="${TRITON_REPO_PATH:-${REPOS_DIR}/triton}"
+ASCEND_REPO_PATH="${ASCEND_REPO_PATH:-${REPOS_DIR}/triton-ascend}"
 DATE="${DATE:-}"
 FORCE="${FORCE:-false}"
-# 默认处理所有仓库；可设为 vllm / vllm-ascend
+# 默认处理所有仓库；可设为 triton / triton-ascend
 REPO="${REPO:-}"
 
 # ---------- 颜色 ----------
@@ -41,10 +41,10 @@ usage() {
 用法: $0 [选项]
 
 选项:
-  --repo REPO              只处理指定仓库：vllm 或 vllm-ascend（默认：全部）
+  --repo REPO              只处理指定仓库：triton 或 triton-ascend（默认：全部）
   --date YYYY-MM-DD       目标日期（默认：北京时间昨天）
-  --vllm-path PATH         vllm 本地仓库路径
-  --ascend-path PATH       vllm-ascend 本地仓库路径
+  --triton-path PATH         triton 本地仓库路径
+  --ascend-path PATH       triton-ascend 本地仓库路径
   --data-dir PATH          data 目录路径（默认: ./data）
   --force                  强制重新获取和重新分析
   --skip-fetch             跳过 fetch 步骤
@@ -66,13 +66,13 @@ usage() {
 
   # 指定日期和本地仓库
   LLM_API_KEY=sk-xxx ./run_pipeline.sh --date 2026-07-27 \
-    --vllm-path ~/code/vllm --ascend-path ~/code/vllm-ascend
+    --triton-path ~/code/triton --ascend-path ~/code/triton-ascend
 
-  # 只处理 vllm
-  LLM_API_KEY=sk-xxx ./daily_refresh.sh --repo vllm
+  # 只处理 triton
+  LLM_API_KEY=sk-xxx ./daily_refresh.sh --repo triton
 
-  # 只处理 vllm-ascend
-  LLM_API_KEY=sk-xxx ./daily_refresh.sh --repo vllm-ascend
+  # 只处理 triton-ascend
+  LLM_API_KEY=sk-xxx ./daily_refresh.sh --repo triton-ascend
 
   # 只执行 fetch 和 analyze，跳过深度分析
   LLM_API_KEY=sk-xxx ./daily_refresh.sh --skip-deep-analyze --skip-build-index
@@ -93,7 +93,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --repo)           REPO="$2"; shift 2 ;;
         --date)           DATE="$2"; shift 2 ;;
-        --vllm-path)      VLLM_REPO_PATH="$2"; shift 2 ;;
+        --triton-path)      TRITON_REPO_PATH="$2"; shift 2 ;;
         --ascend-path)    ASCEND_REPO_PATH="$2"; shift 2 ;;
         --data-dir)       DATA_DIR="$2"; shift 2 ;;
         --force)          FORCE=true; shift ;;
@@ -117,13 +117,13 @@ info "目标日期: $DATE"
 
 if [ -n "$REPO" ]; then
     case "$REPO" in
-        vllm)          DO_VLLM=true; DO_ASCEND=false ;;
-        vllm-ascend)   DO_VLLM=false; DO_ASCEND=true ;;
-        *)             err "不支持的仓库: $REPO（可选: vllm / vllm-ascend）"; exit 1 ;;
+        triton)          DO_UPSTREAM=true; DO_ASCEND=false ;;
+        triton-ascend)   DO_UPSTREAM=false; DO_ASCEND=true ;;
+        *)             err "不支持的仓库: $REPO（可选: triton / triton-ascend）"; exit 1 ;;
     esac
     info "仅处理仓库: $REPO"
 else
-    DO_VLLM=true
+    DO_UPSTREAM=true
     DO_ASCEND=true
 fi
 
@@ -200,113 +200,107 @@ ensure_repo() {
     fi
 }
 
-ensure_repo "vllm" "$VLLM_REPO_PATH" "https://github.com/vllm-project/vllm.git"
+ensure_repo "triton" "$TRITON_REPO_PATH" "https://github.com/triton-lang/triton.git"
 if [ "$DO_ASCEND" = "true" ]; then
-    ensure_repo "vllm-ascend" "$ASCEND_REPO_PATH" "https://github.com/vllm-project/vllm-ascend.git"
+    ensure_repo "triton-ascend" "$ASCEND_REPO_PATH" "https://github.com/triton-lang/triton-ascend.git"
 fi
 
-# 检查 vllm-ascend 的 baseline 文件（仅处理 ascend 时需要）
+# triton-ascend 无 baseline 文件（人工 cherry-pick 回合），
+# 适配状态由 track_adaptation.py 的 git 历史扫描 + 手动 mark 维护
 if [ "$DO_ASCEND" = "true" ]; then
-    BASELINE_FILE="${ASCEND_REPO_PATH}/.github/vllm-main-verified.commit"
-    if [ -f "$BASELINE_FILE" ]; then
-        BASELINE_SHA=$(cat "$BASELINE_FILE" | tr -d '[:space:]')
-        info "vllm-ascend baseline SHA: ${BASELINE_SHA:0:12}"
-    else
-        warn "baseline 文件不存在: $BASELINE_FILE"
-        warn "track_adaptation 步骤可能需要 --since 参数"
-    fi
+    info "适配检测模式: history-scan（无 baseline 文件）"
 fi
 
 ok "仓库准备完毕"
 
-# ---------- Step 3: Fetch vllm commits ----------
-if [ "$SKIP_FETCH" = "false" ] && [ "$DO_VLLM" = "true" ]; then
-    step "3/9  获取 vllm commit 数据"
-    substep "执行: python src/data/fetch_commits.py --repo vllm-project/vllm --local-repo $VLLM_REPO_PATH --date $DATE $FORCE_FLAG"
+# ---------- Step 3: Fetch triton commits ----------
+if [ "$SKIP_FETCH" = "false" ] && [ "$DO_UPSTREAM" = "true" ]; then
+    step "3/9  获取 triton commit 数据"
+    substep "执行: python src/data/fetch_commits.py --repo triton-lang/triton --local-repo $TRITON_REPO_PATH --date $DATE $FORCE_FLAG"
     python src/data/fetch_commits.py \
-        --repo vllm-project/vllm \
-        --local-repo "$VLLM_REPO_PATH" \
+        --repo triton-lang/triton \
+        --local-repo "$TRITON_REPO_PATH" \
         --date "$DATE" \
         $FORCE_FLAG
-    ok "vllm commits 获取完成"
+    ok "triton commits 获取完成"
 else
-    step "3/9  跳过 fetch vllm commits"
+    step "3/9  跳过 fetch triton commits"
 fi
 
-# ---------- Step 4: Analyze vllm commits (Phase 1) ----------
-if [ "$SKIP_ANALYZE" = "false" ] && [ "$DO_VLLM" = "true" ]; then
-    step "4/9  分析 vllm commits (Phase 1)"
-    COMMIT_FILE="${DATA_DIR}/vllm/commits/${DATE}.json"
+# ---------- Step 4: Analyze triton commits (Phase 1) ----------
+if [ "$SKIP_ANALYZE" = "false" ] && [ "$DO_UPSTREAM" = "true" ]; then
+    step "4/9  分析 triton commits (Phase 1)"
+    COMMIT_FILE="${DATA_DIR}/triton/commits/${DATE}.json"
     if [ -f "$COMMIT_FILE" ]; then
-        substep "执行: python src/data/analyze_commits.py --repo vllm-project/vllm --date $DATE --local-repo $VLLM_REPO_PATH --data-dir $DATA_DIR $FORCE_FLAG"
+        substep "执行: python src/data/analyze_commits.py --repo triton-lang/triton --date $DATE --local-repo $TRITON_REPO_PATH --data-dir $DATA_DIR $FORCE_FLAG"
         LLM_API_KEY="${LLM_API_KEY}" python src/data/analyze_commits.py \
-            --repo vllm-project/vllm \
+            --repo triton-lang/triton \
             --date "$DATE" \
-            --local-repo "$VLLM_REPO_PATH" \
+            --local-repo "$TRITON_REPO_PATH" \
             --data-dir "$DATA_DIR" \
             $FORCE_FLAG
-        ok "vllm Phase 1 分析完成"
+        ok "triton Phase 1 分析完成"
     else
-        warn "未找到 commit 数据: $COMMIT_FILE，跳过 vllm 分析"
+        warn "未找到 commit 数据: $COMMIT_FILE，跳过 triton 分析"
     fi
 else
-    step "4/9  跳过分析 vllm commits"
+    step "4/9  跳过分析 triton commits"
 fi
 
-# ---------- Step 5: Deep analyze vllm commits (Phase 2) ----------
-if [ "$SKIP_DEEP_ANALYZE" = "false" ] && [ "$DO_VLLM" = "true" ]; then
-    step "5/9  深度分析 vllm commits (Phase 2)"
-    ANALYSIS_FILE="${DATA_DIR}/vllm/analysis/${DATE}.json"
+# ---------- Step 5: Deep analyze triton commits (Phase 2) ----------
+if [ "$SKIP_DEEP_ANALYZE" = "false" ] && [ "$DO_UPSTREAM" = "true" ]; then
+    step "5/9  深度分析 triton commits (Phase 2)"
+    ANALYSIS_FILE="${DATA_DIR}/triton/analysis/${DATE}.json"
     if [ -f "$ANALYSIS_FILE" ]; then
-        substep "执行: python src/data/deep_analyze_commits.py --repo vllm-project/vllm --date $DATE --local-repo $VLLM_REPO_PATH --data-dir $DATA_DIR"
+        substep "执行: python src/data/deep_analyze_commits.py --repo triton-lang/triton --date $DATE --local-repo $TRITON_REPO_PATH --data-dir $DATA_DIR"
         python src/data/deep_analyze_commits.py \
-            --repo vllm-project/vllm \
+            --repo triton-lang/triton \
             --date "$DATE" \
-            --local-repo "$VLLM_REPO_PATH" \
+            --local-repo "$TRITON_REPO_PATH" \
             --data-dir "$DATA_DIR"
-        ok "vllm Phase 2 深度分析完成"
+        ok "triton Phase 2 深度分析完成"
     else
         warn "未找到 Phase 1 分析结果: $ANALYSIS_FILE，跳过深度分析"
     fi
 else
-    step "5/9  跳过深度分析 vllm commits"
+    step "5/9  跳过深度分析 triton commits"
 fi
 
-# ---------- Step 6: Fetch vllm-ascend commits ----------
+# ---------- Step 6: Fetch triton-ascend commits ----------
 if [ "$SKIP_FETCH" = "false" ] && [ "$DO_ASCEND" = "true" ]; then
-    step "6/9  获取 vllm-ascend commit 数据"
-    substep "执行: python src/data/fetch_commits.py --repo vllm-project/vllm-ascend --local-repo $ASCEND_REPO_PATH --date $DATE $FORCE_FLAG"
+    step "6/9  获取 triton-ascend commit 数据"
+    substep "执行: python src/data/fetch_commits.py --repo triton-lang/triton-ascend --local-repo $ASCEND_REPO_PATH --date $DATE $FORCE_FLAG"
     python src/data/fetch_commits.py \
-        --repo vllm-project/vllm-ascend \
+        --repo triton-lang/triton-ascend \
         --local-repo "$ASCEND_REPO_PATH" \
         --date "$DATE" \
         $FORCE_FLAG
-    ok "vllm-ascend commits 获取完成"
+    ok "triton-ascend commits 获取完成"
 else
-    step "6/9  跳过 fetch vllm-ascend commits"
+    step "6/9  跳过 fetch triton-ascend commits"
 fi
 
-# ---------- Step 7: Analyze vllm-ascend commits ----------
+# ---------- Step 7: Analyze triton-ascend commits ----------
 if [ "$SKIP_ANALYZE" = "false" ] && [ "$DO_ASCEND" = "true" ]; then
-    step "7/9  分析 vllm-ascend commits"
-    COMMIT_FILE_ASCEND="${DATA_DIR}/vllm-ascend/commits/${DATE}.json"
+    step "7/9  分析 triton-ascend commits"
+    COMMIT_FILE_ASCEND="${DATA_DIR}/triton-ascend/commits/${DATE}.json"
     if [ -f "$COMMIT_FILE_ASCEND" ]; then
-        substep "执行: python src/data/analyze_commits.py --repo vllm-project/vllm-ascend --date $DATE --data-dir $DATA_DIR $FORCE_FLAG"
+        substep "执行: python src/data/analyze_commits.py --repo triton-lang/triton-ascend --date $DATE --data-dir $DATA_DIR $FORCE_FLAG"
         LLM_API_KEY="${LLM_API_KEY}" python src/data/analyze_commits.py \
-            --repo vllm-project/vllm-ascend \
+            --repo triton-lang/triton-ascend \
             --date "$DATE" \
             --data-dir "$DATA_DIR" \
             $FORCE_FLAG
-        ok "vllm-ascend 分析完成"
+        ok "triton-ascend 分析完成"
     else
-        warn "未找到 commit 数据: $COMMIT_FILE_ASCEND，跳过 vllm-ascend 分析"
+        warn "未找到 commit 数据: $COMMIT_FILE_ASCEND，跳过 triton-ascend 分析"
     fi
 else
-    step "7/9  跳过分析 vllm-ascend commits"
+    step "7/9  跳过分析 triton-ascend commits"
 fi
 
 # ---------- Step 8: Build search index ----------
-if [ "$SKIP_BUILD_INDEX" = "false" ] && { [ "$DO_VLLM" = "true" ] || [ "$DO_ASCEND" = "true" ]; }; then
+if [ "$SKIP_BUILD_INDEX" = "false" ] && { [ "$DO_UPSTREAM" = "true" ] || [ "$DO_ASCEND" = "true" ]; }; then
     step "8/9  构建搜索索引"
     substep "执行: python src/data/build_index.py --data-dir $DATA_DIR"
     python src/data/build_index.py --data-dir "$DATA_DIR"
@@ -316,13 +310,20 @@ else
 fi
 
 # ---------- Step 9: Track adaptation ----------
-if [ "$SKIP_TRACK_ADAPTATION" = "false" ] && [ "$DO_VLLM" = "true" ]; then
+if [ "$SKIP_TRACK_ADAPTATION" = "false" ] && [ "$DO_UPSTREAM" = "true" ]; then
     step "9/9  跟踪适配状态"
-    substep "执行: python src/data/track_adaptation.py init --ascend-repo-path $ASCEND_REPO_PATH --data-dir $DATA_DIR $FORCE_FLAG"
-    python src/data/track_adaptation.py init \
-        --ascend-repo-path "$ASCEND_REPO_PATH" \
-        --data-dir "$DATA_DIR" \
-        $FORCE_FLAG
+    ADAPTATION_FILE="${DATA_DIR}/triton-ascend/adaptation-status.json"
+    if [ -f "$ADAPTATION_FILE" ] && [ "$FORCE" != "true" ]; then
+        substep "执行: python src/data/track_adaptation.py detect --ascend-repo-path $ASCEND_REPO_PATH --data-dir $DATA_DIR"
+        python src/data/track_adaptation.py detect \
+            --ascend-repo-path "$ASCEND_REPO_PATH" \
+            --data-dir "$DATA_DIR"
+    else
+        substep "执行: python src/data/track_adaptation.py init --ascend-repo-path $ASCEND_REPO_PATH --data-dir $DATA_DIR"
+        python src/data/track_adaptation.py init \
+            --ascend-repo-path "$ASCEND_REPO_PATH" \
+            --data-dir "$DATA_DIR"
+    fi
     ok "适配状态跟踪完成"
 else
     step "9/9  跳过跟踪适配状态"
@@ -341,8 +342,8 @@ echo -e "\n${GREEN}========================================${NC}"
 echo -e "${GREEN}  流水线执行完毕！${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo -e "  日期:    $DATE"
-echo -e "  仓库:    $([ "$DO_VLLM" = "true" ] && echo -n "vllm ") $([ "$DO_ASCEND" = "true" ] && echo -n "vllm-ascend")"
+echo -e "  仓库:    $([ "$DO_UPSTREAM" = "true" ] && echo -n "triton ") $([ "$DO_ASCEND" = "true" ] && echo -n "triton-ascend")"
 echo -e "  数据:    $DATA_DIR"
-echo -e "  vllm:    $VLLM_REPO_PATH"
+echo -e "  triton:    $TRITON_REPO_PATH"
 echo -e "  ascend:  $ASCEND_REPO_PATH"
 echo -e "${GREEN}========================================${NC}"

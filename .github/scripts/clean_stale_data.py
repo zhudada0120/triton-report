@@ -55,7 +55,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="Clean stale commit data without analysis")
     parser.add_argument("--data-dir", default="data")
-    parser.add_argument("--repo", nargs="*", default=["vllm-project/vllm", "vllm-project/vllm-ascend"])
+    parser.add_argument("--repo", nargs="*", default=["triton-lang/triton", "triton-lang/triton-ascend"])
     args = parser.parse_args()
 
     total = 0

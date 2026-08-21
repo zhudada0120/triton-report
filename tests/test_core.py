@@ -10,13 +10,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 class TestBuildIndex(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.repo_dir = os.path.join(self.tmpdir, "vllm")
+        self.repo_dir = os.path.join(self.tmpdir, "triton")
         os.makedirs(os.path.join(self.repo_dir, "analysis"))
 
     def _write_analysis(self, date, commits):
         path = os.path.join(self.repo_dir, "analysis", f"{date}.json")
         with open(path, "w") as f:
-            json.dump({"date": date, "repo": "vllm-project/vllm", "commits": commits}, f)
+            json.dump({"date": date, "repo": "triton-lang/triton", "commits": commits}, f)
 
     def test_build_index_architecture_impact_is_dict(self):
         from data.build_index import build_index
@@ -33,7 +33,7 @@ class TestBuildIndex(unittest.TestCase):
             }
         ])
 
-        result = build_index(self.tmpdir, "vllm")
+        result = build_index(self.tmpdir, "triton")
         self.assertTrue(result)
 
         index_path = os.path.join(self.repo_dir, "index.json")
@@ -51,7 +51,7 @@ class TestBuildIndex(unittest.TestCase):
         from data.build_index import build_index
 
         self._write_analysis("2026-07-01", [])
-        result = build_index(self.tmpdir, "vllm")
+        result = build_index(self.tmpdir, "triton")
         self.assertTrue(result)
 
         index_path = os.path.join(self.repo_dir, "index.json")
@@ -68,7 +68,7 @@ class TestBuildIndex(unittest.TestCase):
             {"sha": "b" * 40, "message": "fix: scheduler bug", "tags": ["bugfix", "scheduler"]},
         ])
 
-        build_index(self.tmpdir, "vllm")
+        build_index(self.tmpdir, "triton")
 
         index_path = os.path.join(self.repo_dir, "index.json")
         with open(index_path) as f:
@@ -93,7 +93,7 @@ class TestBuildIndex(unittest.TestCase):
             {"sha": "a" * 40, "message": "first commit", "tags": ["feature"]},
         ])
 
-        build_index(self.tmpdir, "vllm")
+        build_index(self.tmpdir, "triton")
 
         ci_path = os.path.join(self.repo_dir, "commits-index.json")
         with open(ci_path) as f:
@@ -137,8 +137,8 @@ class TestSourceRepo(unittest.TestCase):
     def test_repo_dir_name(self):
         from data._source_repo import repo_dir_name
 
-        self.assertEqual(repo_dir_name("vllm-project/vllm"), "vllm")
-        self.assertEqual(repo_dir_name("vllm-project/vllm-ascend"), "vllm-ascend")
+        self.assertEqual(repo_dir_name("triton-lang/triton"), "triton")
+        self.assertEqual(repo_dir_name("triton-lang/triton-ascend"), "triton-ascend")
         self.assertEqual(repo_dir_name("custom/repo"), "repo")
 
     def test_known_repos_structure(self):
@@ -156,11 +156,11 @@ class TestCleanStaleData(unittest.TestCase):
         from data.clean_stale_data import clean_stale_data
 
         tmpdir = tempfile.mkdtemp()
-        repo_dir = os.path.join(tmpdir, "vllm")
+        repo_dir = os.path.join(tmpdir, "triton")
         os.makedirs(os.path.join(repo_dir, "commits"))
         # No analysis dir
 
-        result = clean_stale_data(tmpdir, "vllm-project/vllm")
+        result = clean_stale_data(tmpdir, "triton-lang/triton")
         self.assertEqual(result, 0)
 
 
@@ -168,8 +168,8 @@ class TestRepoDirName(unittest.TestCase):
     def test_mcp_repo_dir_name(self):
         from mcp_server_app import repo_dir_name
 
-        self.assertEqual(repo_dir_name("vllm"), "vllm")
-        self.assertEqual(repo_dir_name("vllm-ascend"), "vllm-ascend")
+        self.assertEqual(repo_dir_name("triton"), "triton")
+        self.assertEqual(repo_dir_name("triton-ascend"), "triton-ascend")
         self.assertEqual(repo_dir_name("unknown"), "unknown")
 
 

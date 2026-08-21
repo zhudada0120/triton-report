@@ -17,7 +17,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Start local dev server for vllm-report")
+    parser = argparse.ArgumentParser(description="Start local dev server for triton-report")
     parser.add_argument("--port", type=int, default=8765, help="Port number (default: 8765)")
     parser.add_argument("--no-open", action="store_true", help="Don't open browser automatically")
     args = parser.parse_args()

@@ -1,13 +1,13 @@
-# vllm-report 使用指南 — AI Agent 驱动的 main2main 适配
+# triton-report 使用指南 — AI Agent 驱动的 main2main 适配
 
 > 第三方 main2main 工具（OpenCode、Codex CLI 等）
-> 如何利用 vllm-report 知识库进行 vllm-ascend 代码升级和适配
+> 如何利用 triton-report 知识库进行 triton-ascend 代码升级和适配
 
 ---
 
 ## 前置条件
 
-1. vllm-report 项目数据已正常生成（index.json、arch.json、analysis JSON 等）
+1. triton-report 项目数据已正常生成（index.json、arch.json、analysis JSON 等）
 2. MCP Server 已配置（OpenCode 场景）或可直接读取 JSON 文件（其他工具场景）
 
 ---
@@ -22,9 +22,9 @@ OpenCode 完全支持 MCP 协议，在项目 `opencode.json` 或 `opencode.jsonc
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "vllm-report": {
+    "triton-report": {
       "type": "local",
-      "command": ["python", "-m", "src.mcp_server_app", "--data-dir", "/path/to/vllm-report/data", "--ascend-repo-path", "/path/to/vllm-ascend"],
+      "command": ["python", "-m", "src.mcp_server_app", "--data-dir", "/path/to/triton-report/data", "--ascend-repo-path", "/path/to/triton-ascend"],
       "enabled": true
     }
   }
@@ -36,14 +36,14 @@ OpenCode 完全支持 MCP 协议，在项目 `opencode.json` 或 `opencode.jsonc
 也可用命令添加：
 
 ```bash
-opencode mcp add vllm-report -- python -m src.mcp_server_app \
-    --data-dir /path/to/vllm-report/data \
-    --ascend-repo-path /path/to/vllm-ascend
+opencode mcp add triton-report -- python -m src.mcp_server_app \
+    --data-dir /path/to/triton-report/data \
+    --ascend-repo-path /path/to/triton-ascend
 ```
 
-`--ascend-repo-path` 用于读取 vllm-ascend 项目中的基线文件（`.github/vllm-main-verified.commit` 和 `.github/vllm-release-tag.commit`），使 MCP Server 能回答"当前已验证到哪个 commit"的问题。
+`--ascend-repo-path` 用于读取 triton-ascend 项目中的基线文件（`.github/triton-main-verified.commit` 和 `.github/triton-release-tag.commit`），使 MCP Server 能回答"当前已验证到哪个 commit"的问题。
 
-配置后，在 vllm-ascend 项目目录下打开 opencode，自动拥有所有知识库能力。可用 `opencode mcp list` 验证连接状态。
+配置后，在 triton-ascend 项目目录下打开 opencode，自动拥有所有知识库能力。可用 `opencode mcp list` 验证连接状态。
 
 ### 方式二：HTTP 包装（任意工具）
 
@@ -51,28 +51,28 @@ opencode mcp add vllm-report -- python -m src.mcp_server_app \
 
 ```bash
 socat TCP-LISTEN:9999,reuseaddr,fork \
-  EXEC:"python -m src.mcp_server_app --data-dir /path/to/vllm-report/data --ascend-repo-path /path/to/vllm-ascend"
+  EXEC:"python -m src.mcp_server_app --data-dir /path/to/triton-report/data --ascend-repo-path /path/to/triton-ascend"
 ```
 
 ---
 
 ## 场景一：日常巡检
 
-> 每天查看 vllm 上游有哪些 commit 会影响 vllm-ascend
+> 每天查看 triton 上游有哪些 commit 会影响 triton-ascend
 
 ```
-今天 vllm 有哪些影响 ascend 的 commit？
+今天 triton 有哪些影响 ascend 的 commit？
 ```
 
 Agent 内部：
-1. 调用 `get_daily_analysis("vllm", "2026-07-31")`
+1. 调用 `get_daily_analysis("triton", "2026-07-31")`
 2. 筛选 `ascend_impact.ascend_affected === true` 的 commit
 3. 按风险排序展示
 
 **输出示例：**
 
 ```
-今日（2026-07-31）vllm 有 34 个 commit，其中 3 个影响 ascend：
+今日（2026-07-31）triton 有 34 个 commit，其中 3 个影响 ascend：
 
 1. [high-risk] refactor AttentionBackend.forward() 签名
    → 影响：AscendAttentionBackend 需要适配新的 forward 参数
@@ -89,7 +89,7 @@ Agent 内部：
 
 ## 场景二：main2main 版本同步
 
-> 准备将 vllm main 的最新代码同步到 vllm-ascend，查看还有哪些没适配
+> 准备将 triton main 的最新代码同步到 triton-ascend，查看还有哪些没适配
 
 ```
 上次同步是 7月15日，我要做一次 main2main 同步，帮我看看还有哪些没适配的？
@@ -97,7 +97,7 @@ Agent 内部：
 
 Agent 内部：
 1. 调用 `get_adaptation_baseline()` 获取当前已验证的基线
-2. 调用 `get_ascend_impact_summary("vllm", baseline_date, today)` 获取基线之后影响 ascend 的 commit
+2. 调用 `get_ascend_impact_summary("triton", baseline_date, today)` 获取基线之后影响 ascend 的 commit
 3. 调用 `get_pending_adaptations()` 查看当前适配进度
 4. 对比得出"需要适配但还没做"的列表
 
@@ -122,7 +122,7 @@ Agent 内部：
    架构影响：AttentionBackend 接口变更
    建议适配步骤：
      a. 查看 commit diff
-     b. 修改 vllm_ascend/attention/attention_v1.py
+     b. 修改 triton_ascend/attention/attention_v1.py
      c. 运行相关测试
 
 2. [medium-risk] Scheduler max_num_seqs 校验 - 7月28日
@@ -142,7 +142,7 @@ Agent 内部：
 ```
 
 Agent 内部：
-1. 调用 `get_daily_analysis("vllm", "2026-07-30")` 获取该 commit 的分析
+1. 调用 `get_daily_analysis("triton", "2026-07-30")` 获取该 commit 的分析
 2. 从 arch.json 的 `knowledge_base.patch_catalog` 中找到对应的 patch
 3. 从 `knowledge_base.development_workflows` 中找到适配步骤
 4. 从 `cross_project_relationship.patch_impact_map` 确认影响范围
@@ -154,17 +154,17 @@ Agent 内部：
 commit abc123 - refactor AttentionBackend.forward()
 
 变更内容：
-- 修改了 vllm/v1/attention/backend.py
+- 修改了 triton/v1/attention/backend.py
 - forward() 方法新增参数 `cache_config`
 - 返回类型从 Tensor 改为 Tuple[Tensor, dict]
 
 影响分析：
 - 必然影响 ascend：AscendAttentionBackend 继承 AttentionBackend
-- 对应 patch：vllm_ascend/attention/attention_v1.py
+- 对应 patch：triton_ascend/attention/attention_v1.py
 - 需要修改：forward 方法签名 + 返回值处理
 
 建议适配步骤：
-1. 打开 vllm_ascend/attention/attention_v1.py
+1. 打开 triton_ascend/attention/attention_v1.py
 2. 将 forward 方法添加 `cache_config` 参数
 3. 调整返回值处理逻辑
 4. 运行测试：pytest -sv tests/ut/attention/
@@ -197,7 +197,7 @@ Agent 内部（**顺序强制**）：
 > 评估某个核心接口变更的影响范围
 
 ```
-这个 commit 改了 vllm/platforms/interface.py，影响有多大？
+这个 commit 改了 triton/platforms/interface.py，影响有多大？
 ```
 
 Agent 内部：
@@ -212,7 +212,7 @@ Agent 内部：
 这个 commit 修改了 Platform 基类的 get_device_capability() 返回值类型
 
 影响范围（必然影响）：
-→ NPUPlatform（vllm_ascend/platform.py）需要同步修改
+→ NPUPlatform（triton_ascend/platform.py）需要同步修改
 
 涉及的 patch：
 - 无直接 patch，但 NPUPlatform 继承 Platform，必须适配
@@ -235,7 +235,7 @@ Agent 内部：
 ```
 
 Agent 内部：
-1. 调用 `get_module_history("vllm", "attention", 14)`
+1. 调用 `get_module_history("triton", "attention", 14)`
 2. 通过 index.json 的 `modules_index` 快速定位
 3. 读取对应 analysis 文件获取详情
 
@@ -267,11 +267,11 @@ Agent 内部：
 > 快速了解 ascend 某个模块的架构设计
 
 ```
-ascend 的 attention 后端有哪些？和 vllm 的 AttentionBackend 是什么关系？
+ascend 的 attention 后端有哪些？和 triton 的 AttentionBackend 是什么关系？
 ```
 
 Agent 内部：
-1. 调用 `get_architecture_context("vllm-ascend")`
+1. 调用 `get_architecture_context("triton-ascend")`
 2. 从 `modules` 中提取 Attention 模块
 3. 从 `key_abstractions` 中提取继承关系
 4. 从 `knowledge_base.patch_catalog` 中提取 attention 相关 patch
@@ -282,13 +282,13 @@ Agent 内部：
 Ascend Attention 后端：
 
 实现文件：
-- vllm_ascend/attention/attention_v1.py — V1 主逻辑
-- vllm_ascend/attention/mla_v1.py — MLA 实现
-- vllm_ascend/attention/fa3_v1.py — Flash Attention 3
-- vllm_ascend/attention/dsa_v1.py — DSA
+- triton_ascend/attention/attention_v1.py — V1 主逻辑
+- triton_ascend/attention/mla_v1.py — MLA 实现
+- triton_ascend/attention/fa3_v1.py — Flash Attention 3
+- triton_ascend/attention/dsa_v1.py — DSA
 
 继承关系：
-- AscendAttentionBackend → vllm AttentionBackend（vllm/v1/attention/backend.py）
+- AscendAttentionBackend → triton AttentionBackend（triton/v1/attention/backend.py）
 
 关键差异：
 - 使用 NZ 格式的 KV cache 布局（与 CUDA 不同）
@@ -313,7 +313,7 @@ Ascend Attention 后端：
 ```
 
 Agent 内部：
-1. 调用 `get_architecture_context("vllm-ascend")`
+1. 调用 `get_architecture_context("triton-ascend")`
 2. 从 `knowledge_base.testing_guide` 中提取测试命令
 
 **输出示例：**
@@ -328,7 +328,7 @@ Ascend attention 测试：
   pytest -sv tests/e2e/pull_request/one_card/
 
 没有 NPU 硬件时，部分 attention 单测可在 CPU 上运行：
-  VLLM_ASCEND_USE_CPU_ATTENTION=1 pytest -sv tests/ut/attention/
+  TRITON_ASCEND_USE_CPU_ATTENTION=1 pytest -sv tests/ut/attention/
 ```
 
 ---
@@ -353,7 +353,7 @@ Ascend attention 测试：
 4. 适配 → 逐个 commit 适配
 5. 验证 → 运行测试
 6. 标记 → 全部标记完成
-7. 更新基线 → main2main CI 完成后自动更新 vllm-main-verified.commit
+7. 更新基线 → main2main CI 完成后自动更新 triton-main-verified.commit
 ```
 
 ### 架构变更流程
@@ -368,7 +368,7 @@ Ascend attention 测试：
 
 ## MCP 工具速查表
 
-> 以下为 vllm-report MCP Server 提供的全部工具，按类别组织。
+> 以下为 triton-report MCP Server 提供的全部工具，按类别组织。
 
 ### 架构分析（13 个）
 
@@ -392,7 +392,7 @@ Ascend attention 测试：
 
 | 工具 | 说明 |
 |------|------|
-| `get_adaptation_baseline` | 获取当前已验证的 vllm 基线 commit |
+| `get_adaptation_baseline` | 获取当前已验证的 triton 基线 commit |
 | `advance_baseline` | 推进基线（自动将新基线前的 pending commit 标记为 adapted） |
 | `get_pending_adaptations` | 获取待适配（pending）的 commit 列表 |
 | `get_adaptation_guide` | 单个 commit 的详细适配指南（含影响分析、测试命令） |
@@ -404,7 +404,7 @@ Ascend attention 测试：
 |------|------|
 | `get_ascend_impact_summary` | 日期范围内影响 ascend 的 commit 摘要 |
 | `get_commit_diff` | 获取 commit 全量 diff（本地优先，GitHub API 回退） |
-| `get_commit_impact_batch` | 批量查询一批 vllm commit 的 ascend 影响分析（结构化 JSON） |
+| `get_commit_impact_batch` | 批量查询一批 triton commit 的 ascend 影响分析（结构化 JSON） |
 | `search_analysis` | 跨日期关键词/标签搜索 |
 | `get_daily_analysis` | 指定日期的分析数据 |
 | `get_module_history` | 模块近期变更历史（可指定天数） |
@@ -413,8 +413,8 @@ Ascend attention 测试：
 
 | 工具 | 渐进式 | 说明 |
 |------|--------|------|
-| `get_cross_project_mapping` | ❌ | vllm ↔ vllm-ascend 跨项目映射 |
-| `get_patch_catalog` | ❌ | vllm-ascend 所有 patch 的完整目录（可分类筛选） |
+| `get_cross_project_mapping` | ❌ | triton ↔ triton-ascend 跨项目映射 |
+| `get_patch_catalog` | ❌ | triton-ascend 所有 patch 的完整目录（可分类筛选） |
 
 ### 经验沉淀（2 个）
 
@@ -469,4 +469,4 @@ Ascend attention 测试：
 | **build_index.py** | 检索索引 | 每日更新，加速跨日期搜索 |
 | **index.json + commits-index.json** | 两层检索索引 | index.json 存 SHA 列表映射，commits-index.json 存 SHA→基本信息 |
 | **architecture.json** | 架构知识库（12 维度） | 含 overview、modules、key_abstractions、implementation_principles、interface_surface、cross_project_relationship、knowledge_base、architecture_history |
-| **vllm-knowledge** | 手写知识库 | **已废弃**，内容已合并到 architecture.json |
+| **triton-knowledge** | 手写知识库 | **已废弃**，内容已合并到 architecture.json |

@@ -57,39 +57,44 @@ jobs:
 
       - name: Add MCP Server for opencode
         run: |
-          opencode mcp add vllm-report \
+          opencode mcp add triton-report \
             -- python -m src.mcp_server_app \
             --data-dir "${{ github.workspace }}/data" \
-            --ascend-repo-path "${{ github.workspace }}/repos/vllm-ascend"
+            --ascend-repo-path "${{ github.workspace }}/repos/triton-ascend"
 
-      - name: Checkout vllm source
+      - name: Checkout triton source
         uses: actions/checkout@v4
         with:
-          repository: vllm-project/vllm
-          path: repos/vllm
+          repository: triton-lang/triton
+          path: repos/triton
           fetch-depth: 0
 
-      - name: Checkout vllm-ascend source
+      - name: Checkout triton-ascend source
         uses: actions/checkout@v4
         with:
-          repository: vllm-project/vllm-ascend
-          path: repos/vllm-ascend
+          repository: triton-lang/triton-ascend
+          path: repos/triton-ascend
           fetch-depth: 0
 
-      - name: Generate vllm architecture context
-        run: python src/data/generate_context.py --repo vllm-project/vllm --force --data-dir data --local-repo repos/vllm
+      - name: Generate triton architecture context
+        run: python src/data/generate_context.py --repo triton-lang/triton --force --data-dir data --local-repo repos/triton
 
-      - name: Generate vllm-ascend architecture context
-        run: python src/data/generate_context.py --repo vllm-project/vllm-ascend --force --data-dir data --local-repo repos/vllm-ascend
+      - name: Generate triton-ascend architecture context
+        run: python src/data/generate_context.py --repo triton-lang/triton-ascend --force --data-dir data --local-repo repos/triton-ascend
 
-      - name: Cross-reference vllm vs vllm-ascend
+      - name: Cross-reference triton vs triton-ascend
         run: python src/data/generate_context.py --cross-reference --force --data-dir data
 
       - name: Rebuild search index
         run: python src/data/build_index.py --data-dir data
 
       - name: Track adaptation
-        run: python src/data/track_adaptation.py init --ascend-repo-path repos/vllm-ascend --data-dir data --local-repo repos/vllm --force
+        run: |
+          if [ -f "data/triton-ascend/adaptation-status.json" ]; then
+            python src/data/track_adaptation.py detect --ascend-repo-path repos/triton-ascend --data-dir data
+          else
+            python src/data/track_adaptation.py init --ascend-repo-path repos/triton-ascend --data-dir data
+          fi
 
       - name: Commit and push
         run: |

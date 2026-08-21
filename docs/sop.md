@@ -1,25 +1,25 @@
-# vllm-report 项目 SOP
+# triton-report 项目 SOP
 
 ## 项目结构
 
 ```
 data/
 ├── README.json                          # 项目入口引导文件
-├── vllm/
+├── triton/
 │   ├── commits/{date}.json              # 原始 commit 数据（含 diff/patch）
 │   ├── analysis/{date}.json             # Phase 1 DeepSeek 分析结果
 │   ├── _deep_analysis_cache/            # Phase 2 深分析的源码上下文缓存（AST 提取）
 │   ├── context/
-│   │   ├── architecture.json            # vllm 架构基线知识库
+│   │   ├── architecture.json            # triton 架构基线知识库
 │   │   └── arch_deltas.json             # 自基线以来的架构增量变更
 │   ├── index.json                       # 检索索引
 │   └── commits-index.json               # SHA → {date, message} 查找表
-└── vllm-ascend/
+└── triton-ascend/
     ├── commits/{date}.json
     ├── analysis/{date}.json
     ├── lessons/{date}.json              # 适配经验沉淀（main2main 实战）
     ├── context/
-    │   ├── architecture.json            # vllm-ascend 架构知识（基于最新代码）
+    │   ├── architecture.json            # triton-ascend 架构知识（基于最新代码）
     │   └── arch_deltas.json
     ├── index.json
     ├── commits-index.json
@@ -27,8 +27,8 @@ data/
 ```
 
 **核心概念：**
-- **vllm 架构知识**采用"基线 + 增量"模型：`architecture.json` 是基线快照（锚定于一个 commit），`arch_deltas.json` 记录基线之后每个 commit 的架构增量
-- **vllm-ascend 架构知识**同样采用"基线 + 增量"模型，记录 ascend 自身的代码变化
+- **triton 架构知识**采用"基线 + 增量"模型：`architecture.json` 是基线快照（锚定于一个 commit），`arch_deltas.json` 记录基线之后每个 commit 的架构增量
+- **triton-ascend 架构知识**同样采用"基线 + 增量"模型，记录 ascend 自身的代码变化
 - 所有 git checkout/pull 操作都由脚本自动完成，用户只需提供本地仓库路径
 
 ---
@@ -37,23 +37,23 @@ data/
 
 ### 1.1 确定基线 commit
 
-选择一个 vllm 的 commit 作为架构基线的锚点。通常选择分析起始日前一天的最后一个 commit。
+选择一个 triton 的 commit 作为架构基线的锚点。通常选择分析起始日前一天的最后一个 commit。
 
 ```bash
-cd ~/code/vllm
+cd ~/code/triton
 git log --before="2026-07-27 00:00:00 +0800" --oneline --format="%H %ai %s" -1
 # 输出: 7154856f3dcb ... [Bugfix] Fix handling 5D KV cache
 ```
 
-### 1.2 生成 vllm 架构基线
+### 1.2 生成 triton 架构基线
 
 `--checkout` 指定基线 commit，脚本会自动 pull 最新代码、临时 checkout 到该 commit、生成架构、恢复 HEAD。
 
 ```bash
-cd ~/code/vllm-report
+cd ~/code/triton-report
 python3 src/data/generate_context.py \
-  --repo vllm-project/vllm \
-  --local-repo ~/code/vllm \
+  --repo triton-lang/triton \
+  --local-repo ~/code/triton \
   --checkout <baseline_sha> \
   --force
 ```
@@ -63,7 +63,7 @@ python3 src/data/generate_context.py \
 ```bash
 python3 -c "
 import json
-with open('data/vllm/context/architecture.json') as f:
+with open('data/triton/context/architecture.json') as f:
     d = json.load(f)
 print(f'commit_sha: {d[\"commit_sha\"][:12]}')
 print(f'modules: {len(d[\"modules\"])}')
@@ -72,21 +72,21 @@ print(f'interface_surface: {bool(d.get(\"interface_surface\"))}')
 "
 python3 -c "
 import json
-with open('data/vllm/context/arch_deltas.json') as f:
+with open('data/triton/context/arch_deltas.json') as f:
     d = json.load(f)
 print(f'baseline: {d[\"baseline_sha\"][:12]} deltas: {len(d[\"deltas\"])}')  # 应为 0
 "
 ```
 
-### 1.3 生成 vllm-ascend 架构知识
+### 1.3 生成 triton-ascend 架构知识
 
-vllm-ascend 不需要历史代码，直接用最新 main 分支生成。
+triton-ascend 不需要历史代码，直接用最新 main 分支生成。
 
 ```bash
-cd ~/code/vllm-report
+cd ~/code/triton-report
 python3 src/data/generate_context.py \
-  --repo vllm-project/vllm-ascend \
-  --local-repo ~/code/vllm-ascend \
+  --repo triton-lang/triton-ascend \
+  --local-repo ~/code/triton-ascend \
   --force
 ```
 
@@ -95,7 +95,7 @@ python3 src/data/generate_context.py \
 ```bash
 python3 -c "
 import json
-with open('data/vllm-ascend/context/architecture.json') as f:
+with open('data/triton-ascend/context/architecture.json') as f:
     d = json.load(f)
 print(f'commit_sha: {d.get(\"commit_sha\",\"N/A\")[:12]}')
 print(f'modules: {len(d.get(\"modules\",[]))}')
@@ -105,10 +105,10 @@ print(f'interface_surface inheritable_interfaces: {len(d.get(\"interface_surface
 
 ### 1.4 生成交叉引用
 
-交叉引用会读取两个架构文件，让 opencode 分析跨项目关系。用 `--checkout` 确保 vllm 源码在基线 commit 状态，opencode 可以探索源码来生成更准确的 `definitely_affected_paths` 等规则。
+交叉引用会读取两个架构文件，让 opencode 分析跨项目关系。用 `--checkout` 确保 triton 源码在基线 commit 状态，opencode 可以探索源码来生成更准确的 `definitely_affected_paths` 等规则。
 
 ```bash
-cd ~/code/vllm-report
+cd ~/code/triton-report
 python3 src/data/generate_context.py \
   --cross-reference \
   --checkout <baseline_sha> \
@@ -120,10 +120,10 @@ python3 src/data/generate_context.py \
 ```bash
 python3 -c "
 import json
-with open('data/vllm/context/architecture.json') as f:
+with open('data/triton/context/architecture.json') as f:
     d = json.load(f)
 cpr = d.get('cross_project_relationship', {})
-print(f'vllm_to_ascend_map: {len(cpr.get(\"vllm_to_ascend_map\",{}))} entries')
+print(f'triton_to_ascend_map: {len(cpr.get(\"triton_to_ascend_map\",{}))} entries')
 print(f'definitely_affected_paths: {len(cpr.get(\"impact_judgment_rules\",{}).get(\"definitely_affected_paths\",[]))} entries')
 print(f'never_affected_paths: {len(cpr.get(\"impact_judgment_rules\",{}).get(\"never_affected_paths\",[]))} entries')
 print(f'patch_impact_map: {len(cpr.get(\"patch_impact_map\",{}))} entries')
@@ -134,24 +134,24 @@ print(f'patch_impact_map: {len(cpr.get(\"patch_impact_map\",{}))} entries')
 
 ```bash
 # 获取某天的 commit 数据
-cd ~/code/vllm-report
+cd ~/code/triton-report
 python3 src/data/fetch_commits.py \
-  --repo vllm-project/vllm \
-  --local-repo ~/code/vllm \
+  --repo triton-lang/triton \
+  --local-repo ~/code/triton \
   --date 2026-07-27
 
 # Phase 1: DeepSeek 分析
 python3 src/data/analyze_commits.py \
-  --repo vllm-project/vllm \
+  --repo triton-lang/triton \
   --date 2026-07-27 \
-  --local-repo ~/code/vllm \
+  --local-repo ~/code/triton \
   --force
 
 # Phase 2: opencode 深度分析（针对 ascend_affected 的 commit）
 python3 src/data/deep_analyze_commits.py \
-  --repo vllm-project/vllm \
+  --repo triton-lang/triton \
   --date 2026-07-27 \
-  --local-repo ~/code/vllm \
+  --local-repo ~/code/triton \
   --data-dir data
 ```
 
@@ -160,7 +160,7 @@ python3 src/data/deep_analyze_commits.py \
 ```bash
 python3 -c "
 import json
-with open('data/vllm/analysis/2026-07-27.json') as f:
+with open('data/triton/analysis/2026-07-27.json') as f:
     d = json.load(f)
 print(f'commits: {len(d[\"commits\"])}')
 ascend = [c for c in d['commits'] if c.get('ascend_impact',{}).get('ascend_affected')]
@@ -177,7 +177,7 @@ for c in ascend:
 ```bash
 python3 -c "
 import json
-with open('data/vllm/analysis/2026-07-27.json') as f:
+with open('data/triton/analysis/2026-07-27.json') as f:
     d = json.load(f)
 deep = [(c['sha'][:12], c.get('deep_analysis',{}).get('adaptation_effort','?')) for c in d['commits'] if c.get('deep_analysis')]
 print(f'deep_analysis: {len(deep)}')
@@ -200,7 +200,7 @@ python3 src/data/build_index.py --data-dir data
 
 ```bash
 python3 src/data/track_adaptation.py init \
-  --ascend-repo-path ~/code/vllm-ascend \
+  --ascend-repo-path ~/code/triton-ascend \
   --data-dir data \
   --since 2026-07-27
 ```
@@ -221,43 +221,43 @@ python3 src/data/track_adaptation.py list --status pending
 
 ## 2. 每日例行更新
 
-### 2.1 vllm
+### 2.1 triton
 
 ```bash
 # 获取前一天 commit 数据
-cd ~/code/vllm-report
+cd ~/code/triton-report
 DATE=$(TZ=Asia/Shanghai date -d yesterday +%Y-%m-%d)
 
 python3 src/data/fetch_commits.py \
-  --repo vllm-project/vllm \
-  --local-repo ~/code/vllm \
+  --repo triton-lang/triton \
+  --local-repo ~/code/triton \
   --date $DATE
 
 # Phase 1: DeepSeek 分析
 python3 src/data/analyze_commits.py \
-  --repo vllm-project/vllm \
+  --repo triton-lang/triton \
   --date $DATE \
-  --local-repo ~/code/vllm \
+  --local-repo ~/code/triton \
   --force
 
 # Phase 2: opencode 深度分析
 python3 src/data/deep_analyze_commits.py \
-  --repo vllm-project/vllm \
+  --repo triton-lang/triton \
   --date $DATE \
-  --local-repo ~/code/vllm \
+  --local-repo ~/code/triton \
   --data-dir data
 ```
 
-### 2.2 vllm-ascend
+### 2.2 triton-ascend
 
 ```bash
 python3 src/data/fetch_commits.py \
-  --repo vllm-project/vllm-ascend \
-  --local-repo ~/code/vllm-ascend \
+  --repo triton-lang/triton-ascend \
+  --local-repo ~/code/triton-ascend \
   --date $DATE
 
 python3 src/data/analyze_commits.py \
-  --repo vllm-project/vllm-ascend \
+  --repo triton-lang/triton-ascend \
   --date $DATE \
   --force
 ```
@@ -270,13 +270,13 @@ python3 src/data/build_index.py --data-dir data
 
 ### 2.4 更新适配状态
 
-根据最新的 vllm-ascend 基线重新划分适配状态：
+根据最新的 triton-ascend 基线重新划分适配状态：
 - 基线之前的 commit → **adapted**（已被基线覆盖验证）
 - 基线之后的 commit → **pending**（需要适配）
 
 ```bash
 python3 src/data/track_adaptation.py init \
-  --ascend-repo-path ~/code/vllm-ascend \
+  --ascend-repo-path ~/code/triton-ascend \
   --data-dir data \
   --force
 ```
@@ -285,17 +285,17 @@ python3 src/data/track_adaptation.py init \
 
 ## 3. 刷新架构基线
 
-当 `arch_deltas.json` 累积了较多增量（建议 30-50 个 commit 后），或者 vllm 发生了重大架构变更时，应该刷新基线。
+当 `arch_deltas.json` 累积了较多增量（建议 30-50 个 commit 后），或者 triton 发生了重大架构变更时，应该刷新基线。
 
 刷新基线的本质：用最新代码重新生成 `architecture.json`，清空 `arch_deltas.json`。
 
-### 3.1 重新生成 vllm 架构
+### 3.1 重新生成 triton 架构
 
 ```bash
-cd ~/code/vllm-report
+cd ~/code/triton-report
 python3 src/data/generate_context.py \
-  --repo vllm-project/vllm \
-  --local-repo ~/code/vllm \
+  --repo triton-lang/triton \
+  --local-repo ~/code/triton \
   --force
 ```
 
@@ -314,11 +314,11 @@ python3 src/data/generate_context.py \
 ```bash
 python3 -c "
 import json
-with open('data/vllm/context/architecture.json') as f:
+with open('data/triton/context/architecture.json') as f:
     d = json.load(f)
 print(f'新基线: {d[\"commit_sha\"][:12]}')
 print(f'版本历史: {len(d.get(\"architecture_history\",[]))} 次')
-with open('data/vllm/context/arch_deltas.json') as f:
+with open('data/triton/context/arch_deltas.json') as f:
     d = json.load(f)
 print(f'deltas 已清空: {len(d[\"deltas\"])}')  # 应该为 0
 "
@@ -329,8 +329,8 @@ print(f'deltas 已清空: {len(d[\"deltas\"])}')  # 应该为 0
 - 刷新基线**不会影响**已有的分析结果（`analysis/{date}.json`）。这些分析仍然有效，只是它们引用的 `architecture_based_on_sha` 是旧基线。
 - 刷新基线后 `arch_deltas.json` 被清空，之前累积的增量丢失。这是预期的——新基线已经包含了这些变更。
 - 刷新基线后**建议重新构建索引**：`python3 src/data/build_index.py --data-dir data`
-- 刷新基线后**建议重新初始化适配跟踪**：`python3 src/data/track_adaptation.py init --ascend-repo-path ~/code/vllm-ascend --data-dir data --since <新基线日期>`。因为 `ascend_affected` 的判断可能因架构知识变化而不同，新基线可能标记出不同的 commit。
-- vllm-ascend 的架构知识**不需要**刷新，它始终基于最新代码。
+- 刷新基线后**建议重新初始化适配跟踪**：`python3 src/data/track_adaptation.py init --ascend-repo-path ~/code/triton-ascend --data-dir data --since <新基线日期>`。因为 `ascend_affected` 的判断可能因架构知识变化而不同，新基线可能标记出不同的 commit。
+- triton-ascend 的架构知识**不需要**刷新，它始终基于最新代码。
 
 ## 4. 注意事项
 
@@ -340,12 +340,12 @@ print(f'deltas 已清空: {len(d[\"deltas\"])}')  # 应该为 0
 
 ### 4.2 适配跟踪
 
-`track_adaptation.py init` 扫描 `analysis/` 中所有 `ascend_affected=true` 的 commit，根据 vllm-ascend 的 `vllm-main-verified.commit` 自动划分状态：
+`track_adaptation.py init` 扫描 `analysis/` 中所有 `ascend_affected=true` 的 commit，根据 triton-ascend 的 `triton-main-verified.commit` 自动划分状态：
 - 基线之前的 commit → `adapted`（已被基线覆盖验证）
 - 基线之后的 commit → `pending`（需要适配）
 
 **每次 fetch + analyze 后都必须重新 `init`**，因为：
-1. vllm-ascend 的基线可能已推进（main2main CI 更新了 `vllm-main-verified.commit`）
+1. triton-ascend 的基线可能已推进（main2main CI 更新了 `triton-main-verified.commit`）
 2. 新 commit 需要加入跟踪
 
 **适配状态仅维护两种：`pending` / `adapted`，无需人工干预。**
@@ -359,7 +359,7 @@ print(f'deltas 已清空: {len(d[\"deltas\"])}')  # 应该为 0
 | `analysis/{date}.json` | 不需要动（`architecture_based_on_sha` 记录版本） |
 | `index.json` / `commits-index.json` | 需要重新构建 |
 | `adaptation-status.json` | 建议重新 `init` |
-| `vllm-ascend/architecture.json` | 不需要动 |
+| `triton-ascend/architecture.json` | 不需要动 |
 
 ---
 

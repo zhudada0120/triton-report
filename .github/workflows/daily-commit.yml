@@ -60,10 +60,10 @@ jobs:
 
       - name: Add MCP Server for opencode
         run: |
-          opencode mcp add vllm-report \
+          opencode mcp add triton-report \
             -- python -m src.mcp_server_app \
             --data-dir "${{ github.workspace }}/data" \
-            --ascend-repo-path "${{ github.workspace }}/repos/vllm-ascend"
+            --ascend-repo-path "${{ github.workspace }}/repos/triton-ascend"
 
       - name: Install Python dependencies
         run: pip install -r requirements.txt
@@ -79,72 +79,72 @@ jobs:
             echo "date=$(date -d yesterday +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Checkout vllm source
+      - name: Checkout triton source
         uses: actions/checkout@v4
         with:
-          repository: vllm-project/vllm
-          path: repos/vllm
+          repository: triton-lang/triton
+          path: repos/triton
           fetch-depth: 0
 
-      - name: Checkout vllm-ascend source
+      - name: Checkout triton-ascend source
         uses: actions/checkout@v4
         with:
-          repository: vllm-project/vllm-ascend
-          path: repos/vllm-ascend
+          repository: triton-lang/triton-ascend
+          path: repos/triton-ascend
           fetch-depth: 0
 
-      - name: Fetch vllm commits
+      - name: Fetch triton commits
         run: >-
           python src/data/fetch_commits.py
-          --repo vllm-project/vllm
-          --local-repo repos/vllm
+          --repo triton-lang/triton
+          --local-repo repos/triton
           --date "${{ steps.date.outputs.date }}"
           --force
 
-      - name: Analyze vllm commits (Phase 1)
+      - name: Analyze triton commits (Phase 1)
         env:
           LLM_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
-          if [ -f "data/vllm/commits/${{ steps.date.outputs.date }}.json" ]; then
+          if [ -f "data/triton/commits/${{ steps.date.outputs.date }}.json" ]; then
             python src/data/analyze_commits.py \
-              --repo vllm-project/vllm \
+              --repo triton-lang/triton \
               --date "${{ steps.date.outputs.date }}" \
-              --local-repo repos/vllm \
+              --local-repo repos/triton \
               --data-dir data \
               --force
           else
             echo "No commit data for ${{ steps.date.outputs.date }}, skipping analysis"
           fi
 
-      - name: Deep analyze vllm commits (Phase 2)
+      - name: Deep analyze triton commits (Phase 2)
         env:
           OPENCODE_AUTH_TOKEN: ${{ secrets.OPENCODE_AUTH_TOKEN }}
         run: |
-          if [ -f "data/vllm/analysis/${{ steps.date.outputs.date }}.json" ]; then
+          if [ -f "data/triton/analysis/${{ steps.date.outputs.date }}.json" ]; then
             python src/data/deep_analyze_commits.py \
-              --repo vllm-project/vllm \
+              --repo triton-lang/triton \
               --date "${{ steps.date.outputs.date }}" \
-              --local-repo repos/vllm \
+              --local-repo repos/triton \
               --data-dir data
           fi
 
-      - name: Fetch vllm-ascend commits
+      - name: Fetch triton-ascend commits
         run: >-
           python src/data/fetch_commits.py
-          --repo vllm-project/vllm-ascend
-          --local-repo repos/vllm-ascend
+          --repo triton-lang/triton-ascend
+          --local-repo repos/triton-ascend
           --date "${{ steps.date.outputs.date }}"
           --force
 
-      - name: Analyze vllm-ascend commits
+      - name: Analyze triton-ascend commits
         env:
           LLM_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
-          if [ -f "data/vllm-ascend/commits/${{ steps.date.outputs.date }}.json" ]; then
+          if [ -f "data/triton-ascend/commits/${{ steps.date.outputs.date }}.json" ]; then
             python src/data/analyze_commits.py \
-              --repo vllm-project/vllm-ascend \
+              --repo triton-lang/triton-ascend \
               --date "${{ steps.date.outputs.date }}" \
-              --local-repo repos/vllm-ascend \
+              --local-repo repos/triton-ascend \
               --data-dir data \
               --force
           else
@@ -155,7 +155,12 @@ jobs:
         run: python src/data/build_index.py --data-dir data
 
       - name: Track adaptation
-        run: python src/data/track_adaptation.py init --ascend-repo-path repos/vllm-ascend --data-dir data --local-repo repos/vllm --force
+        run: |
+          if [ -f "data/triton-ascend/adaptation-status.json" ]; then
+            python src/data/track_adaptation.py detect --ascend-repo-path repos/triton-ascend --data-dir data
+          else
+            python src/data/track_adaptation.py init --ascend-repo-path repos/triton-ascend --data-dir data
+          fi
 
       - name: Clean stale data (commits without analysis)
         run: python .github/scripts/clean_stale_data.py --data-dir data

@@ -1,27 +1,27 @@
 (function () {
-  const REPOS = ['vllm-project/vllm', 'vllm-project/vllm-ascend'];
+  const REPOS = ['triton-lang/triton', 'triton-lang/triton-ascend'];
 
   let DATA_BASE = '/data';
 
   async function detectDataBase() {
-    // Strategy 1: Try absolute path from root (/data/vllm/index.json).
+    // Strategy 1: Try absolute path from root (/data/triton/index.json).
     // Works under dev server at http://localhost:8000/ or
     // when Pages site is at domain root (e.g. user.github.io).
     try {
-      const resp = await fetch(`/data/vllm/index.json`, { method: 'HEAD' });
+      const resp = await fetch(`/data/triton/index.json`, { method: 'HEAD' });
       if (resp.ok) {
         DATA_BASE = '/data';
         return;
       }
     } catch {}
 
-    // Strategy 2: Detect GitHub Pages sub-path (e.g. /vllm-report/).
+    // Strategy 2: Detect GitHub Pages sub-path (e.g. /triton-report/).
     // The page URL tells us the base path; append /data/ to it.
     const pagePath = window.location.pathname;
     const pageDir = pagePath.substring(0, pagePath.lastIndexOf('/') + 1);
     const candidate = pageDir + 'data';
     try {
-      const resp = await fetch(`${candidate}/vllm/index.json`, { method: 'HEAD' });
+      const resp = await fetch(`${candidate}/triton/index.json`, { method: 'HEAD' });
       if (resp.ok) {
         DATA_BASE = candidate;
         return;
@@ -30,7 +30,7 @@
 
     // Strategy 3: Relative path from page to repo-root data/ directory.
     try {
-      const resp = await fetch(`../data/vllm/index.json`, { method: 'HEAD' });
+      const resp = await fetch(`../data/triton/index.json`, { method: 'HEAD' });
       if (resp.ok) {
         DATA_BASE = '../data';
         return;
@@ -59,8 +59,8 @@
   const $$ = (sel) => document.querySelectorAll(sel);
 
   function repoDir(repo) {
-    if (repo === 'vllm-project/vllm') return 'vllm';
-    if (repo === 'vllm-project/vllm-ascend') return 'vllm-ascend';
+    if (repo === 'triton-lang/triton') return 'triton';
+    if (repo === 'triton-lang/triton-ascend') return 'triton-ascend';
     return repo.split('/').pop();
   }
 
@@ -344,15 +344,15 @@
     return analysisData.commits.find((c) => c.sha === sha);
   }
 
-  // vllm: 'ascend' | 'code' | 'chore'
-  // vllm-ascend: 'needs-test' | 'chore'
+  // triton: 'ascend' | 'code' | 'chore'
+  // triton-ascend: 'needs-test' | 'chore'
   function classifyCommit(commit) {
     var a = getAnalysisForSha(commit.sha);
-    if (currentRepo === 'vllm-project/vllm-ascend') {
+    if (currentRepo === 'triton-lang/triton-ascend') {
       if (a && a.test_impact && a.test_impact.needs_test_update) return 'needs-test';
       return 'chore';
     }
-    // vllm repo
+    // triton repo
     // 有 deep_analysis 但被确认为 false positive 的单独归类
     if (a && a.deep_analysis && a.deep_analysis.ascend_affected_confirmed === false) return 'false-positive';
     if (a && a.ascend_impact && a.ascend_impact.ascend_affected === true) return 'ascend';
@@ -365,7 +365,7 @@
 
   function classifyCrossDay(commit, analysisMap) {
     var a = analysisMap ? analysisMap[commit.sha] : null;
-    if (currentRepo === 'vllm-project/vllm-ascend') {
+    if (currentRepo === 'triton-lang/triton-ascend') {
       if (a && a.test_impact && a.test_impact.needs_test_update) return 'needs-test';
       return 'chore';
     }
@@ -394,7 +394,7 @@
       if (activeFilter === 'all') return true;
       if (!a) return false;
 
-      // Adaptation status filters (vllm-ascend only)
+      // Adaptation status filters (triton-ascend only)
       if (activeFilter === 'adapt-pending' || activeFilter === 'adapt-adapted') {
         if (!adaptationStatus) return false;
         var adapt = adaptationStatus[c.sha];
@@ -434,8 +434,8 @@
 
   function updateFilterChips(allCommits) {
     var filters = ['all', 'needs-test', 'affects-ascend', 'high-risk', 'feature', 'bugfix', 'refactor', 'performance'];
-    // Add adaptation status filters (only for vllm repo, where upstream commits are tracked)
-    if (currentRepo === 'vllm-project/vllm' && adaptationStatus) {
+    // Add adaptation status filters (only for triton repo, where upstream commits are tracked)
+    if (currentRepo === 'triton-lang/triton' && adaptationStatus) {
       filters.push('adapt-pending', 'adapt-adapted');
     }
     var saved = activeFilter;
@@ -566,7 +566,7 @@
 
   // ── Adaptation Status (P1) ────────────────────
   async function loadAdaptationStatus() {
-    const data = await fetchJSON(`${DATA_BASE}/vllm-ascend/adaptation-status.json`);
+    const data = await fetchJSON(`${DATA_BASE}/triton-ascend/adaptation-status.json`);
     if (!data || !data.commits) {
       adaptationStatus = null;
       return;
@@ -606,65 +606,27 @@
     return '';
   }
 
-  // ── Baseline Info (P3) ────────────────────────
+  // ── Adaptation Status Bar (history-scan mode, no baseline files) ──
   async function loadBaseline() {
-    if (currentRepo !== 'vllm-project/vllm-ascend') {
+    if (currentRepo !== 'triton-lang/triton-ascend') {
       $('#baselineBar').style.display = 'none';
       return;
     }
     try {
-      // Read main baseline SHA
-      const mainResp = await fetch(
-        'https://api.github.com/repos/vllm-project/vllm-ascend/contents/.github/vllm-main-verified.commit'
-      );
-      // Read release tag
-      const releaseResp = await fetch(
-        'https://api.github.com/repos/vllm-project/vllm-ascend/contents/.github/vllm-release-tag.commit'
-      );
-      if (!mainResp.ok || !releaseResp.ok) {
-        // Fallback: read from adaptation-status.json stats
-        showBaselineFromStats();
-        return;
-      }
-      const mainData = await mainResp.json();
-      const releaseData = await releaseResp.json();
-      var mainSha = atob(mainData.content).trim();
-      var releaseTag = atob(releaseData.content).trim();
-
-      // Get stats from adaptation-status.json
-      var adaptData = await fetchJSON(`${DATA_BASE}/vllm-ascend/adaptation-status.json`);
+      var adaptData = await fetchJSON(`${DATA_BASE}/triton-ascend/adaptation-status.json`);
       var stats = adaptData && adaptData.stats ? adaptData.stats : {};
-
-      var html = '';
-      html += '<span class="baseline-text">';
-      html += 'Main: <code>' + mainSha.substring(0, 12) + '</code>';
-      if (releaseTag) html += ' &nbsp;|&nbsp; Release: <code>' + escapeHtml(releaseTag) + '</code>';
-      if (stats.total) {
-        html += ' &nbsp;|&nbsp; ';
-        html += '<span class="baseline-status pending">Pending: ' + (stats.pending || 0) + '</span> ';
-        html += '<span class="baseline-status adapted">Adapted: ' + (stats.adapted || 0) + '</span> ';
-      }
-      html += '</span>';
-
-      $('#baselineText').innerHTML = html;
-      $('#baselineBar').style.display = 'block';
-    } catch {
-      showBaselineFromStats();
-    }
-  }
-
-  async function showBaselineFromStats() {
-    try {
-      var adaptData = await fetchJSON(`${DATA_BASE}/vllm-ascend/adaptation-status.json`);
-      var stats = adaptData && adaptData.stats ? adaptData.stats : {};
+      var baseline = adaptData && adaptData.baseline ? adaptData.baseline : {};
       if (!stats.total) {
         $('#baselineBar').style.display = 'none';
         return;
       }
       var html = '';
-      html += '<span class="baseline-text">Adaptation: ';
+      html += '<span class="baseline-text">Adaptation (git history scan): ';
       html += '<span class="baseline-status pending">Pending: ' + (stats.pending || 0) + '</span> ';
       html += '<span class="baseline-status adapted">Adapted: ' + (stats.adapted || 0) + '</span> ';
+      if (baseline.detected_at) {
+        html += ' &nbsp;|&nbsp; Detected: <code>' + escapeHtml(String(baseline.detected_at).substring(0, 10)) + '</code>';
+      }
       html += '</span>';
       $('#baselineText').innerHTML = html;
       $('#baselineBar').style.display = 'block';
@@ -854,7 +816,7 @@
         if (da.ascend_affected_confirmed === false) {
           html += `<div class="impact-card deep-analysis">`;
           html += `<div class="impact-label" style="color:#e67e22">Phase 2: No Adaptation Needed</div>`;
-          html += `<div class="impact-text">AI 深度分析确认此 commit 无需适配 vllm-ascend</div>`;
+          html += `<div class="impact-text">AI 深度分析确认此 commit 无需适配 triton-ascend</div>`;
           if (da.adaptation_guide) {
             html += `<div class="impact-text" style="margin-top:4px"><strong>分析详情:</strong> ${renderMarkdown(da.adaptation_guide)}</div>`;
           }
@@ -978,7 +940,7 @@
   }
 
   function restoreExpanded() {
-    var saved = sessionStorage.getItem('vllmExpanded');
+    var saved = sessionStorage.getItem('tritonExpanded');
     if (!saved) return;
     var shas = JSON.parse(saved);
     if (!Array.isArray(shas)) return;
@@ -1124,11 +1086,11 @@
       groups[cls].push(c);
     }
 
-    var isVllm = currentRepo === 'vllm-project/vllm';
-    var primaryKey = isVllm ? 'ascend' : 'needs-test';
+    var isUpstream = currentRepo === 'triton-lang/triton';
+    var primaryKey = isUpstream ? 'ascend' : 'needs-test';
     var primaryCommits = groups[primaryKey] || [];
     var fpCommits = groups['false-positive'] || [];
-    var codeCommits = isVllm ? (groups['code'] || []) : [];
+    var codeCommits = isUpstream ? (groups['code'] || []) : [];
     var choreCommits = groups['chore'] || [];
     var otherCount = codeCommits.length + choreCommits.length;
 
@@ -1137,7 +1099,7 @@
 
     // Primary section (collapsible)
     if (primaryCommits.length > 0) {
-      var primaryLabel = isVllm ? 'Ascend Impact' : 'Needs Test Update';
+      var primaryLabel = isUpstream ? 'Ascend Impact' : 'Needs Test Update';
       var primaryExpanded = sectionsExpanded[primaryKey];
       html += '<div class="commit-section">';
       html += '<div class="section-header section-primary" data-section="' + primaryKey + '">';
@@ -1176,8 +1138,8 @@
       html += '</div>';
       html += '<div class="section-body" style="' + (otherExpanded ? '' : 'display:none') + '">';
 
-      // Sub-section: Code Changes (vllm only, collapsible)
-      if (isVllm && codeCommits.length > 0) {
+      // Sub-section: Code Changes (triton only, collapsible)
+      if (isUpstream && codeCommits.length > 0) {
         var codeExpanded = sectionsExpanded['code'];
         html += '<div class="subsection-block">';
         html += '<div class="subsection-header collapsible" data-section="code">';
@@ -1194,7 +1156,7 @@
       // Sub-section: Chores (collapsible)
       if (choreCommits.length > 0) {
         var choreExpanded = sectionsExpanded['chore'];
-        var choreLabel = isVllm ? 'Chores' : 'Other';
+        var choreLabel = isUpstream ? 'Chores' : 'Other';
         html += '<div class="subsection-block">';
         html += '<div class="subsection-header collapsible" data-section="chore">';
         html += '<span class="section-arrow">' + (choreExpanded ? '▼' : '▶') + '</span> ';
@@ -1320,7 +1282,7 @@
         document.querySelectorAll('.commit-card.expanded').forEach(function (c) {
           expanded.push(c.dataset.sha);
         });
-        sessionStorage.setItem('vllmExpanded', JSON.stringify(expanded));
+        sessionStorage.setItem('tritonExpanded', JSON.stringify(expanded));
         return;
       }
 
