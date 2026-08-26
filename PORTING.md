@@ -1,7 +1,10 @@
-# PORTING.md — triton-report ↔ vllm-report 双向移植约定
+# PORTING.md — triton-report 移植参考（源自 vllm-report）
 
-triton-report 与 vllm-report 是**同一引擎**的两个实例（上游仓 ↔ ascend 适配仓双仓监控分析）。
-目录结构保持一致，engine 级 bugfix 应双向移植。
+> **2026-08-26 更新**：两仓**不再要求双向同步**。triton-report 仅以 vllm-report 为
+> 移植起点，之后作为独立项目演进；本次移植期间及后续在 triton-report 上做的修改，
+> 不要求回合同步到 vllm-report。本文档保留为移植历史参考（差异对照、移植方法）。
+
+triton-report 与 vllm-report 曾是同一引擎的两个实例（上游仓 ↔ ascend 适配仓双仓监控分析）。
 
 ## 两个项目的核心差异
 
@@ -15,9 +18,9 @@ triton-report 与 vllm-report 是**同一引擎**的两个实例（上游仓 ↔
 | 适配经验来源 | main2main E2E 修复失败 | 人工 cherry-pick 冲突修复 |
 | MCP 工具 | advance_baseline（推进 baseline 文件） | detect_adaptation（历史扫描检测）+ update_adaptation_status（手动标记） |
 
-## 移植 checklist（vllm-report 修了 bug 后对照检查）
+## 移植 checklist（移植时对照用，不再要求双向同步）
 
-Engine 级文件（两仓逻辑相同，任何修复都要双向同步）：
+Engine 级文件（两仓逻辑相同，当初移植时以此清单对照）：
 
 1. `src/data/fetch_commits.py`
 2. `src/data/analyze_commits.py`（triage、prompt 结构、LLM 调用逻辑）
@@ -47,7 +50,7 @@ git -C ~/project/vllm-report show main:src/data/fetch_commits.py > /tmp/f.py
 cp /tmp/f.py src/data/fetch_commits.py
 ```
 
-反向（triton-report 修了 bug 回给 vllm-report）同理。
+（反向同步自 2026-08-26 起不再要求。）
 
 ## 数据 schema 兼容性
 

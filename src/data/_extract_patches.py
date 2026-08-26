@@ -63,6 +63,13 @@ def build_patch_catalog(ascend_repo_path):
     for fname in sorted(os.listdir(patch_dir)):
         if not fname.endswith(".patch"):
             continue
+        # llvm_patch_*.patch patch the LLVM dependency, not triton source;
+        # upstream triton commits can never touch those files.
+        # triton-ascend-dev-*.patch applies only in dev builds (main-dev /
+        # version.txt containing "dev", see setup_ascend.py:_is_dev_mode);
+        # the pipeline analyzes main, so exclude it as well.
+        if fname.startswith(("llvm_patch_", "triton-ascend-dev-")):
+            continue
         filepath = os.path.join(patch_dir, fname)
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()

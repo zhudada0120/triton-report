@@ -566,7 +566,10 @@ def call_llm(prompt):
     body = json.dumps({
         "model": api_model,
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.1,
+        # deepseek-v4 默认开启思考模式：reasoning 会占满 max_tokens 且单独
+        # 放在 reasoning_content 字段，而本函数只读 message.content。显式关闭。
+        # temperature 在思考模式下不生效，一并移除。
+        "thinking": {"type": "disabled"},
         "max_tokens": 81920,
     }).encode("utf-8")
 
@@ -1162,7 +1165,8 @@ def main():
     if not args.date and not args.latest and not args.catch_up:
         args.catch_up = True
 
-    project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # 仓库根目录（src/data/X.py 往上三级），clone 兜底落到 <root>/repos/ 而非 src/repos/
+    project_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     repo_local_map = {}
     for repo in args.repo:
         local = ensure_repo(repo, args.local_repo, project_dir, skip_pull=True)

@@ -36,18 +36,29 @@ jobs:
           cat > ~/.config/opencode/opencode.json << 'EOF'
           {
             "$schema": "https://opencode.ai/config.json",
-            "model": "deepseek/deepseek-v4-flash",
+            "model": "deepseek/deepseek-v4-pro",
             "provider": {
               "deepseek": {
                 "npm": "@ai-sdk/openai-compatible",
                 "name": "DeepSeek",
                 "options": {
-                  "baseURL": "https://ark.cn-beijing.volces.com/api/coding/v3",
+                  "baseURL": "https://api.deepseek.com/v1",
                   "apiKey": "{env:OPENCODE_AUTH_TOKEN}"
                 },
                 "models": {
                   "deepseek-v4-flash": {
-                    "name": "deepseek-chat"
+                    "name": "deepseek-v4-flash",
+                    "limit": {
+                      "context": 200000,
+                      "output": 32768
+                    }
+                  },
+                  "deepseek-v4-pro": {
+                    "name": "deepseek-v4-pro",
+                    "limit": {
+                      "context": 200000,
+                      "output": 32768
+                    }
                   }
                 }
               }

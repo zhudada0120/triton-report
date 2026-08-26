@@ -43,6 +43,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data._source_repo import ensure_repo, get_current_sha, repo_dir_name, _find_upstream_remote, KNOWN_REPOS
 from data._track_arch_delta import reset_deltas
 from data._opencode_client import call_opencode
+from data._extract_patches import build_patch_catalog
 
 TZ_CN = timezone(timedelta(hours=8))
 
@@ -54,6 +55,12 @@ IGNORE_DIRS = {
     ".github", ".buildkite", ".buildifier",
     "csrc",
 }
+
+# Source file extensions listed in the directory tree. triton's compiler core
+# (include/, lib/Dialect/, lib/Conversion/) is C++/MLIR, so a Python-only tree
+# would render exactly the directories the prompt asks the agent to focus on as
+# empty.
+SOURCE_EXTS = (".py", ".h", ".cpp", ".td", ".cc")
 
 # Key interface files that define the project's abstraction boundaries.
 # Reading these gives the AI the core architecture without walking every file.
@@ -316,6 +323,19 @@ CONTEXT_PROMPT_TEMPLATE = """你是一个资深代码架构分析师。请根据
 - 分支：main
 - 分析的 commit：{commit_sha}
 
+## 输出 JSON 的字段名规范（必须逐字精确使用）
+顶层对象必须包含以下键，键名必须与下面列出的完全一致，不得翻译、缩写或自创（如 project_overview、core_modules、hardware_adaptation、snapshot 等都是错误键名）：
+
+- `overview`：字符串，项目概述
+- `modules`：数组，每个元素为对象，键为 `path`（字符串）、`name`（字符串）、`description`（字符串）、`key_classes`（字符串数组）
+- `key_abstractions`：数组，每个元素为对象，键为 `name`、`description`、`location`、`inherits_from`（字符串或 null）、`key_methods`（字符串数组）、`ascend_implementations`（字符串数组）、`relationships`（字符串数组）
+- `implementation_principles`：数组，每个元素为对象，键为 `module`、`problem`、`workflow`、`interactions`、`platform_differences`
+- `module_dependencies`：字符串
+- `hardware_abstraction`：对象，键为 `description`（字符串）、`platform_independent`（字符串数组）、`platform_specific`（字符串数组）
+- `interface_surface`：对象，键为 `description`（字符串）、`inheritable_interfaces`（数组，每个元素为对象：`interface`、`location`、`ascend_impl`、`key_methods`、`impact_rule`）、`not_used_by_ascend`（字符串数组）
+- `test_structure`：对象，键为 `path`（字符串）、`description`（字符串）
+- `knowledge_base`：对象，键为 `patch_catalog`、`development_workflows`、`testing_guide`
+
 ## 重要说明：这份架构知识将作为"基线快照"使用
 你生成的这份架构知识将作为后续代码变更分析的**基线**。后续每次分析某个 commit 时，会在这个基线的基础上叠加"架构增量变更"来还原该 commit 发生时的代码状态。因此：
 
@@ -363,7 +383,7 @@ CONTEXT_PROMPT_TEMPLATE = """你是一个资深代码架构分析师。请根据
 ## 附加要求：生成 knowledge_base 字段
 请在 JSON 输出中增加 `knowledge_base` 字段，包含以下内容：
 
-1. **patch_catalog**: 从 third_party/ascend/patch/ 目录中的 .patch 文件提取的信息（如果你能看到该目录）。包含 patch 文件名、版本、覆盖的目标文件（从 diffstat 提取）、用途说明。
+1. **patch_catalog**: 从 third_party/ascend/patch/ 目录中的 .patch 文件提取的信息（如果你能看到该目录）。**只包含 main 分支构建实际应用到 triton 源码的 release patch（即 triton-ascend-<版本>.patch）；llvm_patch_*.patch 修改的是 LLVM 依赖而非 triton 源码；triton-ascend-dev-*.patch 只在 dev 构建（main-dev 分支）应用，本分析基于 main，二者都不要包含**。格式必须为对象：{{"patch_files": [{{"name": "<patch 文件名>", "version": "<版本（如有）>", "purpose": "<用途说明>"}}]}}——**注意：size_bytes / total_added / total_removed / target_files 会由确定性 diffstat 解析自动填充，不要自己估算或编造这些字段**（上游 triton 仓库没有该目录时，patch_files 为空数组并附 note 说明）。
 2. **development_workflows**: 请参考以下固定模板，嵌入到 knowledge_base 中。这些模板是固定的，不需要修改。
 ```json
 {knowledge_base_template}
@@ -415,7 +435,7 @@ CROSS_REFERENCE_PROMPT = """你是一个资深代码架构分析师。以下是�
    - 哪些 triton 文件/路径的变更 **必然** 影响 triton-ascend（如 python/triton/backends/ 接口签名变更、IR op 定义变更）
    - 哪些 triton 文件/路径的变更 **可能** 影响 triton-ascend（如编译流水线、language frontend 的行为变更）
    - 哪些 triton 文件/路径的变更 **绝不** 影响 triton-ascend（如 third_party/nvidia、third_party/amd 等纯平台特定代码）
-4. **Patch 影响面**：triton-ascend 通过 third_party/ascend/patch/*.patch 修改了 triton 的哪些模块，这些模块的变更如何影响 ascend
+4. **Patch 影响面**：triton-ascend 通过 third_party/ascend/patch/*.patch 修改了 triton 的哪些模块，这些模块的变更如何影响 ascend。只考虑 main 分支构建实际应用的 release patch（triton-ascend-<版本>.patch）；llvm_patch_*.patch 修改的是 LLVM 依赖，triton-ascend-dev-*.patch 只在 dev 构建（main-dev 分支）应用，都不要纳入
 
 ## 输出格式
 输出 JSON 格式，不要输出其他内容：
@@ -429,15 +449,15 @@ CROSS_REFERENCE_PROMPT = """你是一个资深代码架构分析师。以下是�
   ],
   "impact_judgment_rules": {{
     "definitely_affected_paths": [
-      "<triton 文件/路径模式">,
+      "<triton 文件/路径模式>",
       "<说明：为什么必然影响>"
     ],
     "potentially_affected_paths": [
-      "<triton 文件/路径模式">,
+      "<triton 文件/路径模式>",
       "<说明：什么条件下会影响>"
     ],
     "never_affected_paths": [
-      "<triton 文件/路径模式">,
+      "<triton 文件/路径模式>",
       "<说明：为什么不影响>"
     ]
   }},
@@ -492,7 +512,7 @@ def build_tree(local_repo, source_dir, max_depth=4):
             if os.path.isdir(fp):
                 if e not in IGNORE_DIRS and not e.startswith("."):
                     dirs.append(e)
-            elif e.endswith(".py"):
+            elif e.endswith(SOURCE_EXTS):
                 files.append(e)
         indent = "  " * depth
         for d in dirs:
@@ -504,6 +524,134 @@ def build_tree(local_repo, source_dir, max_depth=4):
     if os.path.isdir(root):
         walk(root, 0)
     return "\n".join(lines)
+
+
+def _validate_arch_context(context):
+    """Check the LLM output against the field names the consumers expect.
+
+    opencode's json_schema is only a soft hint, so the model may invent its
+    own top-level keys (e.g. project_overview / core_modules / hardware_
+    adaptation). Downstream (analyze_commits triage, MCP tools) reads exact
+    names, so fail loudly instead of saving a silently unusable file.
+    """
+    problems = []
+    schema = _build_architecture_schema()
+    for key in schema.get("required", []):
+        if key not in context:
+            problems.append(f"missing top-level key: {key}")
+    for key, expect_type in [
+        ("overview", str),
+        ("modules", list),
+        ("key_abstractions", list),
+        ("implementation_principles", list),
+        ("module_dependencies", str),
+        ("hardware_abstraction", dict),
+        ("interface_surface", dict),
+    ]:
+        if key in context and not isinstance(context[key], expect_type):
+            problems.append(f"{key}: expected {expect_type.__name__}, got {type(context[key]).__name__}")
+    for key in ("modules", "key_abstractions", "implementation_principles"):
+        items = context.get(key)
+        if isinstance(items, list):
+            bad = sum(1 for x in items if not isinstance(x, dict))
+            if bad:
+                problems.append(f"{key}: {bad}/{len(items)} elements are not objects")
+    iface = context.get("interface_surface", {})
+    if isinstance(iface, dict):
+        for sub in ("inheritable_interfaces", "not_used_by_ascend"):
+            if sub not in iface:
+                problems.append(f"interface_surface.{sub} missing")
+        items = iface.get("inheritable_interfaces")
+        if isinstance(items, list) and any(not isinstance(x, dict) for x in items):
+            problems.append("interface_surface.inheritable_interfaces: elements must be objects")
+    ha = context.get("hardware_abstraction", {})
+    if isinstance(ha, dict):
+        for sub in ("platform_independent", "platform_specific"):
+            if sub not in ha:
+                problems.append(f"hardware_abstraction.{sub} missing")
+    kb = context.get("knowledge_base", {})
+    if isinstance(kb, dict):
+        for sub in ("development_workflows", "testing_guide"):
+            if sub not in kb:
+                problems.append(f"knowledge_base.{sub} missing")
+        catalog = kb.get("patch_catalog")
+        if catalog is not None:
+            if not isinstance(catalog, dict) or not isinstance(catalog.get("patch_files"), list):
+                problems.append("knowledge_base.patch_catalog: expected {patch_files: [...]}")
+    return problems
+
+
+def _normalize_patch_catalog(context):
+    """Drop patches that do not touch the analyzed triton tree.
+
+    The prompt constrains patch_catalog to {patch_files: [...]}; shape errors
+    are caught by _validate_arch_context (which triggers a retry), so this
+    function only filters entries:
+      - llvm_patch_*.patch patch the LLVM dependency, not triton source.
+        Upstream triton commits can never touch those files.
+      - triton-ascend-dev-*.patch applies only in dev builds (main-dev /
+        version.txt containing "dev", see setup_ascend.py:_is_dev_mode).
+        The pipeline analyzes main, so dev patches are noise here too.
+    """
+    kb = context.get("knowledge_base")
+    if not isinstance(kb, dict):
+        return
+    catalog = kb.get("patch_catalog")
+    if not isinstance(catalog, dict):
+        return
+    raw_items = catalog.get("patch_files")
+    if not isinstance(raw_items, list):
+        return
+
+    patch_files = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name", "")
+        if name.startswith(("llvm_patch_", "triton-ascend-dev-")):
+            continue
+        patch_files.append(item)
+    result = {"patch_files": patch_files}
+    # Preserve an explanatory note if the model provided one (e.g. the
+    # upstream repo legitimately has no patch directory).
+    if isinstance(catalog.get("note"), str):
+        result["note"] = catalog["note"]
+    kb["patch_catalog"] = result
+
+
+def _merge_deterministic_patch_catalog(context, local_repo, repo):
+    """Fill patch_catalog numeric fields from deterministic diffstat parsing.
+
+    The LLM provides name/purpose/version, but its numeric fields (size_bytes,
+    total_added, total_removed) and target_files came back as nulls/strings in
+    practice. _extract_patches.parse_patch_diffstat parses the actual .patch
+    files deterministically (verified against `git apply --stat`), so merge by
+    patch file name and let deterministic data win for those fields.
+    """
+    if "triton-ascend" not in repo:
+        return
+    kb = context.get("knowledge_base")
+    if not isinstance(kb, dict):
+        return
+    catalog = kb.get("patch_catalog")
+    if not isinstance(catalog, dict):
+        return
+    llm_entries = catalog.get("patch_files")
+    if not isinstance(llm_entries, list):
+        return
+    try:
+        extracted = build_patch_catalog(local_repo)
+    except Exception as e:
+        print(f"  [patch] deterministic extraction failed: {e}")
+        return
+    det_by_name = {p["name"]: p for p in extracted.get("patch_files", [])}
+    for entry in llm_entries:
+        det = det_by_name.get(entry.get("name"))
+        if det:
+            entry["size_bytes"] = det["size_bytes"]
+            entry["total_added"] = det["total_added"]
+            entry["total_removed"] = det["total_removed"]
+            entry["target_files"] = det["target_files"]
 
 
 def generate_context(repo, data_dir, force, local_repo=None, checkout_sha=None):
@@ -580,8 +728,64 @@ def generate_context(repo, data_dir, force, local_repo=None, checkout_sha=None):
             return False
 
         if not isinstance(context, dict):
-            print(f"Unexpected response type: {type(context)}")
-            return False
+            # Usually means the JSON code fence was truncated or never closed,
+            # so _extract_fenced_json fell back to returning the raw text.
+            print(f"Unexpected response type: {type(context)} (truncated JSON?)")
+            print("  Retrying once with corrective instructions...")
+            context = call_opencode(
+                prompt=(
+                    "你上一次的 JSON 输出不完整（缺少结尾），无法解析。请重新输出"
+                    "完整的架构知识 JSON，用 ```json 代码块包裹并保证闭合。顶层字段名"
+                    "必须逐字使用规范中的键名（overview、modules、key_abstractions、"
+                    "implementation_principles、module_dependencies、hardware_"
+                    "abstraction、interface_surface、test_structure、knowledge_base），"
+                    "不要自创或翻译键名。"
+                ),
+                json_schema=arch_schema,
+                add_dirs=[local_repo],
+            )
+            if context is None:
+                print("Failed to get retry response from opencode")
+                return False
+            if not isinstance(context, dict):
+                print(f"Unexpected retry response type: {type(context)}")
+                return False
+
+        _normalize_patch_catalog(context)
+        _merge_deterministic_patch_catalog(context, local_repo, repo)
+
+        problems = _validate_arch_context(context)
+        if problems:
+            print("  [validate] LLM output does not match the expected schema:")
+            for p in problems:
+                print(f"    - {p}")
+            print("  Retrying once with corrective instructions...")
+            retry_prompt = (
+                f"你上一次输出的 JSON 字段名不符合要求。存在的问题：\n"
+                + "\n".join(f"- {p}" for p in problems)
+                + "\n\n请重新输出完整的架构知识 JSON。顶层字段名必须逐字使用规范中的键名"
+                "（overview、modules、key_abstractions、implementation_principles、"
+                "module_dependencies、hardware_abstraction、interface_surface、"
+                "test_structure、knowledge_base），不要自创或翻译键名。"
+            )
+            context = call_opencode(
+                prompt=retry_prompt,
+                json_schema=arch_schema,
+                add_dirs=[local_repo],
+            )
+            if context is None:
+                print("Failed to get retry response from opencode")
+                return False
+            if not isinstance(context, dict):
+                print(f"Unexpected retry response type: {type(context)}")
+                return False
+            problems = _validate_arch_context(context)
+            if problems:
+                print("  [validate] Retry output still does not match schema:")
+                for p in problems:
+                    print(f"    - {p}")
+                print("  Aborting: fix the prompt and re-run.")
+                return False
 
         context["repo"] = repo
         context["commit_sha"] = commit_sha
@@ -755,7 +959,8 @@ def main():
     )
     args = parser.parse_args()
 
-    project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # 仓库根目录（src/data/X.py 往上三级），clone 兜底落到 <root>/repos/ 而非 src/repos/
+    project_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
     if args.cross_reference:
         # Auto-discover both repos from KNOWN_REPOS

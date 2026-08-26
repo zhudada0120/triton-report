@@ -23,7 +23,7 @@ import subprocess
 from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from data._source_repo import repo_dir_name
+from data._source_repo import repo_dir_name, _find_upstream_remote
 
 TZ_CN = timezone(timedelta(hours=8))
 
@@ -192,10 +192,14 @@ def main():
         print(f"Error: local repo not found at {local_repo}")
         sys.exit(1)
 
-    # Pull latest to ensure we have the most recent commits
+    # Pull latest to ensure we have the most recent commits.
+    # Resolve the remote that actually points at --repo: "origin" may be a
+    # personal fork (stale, or unreachable), which would silently pull the
+    # wrong history. Mirrors generate_context.py's behaviour.
+    upstream = _find_upstream_remote(local_repo, args.repo)
     try:
         result = subprocess.run(
-            ["git", "pull", "--ff-only", "origin", args.branch],
+            ["git", "pull", "--ff-only", upstream, args.branch],
             cwd=local_repo, capture_output=True, text=True, timeout=60,
         )
         if result.returncode == 0:
