@@ -665,6 +665,15 @@ def _merge_deterministic_patch_catalog(context, local_repo, repo):
             entry["target_files"] = det["target_files"]
 
 
+def _build_architecture_history(prev_history, commit_sha, generated_at):
+    """Append the new baseline to the previous version history (dedupe by sha)."""
+    history = [e for e in (prev_history or []) if isinstance(e, dict)]
+    if commit_sha and commit_sha != "unknown":
+        if not history or history[-1].get("commit_sha") != commit_sha:
+            history.append({"commit_sha": commit_sha, "generated_at": generated_at})
+    return history
+
+
 def generate_context(repo, data_dir, force, local_repo=None, checkout_sha=None):
     """Phase 1: Generate architecture.json for a single repo using opencode agent."""
     repo_dir = os.path.join(data_dir, repo_dir_name(repo))
@@ -802,23 +811,17 @@ def generate_context(repo, data_dir, force, local_repo=None, checkout_sha=None):
         context["commit_sha"] = commit_sha
         context["generated_at"] = datetime.now(TZ_CN).isoformat()
 
-        arch_history = context.get("architecture_history", [])
-        if arch_history:
-            last_entry = arch_history[-1]
-            prev_sha = context.get("commit_sha")
-            if prev_sha and prev_sha != commit_sha:
-                arch_history.append({
-                    "commit_sha": commit_sha,
-                    "generated_at": context["generated_at"],
-                })
-        else:
-            if commit_sha != "unknown":
-                arch_history = [{
-                    "commit_sha": commit_sha,
-                    "generated_at": context["generated_at"],
-                }]
-        if arch_history:
-            context["architecture_history"] = arch_history
+        # Preserve the baseline version history across regenerations. The old
+        # code read history from the fresh LLM output (always empty), so
+        # version_count never grew. Consumers (get_architecture_freshness,
+        # build_index) expect first/latest version entries here.
+        prev_history = []
+        if os.path.exists(context_path):
+            existing = load_json(context_path)
+            if isinstance(existing, dict):
+                prev_history = existing.get("architecture_history") or []
+        context["architecture_history"] = _build_architecture_history(
+            prev_history, commit_sha, context["generated_at"])
 
         save_json_atomic(context_path, context)
         print(f"Architecture context saved to {context_path}")
