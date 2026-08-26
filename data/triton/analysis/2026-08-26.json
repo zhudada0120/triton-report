@@ -1,0 +1,81 @@
+{
+  "date": "2026-08-26",
+  "repo": "triton-lang/triton",
+  "daily_summary": "当日 0 条 commit 均不涉及 triton-ascend。",
+  "ascend_impact_summary": "当日所有变更均为 tests / docs / CI / 平台特化代码，对 triton-ascend 无影响。",
+  "commits": [
+    {
+      "sha": "a8909ca037b61934d151062afb134ed259c01c08",
+      "comment": "（分析缺失）",
+      "tags": [
+        "chore"
+      ]
+    },
+    {
+      "sha": "c0901bf1cc481116a54df08bad5721ec60393965",
+      "comment": "（分析缺失）",
+      "tags": [
+        "chore"
+      ]
+    },
+    {
+      "sha": "f29a6d4dbe4fa910956dc4469fa67a420005c670",
+      "comment": "（分析缺失）",
+      "tags": [
+        "chore"
+      ]
+    },
+    {
+      "sha": "0bd37f36094f133555bbd6130be9868d9b688351",
+      "comment": "（分析缺失）",
+      "tags": [
+        "chore"
+      ]
+    },
+    {
+      "sha": "5a495ee2b8fbc06b3fe022e3351c9cc985f7d742",
+      "comment": "（分析缺失）",
+      "tags": [
+        "chore"
+      ]
+    },
+    {
+      "sha": "4313a23cc565aea332ea3876411733a1f1cba9e8",
+      "comment": "（分析缺失）",
+      "tags": [
+        "chore"
+      ]
+    },
+    {
+      "sha": "0c91a25bf19d2a5d07d33e556956f30850d5a966",
+      "comment": "（分析缺失）",
+      "tags": [
+        "chore"
+      ]
+    },
+    {
+      "sha": "f4c8fdb39c05f44c229e3b16d621483edb186dd9",
+      "comment": "（分析缺失）",
+      "tags": [
+        "chore"
+      ]
+    },
+    {
+      "sha": "dda532b66d3376593069d726f907a444b912e874",
+      "comment": "（分析缺失）",
+      "tags": [
+        "chore"
+      ]
+    },
+    {
+      "sha": "2419165d7985d57c9a12333f481a0c01afffd260",
+      "comment": "（分析缺失）",
+      "tags": [
+        "chore"
+      ]
+    }
+  ],
+  "generated_at": "2026-08-27T02:34:03.655217+08:00",
+  "architecture_based_on_sha": "0c91a25bf19d2a5d07d33e556956f30850d5a966",
+  "architecture_generated_at": "2026-08-26T17:52:42.145454+08:00"
+}

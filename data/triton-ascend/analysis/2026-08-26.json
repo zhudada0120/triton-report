@@ -1,0 +1,101 @@
+{
+  "date": "2026-08-26",
+  "repo": "triton-lang/triton-ascend",
+  "daily_summary": "当日 0 条 commit 均不涉及 triton-ascend。",
+  "commits": [
+    {
+      "sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+      "comment": "（分析缺失）",
+      "tags": [
+        "chore"
+      ]
+    },
+    {
+      "sha": "5add433d43330c37c2bf607e80921f827d2f24ae",
+      "comment": "（分析缺失）",
+      "tags": [
+        "chore"
+      ]
+    },
+    {
+      "sha": "b1187ec820e877099cea379fc8378233c37b8caf",
+      "comment": "（分析缺失）",
+      "tags": [
+        "chore"
+      ]
+    },
+    {
+      "sha": "39b5644c1188b99700cb91867c16f826ee971633",
+      "comment": "（分析缺失）",
+      "tags": [
+        "chore"
+      ]
+    },
+    {
+      "sha": "bb30d768fec05e1966a0ed671662c8370e64de3e",
+      "comment": "（分析缺失）",
+      "tags": [
+        "chore"
+      ]
+    },
+    {
+      "sha": "8ec15cb8e4a7bbdb73d4159553387e7ac841ddea",
+      "comment": "（分析缺失）",
+      "tags": [
+        "chore"
+      ]
+    },
+    {
+      "sha": "a7ce4f57dfe729afceb527aa21f4591a64530c24",
+      "comment": "（分析缺失）",
+      "tags": [
+        "chore"
+      ]
+    },
+    {
+      "sha": "01d4c9db893ecfde5078c01edfbace4f59430a22",
+      "comment": "（分析缺失）",
+      "tags": [
+        "chore"
+      ]
+    },
+    {
+      "sha": "2eee2238d57314d200b9fc99b8c795653b88ac7b",
+      "comment": "（分析缺失）",
+      "tags": [
+        "chore"
+      ]
+    },
+    {
+      "sha": "5f159e26bc31a7a51d369896dfd9003d15fb5792",
+      "comment": "（分析缺失）",
+      "tags": [
+        "chore"
+      ]
+    },
+    {
+      "sha": "1fc41dbbe1bf029da55e4582b2b1bcb704f47e84",
+      "comment": "（分析缺失）",
+      "tags": [
+        "chore"
+      ]
+    },
+    {
+      "sha": "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0",
+      "comment": "（分析缺失）",
+      "tags": [
+        "chore"
+      ]
+    },
+    {
+      "sha": "12560d811374b08412d66e4e55012576b186b1c0",
+      "comment": "（分析缺失）",
+      "tags": [
+        "chore"
+      ]
+    }
+  ],
+  "generated_at": "2026-08-27T02:34:04.419877+08:00",
+  "architecture_based_on_sha": "a4aecc3292d8bdf7ae80165f113a27ea1e89803a",
+  "architecture_generated_at": "2026-08-26T17:52:42.148804+08:00"
+}
