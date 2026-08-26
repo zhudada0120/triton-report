@@ -296,11 +296,11 @@ def build_context_section(context, data_dir=None, repo_short=None, deltas_up_to_
             rules = cpr["impact_judgment_rules"]
             parts.append("跨项目影响判断规则：")
             if rules.get("definitely_affected_paths"):
-                parts.append(f"  必然影响: {'; '.join(rules['definitely_affected_paths'])}")
+                parts.append(f"  必然影响: {'; '.join(_format_rule_items(rules['definitely_affected_paths']))}")
             if rules.get("potentially_affected_paths"):
-                parts.append(f"  可能影响: {'; '.join(rules['potentially_affected_paths'])}")
+                parts.append(f"  可能影响: {'; '.join(_format_rule_items(rules['potentially_affected_paths']))}")
             if rules.get("never_affected_paths"):
-                parts.append(f"  绝不影哬: {'; '.join(rules['never_affected_paths'])}")
+                parts.append(f"  绝不影哬: {'; '.join(_format_rule_items(rules['never_affected_paths']))}")
         if cpr.get("patch_impact_map"):
             patch_lines = [f"  {k} → {v}" for k, v in cpr["patch_impact_map"].items()]
             parts.append(f"Patch 影响映射：\n" + "\n".join(patch_lines))
@@ -404,6 +404,36 @@ def _is_auto_false_path(filename, not_used_set):
         if filename == prefix or filename.startswith(prefix.rstrip("/") + "/"):
             return True
     return False
+
+
+def _format_rule_items(items):
+    """Format impact_judgment_rules entries for prompt injection: "path（reason）"."""
+    lines = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        line = str(item.get("path", ""))
+        if item.get("reason"):
+            line += f"（{item['reason']}）"
+        if line:
+            lines.append(line)
+    return lines
+
+
+def _extract_definitely_affected_paths(rules):
+    """Return cleaned path patterns from impact_judgment_rules.
+
+    Rules are objects {path, reason} (schema-enforced); only path is used
+    for file matching. No positional/parity assumptions.
+    """
+    paths = set()
+    for item in rules.get("definitely_affected_paths") or []:
+        if not isinstance(item, dict):
+            continue
+        clean = str(item.get("path", "")).strip().rstrip("、，,")
+        if clean:
+            paths.add(clean)
+    return paths
 
 
 def triage_ascend(commit, not_used_set):
@@ -1051,15 +1081,7 @@ def analyze_commits(repo, date, data_dir, confirm, force, local_repo=None):
     if context and context.get("cross_project_relationship"):
         cpr = context["cross_project_relationship"]
         rules = cpr.get("impact_judgment_rules", {})
-        raw_paths = rules.get("definitely_affected_paths", [])
-        # The format is [path1, description1, path2, description2, ...]
-        # Take only the path elements (even indices)
-        for i, p in enumerate(raw_paths):
-            if i % 2 == 0:
-                # Clean up: remove any trailing 的 or Chinese punctuation
-                clean = p.strip().rstrip("、，,")
-                if clean:
-                    definitely_affected_paths.add(clean)
+        definitely_affected_paths = _extract_definitely_affected_paths(rules)
 
     for commit in merged_commits:
         commit_data = None

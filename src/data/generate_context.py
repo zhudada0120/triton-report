@@ -289,6 +289,19 @@ def _build_cross_ref_schema():
     """Build JSON Schema for cross-reference output."""
     return {
         "type": "object",
+        "$defs": {
+            "impact_rule_list": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["path"],
+                },
+            },
+        },
         "properties": {
             "triton_to_ascend_map": {
                 "type": "object",
@@ -301,9 +314,9 @@ def _build_cross_ref_schema():
             "impact_judgment_rules": {
                 "type": "object",
                 "properties": {
-                    "definitely_affected_paths": {"type": "array", "items": {"type": "string"}},
-                    "potentially_affected_paths": {"type": "array", "items": {"type": "string"}},
-                    "never_affected_paths": {"type": "array", "items": {"type": "string"}},
+                    "definitely_affected_paths": {"$ref": "#/$defs/impact_rule_list"},
+                    "potentially_affected_paths": {"$ref": "#/$defs/impact_rule_list"},
+                    "never_affected_paths": {"$ref": "#/$defs/impact_rule_list"},
                 },
                 "required": ["definitely_affected_paths", "potentially_affected_paths", "never_affected_paths"],
             },
@@ -435,6 +448,7 @@ CROSS_REFERENCE_PROMPT = """你是一个资深代码架构分析师。以下是�
    - 哪些 triton 文件/路径的变更 **必然** 影响 triton-ascend（如 python/triton/backends/ 接口签名变更、IR op 定义变更）
    - 哪些 triton 文件/路径的变更 **可能** 影响 triton-ascend（如编译流水线、language frontend 的行为变更）
    - 哪些 triton 文件/路径的变更 **绝不** 影响 triton-ascend（如 third_party/nvidia、third_party/amd 等纯平台特定代码）
+   - **每条规则必须是对象 {{"path": "<路径模式>", "reason": "<说明>"}}**，path 本身必须是可做文件名前缀匹配的纯路径/路径模式（可带 ::ClassName 后缀，但不要与说明文字混在一起）；reason 是给人看的解释。不要把路径和说明交替平铺成字符串数组。
 4. **Patch 影响面**：triton-ascend 通过 third_party/ascend/patch/*.patch 修改了 triton 的哪些模块，这些模块的变更如何影响 ascend。只考虑 main 分支构建实际应用的 release patch（triton-ascend-<版本>.patch）；llvm_patch_*.patch 修改的是 LLVM 依赖，triton-ascend-dev-*.patch 只在 dev 构建（main-dev 分支）应用，都不要纳入
 
 ## 输出格式
@@ -449,16 +463,13 @@ CROSS_REFERENCE_PROMPT = """你是一个资深代码架构分析师。以下是�
   ],
   "impact_judgment_rules": {{
     "definitely_affected_paths": [
-      "<triton 文件/路径模式>",
-      "<说明：为什么必然影响>"
+      {{"path": "<triton 文件/路径模式>", "reason": "<说明：为什么必然影响>"}}
     ],
     "potentially_affected_paths": [
-      "<triton 文件/路径模式>",
-      "<说明：什么条件下会影响>"
+      {{"path": "<triton 文件/路径模式>", "reason": "<说明：什么条件下会影响>"}}
     ],
     "never_affected_paths": [
-      "<triton 文件/路径模式>",
-      "<说明：为什么不影响>"
+      {{"path": "<triton 文件/路径模式>", "reason": "<说明：为什么不影响>"}}
     ]
   }},
   "patch_impact_map": {{
@@ -823,6 +834,36 @@ def generate_context(repo, data_dir, force, local_repo=None, checkout_sha=None):
             _restore_head(local_repo, orig_head)
 
 
+def _validate_cross_ref(cross_ref):
+    """Check the cross-reference output against the consumers' contract.
+
+    The consumer (analyze_commits._extract_definitely_affected_paths) reads
+    impact_judgment_rules entries as {path, reason} objects. Fail loudly on
+    any deviation instead of saving a file that silently breaks matching.
+    """
+    problems = []
+    if not isinstance(cross_ref, dict):
+        return ["cross-reference output is not an object (truncated or unparsed JSON?)"]
+    for key in ("triton_to_ascend_map", "ascend_only_components",
+                "impact_judgment_rules", "patch_impact_map"):
+        if key not in cross_ref:
+            problems.append(f"missing top-level key: {key}")
+    rules = cross_ref.get("impact_judgment_rules")
+    if isinstance(rules, dict):
+        for sub in ("definitely_affected_paths", "potentially_affected_paths",
+                    "never_affected_paths"):
+            items = rules.get(sub)
+            if not isinstance(items, list):
+                problems.append(f"impact_judgment_rules.{sub} is not a list")
+                continue
+            bad = sum(1 for x in items if not isinstance(x, dict) or not x.get("path"))
+            if bad:
+                problems.append(
+                    f"impact_judgment_rules.{sub}: {bad}/{len(items)} entries are "
+                    "not objects with a path field")
+    return problems
+
+
 def generate_cross_reference(data_dir, force, triton_local=None, ascend_local=None):
     """Phase 2: Cross-reference triton and triton-ascend architectures.
 
@@ -892,6 +933,35 @@ def generate_cross_reference(data_dir, force, triton_local=None, ascend_local=No
     if cross_ref is None:
         print("Failed to get cross-reference from opencode")
         return False
+
+    problems = _validate_cross_ref(cross_ref)
+    if problems:
+        print("  [validate] cross-reference output does not match the expected schema:")
+        for p in problems:
+            print(f"    - {p}")
+        print("  Retrying once with corrective instructions...")
+        retry_prompt = (
+            f"你上一次输出的 cross-reference JSON 不符合要求。存在的问题：\n"
+            + "\n".join(f"- {p}" for p in problems)
+            + "\n\n请重新输出完整的跨项目关系 JSON。impact_judgment_rules 的三类路径"
+            "必须是对象数组 [{{\"path\": \"<路径模式>\", \"reason\": \"<说明>\"}}]，"
+            "不要平铺成交替的字符串数组。"
+        )
+        cross_ref = call_opencode(
+            prompt=retry_prompt,
+            json_schema=cross_ref_schema,
+            add_dirs=[d for d in [triton_local, ascend_local] if d],
+        )
+        if cross_ref is None:
+            print("Failed to get retry response from opencode")
+            return False
+        problems = _validate_cross_ref(cross_ref)
+        if problems:
+            print("  [validate] Retry output still does not match schema:")
+            for p in problems:
+                print(f"    - {p}")
+            print("  Aborting: fix the prompt and re-run.")
+            return False
 
     # Write cross_project_relationship into both architecture files
     for ctx, path in [(triton_ctx, triton_path), (ascend_ctx, ascend_path)]:
