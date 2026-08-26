@@ -1,0 +1,234 @@
+{
+  "date": "2026-08-25",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-08-26T13:02:52.680265+08:00",
+  "daily_summary": "当日变更聚焦于编译器核心与前端优化：1) 内存屏障 (Membar) 分析的共享内存别名推断增强（物理足迹恢复、迭代边界处理、AMD 流水线依赖修复），涉及 BufferIndexAnalysis/Membar/ConvertWarpPipeline 等核心分析；2) 前端多个 BC 兼容性修复（softmax keep_dims 恢复、fp8 常量折叠回退、keyword-only 参数支持）；3) NVIDIA Blackwell/AMD 后端针对性优化（K96 FP4 MMA、async load 屏障省略、FP4 → strided layout 直接转换、masked load 回退恢复）；4) LLVM 版本升级至 ce3529423abd（引入 shortptr ABI）。",
+  "ascend_impact_summary": "虽然多数变更涉及 NVIDIA/AMD 专属代码，但两个高影响 commit：eaa06d8（Membar 分析重构）修改了 BufferIndexAnalysis 与 Membar 核心分析框架，影响了 shared-memory 访问分离证明的语义；8ce2ac1（keyword-only 参数支持）修改了 CodeGenerator 和 JITFunction 的签名处理与调用约定，直接影响 Ascend 的 monkey-patch 和参数绑定路径。这两个必须同步适配。",
+  "commits": [
+    {
+      "sha": "eaa06d8bfc4ebe887791648bbe3fa3543289678f",
+      "comment": "这是内存屏障（Membar）分析的一次重大重构，混合了多个 bug 修复和优化：1) 引入物理足迹（physical footprint）概念，用 BufferRegion 分析结果计算每个访问的完整地址集合，允许跨迭代边界证明不相交性；2) 修复了索引比较仅在相同源描述符下才有效的逻辑（不同源可以定位到相同的物理槽位）；3) 修复子切片比较需要共同直接源的问题（偏移 0 和 128 可以映射到相同的物理区域）；4) 在循环 backedges 和函数边界清除迭代相关的事实（同一 SSA 值可表示不同迭代的值）；5) 对 AMD warp pipeline 依赖分析做了包装修复，仅在非包装对上保留相对证明；6) 将 SubSliceOffsets 从 vector 改为 ArrayRef，并新增 subsliceSource 字段。此重构改变了 AllocationSlice 的相等性和排序语义，并为 MembarAnalysis 添加了 SharedMemoryFootprints 依赖。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "performance",
+        "medium-risk",
+        "compiler",
+        "membar",
+        "shared-memory"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "修改了 include/triton/Analysis/BufferIndexAnalysis.h 中 AllocationSlice 的 asTuple() 成员函数签名（新增 subsliceSource 和 physicalFootprint 字段），以及移除 invalidateBufferIndices 方法，新增 BlockInfo::invalidateIterationInfo 和 MembarAnalysis 构造函数新参数（SharedMemoryFootprints）。若 Ascend 后端有自定义代码直接构造 AllocationSlice 或调用 BufferIndexAnalysis::invalidateBufferIndices，将编译失败。此外，MembarAnalysis 构造函数签名变更（新增 physicalFootprints 参数）会影响任何直接实例化 MembarAnalysis 的代码。Membar 分析逻辑变化可能影响 Ascend 流水线中屏障生成（若有相关 pass）。",
+        "testing": "上游新增/修改了大量 membar 相关的 lit 测试（test-membar.mlir、test-membar-ttng.mlir、amd-convert-warp-pipeline.mlir）。Ascend 若有基于 Membar 分析的自定义测试需同步检查，但无需新增测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Membar] Fix shared alias reasoning and recover physical footprints (#11431)\n\nWe mix a few bugfixes and optimisations to avoid regressing due to\nthe bug fixes in real workloads. This PR does not materially change\nthe barriers emitted in most kernels.\n\nThere will be a follow up where we use BufferIndex and BufferRegion\nto actually materially improve the intersection analysis.\n\n[BUGFIX] Compare indices only within the same source\n--------------------------------------------------\nDifferent indices can alias after shifting or reinterpreting the source:\n\n    slots = gl.allocate_shared_memory(gl.int32, [4, 128], ...)\n    slots.index(1).store(x128)\n    y = slots.slice(1, 2).index(0).load(R)  # Same slot.\n\n    wide = slots.reinterpret(shape=[2, 256])\n    slots.index(2).store(x128)  # [256, 384)\n    y = wide.index(1).load(R)   # [256, 512)\n\nRequire the same indexed descriptor, not just a common allocation root,\nbefore using index differences to prove disjointness.\n\n[BUGFIX] Compare subslices in common coordinates\n----------------------------------------------\nDifferent local offsets can identify the same physical region:\n\n    a = slots.slice(1, 2).index(0).slice(0, 64)\n    b = slots.reinterpret(shape=[2, 256]).index(0).slice(128, 64)\n    a.store(x64)\n    y = b.load(R)\n\nBoth cover [128, 192), despite final offsets of 0 and 128. Require a\ncommon\nimmediate source; matching encodings and allocation IDs are\ninsufficient.\n\n[OPTIM] Allow subslice proofs for nested views\n--------------------------------------------\nIn a non-inlined helper with a 512-element shared allocation:\n\n    if choose:\n        middle = arena.slice(0, 256)\n    else:\n        middle = arena.slice(256, 256)\n    middle.slice(0, 128).store(x128)\n    y = middle.slice(128, 128).load(R)\n\nThe halves are disjoint even though middle does not cover its\nallocation.\n\n[BUGFIX] Expire iteration-relative source and index facts\n-------------------------------------------------------\nDifferent slots within one iteration can overlap across iterations:\n\n    for i in range(n_iters):\n        total += slots.index(i % 2).load(R)\n        slots.index((i + 1) % 2).store(x128)\n\nIteration i writes the slot read by i+1. Clear index/source facts at\nloop\nbackedges and function boundaries, including structured, nested and\nirreducible CFGs. Complete physical footprints remain valid within their\nallocation frame.\n\n[BUGFIX] Invalidate wrapping AMD pipeline dependencies\n----------------------------------------------------\nReuse BlockInfo's invalidation for dependencies crossing the loop tail:\n\n    pages = arena.reinterpret(shape=[8, 64])\n    first = pages.slice(0, 4).reinterpret(shape=[256])\n    shifted = pages.slice(1, 4).reinterpret(shape=[256])\n    source = first\n    for i in range(n_iters):\n        with gl.amd.warp_pipeline_stage(\"read\"):\n            last = source.slice(0, 128).load(W)\n        with gl.amd.warp_pipeline_stage(\"advance\"):\n            next_source = shifted if i == 0 else first\n        with gl.amd.warp_pipeline_stage(\"write\"):\n            source.slice(128, 128).store(x128)\n            source = next_source\n\nThe first write [128, 256) overlaps the next read [64, 192). Keep the\nloop-tail barrier, including self-dependencies across iterations, while\nretaining relative proofs for nonwrapping pairs.\n\n[OPTIM] Refine aliases using complete physical footprints\n--------------------------------------------------------\nDifferent parents can select disjoint or overlapping sets of slots:\n\n    stage = i % 2\n    low = slots.slice(0, 2).index(stage)\n    high = slots.slice(HIGH_BASE, 2).index(1 - stage)\n    low.store(x128)\n    y = high.load(R)\n\nHIGH_BASE=2 gives disjoint unions {0,1} and {2,3}: no barrier is needed,\neven across iterations. HIGH_BASE=1 overlaps at slot one when stage=1.\nCache BufferRegion's complete address union per descriptor in single-CTA\nkernel frames; unknown or untranslated origins retain the coarse\nfallback.\n\nBufferRegion also accounts for padding and partition bases:\n\n    piece = gl.PaddedSharedLayout.with_identity_for(\n        [[16, 4]], [4, 16], [1, 0])\n    layout = PartitionedSharedLayout(2, 1, 0, piece)\n    buf = gl.allocate_shared_memory(gl.float16, [8, 16], layout)\n    left, right = buf.slice(0, 4), buf.slice(4, 4)\n\nThese views remain physically disjoint when forwarding hides their\ndirect\nsubslice relationship, which the containing allocation interval cannot\nprove.\n\n[NFC] Reuse canonical indices and immutable slice metadata\n--------------------------------------------------------\nInterning already normalizes modular offsets:\n\n    a = slots.index((i + 1) % 4)\n    b = slots.index((i + 5) % 4)  # Same canonical offset as a.\n    c = slots.index((i + 2) % 4)  # Different slot in this iteration.\n\nCompare those offsets directly and borrow immutable offset/shape arrays\ninstead of copying them.",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "b7f349dc657cb58419a740fd960afb45776d38c4",
+      "comment": "修复 fp8 常量折叠回退问题。#11426 将 scalar_constant 的 lowering 改为统一使用 cast 逻辑（tt.fp_to_fp），但该 op 只对零值有常量折叠，导致其他值的常量折叠丢失。此修复合计将 `tt.fp_to_fp` 仅用于 `fp8e4b15`（因为它在 IR 中表示为整数类型，fp_trunc 不适用），其余 fp8 类型恢复使用 `arith.truncf`（通过 `create_fp_trunc`），以保持常量折叠能力。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "frontend",
+        "fp8",
+        "constant-folding"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "该 commit 仅修改了 python/triton/language/semantic.py 中 TritonSemantic 的 scalar_constant 实现，将 fp8 常量的降级路径从统一的 `cast` 改为对 fp8e4b15 使用 cast、对其他 fp8 使用 fp_trunc。Ascend 未对 `scalar_constant` 进行 monkey-patch，且此变更不影响 `dot` 或其他 Ascend 关注的路径。",
+        "testing": "无影响",
+        "needs_test_update": false
+      },
+      "message": "[Frontend] Restore arith.truncf for most fp8 constants (#11441)\n\nIn #11426 I changed the scalar_constant lowering to use the same logic\nas `cast`, which for fp8 dtypes lowers to `tt.fp_to_fp`. Apparently this\nop only has constant folding for zero, so we lost constant folding for\nother values.\n\nTo fix, I make the change more limited and only use cast for `fp8e4b15`\nwhich was otherwise problematic because it is represented in IR as an\ninteger type so fp_trunc doesn't work."
+    },
+    {
+      "sha": "a2d75c0e4d7d81f5085053a76d9b971fc6e706e7",
+      "comment": "NVIDIA SM103（Blackwell Ultra）上的 FP4 MMA K96 subtile 优化。在 SM103 上启用 K96 tcgen05 MMA，通过将 K 维度切成 96/64 的混合 tile 而非统一的 64，减少了 MMA 指令数量，从而提升 6-15% 性能。涉及的主要变更包括：1) 在 TargetFeatures 中添加 `supportsK96Tcgen05MMA()`；2) 修改 MMAv5.cpp 的 convertScaledDot 以生成 K96 的 kOffsets 序列；3) SMEMDescriptor 中新增 `leadDimensionAbsoluteMode` 位，支持跨 sector 的 K96 寻址；4) 调整 scale 指令描述符以处理 K96 的字节偏移语义；5) 新增大规模 pytest 覆盖。",
+      "tags": [
+        "performance",
+        "feature",
+        "medium-risk",
+        "nvidia",
+        "mma",
+        "blackwell",
+        "fp4"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "变更聚焦于 NVIDIA SM103 的 tcgen05 MMA 指令（K96 subtile 逻辑），涉及 third_party/nvidia 下的 MMAv5.cpp、MMAHelpers.h 以及 TritonNvidiaGPU 方言的 TargetFeatures。Ascend 不使用 tcgen05/tmem 相关路径，无影响。",
+        "testing": "无影响",
+        "needs_test_update": false
+      },
+      "message": "[NVIDIA] Subtile packed FP4 MMA to K96 on SM103 (#11438)\n\n<img width=\"1600\" height=\"985\" alt=\"image\"\nsrc=\"https://github.com/user-attachments/assets/aac8242b-a26a-4238-8948-c6aac5fcf677\"\n/>\n\nfree 6-15% win on fp4 x fp4 kernels"
+    },
+    {
+      "sha": "78e68216cb64fbb2d683b5ff6905cf81ef7eb3ac",
+      "comment": "恢复 `tl.softmax` 和 `tensor.softmax` 的 `keep_dims` 参数，以保持向后兼容性。#11409 移除了该参数，导致用户按关键字传递时崩溃。此变更将其恢复为仅限关键字的参数（默认 None），非 None 时发出弃用警告并被忽略，内部归约仍使用 keep_dims=True（保留 #11409 的归一化修复）。新增回归测试覆盖关键字调用、张量方法、警告/无警告行为，以及拒绝位置参数。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "frontend",
+        "backward-compatibility",
+        "softmax"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "该 commit 仅修改了 `tl.softmax` API 的签名（新增 keep_dims 参数），不涉及 Ascend 关注的接口面（BaseBackend/DriverBase/CodeGenerator/JITFunction/semantic.dot），且 Ascend 未对 softmax 做特殊处理。",
+        "testing": "无影响",
+        "needs_test_update": false
+      },
+      "message": "[FRONTEND] Restore tl.softmax keep_dims argument for BC (#11430)\n\n## Summary\n\n#11409 removed `keep_dims`, breaking callers that pass it by keyword.\n\nRestore `keep_dims=None` as a keyword-only argument for `tl.softmax` and\n`tensor.softmax`, and document its deprecation. Non-`None` values emit a\ndeprecation warning and are ignored; the internal reductions still use\n`keep_dims=True`, preserving the normalization fix. `ieee_rounding`\nremains keyword-only, as introduced by #11418.\n\nAdd regression coverage for keyword calls, tensor methods,\nwarning/no-warning behavior, and rejection of positional `keep_dims`.\n\n## Validation\n\n- GB300: rebuilt Triton with `make`; all 11 focused cases passed\n(`test_softmax`, `test_softmax_keep_dims_deprecated`, and\n`test_softmax_rejects_positional_keep_dims`).\n- Interpreter: the same 11 cases passed with `TRITON_INTERPRET=1\n--device=cpu`.\n- Pre-commit hooks passed, including Ruff, YAPF, and mypy."
+    },
+    {
+      "sha": "8ce2ac12d21648f0f787ecc7576a26c4b34be3cd",
+      "comment": "前端新增对 keyword-only 参数的支持，并让 softmax 的 ieee_rounding 变为仅关键字参数。#11409 移除了 keep_dims，但若用户按位置传递 ieee_rounding 会出现问题。此变更重构了 CodeGenerator 的参数解析（支持 kwonlyargs 按顺序加入参数列表），修改了 `create_function_from_signature` 以保留关键字专用分隔符，使 JIT function 能够正确处理 keyword-only 参数。还禁止了 **kwargs（JIT functions do not support **kwargs），并让 DependenciesFinder 正确识别 keyword-only 参数（在函数体中被视为局部变量以遮蔽全局变量）。",
+      "tags": [
+        "feature",
+        "bugfix",
+        "medium-risk",
+        "frontend",
+        "jit",
+        "code-generator"
+      ],
+      "ascend_impact": {
+        "ascend_affected": true,
+        "functionality": "1) 修改了 CodeGenerator 的 `visit_FunctionDef` 和 `visit_arguments`：`visit_arguments` 返回类型从 `(arg_names, kwarg_names)` 变为仅 `arg_names`，新增 keyword-only 参数。Ascend 的 `_patched_cg_init` monkey-patch 虽然不依赖返回值，但任何基于 `visit_arguments` 返回值的自定义分析可能受影响。2) 修改了 JITFunction.__init__，新增对 **kwargs 的显式检查（raise TypeError），并调整了参数初始化顺序（在注册 _triton_jit_function_registry 之前构建 params）。若 Ascend 的扩展 JITFunction（如 Gluon）覆盖了 `create_function_from_signature` 或参数解析逻辑，需同步适配新的签名生成方式（支持 keyword-only）。",
+        "testing": "无直接影响；Ascend 若有依赖旧参数解析逻辑的测试（如调用含关键字参数的 Triton 函数）需更新。",
+        "needs_test_update": false
+      },
+      "message": "[BC Breaking][FRONTEND] Support keyword-only args in triton (#11418)\n\nAdd keyword-only argument support to the frontend and interpreter, and\nmake `softmax`'s `ieee_rounding` keyword-only.\n\nThis preserves the `keep_dims` removal from #11409 while rejecting old\npositional calls instead of silently changing their meaning.",
+      "deep_analysis": {
+        "ascend_affected_confirmed": true,
+        "affected_interfaces": [
+          "python/triton/runtime/jit.py::create_function_from_signature (triton-ascend 通过 third_party/ascend/patch/triton-ascend-3.6.0.patch 在构建期对该函数打整体式补丁，加入 alignment_specialization / use_alignment_specialization 特性)"
+        ],
+        "adaptation_effort": "medium",
+        "adaptation_guide": "本提交将 create_function_from_signature 中生成 dynamic_func 参数列表的逻辑从 `def arg(name_param)`(含 VAR_POSITIONAL 处理) 改写为 `arg_list`/`has_star` 循环，并在 KEYWORD_ONLY 参数前插入 `*` 分隔符，同时把 `def dynamic_func({list(map(arg, ...))})` 改为 `def dynamic_func({arg_list ...})`。triton-ascend 的 third_party/ascend/patch/triton-ascend-3.6.0.patch 恰好在此同一函数、同一区域有改动：它把 `arg = lambda x: ...` 作为上下文行、在其后追加 `alignment_specialization_init`，并改写 `params = {...}` 行为 `{alignment_specialization_init}    params = {...}`，且其 `dynamic_func` 上下文行仍是旧的 `list(map(arg, ...))`。二者直接重叠：a) `# compute argument string for a given parameter` 与 `arg`/`arg_list` 计算块；b) `def dynamic_func(...)` 签名行。因此 triton-ascend 需要：(1) 在 rebase 到含本提交的 triton 后，重新生成 triton-ascend-3.6.0.patch 中 `@@ -423,8 +436,11 @@` 这个 hunk，使 `git apply`(setup_ascend.py 的 _apply_triton_ascend_patch) 能干净应用；(2) 合并后必须保留上游新的 arg_list/has_star 循环以正确输出 keyword-only 的 `*` 分隔符(旧 `arg = lambda` 不会输出 `*`，会使 Ascend 上 keyword-only kernel 的 binder 失效)，同时把 Ascend 的 alignment_specialization_init 注入逻辑原样叠加在 `params` 行；(3) 对上游其它 jit.py 改动(DependenciesFinder.visit_FunctionDef 的 kwonlyargs shadow 处理、JITFunction.__init__ 的 VAR_KEYWORD 检查与 registry 注册位置移动)无需改动，Ascend 直接复用。此外 softmax 的 ieee_rounding 改为 keyword-only(以及 #11409 已移除 keep_dims) 是纯用户侧 BC break，Ascend 后端未覆写 tl.softmax，无需适配。验证方式：rebuild 后运行 third_party/ascend/unittest/pytest_ut/test_specialization_cache_unit.py(它直接 import create_function_from_signature/compute_cache_key)并跑一个含 keyword-only constexpr 参数的 Ascend kernel 确认 binder 正确。",
+        "risk": "中。风险主要集中在整体式 .patch 文件的 rebase：若只合并上游代码而不同步更新 patch，setup_ascend.py 构建期 `git apply` 会因上下文不匹配直接失败(构建阻断)；若机械保留旧的 `arg = lambda` 逻辑，则 keyword-only 参数在 Ascend 的 dynamic_func 签名中不会生成 `*` 分隔符，导致 keyword-only kernel 绑定/缓存 key 出错(表现为 TypeError 或错误 specialization)。运行时 monkey-patch(_patched_cg_init/_patched_parse/_patched_dot)与本提交无关，不受影响。softmax 的 ieee_rounding keyword-only 变更会破坏使用位置参数调用 tl.softmax(x, dim, True) 的用户代码，但这是通用前端行为，对 Ascend 后端接口无影响。"
+      }
+    },
+    {
+      "sha": "b5505fe8e30d06861c91203ffe6f9e5d5ffa55b0",
+      "comment": "LLVM 版本升级到 ce3529423abd。关键生产变更：1) 将 optional-pass 回调从 `Any` 迁移到 `IRUnitRef`；2) 采用新 NVPTX `shortptr` ABI（通过 `attach_datalayout` 和 `translate_to_asm` 传入 abi='shortptr'），取代移除的 `set_short_ptr` 命令行选项；3) 更新 llvm-info.json 的 hash 和所有 8 个平台的校验和；4) 刷新了大量受 LLVM 上游改动影响的 NVVM/ROCDL 汇编测试格式。",
+      "tags": [
+        "chore",
+        "build",
+        "high-risk",
+        "llvm-update",
+        "dependencies"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "该 commit 更新了 LLVM 版本并修改了 Python 绑定（python/src/llvm.cc），新增 attach_datalayout/translate_to_asm 的 abi 参数。Ascend 若复用这些绑定传递空字符串 abi 参数则不受影响，但若 Ascend 有自定义 llvm.cc 修改（如调用 attach_datalayout）需适配新签名（添加末尾 abi 参数）。",
+        "testing": "无直接影响。",
+        "needs_test_update": false
+      },
+      "message": "[LLVM] Update to llvm/llvm-project@ce3529423abd (#11421)\n\nPR description written by Codex\n\nUpdate LLVM to ce3529423abd, including the fix for costly MLIR symbol\nverification, using the persistent build from #11412. Production changes\nmigrate the optional-pass callback from `Any` to `IRUnitRef` and select\nthe new NVPTX `shortptr` ABI for data layout and code generation,\nreplacing the removed command-line option. Other changes update the\ndependency pin and all eight archive checksums, refresh ROCDL/NVVM\nassembly tests, and check that shared/local pointers remain 32-bit.\n\nOn macOS arm64, `make` succeeds, `make test-lit` passes all 295\nsupported tests (2 unsupported), and `make test-cpp` passes all 277\ntests. The Gluon and Triton frontend suites pass 482 and 83 tests\nrespectively (184 Gluon cases skipped). After the ABI change, the HIP\nFP8 compile-only test passes for gfx950/gfx942, and a shared-memory\nreduction compiled through PTX for sm80/sm90/sm100 preserves 32-bit\nshared/local pointers; CUDA assembly and execution are covered by CI."
+    },
+    {
+      "sha": "9151221f5265433a1f5467a59fbed4d4eaf6063f",
+      "comment": "修复负零常量丢失的问题。由于 IEEE 语义中 `-0.0 == 0.0`，原代码将 `value == 0` 误判为所有零值，导致负零被丢弃。此变更将整数零的 BC 特例缩小为仅当 dtype 是整数时，并让 fp8 和非 fp8 浮点类型都生成正确的负零常量。还给解释器补充了 bf16 `get_bf16` 方法和浮点转 FNUZ 格式（fp8e4b8/fp8e5b16）时清零符号位（FNUZ 只有无符号零）的逻辑。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "frontend",
+        "constant-folding",
+        "interpreter"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "未影响 Ascend 后端。此 commit 仅修改 TritonSemantic.scalar_constant 和解释器层（interpreter.py），不影响 BaseBackend/DriverBase 等核心接口，且 Ascend 不依赖标量常量降级和 fp8 符号位处理逻辑（Ascend 使用 hf32 而非 fp8 路径）。",
+        "testing": "无影响",
+        "needs_test_update": false
+      },
+      "message": "[Frontend] Fix negative zero constants (#11426)\n\nSince in IEEE semantics `-0.0 == 0.0`, this special case drops all\nnegative zero values."
+    },
+    {
+      "sha": "ce40aeee6058c9d66bc5b80feb13bc3188ecc48a",
+      "comment": "在类型验证阶段强制要求 shared-memory 描述符的元素位宽为 8 的倍数。移除了 LocalAllocOp 和 Utility.cpp 中的冗余检查，集中到 MemDescType::verify。这个变更加强了类型系统的约束，确保所有 shared-memory 描述符都可以按字节寻址。同时更新了 AGENTS.md 文档，描述 block programming model 和 descriptor memory effects。MMAv5.cpp 简化了 storageBits 逻辑（因为现在共享内存元素位宽必为 8 的倍数）。",
+      "tags": [
+        "refactor",
+        "medium-risk",
+        "compiler",
+        "type-system",
+        "shared-memory"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "变更涉及 TritonGPU 方言的 MemDescType 验证和 AMD/NVIDIA 后端的 lowering 检查移除。Ascend 后端不使用 TritonGPU 的 MemDescType 验证，但若 Ascend 的 C++ pass 中有调用 `getIntOrFloatOrPtrBitWidth` 且未考虑 8 位倍数要求的代码，将不再有上游检查兜底。",
+        "testing": "无直接影响。Ascend 现有测试若构造非 8 位倍数的 shared-memory 类型将被上游拒绝。",
+        "needs_test_update": false
+      },
+      "message": "[TritonGPU] Require byte-addressable shared-memory descriptors (#11422)\n\nRequire shared-memory descriptor element widths to be multiples of eight\nat type verification. Remove redundant allocation and\ndescriptor-lowering checks while preserving boolean scratch conversions.\n\nDocument the block programming model and descriptor memory effects in\nAGENTS.md."
+    },
+    {
+      "sha": "cd925d1d15b2a2f02e0a1a2f2018a9726c0c4612",
+      "comment": "将 Hopper 和 Blackwell 的 FP4 值从各自的布局直接转换为 StridedLayout(-1) 或 StridedLayout(-2)，消除完整的 canonical 中间表示。Hopper 融合了解码、逆 tile 置换和 nibble 重打包；Blackwell 复用现有 repacker 并扩展 shuffling converter 以写入任一打包轴。非测试代码主要为 triton_kernels 库（convert_layout、empty 及布局变换类），与编译器核心无关。",
+      "tags": [
+        "performance",
+        "feature",
+        "medium-risk",
+        "triton_kernels",
+        "fp4",
+        "layout-conversion"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "变更仅限 python/triton_kernels 库（cpu/GPU 端 FP4 布局转换 kernel），不涉及 Triton 编译器核心。Ascend 不使用 triton_kernels 中的 Hopper/Blackwell 布局逻辑。",
+        "testing": "无影响",
+        "needs_test_update": false
+      },
+      "message": "[KERNELS] Convert Hopper and Blackwell FP4 directly to strided layouts (#11387)\n\n## Summary\n\nFollow-up to [Reduce MXFP4 layout conversion\nallocations](https://github.com/triton-lang/triton/pull/11360).\n\nWrite CUDA FP4 values directly from Hopper or Blackwell storage into the\nrequested `StridedLayout(-1)` or `StridedLayout(-2)` output, eliminating\nthe full-sized canonical intermediate.\n\n- Hopper: fuse decoding, inverse tile permutation, and nibble repacking.\n- Blackwell: reuse the existing repacker for the default layout and\nextend the existing shuffled converter to write either packing axis.\n\nBoth use the same layout-level dispatch and destination shape/stride\nmetadata. The public API and forward conversion behavior are unchanged.\nOther conversions retain the canonical fallback; empty public\nconversions preserve output metadata and skip only the kernel launch.\n\n## Performance\n\nSynthetic logical shape `[16, 4096, 4096]`, 128 MiB packed input; four\nbalanced rounds of 25 synchronized warm public `convert_layout` calls.\nBoth platforms use a compiler built from [the main\nrevision](https://github.com/triton-lang/triton/commit/d3554fba526442d878c2eae2bb57cfc3c59eacf6).\nInputs and expected outputs come from the respective baseline's CPU\nconversion.\n\n| GPU / source layout | Destination | Time before → after | Speedup |\n| --- | --- | ---: | ---: |\n| H100 / Hopper `(-2, 3)` | `StridedLayout(-1)` | 3.228 → 0.161 ms |\n20.1× |\n| H100 / Hopper `(-2, 3)` | `StridedLayout(-2)` | 5.648 → 0.147 ms |\n38.4× |\n| GB300 / Blackwell default | `StridedLayout(-1)` | 1.571 → 1.534 ms |\n1.02× |\n| GB300 / Blackwell default | `StridedLayout(-2)` | 2.986 → 0.079 ms |\n37.8× |\n| GB300 / Blackwell shuffled | `StridedLayout(-1)` | 0.142 → 0.096 ms |\n1.49× |\n| GB300 / Blackwell shuffled | `StridedLayout(-2)` | 1.577 → 0.083 ms |\n18.9× |\n\n[Hopper measurement\nrevisions](https://github.com/triton-lang/triton/compare/d3554fba526442d878c2eae2bb57cfc3c59eacf6...d553740e13a721271574f7517fac6ec4d0f6d637);\n[Blackwell measurement\nrevisions](https://github.com/triton-lang/triton/compare/d553740e13a721271574f7517fac6ec4d0f6d637...4924ec8fd4329468cee1ef5766883dc5c2c141c7).\nSubsequent stride-argument cleanup leaves Hopper's kernel arithmetic\nunchanged.\n\nEvery row reduces incremental peak allocation from **256 to 128 MiB**,\nincluding the output and excluding the resident input. With **192 MiB\nadditional allocator headroom**, each baseline OOMs and each optimized\nconversion succeeds in all four rounds. The main benefit for default\nBlackwell → row-major is memory, with nearly unchanged latency. Timings\nexclude first-use JIT compilation and do not measure matmul performance.\n\n## Validation (benchmarked revisions)\n\n- GB300: **897 passed, 8 existing skips** across the tensor/layout\nsuites; **202 focused Blackwell cases pass CUDA memcheck with zero\nerrors**.\n- Exact bytes, shapes, strides, padding, stepped inputs, CPU/meta and\ndtype fallbacks, zero-sized dimensions, and two-GPU/nondefault-stream\nbehavior are covered. All eight new Blackwell allocation regressions\nfail on the previous head and pass here.\n- All eight large Blackwell cases match independent CPU fixtures and\nallocate exactly their **2.5 GiB output**, including stepped source\noffsets beyond 32 bits.\n- Retained H100 validation: **759 passed, 8 existing skips**, 234\nCUDA-memcheck cases with zero errors, and equivalent\nlarge-output/allocation checks.\n\n## Diff size\n\n| Files | Added | Removed | Net |\n| --- | ---: | ---: | ---: |\n| Tests | +175 | -11 | +164 |\n| Non-tests | +181 | -72 | +109 |\n| All | +356 | -83 | +273 |\n\n## Reviewer's guide\n\n- [Tensor and layout\nimplementations](https://github.com/triton-lang/triton/tree/16740221f0bb4591cfd56fc38df3b3c296dcc116/python/triton_kernels/triton_kernels):\nshared direct-conversion dispatch and strided metadata, the fused Hopper\ninverse kernel, and destination-backed Blackwell conversion using\nexisting repacking/tile logic.\n- [Kernel\ntests](https://github.com/triton-lang/triton/tree/16740221f0bb4591cfd56fc38df3b3c296dcc116/python/triton_kernels/tests):\nexact-byte/stride and empty-shape matrices, preserved fallbacks, shared\none-output allocation bounds, and device/stream handling."
+    },
+    {
+      "sha": "931cf5b023b90570cabc58e483da0c13d7aac5f9",
+      "comment": "撤销 #11335（generalize masked load fallback register ties），该变更导致调度恶化并在内部工作负载中引发回归。恢复为每个掩码加载项添加显式 `mov.u32` 指令，而不是将其折叠到内联汇编的输入约束中。影响了 NVIDIA LoadStoreOpToLLVM 的代码生成。",
+      "tags": [
+        "revert",
+        "performance",
+        "medium-risk",
+        "nvidia",
+        "load-store",
+        "ptx"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "纯 NVIDIA 后端代码生成调整（third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/LoadStoreOpToLLVM.cpp），涉及 PTX 内联汇编约束。Ascend 不经过 PTX 生成路径。",
+        "testing": "无影响",
+        "needs_test_update": false
+      },
+      "message": "Revert \"[NVIDIA] Generalize masked load fallback register ties (#11335)\" (#11428)\n\nThis reverts commit #11335, which results in worse scheduling and caused\nregressions in internal workloads."
+    },
+    {
+      "sha": "28c3718e03483777ddc5b972ae56d79d7a1fb24e",
+      "comment": "AMD 后端 Membar filter 优化：在两个异步加载之间省略屏障。理由：异步加载由 `ttg.async_wait` 排序，屏障同步无意义。新增 `GlobalToLocalCopyTrait` 用于将所有异步全局到本地拷贝分组（AsyncCopyGlobalToLocal、BufferLoadToLocal、AsyncTDMCopyGlobalToLocal、AsyncTDMFusedCopyGlobalToLocal、AsyncTDMGather）。同时将 MembarUtility 的 getMemdescValue 扩展为返回多个目标（Fused copy 有多个 dests），并支持通过 trait 检查来识别异步加载操作。",
+      "tags": [
+        "performance",
+        "feature",
+        "medium-risk",
+        "amd",
+        "membar",
+        "async-copy"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "变更聚焦 AMD 后端的 Membar filter（third_party/amd/lib/TritonAMDGPUToLLVM/MembarUtility.cpp）和 TritonAMDGPU 方言的 op 定义新增 GlobalToLocalCopyTrait。Ascend 不走异步全局到本地拷贝路径。",
+        "testing": "无影响",
+        "needs_test_update": false
+      },
+      "message": "[AMD] Omit barriers between two async loads in Membar filter (#11367)\n\nMembar emits a ttg.barrier between two async loads when it cannot prove\ntheir destination slices disjoint, e.g. dynamically indexed tiles of one\nallocation in a pipelined loop.\nAsync loads are ordered by ttg.async_wait, not by barriers, so that\nbarrier synchronizes nothing.\nwe set the Async programming model for Async load as below\n1) user need to handle RAW dependency using async_wait, while all others\nare handled by compiler\n2) no barrier between async loads\n\nadd GlobalToLocalCopyTrait to group all the async load."
+    }
+  ],
+  "architecture_based_on_sha": "0c91a25bf19d2a5d07d33e556956f30850d5a966",
+  "architecture_generated_at": "2026-08-26T13:01:27.411656+08:00"
+}

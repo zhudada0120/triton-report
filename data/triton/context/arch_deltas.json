@@ -1,0 +1,30 @@
+{
+  "baseline_sha": "0c91a25bf19d2a5d07d33e556956f30850d5a966",
+  "baseline_generated_at": "2026-08-26T12:52:28.794343+08:00",
+  "deltas": {
+    "eaa06d8bfc4ebe887791648bbe3fa3543289678f": {
+      "date": "2026-08-25",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "这是内存屏障（Membar）分析的一次重大重构，混合了多个 bug 修复和优化：1) 引入物理足迹（physical footprint）概念，用 BufferRegion 分析结果计算每个访问的完整地址集合，允许跨迭代边界证明不相交性；2) 修复了索引比较仅在相同源描述符下才有效的逻辑（不同源可以定位到相同的物理槽位）；3) 修复子切片比较需要共同直接源的问题（偏移 0 和 128 可以映射到相同的物理区域）；4) 在循环 backedges 和函数边界清除迭代相关的事实（同一 SSA 值可表示不同迭代的值）；5) 对 AMD warp pipeline 依赖分析做了包装修复，仅在非包装对上保留相对证明；6) 将 SubSliceOffsets 从 vector 改为 ArrayRef，并新增 subsliceSource 字段。此重构改变了 AllocationSlice 的相等性和排序语义，并为 MembarAnalysis 添加了 SharedMemoryFootprints 依赖。",
+      "change_summary": "[Membar] Fix shared alias reasoning and recover physical footprints (#11431)",
+      "ascend_impact": false
+    },
+    "8ce2ac12d21648f0f787ecc7576a26c4b34be3cd": {
+      "date": "2026-08-25",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "前端新增对 keyword-only 参数的支持，并让 softmax 的 ieee_rounding 变为仅关键字参数。#11409 移除了 keep_dims，但若用户按位置传递 ieee_rounding 会出现问题。此变更重构了 CodeGenerator 的参数解析（支持 kwonlyargs 按顺序加入参数列表），修改了 `create_function_from_signature` 以保留关键字专用分隔符，使 JIT function 能够正确处理 keyword-only 参数。还禁止了 **kwargs（JIT functions do not support **kwargs），并让 DependenciesFinder 正确识别 keyword-only 参数（在函数体中被视为局部变量以遮蔽全局变量）。",
+      "change_summary": "[BC Breaking][FRONTEND] Support keyword-only args in triton (#11418)",
+      "ascend_impact": true
+    }
+  }
+}

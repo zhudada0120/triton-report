@@ -1,0 +1,19 @@
+{
+  "content_hash": "24ecc4d4279dd26e",
+  "analysis": {
+    "interface_summary": "定义 2 个类；定义 125 个函数",
+    "key_interfaces": [
+      "MockThreadPool",
+      "DictRemoteCacheBackend",
+      "MockThreadPool.__init__",
+      "MockThreadPool.submit",
+      "MockThreadPool.run_one",
+      "MockThreadPool.run_all",
+      "MockThreadPool.shutdown",
+      "DictRemoteCacheBackend.__init__",
+      "DictRemoteCacheBackend.get",
+      "DictRemoteCacheBackend.put"
+    ]
+  },
+  "cached_at": "2026-08-26T13:07:11.074521+08:00"
+}

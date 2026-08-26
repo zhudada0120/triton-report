@@ -1,0 +1,46 @@
+{
+  "eaa06d8bfc4ebe887791648bbe3fa3543289678f": {
+    "date": "2026-08-25",
+    "msg": "[Membar] Fix shared alias reasoning and recover physical footprints (#11431)"
+  },
+  "b7f349dc657cb58419a740fd960afb45776d38c4": {
+    "date": "2026-08-25",
+    "msg": "[Frontend] Restore arith.truncf for most fp8 constants (#11441)"
+  },
+  "a2d75c0e4d7d81f5085053a76d9b971fc6e706e7": {
+    "date": "2026-08-25",
+    "msg": "[NVIDIA] Subtile packed FP4 MMA to K96 on SM103 (#11438)"
+  },
+  "78e68216cb64fbb2d683b5ff6905cf81ef7eb3ac": {
+    "date": "2026-08-25",
+    "msg": "[FRONTEND] Restore tl.softmax keep_dims argument for BC (#11430)"
+  },
+  "8ce2ac12d21648f0f787ecc7576a26c4b34be3cd": {
+    "date": "2026-08-25",
+    "msg": "[BC Breaking][FRONTEND] Support keyword-only args in triton (#11418)"
+  },
+  "b5505fe8e30d06861c91203ffe6f9e5d5ffa55b0": {
+    "date": "2026-08-25",
+    "msg": "[LLVM] Update to llvm/llvm-project@ce3529423abd (#11421)"
+  },
+  "9151221f5265433a1f5467a59fbed4d4eaf6063f": {
+    "date": "2026-08-25",
+    "msg": "[Frontend] Fix negative zero constants (#11426)"
+  },
+  "ce40aeee6058c9d66bc5b80feb13bc3188ecc48a": {
+    "date": "2026-08-25",
+    "msg": "[TritonGPU] Require byte-addressable shared-memory descriptors (#11422)"
+  },
+  "cd925d1d15b2a2f02e0a1a2f2018a9726c0c4612": {
+    "date": "2026-08-25",
+    "msg": "[KERNELS] Convert Hopper and Blackwell FP4 directly to strided layouts (#11387)"
+  },
+  "931cf5b023b90570cabc58e483da0c13d7aac5f9": {
+    "date": "2026-08-25",
+    "msg": "Revert \"[NVIDIA] Generalize masked load fallback register ties (#11335)\" (#11428)"
+  },
+  "28c3718e03483777ddc5b972ae56d79d7a1fb24e": {
+    "date": "2026-08-25",
+    "msg": "[AMD] Omit barriers between two async loads in Membar filter (#11367)"
+  }
+}

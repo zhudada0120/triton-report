@@ -1,0 +1,300 @@
+{
+  "date": "2026-08-25",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-08-26T13:04:06.667221+08:00",
+  "daily_summary": "当日变更主要围绕 Ascend 后端的编译选项治理与运行时性能优化。核心方向为：1) 对已弃用的 NPU 编译选项进行系统性清理与兼容性恢复（isolate/restore/consolidate），包括将 force_simt_* 选项路由到 compile_mode、为所有弃用选项提供详细迁移警告、将 arch/warp_size 等后端专属字段内部化，以及恢复 bisheng_options 与 enable_cube_block_merge 的可用性；2) 对 launcher 进行性能优化（METH_FASTCALL 快速参数解析、FFTS 地址缓存、RT 到 ACL API 迁移），同时修复 workspace 大小计算中的 uint32 溢出问题；3) 回退了一个有问题的 global scratch 特性（#1645）并新增了相关测试；4) 在 C++ 层增强 ConvertModuloToMask 图优化规则的维度追踪能力，以支持 block-quantised fused-MoE 等复杂场景；5) 优化 triton import 时间并添加回归测试；6) 将文档主题从 furo 切换到 sphinx_book_theme。整体呈现“清理、优化、回退、加固”的多线并行态势。",
+  "test_impact_summary": "当日变更对测试看护提出了较高要求。为验证编译选项的兼容性恢复，新增/修改了大量针对 deprecated option 路由、优先级和警告行为的单测（test_runtime_utils.py），并调整了编译合约测试（test_compiler_layout_memory_contract.py），需确保这些测试能在所有目标架构（A2/A3/A5）上正确运行。性能优化（launcher）引入了新的 C++ 代码生成路径，需确保新增的 launcher 导出测试（test_launcher_export_api.py, test_npu_launcher.py）能覆盖 METH_FASTCALL 和本地打包两条路径，并补充高负载下的回归测试以防性能退化。全局 scratch 特性的回退需删除并调整相应测试，同时保留针对 uint32 溢出的新增测试（test_workspace_usage.py）。ConvertModuloToMask 的重写增加了大量新的正/反向 lit 测试用例，需确保其被 CI 正确收集和执行。此外，新增的 import 时间回归测试（test_import_time.py）将限制未来对模块导入路径的改动。",
+  "commits": [
+    {
+      "sha": "a4aecc3292d8bdf7ae80165f113a27ea1e89803a",
+      "comment": "该 commit 进一步修复了编译选项的兼容性问题。1) 将 `compile_on_910_95` 从构造必选参数改为可选（kw_only），作为“已弃用的仅构造兼容输入”，其值被忽略并替换为从 GPUTarget.arch 派生的值，并提供弃用警告，确保了旧代码的构造兼容性。2) 恢复了 legacy force SIMT 选项的优先级：修正了 `_remove_deprecated_npu_options` 的路由逻辑，使 `force_simt_only` / `force_simt_template` 在其被启用时能够覆盖 `compile_mode`，并在两者同时启用时定义了优先级（simt_only 优先）。3) 恢复了 `hfusion_enable_multiple_consumer_fusion` 编译选项，将其从弃用列表中移除并重新在 A5 编译路径中生效。此变更在兼容性与清理之间做了精细的平衡，需要确保新增的警告、优先级逻辑与选项恢复不会破坏现有编译流程与缓存键的稳定性，相关 `test_specialization_cache_unit.py` 测试也预期随之调整。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "medium-risk",
+        "compiler",
+        "NPUOptions",
+        "compatibility"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "变更涉及编译选项的行为变化、优先级恢复和警告引入，必须更新单测以覆盖新的优先级逻辑（如当两个 force 选项同时启用时）和弃用警告。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_runtime_utils.py",
+          "third_party/ascend/unittest/pytest_ut/test_specialization_cache_unit.py",
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py"
+        ]
+      },
+      "message": "[compiler](fix) restore legacy compile option behavior (#1748)\n\n* [compiler](fix) preserve compile_on_910_95 constructor compatibility\n\n* [compiler](fix) restore legacy force SIMT option precedence\n\n* [compiler](fix) restore multiple-consumer fusion option"
+    },
+    {
+      "sha": "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef",
+      "comment": "此 commit 专注于改进已弃用选项的警告信息，为 `_DEPRECATED_NPU_OPTIONS` 和 `_DEPRECATED_ASCEND_ENV_VARS` 引入了详细的迁移/替代说明文本（`_DEPRECATED_NPU_OPTION_DETAILS` 与 `_DEPRECATED_ASCEND_ENV_VAR_DETAILS`），并调整了警告消息的措辞，使其更明确地指向“将在未来版本中移除”。同时在 `NPULauncher.__call__` 中对 `TRITON_REGISTER_TENSOR_MSPROF` 环境变量增加了弃用警告。该改动提升了用户体验，但需注意大量字符串的维护成本，且对依赖旧警告文本的测试（如 `test_runtime_utils.py`）需要同步更新。",
+      "tags": [
+        "refactor",
+        "low-risk",
+        "compiler",
+        "deprecation",
+        "warning"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "警告信息文本已改变，现有测试对警告内容的匹配需要更新。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_runtime_utils.py"
+        ]
+      },
+      "message": "[compiler](fix) add detailed removed option warnings (#1733)\n\n* [compiler] add detailed deprecated option messages\n\n* [compiler] describe deprecated add_auto_scheduling option\n\n* [compiler] describe deprecated allow_fp8e4nv option\n\n* [compiler] describe deprecated arch option\n\n* [compiler] describe deprecated auto_blockify_size option\n\n* [compiler] describe deprecated auto_tile_and_bind_subblock option\n\n* [compiler] describe deprecated code_motion option\n\n* [compiler] describe deprecated disable_size_align_for_cast option\n\n* [compiler] describe deprecated enable_auto_blockify option\n\n* [compiler] describe deprecated enable_buffer_insert_optimization option\n\n* [compiler] describe deprecated enable_cce_vf_auto_sync option\n\n* [compiler] describe deprecated enable_cce_vf_remove_membar option\n\n* [compiler] describe deprecated enable_cross_if_fusion option\n\n* [compiler] describe deprecated enable_drop_unit_dims option\n\n* [compiler] describe deprecated enable_linearize option\n\n* [compiler] describe deprecated enable_mask_fallback_conversion option\n\n* [compiler] describe deprecated enable_nd2nz_on_vector option\n\n* [compiler] describe deprecated enable_select_analysis option\n\n* [compiler] describe deprecated enable_sync_block_lock option\n\n* [compiler] describe deprecated enable_ub_refine_opt option\n\n* [compiler] describe deprecated enable_vf_fusion option\n\n* [compiler] describe deprecated graph_optimize_emit_remarks option\n\n* [compiler] describe deprecated graph_optimize_max_rewrites_per_function option\n\n* [compiler] describe deprecated graph_optimize_rule_mask option\n\n* [compiler] describe deprecated graph_optimize_ub_capacity_bytes option\n\n* [compiler] describe deprecated has_auto_blockify_blacklist_op option\n\n* [compiler] describe deprecated hfusion_enable_multiple_consumer_fusion option\n\n* [compiler] describe deprecated kernel_name option\n\n* [compiler] describe deprecated llvm_version option\n\n* [compiler] describe deprecated mix_mode option\n\n* [compiler] describe deprecated ops_reorder option\n\n* [compiler] describe deprecated optimize_dynamic_offset option\n\n* [compiler] describe deprecated parallel_mode option\n\n* [compiler] describe deprecated storage_align option\n\n* [compiler] describe deprecated stream option\n\n* [compiler] describe deprecated use_bytecode option\n\n* [compiler] describe deprecated warp_size option\n\n* [compiler] add deprecated environment warning details\n\n* [compiler] describe deprecated LLVM_ROOT environment variable\n\n* [compiler] describe deprecated MLIR_ROOT environment variable\n\n* [compiler] describe deprecated TRITON_ALL_BLOCKS_PARALLEL environment variable\n\n* [compiler] describe deprecated TRITON_ASCEND_ARCH environment variable\n\n* [compiler] describe deprecated TRITON_ASCEND_COMPILE_SPEED_OPT environment variable\n\n* [compiler] describe deprecated TRITON_BACKEND environment variable\n\n* [compiler] describe deprecated TRITON_DISABLE_FFTS environment variable\n\n* [compiler] describe deprecated TRITON_REGISTER_TENSOR_MSPROF environment variable\n\n* [compiler] adapt deprecated environment warning assertion\n\n* [compiler] format deprecated compatibility details\n\n---------\n\nCo-authored-by: zhanwei33 <22679270+zhanwei33@users.noreply.github.com>"
+    },
+    {
+      "sha": "e1314a246d4ef73de98ba2c9333f4f7a42f3aeb1",
+      "comment": "这是一个大规模重构提交（恢复弃用编译选项兼容性）。核心变更：1) 将 `force_simt_only` 和 `force_simt_template` 重新引入 `NPUOptions` 作为保留的公开选择器，并提供一个 `effective_compile_mode` 属性来统一判断显式 `compile_mode` 与隐式 force 选项的逻辑。2) 在 `AscendBackend.parse_options` 中引入 `_is_internal_npu_options` 和 `_INTERNAL_NPU_OPTION_MARKERS` 以更好地识别内部选项往返，避免误处理。3) 恢复 `bisheng_options` 与 `enable_cube_block_merge` 编译选项（虽然是独立修复，但此提交也整合了对两者的支持），并增加了 `enable_libdevice` 相关逻辑。4) `use_alignment_specialization` 逻辑改为基于归一化后的 option 判断。5) `Autotuner` 的相关逻辑（`generate_key_and_configs`, `run`, `warmup`）也同步适配了 `compile_mode` 与 force 选项的优先级。此提交兼顾了清理与兼容，但涉及 `NPUOptions` 字段、后端解析逻辑和自动调优，影响面广，需重点回归编译缓存命中和 autotune 行为。",
+      "tags": [
+        "refactor",
+        "feature",
+        "high-risk",
+        "compiler",
+        "NPUOptions",
+        "autotuner",
+        "compatibility"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "NPUOptions 字段和 compile_mode 语义发生重大变化，需更新所有相关测试以验证新逻辑，包括有效compile_mode的解析、内部选项识别、autotuner的 key 生成和缓存。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "third_party/ascend/unittest/autotune_ut/test_autotune_param_valid.py",
+          "third_party/ascend/unittest/pytest_ut/test_runtime_utils.py",
+          "third_party/ascend/unittest/costmodel_ut/test_compiler_costmodel_contract.py"
+        ]
+      },
+      "message": "[compiler](fix) restore deprecated compile option compatibility (#1729)"
+    },
+    {
+      "sha": "bd1f00862288b88865231b4859dcac85831c9fce",
+      "comment": "这是一个针对潜在运行时错误的 bugfix。修复了 launcher 模板（driver.py）中 `totalWorkSpaceSize` 的计算可能发生的 uint32 溢出问题——当 `workspace_size` 较大且与 grid 数相乘时，通过将 `workspace_size` 显式转换为 `uint64_t` 来防止溢出。新增的 `test_workspace_usage.py` 通过一个大的矩阵乘法 kernel 来验证此修复。此修复是安全且必要的，尤其在处理大规模计算时能避免内存分配错误。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "driver",
+        "launcher",
+        "overflow"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了端到端测试来验证修复。虽然现有测试可能间接覆盖，但此特定场景（大网格 x 大 workspace）值得新增看护。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_workspace_usage.py"
+        ]
+      },
+      "message": "[driver](fix) prevent uint32 overflow in totalWorkSpaceSize (#1714)\n\n* [driver](fix) prevent uint32 overflow in totalWorkSpaceSize\n\n* fix precommit\n\n* fix precommit"
+    },
+    {
+      "sha": "bb75f42b96dae31b9eae5217f9760d425be669a8",
+      "comment": "该提交回退了 #1645 引入的“全局 scratch 内存支持”功能（Revert）。回退原因是该功能可能引入问题（如C++ ABI变更过大、与任务队列模式冲突等）。变更删除了 compiler.py 中生成 `--triton-metadata-output` 和 `--enable-global-scratch-allocation` 参数的逻辑，回退了 driver.py 中 launcher 对 `global_scratch`/`profile_scratch` 参数的传递、分配和导出支持，并删除了相应的测试文件 `test_npu_launcher.py`。这属于功能回退，降低了代码复杂性，但需确保没有其他代码依赖被移除的接口。",
+      "tags": [
+        "revert",
+        "bugfix",
+        "medium-risk",
+        "compiler",
+        "driver",
+        "launcher"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "回退功能意味着相关的测试文件（test_npu_launcher.py）被删除或大量修改，其他测试如果引用了 global_scratch 相关接口或编译参数（如 --enable-global-scratch-allocation）也需要清理。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_launcher_export_api.py",
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py"
+        ]
+      },
+      "message": "[Revert](fix) Revert pr 1645 (#1720)\n\n* Revert \"[Ascend](feat) support global scratch at launch (#1645)\"\n\nThis reverts commit b9526b58\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>\n\n* [pytest](fix) skip error case\n\n---------\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>"
+    },
+    {
+      "sha": "00d95a40b55dc60e986a062e279c532797df6047",
+      "comment": "该提交针对 C++ 层（`DynamicCVPipeline` 的 `PlanCubeBlock` pass）增强了 L0C 到 L0C（cube 到 cube）的数据流转支持。具体为：1) 在 `checkValidUserSeed` 中新增了对 `linalg::MatmulOp`（`nextDot`）的识别，允许将 matmul 的输出直接作为下一个 matmul 的输入（通过 L0C），而无需经过 L0C->UB->L0C 的冗余搬运，并更新了 `preDot` 引用。2) 重构了 `SplitMatmulPattern.cpp` 中 `shouldSplitByInput` 的逻辑，调整了判断 broadcast 偏置是否导致拆分的行为。这属于性能优化和功能增强，但涉及流水线调度核心逻辑，风险中等，需要确保正确性和性能收益。",
+      "tags": [
+        "performance",
+        "feature",
+        "medium-risk",
+        "DynamicCVPipeline",
+        "PlanCubeBlock",
+        "L0C"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "该优化改变了 IR 匹配和变换的方式，需要新增或更新 lit 测试来验证新引入的 Matmul 链式（L0C）优化路径，以及原有的 cube 分离逻辑。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/",
+          "third_party/ascend/unittest/lit.cfg.py"
+        ]
+      },
+      "message": "[ssbuffer](fix) simple L0C->L0C support (#1654)\n\nCo-authored-by: shaoyiyang <shaoyiyang1@huawei.com>"
+    },
+    {
+      "sha": "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "comment": "这是一个大规模（130个文件）的 NFC（非功能性变更）重构提交，旨在整合和清理 Ascend 的编译选项。核心改动：1) 将 `arch`、`warp_size` 等后端专属字段从公开的 `NPUOptions` 构造参数中移除（改为 `InitVar` 或 `init=False`），改为由 `parse_options` 从 `GPUTarget` 注入。2) 将 `compile_mode` 作为唯一公开的 lowering 模式选择器，并将旧的 `unstructured_in_simt` 映射为 `simd_simt_template`。3) 引入 `enable_cube_block_merge` 等新选项，同时移除大量旧的、内部管理的选项（如 `graph_optimize_rule_mask`, `bisheng_options` 等）。4) C++ pass（`TritonToLinalg` 等）的接口从 `forceSimtTemplate` 改为 `compileMode` 字符串参数。5) 内部 `parallel_mode` 和 `is_pure_simt` 改为派生字段。此提交兼容性风险极高，因为它移除了大量公开接口，虽然后续有恢复性提交，但此次大规模清理为所有下游代码带来了巨大的适配压力。",
+      "tags": [
+        "refactor",
+        "breaking-change",
+        "high-risk",
+        "compiler",
+        "NPUOptions",
+        "C++ passes"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "大量 NPUOptions 字段被移除、重命名或改变语义，所有使用这些字段的测试（如 test_compiler_layout_memory_contract.py, test_graph_optimize.py）都需要彻底重写。同时，所有 lit 测试中 pass 的 option 名称也需同步更新（如 force-simt-template 改为 compile-mode）。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "third_party/ascend/unittest/pytest_ut/test_graph_optimize.py",
+          "third_party/ascend/unittest/Conversion/",
+          "third_party/ascend/unittest/pytest_ut/test_specialization_cache_unit.py"
+        ]
+      },
+      "message": "[compiler](NFC) consolidate Ascend compile options (#1700)\n\n* [compile-options] remove unused llvm_version\n\n* [compile-options] internalize kernel name\n\n* [compile-options] internalize target architecture\n\n* [compile-options] internalize warp size\n\n* [compile-options] remove unused auto blockify size\n\n* [compile-options] remove graph optimize rule mask\n\n* [compile-options] remove graph optimize rewrite limit\n\n* [compile-options] internalize graph optimize UB budget\n\n* [compile-options] remove allow_fp8e4nv\n\n* [compile-options] internalize auto tile bind subblock\n\n* [compile-options] remove bisheng options\n\n* [compile-options] remove storage align\n\n* [compile-options] remove ops reorder\n\n* [compile-options] remove code motion\n\n* [compile-options] remove CCE VF auto sync\n\n* [compile-options] remove CCE VF membar option\n\n* [compile-options] remove drop unit dims option\n\n* [compile-options] remove select analysis option\n\n* [compile-options] remove disable_size_align_for_cast\n\n* [compile-options] remove auto block sync override option\n\n* [compile-options] remove auto scheduling option\n\n* [compile-options] remove auto blockify option\n\n* [compile-options] remove duplicate vf merge level\n\n* [compile-options] derive 91095 pipeline from target\n\n* [compile-options] remove dynamic offset option\n\n* [compile-options] remove mask fallback option\n\n* [compile-options] remove nd2nz vector option\n\n* [compile-options] silently ignore CCE VF auto sync option\n\n* [compile-options] silently ignore CCE VF membar option\n\n* [compile-options] silently ignore drop unit dims option\n\n* [compile-options] remove enable vf fusion option\n\n* [compile-options] remove cube block merge option\n\n* [compile-options] remove ub refine opt option\n\n* [compile-options] remove buffer insert optimization option\n\n* [compile-options] remove multiple consumer fusion option\n\n* [compile-options] remove cross if fusion option\n\n* [compile-options] internalize auto blockify blacklist\n\n* [compile option] remove mix_mode interface\n\n* [compile option] honor simt stack limit\n\n* [compile option] fix bytecode pipeline\n\n* [compile option] remove ascend arch environment override\n\n* [compile-options] remove libdevice environment override\n\n* [compile option] remove all blocks parallel env\n\n* [compile option] derive libdevice simt from target and compile mode\n\n* [compile option] remove FFTS disable env\n\n* [compile-options] default backend policy to torch_npu\n\n* [compile-options] remove MLIR root override\n\n* [compile-options] remove LLVM root override\n\n* [compile-options] remove msprof tensor registration switch\n\n(cherry picked from commit 8bb15b736a9926fd1db89b3d4e3ea4b5f7f5e2d4)\n\n* [compile-options] remove stream option\n\n(cherry picked from commit 6295da76bc0b56ce05941fc267094dacd3ae84b9)\n\n* [compile-options] internalize parallel mode\n\n(cherry picked from commit 73ddd19b90609dce84df7cc89869056efbc0ae8b)\n\n* [compile-options] retain force simt template alongside compile mode\n\n* [compile-options] centralize effective compile mode\n\n* [compile-options] remove linearize option docs\n\n* [compile-options] rename intra cache count to veccore slots\n\n* [compile-options] rename inter cache count to crosscore slots\n\n* [compile-options] reconcile retained simt option compatibility\n\n* Revert \"[compile-options] remove auto block sync override option\"\n\nThis reverts commit 7945e3fbc2d9f245a5dc1f4057d242ea47e5e939.\n\n---------\n\nCo-authored-by: zhanwei33 <22679270+zhanwei33@users.noreply.github.com>"
+    },
+    {
+      "sha": "0bd2ad8ab35a5546f1bb2d93e83116b18db80a4e",
+      "comment": "这是一个快速修复，将 `bisheng_options` 和 `enable_cube_block_merge` 从 `_DEPRECATED_NPU_OPTIONS` 集合中移除。原因是在上一个提交（452e8717e4aa）中这两个选项被错误地标记为弃用，但实际上它们仍被后端使用（见 e1314a246d4 的恢复）。此提交纠正了清理过程中的错误，避免了这两个重要编译选项被误删，消除了潜在的功能回退风险。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "compiler",
+        "deprecated-options",
+        "bisheng_options",
+        "enable_cube_block_merge"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "虽然只是从集合中移除，但恢复的选项需要后续测试来验证其行为。相关测试的调整主要关注这两个选项是否还能被正确解析和传递。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py"
+        ]
+      },
+      "message": "[compiler](fix) restore bisheng_options and enable_cube_block_merge (#1715)"
+    },
+    {
+      "sha": "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "comment": "该提交是一个对图优化 pass (`ConvertModuloToMaskRule`) 的功能增强。它解决了原有优化规则因形状保守而无法覆盖 block-quantised fused-MoE 权重矩阵场景的问题。核心改进是：1) 在 `ModuloCandidate` 中引入 `AddressedLoad` 结构，为每个 load 记录其被寻址的维度（`dim`），而不再是记录单一的轴。2) 增加 `mapDimThroughExpand`/`mapDimThroughTrans`/`broadcastKeepsDim` 等辅助函数，用于在 `expand_dims`, `trans`（转置）, `broadcast` 等操作后追踪维度的变化。3) 新增 `tileReachesOnlyGuardedStores` 函数，更精确地验证 tile 数据只流向被 guard 覆盖的 store 操作，且维度必须匹配。4) 允许 rank-one load（如 scale 向量）和 transposed load 被优化。5) 引入 `onlyFeedsOverflowAssert` 来处理 debug 模式下溢出检查锥（overflow check cone）对消费点的影响。此改动显著增强了规则的适用性和安全性，但实现复杂度高，需重点验证其正确性，防止误优化的发生。",
+      "tags": [
+        "feature",
+        "performance",
+        "high-risk",
+        "TritonToGraph",
+        "ConvertModuloToMask",
+        "codegen"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了大量正向和反向的 lit 测试用例（indirect_loadstore.mlir, indirect_atomic.mlir, convert_modulo_to_mask.mlir 等）和 Python 测试 (test_graph_optimize.py) 来覆盖 rank-one load、transpose、dot 等复杂路径，必须确保这些测试被正确执行。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToGraph/convert_modulo_to_mask.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_graph_optimize.py"
+        ]
+      },
+      "message": "[ConvertModuloToMask](fix) track the wrapped dimension per load (#1698)\n\nThe rule proved its rewrite safe with a single axis recorded on the modulo\nresult plus a shape invariant on the data path.  That approximation rejected\nthe shapes a block-quantised fused-MoE weight tile actually has, so the wrap\nsurvived and the tile stayed a per-element gather instead of a contiguous\ntransfer.\n\nTrack instead, per load, the dimension the wrapped coordinate varies along,\nand map it through expand_dims, broadcast, trans and dot.  That admits three\nshapes the rule had to reject before:\n\n  - A derived index, offs_bn // group_n, addressing the scale vector.  A\n    uniform divisor leaves each lane a function of the same lane of the\n    tracked index, so the one boundary mask still zeros exactly the lanes the\n    wrap folded back.  The derived index may run past the array it indexes,\n    but only on lanes the mask removes, so those are never read.\n  - A rank-one load.  The comparison already has one lane per tile element,\n    so it is the mask.  Rejecting it used to veto the whole candidate,\n    including the rank-two tile beside it.\n  - A transpose on the data path, which is what swapping the dot operands\n    emits.\n\nAdmitting the transpose needs the guard to be precise about orientation, so\ncollectStoreMaskGuard now records which dimension each store discards rather\nthan only that some store discards something.  Without that, a square tile\nwhose store mask drops rows would read as a proof about the columns the\ninjected mask zeros, which is a miscompile the old shape comparison could not\nsee.\n\nTwo lit cases that were negative only because of the old approximation are\nnow positive, with the reasoning that makes them safe stated in place.\n\nCo-authored-by: xudezheng <xudezheng1@huawei.com>"
+    },
+    {
+      "sha": "3931511e87ec26e83e98a59d06e835c37a482703",
+      "comment": "这是一个测试加固提交，为 `import triton` 的时间添加了回归测试（`test_import_time.py`）。它通过在子进程中执行 `import triton` 并测量耗时，断言其低于 1000ms（基线约 243ms），以防止未来引入导致导入变慢的改动（如重新引入 eager init）。此提交对维护代码性能有积极作用，是防止性能回归的有效手段。",
+      "tags": [
+        "test",
+        "performance",
+        "low-risk",
+        "import-time",
+        "regression"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了测试文件用于看护 import 时间，需确保该测试在 CI 环境中稳定运行（考虑CI机器性能差异，1000ms阈值可能需要调整）。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_import_time.py"
+        ]
+      },
+      "message": "[import](test) add regression test for triton import time (#1687)\n\nAdd pytest_ut/test_import_time.py to guard against regressions from PR #1200\n(lazy init of is_compile_on_910_95). Measures `import triton` in a fresh\nsubprocess and asserts it stays under 1000ms (baseline ~243ms, ~4x headroom)."
+    },
+    {
+      "sha": "a8ff41745f15230761a50ac7668d0c3cc3486309",
+      "comment": "该提交对 launcher 进行了性能和 API 迁移优化。1) **性能优化**：将 `launch` 函数的参数解析从 `PyArg_ParseTuple`（METH_VARARGS）改为手动解析（METH_FASTCALL），避免了临时 tuple 的创建和 `PyArg_ParseTuple` 的开销，并相应更新了参数索引和 `_BASE_ARGS_FORMAT`。2) 增加了对 `aclrtGetHardwareSyncAddr` 的缓存（`g_last_ffts_stream`/`g_last_ffts_addr`），避免了每次 launch 都查询 FFTS 地址。3) **API迁移**：将 `rtMemcpy`/`rtMemsetAsync` 替换为 `aclrtMemcpy`/`aclrtMemsetAsync`，并更新了相应的枚举和数据结构（如 `aclrtLaunchKernelAttr`）。4) 优化了 `getPointer` 和 `_get_tensor_shape` 的实现。此提交在降低 launch 延迟的同时也统一了 CANN API 的使用。风险在于 METH_FASTCALL 的参数索引必须与 Python 侧调用方精确匹配，以及 C++ 代码生成逻辑的正确性。",
+      "tags": [
+        "performance",
+        "refactor",
+        "medium-risk",
+        "driver",
+        "launcher",
+        "CANN"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "METH_FASTCALL 和新的 API 调用改变了生成的 launcher 源码，需要更新 test_npu_launcher.py 和 test_launcher_export_api.py 中的源码断言，并建议增加端到端测试验证 launch 功能，尤其是非纯SIMT路径。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_npu_launcher.py",
+          "third_party/ascend/unittest/pytest_ut/test_launcher_export_api.py"
+        ]
+      },
+      "message": "[launch](feat) optimize the launch to reduce the exection time (#1651)\n\n* [launch](feat) optimize the launch to reduce the exection time.\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>\n\n* [launch](feat) rt->acl\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>\n\n---------\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>"
+    },
+    {
+      "sha": "b1e2f99618ecd4ac3e4a0ca7630324b869335d25",
+      "comment": "该提交是编译选项清理（#1700）的延伸，将 Ascend 的编译选项弃用逻辑从 `compiler.py` 中分离出来，集中到 `utils.py`。它引入了 `_DEPRECATED_NPU_OPTIONS`, `_DEPRECATED_NPU_OPTION_ROUTES`, `_DEPRECATED_ASCEND_ENV_VARS` 等常量表和相关的 `_warn_`/`_remove_` 函数。`AscendBackend.parse_options` 将调用 `_remove_deprecated_npu_options` 来预处理用户选项，`Autotuner` 也同步适配。此外，`get_ascend_arch_from_env` 被废弃（总是返回空），`_get_mlir_path`/`_get_llvm_path` 改用默认工具链路径。此提交是清理工作的基础，但将大量逻辑迁移到 `utils.py` 增加了该模块的复杂度，且对 `NPUOptions` 字段的过滤可能影响 autotune 的 config 传递。",
+      "tags": [
+        "refactor",
+        "medium-risk",
+        "compiler",
+        "utils",
+        "deprecation",
+        "options"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了针对 deprecated option 路由和警告的测试（test_runtime_utils.py），需要确保这些测试覆盖了所有的路由和别名场景。同时，由于 parse_options 逻辑改变，其他编译合约测试也需要回归。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_runtime_utils.py",
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py"
+        ]
+      },
+      "message": "[compiler](refactor) isolate deprecated Ascend compile options (#1692)"
+    },
+    {
+      "sha": "898f909f982c0b3639712f535a84417d28a0e2da",
+      "comment": "该提交为纯 SIMT 模式引入了“全局 scratch（global scratch）启动”功能。它通过向 bishengir-compile 传递 --triton-metadata-output 和 --enable-global-scratch-allocation 参数，让编译器报告所需 scratch 大小，并在 NPULauncher 中通过 `triton.runtime._allocation._allocator` 进行分配，然后将其传递给 C++ launcher 处理。此特性为纯 SIMT kernel 提供了更灵活的运行时内存管理，但引入了对上游 `triton.runtime._allocation` 的依赖以及 C++ ABI 的巨大变化（如 `_BASE_ARGS_FORMAT` 和 `launch` 函数签名）。此提交已确认被后续提交（bb75f42b）回退，表明其实现可能存在严重问题或性能回归。",
+      "tags": [
+        "feature",
+        "reverted",
+        "high-risk",
+        "compiler",
+        "driver",
+        "global-scratch"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 test_npu_launcher.py 来覆盖 scratch 分配逻辑，但由于功能已被回退，这些测试也需要被删除或修改。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_npu_launcher.py",
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py"
+        ]
+      },
+      "message": "[Ascend](feat) support global scratch at launch (#1645)\n\nSigned-off-by: Ritsuka314 <Ritsuka@huawei.com>"
+    },
+    {
+      "sha": "cfa029a676614b477a7947b515aa2022e64e994f",
+      "comment": "这是一个纯文档（docs）相关的提交，将 Sphinx HTML 主题从 `furo` 切换到 `sphinx_book_theme`。主要变更包括更新 `conf.py` 配置、删除 `furo` 专用的 `page.html` 模板、添加 `sphinx_copybutton` 扩展、调整 landing page 的 HTML 结构，以及更新依赖文件 `requirement.txt`/`requirements.txt`。此提交不涉及任何功能代码，风险极低。注意：移除了 `python-api` 中 `triton.language.extra.cann.*` 的链接，可能影响文档导航。",
+      "tags": [
+        "docs",
+        "chore",
+        "low-risk",
+        "sphinx",
+        "theme"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯文档变更，不涉及任何测试逻辑。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](feat) Restyle docs with sphinx_book_theme (#1599)\n\nSwitch the Sphinx HTML theme from furo to sphinx_book_theme.\n\n- Landing page: centered project name, GitHub star/watch/fork buttons\n  and sectioned toctrees\n- Per-page repository / suggest-edit buttons in the article header\n- Code-copy buttons via sphinx-copybutton\n- Top navbar removed (navbar_persistent=[]) so the visible sidebar\n  toggle keeps its click binding and the duplicated search field is gone\n- No logo/favicon images; sidebar shows the project name only\n- zh search template adapted to the new theme\n- Drop the furo-only page.html overrides and furo from requirements\n- Temporarily hide triton.language.extra.cann.extension / ...libdevice /\n  triton.extension.buffer.language from the API Reference toctrees (zh + en)\n- Center the landing-page title and drop the duplicate inline project name"
+    }
+  ],
+  "architecture_based_on_sha": "a4aecc3292d8bdf7ae80165f113a27ea1e89803a",
+  "architecture_generated_at": "2026-08-26T13:01:27.413725+08:00"
+}

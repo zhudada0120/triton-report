@@ -1,0 +1,32 @@
+{
+  "content_hash": "23d17dda5e588d12",
+  "analysis": {
+    "interface_summary": "定义 5 个类；定义 122 个函数",
+    "key_interfaces": [
+      "enter_sub_region",
+      "ContainsReturnChecker",
+      "ASTFunction",
+      "BoundJITMethod",
+      "CodeGenerator",
+      "enter_sub_region.__init__",
+      "enter_sub_region.__enter__",
+      "enter_sub_region.__exit__",
+      "ContainsReturnChecker.__init__",
+      "ContainsReturnChecker._visit_stmts",
+      "ContainsReturnChecker._visit_function",
+      "ContainsReturnChecker.generic_visit",
+      "ContainsReturnChecker.visit_Attribute",
+      "ASTFunction.__init__",
+      "ASTFunction.flatten_ir_types",
+      "ASTFunction.return_types_ir",
+      "ASTFunction.serialize",
+      "ASTFunction.deserialize",
+      "CodeGenerator.__init__",
+      "CodeGenerator._unsupported",
+      "CodeGenerator._is_constexpr_global",
+      "CodeGenerator._define_name_lookup",
+      "CodeGenerator._name_loc_prefix"
+    ]
+  },
+  "cached_at": "2026-08-26T13:07:11.118150+08:00"
+}

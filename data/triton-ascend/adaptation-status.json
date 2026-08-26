@@ -1,0 +1,36 @@
+{
+  "baseline": {
+    "mode": "history-scan",
+    "detection": "upstream SHA in ascend git history OR cherry-pick marker",
+    "ascend_repo_sha": "a4aecc3292d8bdf7ae80165f113a27ea1e89803a",
+    "tracking_start_date": "",
+    "detected_at": "2026-08-26T13:12:30.518338+08:00",
+    "note": "triton-ascend 无 baseline 文件（人工 cherry-pick 回合）。无标记的人工回合请用 `mark` 命令手动更新。"
+  },
+  "commits": [
+    {
+      "sha": "8ce2ac12d21648f0f787ecc7576a26c4b34be3cd",
+      "upstream_date": "2026-08-25",
+      "upstream_sha": "8ce2ac12d21648f0f787ecc7576a26c4b34be3cd",
+      "message": "[BC Breaking][FRONTEND] Support keyword-only args in triton (#11418)",
+      "status": "pending",
+      "tags": [
+        "feature",
+        "bugfix",
+        "medium-risk",
+        "frontend",
+        "jit",
+        "code-generator"
+      ],
+      "ascend_impact_summary": "1) 修改了 CodeGenerator 的 `visit_FunctionDef` 和 `visit_arguments`：`visit_arguments` 返回类型从 `(arg_names, kwarg_names)` 变为仅 `arg_names`，新增 keyword-only 参数。Ascend 的 `_patched_cg_init` monkey-patch 虽然不依赖返回值，但任何基于 `visit_arguments` 返回值的自定义分析可能受影响。2) 修改了 JITFunction.__init__，新增对 **kwargs 的显式检查（raise TypeError），并调整了参数初始化顺序（在注册 _triton_jit_function_registry 之前构建 params）。若 Ascend 的扩展 JITFunction（如 Gluon）覆盖了 `create_function_from_signature` 或参数解析逻辑，需同步适配新的签名生成方式（支持 keyword-only）。",
+      "adaptation_notes": "",
+      "adapted_at": null,
+      "adapted_by": null
+    }
+  ],
+  "stats": {
+    "total": 1,
+    "pending": 1,
+    "adapted": 0
+  }
+}

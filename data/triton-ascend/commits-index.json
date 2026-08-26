@@ -1,0 +1,58 @@
+{
+  "a4aecc3292d8bdf7ae80165f113a27ea1e89803a": {
+    "date": "2026-08-25",
+    "msg": "[compiler](fix) restore legacy compile option behavior (#1748)"
+  },
+  "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef": {
+    "date": "2026-08-25",
+    "msg": "[compiler](fix) add detailed removed option warnings (#1733)"
+  },
+  "e1314a246d4ef73de98ba2c9333f4f7a42f3aeb1": {
+    "date": "2026-08-25",
+    "msg": "[compiler](fix) restore deprecated compile option compatibility (#1729)"
+  },
+  "bd1f00862288b88865231b4859dcac85831c9fce": {
+    "date": "2026-08-25",
+    "msg": "[driver](fix) prevent uint32 overflow in totalWorkSpaceSize (#1714)"
+  },
+  "bb75f42b96dae31b9eae5217f9760d425be669a8": {
+    "date": "2026-08-25",
+    "msg": "[Revert](fix) Revert pr 1645 (#1720)"
+  },
+  "00d95a40b55dc60e986a062e279c532797df6047": {
+    "date": "2026-08-25",
+    "msg": "[ssbuffer](fix) simple L0C->L0C support (#1654)"
+  },
+  "452e8717e4aa8f64b36336bdcffb84027cb9135a": {
+    "date": "2026-08-25",
+    "msg": "[compiler](NFC) consolidate Ascend compile options (#1700)"
+  },
+  "0bd2ad8ab35a5546f1bb2d93e83116b18db80a4e": {
+    "date": "2026-08-25",
+    "msg": "[compiler](fix) restore bisheng_options and enable_cube_block_merge (#1715)"
+  },
+  "02fa3fd710e457af1366615ed5e911781b4a51f5": {
+    "date": "2026-08-25",
+    "msg": "[ConvertModuloToMask](fix) track the wrapped dimension per load (#1698)"
+  },
+  "3931511e87ec26e83e98a59d06e835c37a482703": {
+    "date": "2026-08-25",
+    "msg": "[import](test) add regression test for triton import time (#1687)"
+  },
+  "a8ff41745f15230761a50ac7668d0c3cc3486309": {
+    "date": "2026-08-25",
+    "msg": "[launch](feat) optimize the launch to reduce the exection time (#1651)"
+  },
+  "b1e2f99618ecd4ac3e4a0ca7630324b869335d25": {
+    "date": "2026-08-25",
+    "msg": "[compiler](refactor) isolate deprecated Ascend compile options (#1692)"
+  },
+  "898f909f982c0b3639712f535a84417d28a0e2da": {
+    "date": "2026-08-25",
+    "msg": "[Ascend](feat) support global scratch at launch (#1645)"
+  },
+  "cfa029a676614b477a7947b515aa2022e64e994f": {
+    "date": "2026-08-25",
+    "msg": "[Docs](feat) Restyle docs with sphinx_book_theme (#1599)"
+  }
+}
