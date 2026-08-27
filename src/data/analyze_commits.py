@@ -998,8 +998,16 @@ def analyze_commits(repo, date, data_dir, confirm, force, local_repo=None):
         remaining_after_batch = []
         retry_count += 1
 
-    if missing_shas and retry_count >= max_retries:
-        print(f"  ✗ Still {len(missing_shas)} commits missing after {max_retries} retries")
+    if missing_shas or llm_shas:
+        # LLM analysis failed entirely (or partially): refuse to write
+        # placeholder "（分析缺失）" entries and fail loudly. A silent
+        # "success" would push junk data to main via CI.
+        unprocessed = set(missing_shas) | set(llm_shas)
+        print(f"  ✗ {len(unprocessed)} commits still unanalyzed after {retry_count} attempts")
+        for sha in sorted(unprocessed):
+            print(f"    - {sha[:8]}")
+        print("  Aborting: refusing to write placeholder analysis (fix the LLM config and re-run)")
+        return False
 
     analysis = llm_analysis
 

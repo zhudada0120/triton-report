@@ -5,7 +5,8 @@ on:
     branches: [main]
   workflow_dispatch:
   workflow_run:
-    workflows: ["Daily Commit Fetch & Analyze"]
+    # CI 用 GITHUB_TOKEN 推送不触发 push 事件，所以两个数据生产者都要显式挂 workflow_run
+    workflows: ["Daily Commit Fetch & Analyze", "Refresh Architecture Context"]
     types:
       - completed
 
