@@ -1,5 +1,20 @@
 {
   "baseline_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
   "baseline_generated_at": "2026-08-27T10:22:02.679880+08:00",
-  "deltas": {}
+  "deltas": {
+    "4313a23cc565aea332ea3876411733a1f1cba9e8": {
+      "date": "2026-08-26",
+      "affected_modules": [
+        "include/triton/Dialect/Triton/",
+        "lib/Dialect/Triton/"
+      ],
+      "affected_interfaces": [
+        "include/triton/Dialect/Triton/",
+        "lib/Dialect/Triton/"
+      ],
+      "interface_changes": "修复并简化 AMD 后端 scaled_dot 操作中 scale 张量的 CGA 布局处理。之前 B 操作数的 scale 的 CGA 布局未正确转置导致在特定 CGA 布局下静默使用错误的 scale。本次重构将布局推断逻辑集中到 inferDotOperandCGALayout 和 inferDotScaleCGALayoutFromOperand 函数中，并加强了 DotScaledOp 的 verifier，使不兼容的布局在编译期报错。影响范围包括 Triton 方言接口、TritonGPU 方言的布局工具以及 AMD 后端的 AccelerateAMDMatmul pass。",
+      "change_summary": "[AMD][GLUON] Fix and simplify CGA layout handling of scaled_dot scales (#11443)",
+      "ascend_impact": false
+    }
+  }
 }

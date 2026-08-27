@@ -1,81 +1,212 @@
 {
   "date": "2026-08-26",
   "repo": "triton-lang/triton",
-  "daily_summary": "当日 0 条 commit 均不涉及 triton-ascend。",
-  "ascend_impact_summary": "当日所有变更均为 tests / docs / CI / 平台特化代码，对 triton-ascend 无影响。",
+  "generated_at": "2026-08-27T10:55:14.047443+08:00",
+  "daily_summary": "当日变更聚焦于 Gluon 前端的布局 mangling 修复（区分TMEM布局的bases）、Membar 分析的 barrier 分类重构（正确处理 relaxed cluster barrier 与 tensor map 的内存语义）、NVIDIA 后端的 maxnreg 与向量化优化（scalarize packed FP ops）、解释器对 tl.condition 的支持、AMD 后端 CGA 布局处理与 compact scales 支持，以及 triton_kernels 中 topk 对任意k宽度的支持。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 无必然影响。所有变更集中在 Gluon 前端（NVIDIA专属）、TritonGPU/NvidiaGPU Dialect、NVIDIA后端、AMD后端、解释器、以及 triton_kernels 相关模块，均不涉及 triton-ascend 使用的 TTIR 前端、BaseBackend/DriverBase 抽象接口或非NVIDIA/AMD的编译器核心路径。解释器中 tl.condition 的支持为Ascend解释器新增了一个功能点，但并非破坏性变更。",
   "commits": [
     {
       "sha": "a8909ca037b61934d151062afb134ed259c01c08",
-      "comment": "（分析缺失）",
+      "comment": "修复 Gluon TensorMemoryLinearLayout 的 mangling 名称冲突。当两个布局 shape 相同但 bases 不同时，生成的函数特化名称相同导致编译器误复用已编译的kernel，现在将 rows 和 cols 的 bases 也纳入名称，确保不同布局生成不同的特化副本。属于正确性 bugfix，影响仅限 Gluon 前端。",
       "tags": [
-        "chore"
-      ]
+        "bugfix",
+        "gluon",
+        "nvidia",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false
+      },
+      "message": "[Gluon] Include bases in TensorMemoryLinearLayout mangling (#11201)\n\nWhen a Gluon function is called with a layout as a compile time\nargument, the\ncompiler builds one copy of that function per layout, and tells the\ncopies\napart by a name derived from the layout.,.\n\nFor TMEM linear layouts, the mangled name was built from the layout's\nshape only\nbut two layouts can have the same shape and still map data to memory\ncompletely differently (different bases). Since both got the same name,\nthe\ncompiler thought it had already compiled the function and reused the\ncopy\nbuilt for the first layout. The second call silently ran code\nspecialized\nfor the wrong layout .\n\nThe fix includes the bases in the name, so different layouts always get\ndifferent names and their own copies.\n\n\n<!---\nThe core Triton is a small number of people, and we receive many PRs\n(thank\nyou!).  To help us review your code more quickly, **if you are a new\ncontributor (less than 3 PRs merged) we ask that you complete the\nfollowing\ntasks and include the filled-out checklist in your PR description.**\n\nComplete the following tasks before sending your PR, and replace `[ ]`\nwith\n`[x]` to indicate you have done them.\n-->\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [ ] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)"
     },
     {
       "sha": "c0901bf1cc481116a54df08bad5721ec60393965",
-      "comment": "（分析缺失）",
+      "comment": "修复 Membar 分析中 relaxed cluster barrier 被错误地当作完全内存同步处理的问题。现在只有非 relaxed 的 cluster barrier 会清除待处理的共享内存访问状态，relaxed barrier 仅同步执行流不提供内存序，修正后分析能正确地在 relaxed barrier 后插入必要的强 barrier。属于正确性 bugfix，影响范围限于 TritonNvidiaGPU 方言的 ClusterBarrierInsertion pass。",
       "tags": [
-        "chore"
-      ]
+        "bugfix",
+        "membar",
+        "tritongpu",
+        "nvidia",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false
+      },
+      "message": "[Membar] Preserve memory state across relaxed cluster barriers (#11462)\n\n## Summary\n\nA relaxed cluster barrier synchronizes execution but does not provide\nmemory ordering or visibility. Treating it as a full memory sync clears\nthe analysis's pending distributed shared-memory accesses and can\nsuppress a required strong cluster barrier before scratch memory is\nreused.\n\nThis change keeps pending memory state across relaxed cluster barriers.\nNon-relaxed cluster barriers continue to clear it as before.\n\nThe regression test models a distributed `convert_layout`, followed by a\nrelaxed barrier and shared-memory reuse. It verifies that the pass\ninserts a strong barrier between the relaxed barrier and `local_alloc`.\n\nFixes #11404.\n\n## Validation\n\n- Baseline regression: failed because `local_alloc` immediately followed\nthe relaxed barrier.\n- Patched regression: `membar-cluster.mlir` passed (1/1).\n- Incremental native build: passed (`make`, 16 targets rebuilt/linked).\n- RTX 5090 (SM 12.0): a two-CTA Gluon cluster-barrier kernel compiled\nand ran successfully with both `relaxed=false` and `relaxed=true`\n(`payload=1`, `out=1`).\n- `pre-commit run --from-ref origin/main --to-ref HEAD`: passed.\n- `git diff --check`: passed.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- [x] I have added tests.\n  - `/test` for `lit` tests\n  - `/unittest` for C++ tests\n  - `/python/test` for end-to-end tests\n\n- [ ] I have not added any `lit` tests.\n- [x] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\n  including the \"tests should be minimal\" section."
     },
     {
       "sha": "f29a6d4dbe4fa910956dc4469fa67a420005c670",
-      "comment": "（分析缺失）",
+      "comment": "NVIDIA 后端在启用 instrumentation（如consan/gsan等）时，强制忽略用户指定的 maxnreg 选项。因为插桩会引入额外的寄存器压力，如果保留用户限制可能导致编译失败或功能异常。实现方式是在 CUDAOptions 解析后检查 instrumentation_mode，若非空则设置 maxnreg 为 None。属于后端编译选项的健壮性修复。",
       "tags": [
-        "chore"
-      ]
+        "bugfix",
+        "nvidia",
+        "backend",
+        "instrumentation",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false
+      },
+      "message": "[Runtime] Ignore requested maxnreg when compiling for instrumentation (#11466)"
     },
     {
       "sha": "0bd37f36094f133555bbd6130be9868d9b688351",
-      "comment": "（分析缺失）",
+      "comment": "为解释器添加 tl.condition 对象在 while 循环条件中的 __bool__ 支持，使其能在 CPU 解释模式下正确评估循环条件。通过 monkey-patch 在 tl.condition 上添加 __bool__ 方法，并在测试中验证。属于解释器功能增强。",
       "tags": [
-        "chore"
-      ]
+        "feature",
+        "interpreter",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。解释器为通用机制，本次变更未修改任何抽象接口或行为契约，triton-ascend 的 AscendInterpreterBuilder 无需适配。",
+        "testing": "无影响。上游新增测试仅覆盖解释器通用功能，不涉及 Ascend 专属代码路径。",
+        "needs_test_update": false
+      },
+      "message": "[INTERPRETER] Evaluate tl.condition in while loops (#11403)",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/runtime/interpreter.py"
+        ],
+        "recommend_refresh": true
+      }
     },
     {
       "sha": "5a495ee2b8fbc06b3fe022e3351c9cc985f7d742",
-      "comment": "（分析缺失）",
+      "comment": "为 Rubin (Blackwell 后续架构) 调优块状缩放矩阵乘法的配置。根据 Rubin 支持打包 FP4 布局、更大的 SMEM 容量等特性，新增了 Rubin 的每格式/每 CTA 数量最优配置，并更新了 CGA 布局和 tmem 布局的处理逻辑。仅为示例代码和配置调整，不影响编译器核心。",
       "tags": [
-        "chore"
-      ]
+        "performance",
+        "nvidia",
+        "gluon",
+        "example",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false
+      },
+      "message": "Tune 2CTA block-scale matmul for Rubin (#11423)\n\nTune Rubin block scale MMA configurations using B reuse, deeper\npipelines, packed FP4 shared memory layouts, and K tile sizes selected\nfor each format.\n\nAdd separate best configurations for Rubin and Blackwell for each input\ndata type and CTA count combination, and test every configuration.\nExisting Blackwell configurations remain unchanged."
     },
     {
       "sha": "4313a23cc565aea332ea3876411733a1f1cba9e8",
-      "comment": "（分析缺失）",
+      "comment": "修复并简化 AMD 后端 scaled_dot 操作中 scale 张量的 CGA 布局处理。之前 B 操作数的 scale 的 CGA 布局未正确转置导致在特定 CGA 布局下静默使用错误的 scale。本次重构将布局推断逻辑集中到 inferDotOperandCGALayout 和 inferDotScaleCGALayoutFromOperand 函数中，并加强了 DotScaledOp 的 verifier，使不兼容的布局在编译期报错。影响范围包括 Triton 方言接口、TritonGPU 方言的布局工具以及 AMD 后端的 AccelerateAMDMatmul pass。",
       "tags": [
-        "chore"
-      ]
+        "bugfix",
+        "refactor",
+        "amd",
+        "trongpu",
+        "layout",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "影响 `include/triton/Dialect/Triton/IR/Dialect.h` 中定义的 `DialectInferLayoutInterface`。该接口新增了纯虚方法 `verifyDotScaledOpEncodingCompatibility`，但提供了默认返回 `success()` 的实现。虽然 `TritonGPUInferLayoutInterface` 覆写了此方法用于 AMD WMMA 验证，但 triton-ascend 使用的 TTIR  dialect 不实现 `DialectInferLayoutInterface`，且其 `DotScaledOp` 的 verifier 在 C 的结果编码不存在或非 TritonGPU 编码时直接返回成功，因此该变更对 Ascend 的 `TritonToLinalg` 路径无实际影响。同样，`lib/Dialect/TritonGPU/` 下的 `inferDotOperandCGALayout` 等新函数仅被 AMD 后端的代码调用，Ascend 不会使用。",
+        "testing": "无影响。新增的 lit 测试和 Gluon 测试均针对 AMD 后端的 WMMA 布局。",
+        "needs_test_update": false
+      },
+      "message": "[AMD][GLUON] Fix and simplify CGA layout handling of scaled_dot scales (#11443)\n\nFor the B operand we need to transpose the last 2 dims in the CGA layout\nof the scales to account for the difference in dim order compared to the\noperand B.\nBefore this PR this was silently miscompiled and we used the wrong\nscales in case the CGA layout was not explicitly transposed in the\nkernel. This PR tightens the verifiers and moves the logic into an infer\nfunction to share it across multiple callers (deduplicates the logic\nfrom the Gluon wrapper and AccelerateMatmul)",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "include/triton/Dialect/Triton/",
+          "lib/Dialect/Triton/"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
     },
     {
       "sha": "0c91a25bf19d2a5d07d33e556956f30850d5a966",
-      "comment": "（分析缺失）",
+      "comment": "新增 LLVM pass（ScalarizePackedFOps）用于将只使用一个 lane 的 f32x2 向量算术操作（如 FMA）标量化，以生成更优的 NVPTX 代码。该 pass 会分析向量操作的使用情况，如果发现只有一半的 lane 被使用，则将其替换为标量操作。此功能默认关闭，NVIDIA 后端通过 `scalarize_packed_fops` 选项显式开启。影响范围包括 LLVM pass 本身、`triton-llvm-opt` 工具、`llvm.optimize_module` 的 Python 绑定以及 NVIDIA 后端。",
       "tags": [
-        "chore"
-      ]
+        "performance",
+        "nvidia",
+        "llvm",
+        "backend",
+        "feature",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false
+      },
+      "message": "[Backend] Add LLVM pass to break up <2 x float> vectors (#11458)\n\nBecause we don't set the target info correctly on the llvm optimizer, it\ncan generate vectorized ops that aren't profitable on NVIDIA hardware.\nIn particular, I was seeing f32x2 instructions where only one output is\nused.\n\nThis adds an llvm pass to scalarize any float vector ops where only one\nlane is used. This is always profitable because f32x2 registers are\nactually just two 4-byte registers allocated next to each other, so the\nextract element is free."
     },
     {
       "sha": "f4c8fdb39c05f44c229e3b16d621483edb186dd9",
-      "comment": "（分析缺失）",
+      "comment": "重构 Membar 分析中的本地 barrier 分类逻辑，将 `containsLocalBarrier` 函数替换为更细粒度的 `getLocalBarrierStages`，可以返回 barrier 相对于操作内存效果的位置（before、between、after），并新增了对 `TensormapCreateOp` 和 `MMAv5OpInterface` 等操作的处理。同时修复了一个 TensormapFenceproxyAcquireOp lowering 中的地址空间错误（None → Local）。此重构提升了 Membar 分析的准确性，影响范围包括 Triton Analysis、TritonNvidiaGPU 方言的 TMemBarrierInsertion pass 和相关 lowering。",
       "tags": [
-        "chore"
-      ]
+        "refactor",
+        "membar",
+        "tritongpu",
+        "nvidia",
+        "analysis",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false
+      },
+      "message": "[Analysis] Consolidate local barrier classification (#11453)\n\nWe also use barriers that may be emitted in the middle of ops in\n`TMemBarrierInsection`"
     },
     {
       "sha": "dda532b66d3376593069d726f907a444b912e874",
-      "comment": "（分析缺失）",
+      "comment": "增强 triton_kernels 中的 topk 功能，支持任意 top-k 宽度（非 2 的幂、大于 32）。主要通过将 `N_EXPTS_ACT` 向上取整为 2 的幂（`N_EXPTS_ACT_PAD`）用于计算，并在加载/存储时使用 mask 处理无效元素。同时调整了 bitmatrix 相关函数以处理非 2 的幂的块大小，并在 SymmetricMemoryPool 中对 topk 缓冲区增加了对齐。属于 triton_kernels 库的功能增强。",
       "tags": [
-        "chore"
-      ]
+        "feature",
+        "triton_kernels",
+        "topk",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false
+      },
+      "message": "[triton_kernels] Support arbitrary top-k widths (#11445)\n\n## Summary\n\n- Support non-power-of-two top-k widths and widths above 32, including\nautomatic and caller-provided indices, without changing the existing\nTriton kernel interfaces.\n- Preserve the upstream 32-row tile, canonical 32-bit bitmap storage,\nFPSan behavior, empty-batch handling, and forward/backward correctness.\n- Round bitmap-metadata sort blocks to a valid power of two and account\nfor 128-byte alignment between symmetric-memory buffers so small-batch\nall-gather allocations remain valid.\n\n## Validation\n\n- NVIDIA GB200, four GPUs:\n\n  ```bash\n  python -m pytest \\\n    python/triton_kernels/tests/test_topk.py \\\n\npython/triton_kernels/tests/test_tensor.py::test_make_bitmatrix_metadata\n\\\n    -n 4 -s --tb=short\n  ```\n\nResult: **784 passed, 20 skipped**. The skips are parameter combinations\nwhere `k` exceeds the expert count.\n\n- Real two-GPU symmetric-memory all-gather passed for `k=8, 18, 33, 64`,\nboth with automatically selected indices and with caller-provided\nindices.\n- Ruff checks and `git diff --check` pass."
     },
     {
       "sha": "2419165d7985d57c9a12333f481a0c01afffd260",
-      "comment": "（分析缺失）",
+      "comment": "为 AMD CDNA4 (gfx950) 添加对 scaled_upcast_fp4 操作中 compact scales 的支持。与之前要求 scale 必须有与输出相同的线程布局不同，compact 布局允许 scale 张量形状更小，从而减少寄存器占用和内存访问。同时修复了 scale-to-intrinsic 映射中忽略 register 维度零基址导致越界的问题。实现涉及 ScaledUpcastToLLVM pass 中大量 scale 寄存器索引与转换逻辑的重写。",
       "tags": [
-        "chore"
-      ]
+        "feature",
+        "amd",
+        "cdna4",
+        "scaled-upcast",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false
+      },
+      "message": "[AMD] Allow compact scales in scaled_upcast on CDNA4 (#11442)\n\nThis PR adds support for compact scales on gfx950. This means the scale\ntensor does not need to be reshaped which allows for more efficient\ncodegen.\nThis also surfaced an issue in the scale to intrinsic mapping, where we\ndid not correctly ignore zero bases in register dimension and hence\nindexed out of bounds when accessing the LLVM values for the passed in\nscales (which are unique values)."
     }
   ],
-  "generated_at": "2026-08-27T02:34:03.655217+08:00",
-  "architecture_based_on_sha": "0c91a25bf19d2a5d07d33e556956f30850d5a966",
-  "architecture_generated_at": "2026-08-26T17:52:42.145454+08:00"
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
 }

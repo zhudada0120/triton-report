@@ -1,101 +1,241 @@
 {
   "date": "2026-08-26",
   "repo": "triton-lang/triton-ascend",
-  "daily_summary": "当日 0 条 commit 均不涉及 triton-ascend。",
+  "generated_at": "2026-08-27T10:57:24.531392+08:00",
+  "daily_summary": "今日变更主要集中在 Ascend 后端的 DynamicCVPipeline 计算块规划与核心调度优化。核心工作是引入更精细的计算块(block)划分策略：新增了独立的小块合并(merge-small-block)与 UB 占用优化策略，并重构了块 ID 分配机制，支持从父控制流继承块 ID（Non-Interruptive block_id Allocation），避免跨层块 ID 冲突。同时，新增了 Cube 到 Cube 的 L1 缓冲传输路径，以优化多级 MatMul 数据流。此外，还适配了 CANN 9.1.0 版本的运行时 API（rt 到 aclrt 的迁移），并在尝试加入按块 ID 拆分 if 的 SplitIfByBlockIdPass 后，因引入回归而将其回滚。最后，回滚了 ConvertModuloToMask 规则的过度激进的维度跟踪，以解决编译 UB 溢出问题。",
+  "test_impact_summary": "今日变更对测试看护提出了较高要求。核心风险在于新的计算块规划与合并策略（MergeSmallBlockPass、BroadcastUBOptPass、PosMaskPatternPass 等）及块 ID 继承机制，这些新增 pass 改变了 IR 变换行为，需要新增 lit 测试用例来覆盖新功能和回归场景，同时现有 lit 测试（如 test_plan_compute_block_subview_memory_deps.mlir）的期望模式可能因调度顺序改变而失效，需要同步更新。C2C 传输路径作为一项新功能，必须有对应的单元测试和 lit 测试来保障其正确性。CANN 版本适配应在不同版本环境下进行验证，确保兼容性。此外，SplitIfByBlockIdPass 的回滚和 ConvertModuloToMaskRule 的回滚都应保留相应的测试用例，防止未来被错误地重新引入。",
   "commits": [
     {
       "sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
-      "comment": "（分析缺失）",
+      "comment": "回滚了 ConvertModuloToMaskRule 中 per-load 维度跟踪的改进。该改进虽然扩展了规则的适用范围，但会导致特定 kernel（如 _kernel_matmul_fp8_row_non_persistent）编译时发生 UB 溢出，因为规则缺少成本模型，无法评估重写对全局 UB 占用量的影响。回滚后，规则恢复到更保守的匹配策略，仅处理 rank-2 load，并要求唯一的 expand_dims 轴，避免因过度优化引入编译失败。此变更属于风险规避，牺牲了部分优化机会以保证编译稳定性。",
       "tags": [
-        "chore"
-      ]
+        "bugfix",
+        "high-risk",
+        "graph-optimizer"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "回滚了规则实现和新增的测试用例，需要删除不再支持的场景（如派生索引、rank-one load、transpose 链等）的测试，并保留原有基础用例以确保回归。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToGraph/convert_modulo_to_mask.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_graph_optimize.py"
+        ]
+      },
+      "message": "[ConvertModuloToMask](revert) rollback per-load wrapped dimension tracking\n\n#1698 tracked the wrapped dimension per load so the rule would admit a derived\nscale index, a rank-one load and a transpose on the data path.  That widening\nmakes the rule fire on _kernel_matmul_fp8_row_non_persistent, whose 128x256 f32\nepilogue tiles already sit at the UB ceiling, and compilation now fails:\n\n  ub overflow, requires 2109440 bits while 2031616 bits available\n\nThe rule carries no UB cost model, ubCapacityBytes reaches StoreCoalescing\nonly, so it cannot decline a rewrite on a kernel with no room for it.  A\nper-load byte guard would not catch this case either: the tiles the rule\nrewrites are around 16 KB against a 124 KB budget, while the overflow comes\nfrom how the rewrite changes reuse of the f32 epilogue tiles it never touches.\nRoll the widening back to unblock the fbgemm case, and re-land it once the\nmechanism is understood and the rule can price the buffers it costs.\n\nReverts 02fa3fd71."
     },
     {
       "sha": "5add433d43330c37c2bf607e80921f827d2f24ae",
-      "comment": "（分析缺失）",
+      "comment": "为精确性问题修复，简单地在拦截函数列表（interceptrFunc）中添加了新的 kernel 名称 `_sparse_decode_kernel`。这属于对特定 kernel 的特判，以启用或调整某种处理逻辑，改动范围小，风险低。",
       "tags": [
-        "chore"
-      ]
+        "bugfix",
+        "low-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅添加了内部函数名称列表，不涉及逻辑变更，现有测试已足够覆盖。",
+        "suggested_test_areas": []
+      },
+      "message": "[ssbuffer](fix) Fix errors for #1296\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>"
     },
     {
       "sha": "b1187ec820e877099cea379fc8378233c37b8caf",
-      "comment": "（分析缺失）",
+      "comment": "这是一个重要的适配变更，旨在支持 CANN 8.5.0 至 9.1.0 版本。核心工作是在 launcher 生成代码中引入兼容层（shim），通过宏定义 `TRITON_CANN_910` 切换新旧运行时 API（如 `aclrtLaunchKernelWithHostArgs` 与 `rtKernelLaunchWithFlagV2`）。同时，也重构了 `npu_utils.cpp` 中的内存分配、kernel 注册等操作，统一使用新的 shim 接口。此变更增强了后端对不同 CANN 版本的兼容性，但引入了复杂的条件编译逻辑，增加了维护成本和新版本适配的风险。",
       "tags": [
-        "chore"
-      ]
+        "feature",
+        "high-risk",
+        "runtime",
+        "CANN"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "launcher 生成代码逻辑变化巨大，需要更新相关单元测试以断言新的 shim 函数调用和配置，并确保在旧版（<9.1.0）和新版（>=9.1.0）CANN 环境下的行为均正确。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_launcher_export_api.py",
+          "third_party/ascend/unittest/pytest_ut/test_layout_memory_895_closure_differential.py",
+          "third_party/ascend/unittest/pytest_ut/test_layout_memory_91095_native_e2e.py"
+        ]
+      },
+      "message": "[launch](feat) adapter cann version(8.5.0 - 9.1.0) (#1705)\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>"
     },
     {
       "sha": "39b5644c1188b99700cb91867c16f826ee971633",
-      "comment": "（分析缺失）",
+      "comment": "这是一个多方面的精度修复。首先，扩大了 `interceptrFunc` 和 `regionalDisabledOps` 的 kernel 名称列表，增加了对 `_jagged_flash_attention_bwd_basic_kernel` 等 kernel 的特判。其次，为 `isTensorComputeOp` 增加了针对 `pcb10_tc01_kernel` 的 legacy 处理路径，使其使用旧的判定逻辑。这些修改表明在动态 CV pipeline 中，不同的 kernel 可能需要不同的处理策略，但硬编码 kernel 名列表的方式增加了代码的脆弱性。",
       "tags": [
-        "chore"
-      ]
+        "bugfix",
+        "medium-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "主要是在内部函数列表或判定逻辑中增加了特判，现有测试的覆盖范围可能已足够，但建议关注相关 kernel 的回归测试。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/"
+        ]
+      },
+      "message": "[ssbuffer](fix) Fix precision errors for #1296 (#1758)"
     },
     {
       "sha": "bb30d768fec05e1966a0ed671662c8370e64de3e",
-      "comment": "（分析缺失）",
+      "comment": "修复 C2C fixpipe 传输的 `kIntraDeps` 属性问题。变更内容为：1) 在 `AddMultiBufferInnerScopePass` 中扫描已存在的 `kIntraDeps` 属性，避免新增属性时 groupId 冲突；2) 在 `InterCoreTransferAndSyncPass` 中为生成的 fixpipe 和 memory_space_cast 操作添加 `kIntraDeps` 属性，以标记跨 Core 的依赖关系。此变更解决了多缓冲 (multibuffer) 与 C2C 传输之间的交互问题，但手动管理 groupId 的方式存在潜在冲突风险。",
       "tags": [
-        "chore"
-      ]
+        "bugfix",
+        "medium-risk",
+        "DynamicCVPipeline",
+        "ssbuffer"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "lit 测试 `test_fixpipe_nz2nz.mlir` 的期望输出已更新，以检查新的 `ssbuffer.intraDeps` 属性，需要确保该测试能正确验证属性的生成和传递。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow/test_fixpipe_nz2nz.mlir"
+        ]
+      },
+      "message": "[ssbuffer](fix) fix IntraDeps attr for nz2nz (#1763)"
     },
     {
       "sha": "8ec15cb8e4a7bbdb73d4159553387e7ac841ddea",
-      "comment": "（分析缺失）",
+      "comment": "恢复 `test_debug_line_rewriter.py` 测试。此前的 commit 因 `debug_line_rewriter` UT 不受支持而将其跳过，现在恢复，表明该测试可能已具备运行条件或解决了之前的问题。此变更仅涉及测试代码。",
       "tags": [
-        "chore"
-      ]
+        "test",
+        "low-risk",
+        "test"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "此变更本身是恢复测试，因此需要在 CI 环境中重新启用并运行该测试，确保其通过。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_debug_line_rewriter.py"
+        ]
+      },
+      "message": "Revert \"[UT](fix) skip test debug line rewriter (#1690)\" (#1696)\n\nThis reverts commit 36d0cb4699227ff89150c0517917d52dfb59d22b."
     },
     {
       "sha": "a7ce4f57dfe729afceb527aa21f4591a64530c24",
-      "comment": "（分析缺失）",
+      "comment": "修复 `MergeCubeForBlockPass` 在合并块时，漏掉为新合并的计算块设置 `CUBE` 核心类型属性的问题。这是对 `applyMerge` 函数的补充，确保合并后的块拥有正确的核心类型标记，对后续 pass 的正确性至关重要。",
       "tags": [
-        "chore"
-      ]
+        "bugfix",
+        "low-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "改动点较小，主要为补充属性设置，现有测试的覆盖范围可能已足够，但建议关注涉及块合并的 lit 测试。",
+        "suggested_test_areas": []
+      },
+      "message": "fix: merge cube for (#1750)\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>"
     },
     {
       "sha": "01d4c9db893ecfde5078c01edfbace4f59430a22",
-      "comment": "（分析缺失）",
+      "comment": "为 `getCoreTypeOfSimpleOpOrCf` 和 `MergeSmallBlockPass` 增加了 fallback 路径。前者在遇到特定 kernel（如 `pcb10_tc01_kernel`）时返回 `UNDETERMINED`，避免错误的类型判断。后者重构了计算操作计数逻辑，使其更精确地识别 linalg 和 elementwise 操作。这些修改是为了提升多区域 (multi-region) 支持的鲁棒性。",
       "tags": [
-        "chore"
-      ]
+        "bugfix",
+        "refactor",
+        "medium-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "合并了原先分散的 `isTensorComputeOp` 逻辑，`MergeSmallBlockPass`（新增）的算法需要专门的 lit 测试来覆盖其策略和边界情况。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/"
+        ]
+      },
+      "message": "[ssbuffer](fix) Add fallback path for mult-region (#1749)\n\n* [ssbuffer](fix) fix precsion errors\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>\n\n* [ssbuffer](fix) add fallback path for multi-region\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>\n\n---------\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>\nCo-authored-by: shaoyiyang <shaoyiyang1@huawei.com>\nCo-authored-by: chenwuyang <chenwuyang1@huawei.com>"
     },
     {
       "sha": "2eee2238d57314d200b9fc99b8c795653b88ac7b",
-      "comment": "（分析缺失）",
+      "comment": "这是一个重要的功能增强：新增 C2C (Cube-to-Cube) 的 fixpipe 传输路径。在数据依赖分析中识别 C2C 依赖，并在 `InterCoreTransferAndSyncPass` 中实现 `handleCubeToCube`，用于在 Cube 核心之间通过共享的 L1 buffer 直接传输数据，并将 `trunc` 操作折叠为 fixpipe 的 `pre_quant`。这优化了多 MatMul 场景的数据流，但新增的传输路径和共享缓冲管理增加了系统复杂性。",
       "tags": [
-        "chore"
-      ]
+        "feature",
+        "high-risk",
+        "DynamicCVPipeline",
+        "ssbuffer"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 `test_fixpipe_nz2nz.mlir` lit 测试来覆盖 C2C 传输的多种场景（f32/f16/trunc），但还需编写更综合的单元测试来验证数据依赖分析的正确性以及 L1 buffer 的生命周期管理。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow/test_fixpipe_nz2nz.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow/"
+        ]
+      },
+      "message": "[ssbuffer](feat) support fixpipe to L1 (#1647)"
     },
     {
       "sha": "5f159e26bc31a7a51d369896dfd9003d15fb5792",
-      "comment": "（分析缺失）",
+      "comment": "这是一个大型重构和功能增强提交，旨在优化 PlanVectorBlockPass 的计算块规划。主要变更包括：1) 新增多个优化 pass（如 MergeSmallBlockPass, MoveLoadIntoUserPass, SinkI1ProducersIntoUsersPass, PosMaskPatternPass），用于在向量核心上合并小计算块、优化内存访问和下沉 i1 生产者；2) 重构了 PlanVectorBlockPass 的规划逻辑，支持反向裁剪和更灵活的块继承；3) 将 `kEnableUbRefineOpt` 开关移除，使得这些新 pass 始终启用。此提交显著增强了向量核心的调度和优化能力，但引入大量新逻辑和默认行为变更，回归风险高。",
       "tags": [
-        "chore"
-      ]
+        "feature",
+        "refactor",
+        "high-risk",
+        "DynamicCVPipeline",
+        "performance"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了大量 pass 并修改了默认行为，需要为每个新 pass 编写独立的 lit 测试，并更新现有受影响的 `test_plan_vector_block` 相关测试。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/PlanComputeBlock/test_plan_compute_block_subview_memory_deps.mlir"
+        ]
+      },
+      "message": "[ssbuffer](feat) better refine module in  PlanVectorBlockPass (#1296)\n\n* fix memref dep\n\nSigned-off-by: cxtverygood123 <chenxiaotian12@huawei.com>\n\n* [ssbuffer](fix) unify view/tile ops in UnifyAllocBlock and UnifyStoreBlock Pass\n\nSigned-off-by: lichengfeng497 <1309837013@qq.com>\n\n* migrate SinkI1ProducersIntoUsersPass, BroadcastUBOptPass, MoveLoadIntoUserPass from YY/cut and add checks to skip scf ops and multi-result ops in SinkI1\n\nSigned-off-by: suzuko <linzirui1@huawei.com>\n\n* [ssbuffer](feat) better refine module in PlanVectorBlockPass\n\nSigned-off-by: shaoyiyang <shaoyiyang1@huawei.com>\n\n* [ssbuffer](feat) Handle PosEncoding pattern in opt\n\nSigned-off-by: shaoyiyang <shaoyiyang1@huawei.com>\n\n* [ssbuffer](fix) SinkI1 just move without clone\n\n* [ssbuffer](fix)fix alloc_tensor copy\n\nSigned-off-by: cxtverygood123 <chenxiaotian12@huawei.com>\n\n* [ssbuffer] (fix) Adapter no-interruptive block\n\nSigned-off-by: shaoyiyang <shaoyiyang1@huawei.com>\n\n---------\n\nSigned-off-by: cxtverygood123 <chenxiaotian12@huawei.com>\nSigned-off-by: lichengfeng497 <1309837013@qq.com>\nSigned-off-by: suzuko <linzirui1@huawei.com>\nSigned-off-by: shaoyiyang <shaoyiyang1@huawei.com>\nCo-authored-by: cxtverygood123 <chenxiaotian12@huawei.com>\nCo-authored-by: lichengfeng497 <1309837013@qq.com>\nCo-authored-by: suzuko <linzirui1@huawei.com>\nCo-authored-by: shaoyiyang <shaoyiyang@gitcode.com>\nCo-authored-by: shaoyiyang <shaoyiyang1@huawei.com>"
     },
     {
       "sha": "1fc41dbbe1bf029da55e4582b2b1bcb704f47e84",
-      "comment": "（分析缺失）",
+      "comment": "回滚了 `SplitIfByBlockIdPass` 及其相关代码。该 pass 旨在按计算块 ID 拆分 `scf.if` 操作，但可能因实现复杂或引入回归而被回滚。文档说明中并未明确给出原因，但通常此类回滚是为了保证主分支的稳定性。此变更删除了大量代码。",
       "tags": [
-        "chore"
-      ]
+        "bugfix",
+        "high-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "删除了 `SplitIfByBlockIdPass`，相关的测试文件（如果有）也需要删除或标记为跳过，并确保其回滚后其他依赖该 pass 的测试能正常通过。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/"
+        ]
+      },
+      "message": "Revert \"[SSBuffer](feat) Add SplitIfByBlockIdPass to pipeline (#1665)\" (#1710)\n\nThis reverts commit f0bfd614d731b793cf8c387a72d928e57a6767ee.\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>"
     },
     {
       "sha": "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0",
-      "comment": "（分析缺失）",
+      "comment": "实现了 Non-Interruptive block_id Allocation，核心是引入了 `DependencyHelper` 和 `DependencyCycleDetector`，以统一和简化依赖查询与环检测逻辑。ComputeBlockIdManager 增加了 `shouldInheritFromParent` 和 `inheritFromParent` 方法，支持从父控制流块（如 scf.for/if）继承块 ID，并优化了同块操作的查询。此重构提升了代码复用性和可维护性，但涉及大量核心 pass 的改动，可能导致行为变化。",
       "tags": [
-        "chore"
-      ]
+        "refactor",
+        "high-risk",
+        "DynamicCVPipeline",
+        "ssbuffer"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "核心算法重构，需更新现有 lit 测试以匹配新的调度顺序，并新增测试覆盖块 ID 继承的场景。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/PlanComputeBlock/test_plan_compute_block_regional.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/PlanComputeBlock/test_plan_compute_block_subview_memory_deps.mlir"
+        ]
+      },
+      "message": "[ssbuffer](feat) Non-Interruptive block_id Allocation (#1660)\n\n* regional\n\n* fix reviews\n\n* DependencyHelper supports interrupt\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>\n\n* opt: move vector single calculation staring blocks to front\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>\n\n* fix other passes in computeblockopt\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>\n\n* format\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>\n\n* scalar closure\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>\n\n* fixpipe opt fix\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>\n\n* fixpipe opt\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>\n\n* intercore transfer\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>\n\n* unifystore\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>\n\n* update ut\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>\n\n* [ssbuffer](fix) Non-interruptive regional fix\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>\n\n---------\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>"
     },
     {
       "sha": "12560d811374b08412d66e4e55012576b186b1c0",
-      "comment": "（分析缺失）",
+      "comment": "引入了 `SplitIfByBlockIdPass`，旨在将包含多个不同 block_id 操作组的 `scf.if` 拆分成一系列单一的 if 操作，每个 if 只包含一个组的操作，并处理跨组 SSA 依赖。此变更试图优化控制流块，但增加了巨大复杂度，且根据后续 commit（1fc41db），此特性最终被回滚，可能是因为引入了回归或设计问题。",
       "tags": [
-        "chore"
-      ]
+        "feature",
+        "high-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 pass 需要对应的 lit 测试来覆盖拆分逻辑，但由于该提交在当日即被回滚，测试也应一并删除或不再执行。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/"
+        ]
+      },
+      "message": "[SSBuffer](feat) Add SplitIfByBlockIdPass to pipeline (#1665)\n\n* [SSBuffer](feat) Add SplitIfByBlockIdPass to pipeline\n\n* fix errors\n\n* Better structure\n\n* fix: do not clone alloc/alloca\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>\n\n* fix: contains Main Loop should be set to true\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>\n\n* fix: do not erase if results\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>\n\n---------\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>\nCo-authored-by: open_zk <2086579770@qq.com>"
     }
   ],
-  "generated_at": "2026-08-27T02:34:04.419877+08:00",
-  "architecture_based_on_sha": "a4aecc3292d8bdf7ae80165f113a27ea1e89803a",
-  "architecture_generated_at": "2026-08-26T17:52:42.148804+08:00"
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
 }

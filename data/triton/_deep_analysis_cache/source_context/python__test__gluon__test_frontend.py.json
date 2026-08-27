@@ -1,0 +1,23 @@
+{
+  "content_hash": "b3cc96c7859357ab",
+  "analysis": {
+    "interface_summary": "定义 5 个类；定义 323 个函数",
+    "key_interfaces": [
+      "Pair",
+      "ForwardOnlyAggregate",
+      "NotImplementedAggregate",
+      "ReflectedOnlyAggregate",
+      "TensorTupleType",
+      "ForwardOnlyAggregate.__add__",
+      "ForwardOnlyAggregate.logical_and",
+      "NotImplementedAggregate.__add__",
+      "ReflectedOnlyAggregate.__radd__",
+      "TensorTupleType.arange",
+      "TensorTupleType.full",
+      "TensorTupleType.valid_mask",
+      "TensorTupleType._binary",
+      "TensorTupleType.__add__"
+    ]
+  },
+  "cached_at": "2026-08-27T10:55:14.350753+08:00"
+}
