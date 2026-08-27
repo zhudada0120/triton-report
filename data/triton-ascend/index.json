@@ -1,7 +1,7 @@
 {
   "repo": "triton-ascend",
   "source_repo": "triton-lang/triton-ascend",
-  "built_at": "2026-08-27T02:34:04.481178+08:00",
+  "built_at": "2026-08-27T10:29:02.200940+08:00",
   "total_dates": 2,
   "date_range": [
     "2026-08-25",
@@ -17,12 +17,12 @@
     "adaptation_status": true
   },
   "architecture_version": {
-    "commit_sha": "a4aecc3292d8bdf7ae80165f113a27ea1e89803a",
-    "generated_at": "2026-08-26T17:52:42.148804+08:00",
-    "version_count": 1
+    "commit_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+    "generated_at": "2026-08-27T10:29:02.142529+08:00",
+    "version_count": 2
   },
   "architecture_deltas": {
-    "baseline_sha": "a4aecc3292d8bdf7ae80165f113a27ea1e89803a",
+    "baseline_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
     "delta_count": 0,
     "affected_commits": []
   },
@@ -309,39 +309,24 @@
   },
   "architecture_impact_index": {},
   "keyword_index": {
-    "precedence": [
-      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
-    ],
-    "compile": [
+    "force": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a",
-      "b1e2f99618ecd4ac3e4a0ca7630324b869335d25",
-      "e1314a246d4ef73de98ba2c9333f4f7a42f3aeb1"
+      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
     ],
     "compile_on_910_95": [
       "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
     ],
-    "constructor": [
-      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
-    ],
-    "compatibility": [
+    "option": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
       "a4aecc3292d8bdf7ae80165f113a27ea1e89803a",
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef",
       "e1314a246d4ef73de98ba2c9333f4f7a42f3aeb1"
     ],
-    "behavior": [
-      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
-    ],
-    "legacy": [
-      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
-    ],
-    "force": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
-    ],
     "fusion": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
+    ],
+    "precedence": [
       "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
     ],
     "restore": [
@@ -349,7 +334,35 @@
       "a4aecc3292d8bdf7ae80165f113a27ea1e89803a",
       "e1314a246d4ef73de98ba2c9333f4f7a42f3aeb1"
     ],
+    "compatibility": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a",
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef",
+      "e1314a246d4ef73de98ba2c9333f4f7a42f3aeb1"
+    ],
+    "compile": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a",
+      "b1e2f99618ecd4ac3e4a0ca7630324b869335d25",
+      "e1314a246d4ef73de98ba2c9333f4f7a42f3aeb1"
+    ],
     "multiple-consumer": [
+      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
+    ],
+    "preserve": [
+      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
+    ],
+    "legacy": [
+      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
+    ],
+    "constructor": [
+      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
+    ],
+    "simt": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
+    ],
+    "behavior": [
       "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
     ],
     "compiler": [
@@ -360,61 +373,51 @@
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef",
       "e1314a246d4ef73de98ba2c9333f4f7a42f3aeb1"
     ],
-    "preserve": [
-      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
-    ],
-    "option": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a",
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef",
-      "e1314a246d4ef73de98ba2c9333f4f7a42f3aeb1"
-    ],
-    "simt": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
-    ],
-    "assertion": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "enable_sync_block_lock": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "variable": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "detailed": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "stream": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "environment": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "enable_ub_refine_opt": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "enable_cce_vf_remove_membar": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "enable_cce_vf_auto_sync": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "describe": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "triton_all_blocks_parallel": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "enable_mask_fallback_conversion": [
+    "enable_cross_if_fusion": [
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
     "enable_buffer_insert_optimization": [
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
-    "warp_size": [
+    "mlir_root": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "triton_ascend_arch": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "warnings": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "warning": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "triton_disable_ffts": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "code_motion": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "enable_cce_vf_remove_membar": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "enable_auto_blockify": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "triton_backend": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "variable": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "disable_size_align_for_cast": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "enable_linearize": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "mix_mode": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
     "deprecated": [
@@ -422,83 +425,14 @@
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef",
       "e1314a246d4ef73de98ba2c9333f4f7a42f3aeb1"
     ],
-    "kernel_name": [
+    "enable_nd2nz_on_vector": [
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
-    "graph_optimize_emit_remarks": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "mix_mode": [
+    "environment": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "enable_cross_if_fusion": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "triton_backend": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "enable_vf_fusion": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "parallel_mode": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "mlir_root": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "triton_ascend_compile_speed_opt": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "code_motion": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "warnings": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "has_auto_blockify_blacklist_op": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "add_auto_scheduling": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "triton_disable_ffts": [
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
     "triton_register_tensor_msprof": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "triton_ascend_arch": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "disable_size_align_for_cast": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "optimize_dynamic_offset": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "auto_blockify_size": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "allow_fp8e4nv": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "adapt": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "format": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "enable_linearize": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "arch": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "enable_nd2nz_on_vector": [
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
     "enable_select_analysis": [
@@ -507,44 +441,110 @@
     "graph_optimize_rule_mask": [
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
+    "enable_vf_fusion": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "enable_cce_vf_auto_sync": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "graph_optimize_max_rewrites_per_function": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "triton_all_blocks_parallel": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "allow_fp8e4nv": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "enable_sync_block_lock": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "has_auto_blockify_blacklist_op": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "adapt": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "warp_size": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "format": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "describe": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "auto_blockify_size": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
     "hfusion_enable_multiple_consumer_fusion": [
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
+    "ops_reorder": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "triton_ascend_compile_speed_opt": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "detailed": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "storage_align": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "graph_optimize_emit_remarks": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "add_auto_scheduling": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "llvm_root": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "optimize_dynamic_offset": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "assertion": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "stream": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
     "enable_drop_unit_dims": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "use_bytecode": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "kernel_name": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "messages": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "enable_ub_refine_opt": [
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
     "llvm_version": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
-    "ops_reorder": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "storage_align": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "llvm_root": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "warning": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
     "auto_tile_and_bind_subblock": [
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
-    "use_bytecode": [
+    "enable_mask_fallback_conversion": [
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
     "graph_optimize_ub_capacity_bytes": [
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
-    "graph_optimize_max_rewrites_per_function": [
+    "parallel_mode": [
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
-    "messages": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "enable_auto_blockify": [
+    "arch": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
     "overflow": [
@@ -553,23 +553,23 @@
     "driver": [
       "bd1f00862288b88865231b4859dcac85831c9fce"
     ],
-    "precommit": [
+    "uint32": [
       "bd1f00862288b88865231b4859dcac85831c9fce"
     ],
     "totalworkspacesize": [
       "bd1f00862288b88865231b4859dcac85831c9fce"
     ],
-    "uint32": [
+    "precommit": [
       "bd1f00862288b88865231b4859dcac85831c9fce"
+    ],
+    "reverts": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "bb75f42b96dae31b9eae5217f9760d425be669a8"
     ],
     "skip": [
       "bb75f42b96dae31b9eae5217f9760d425be669a8"
     ],
-    "global": [
-      "898f909f982c0b3639712f535a84417d28a0e2da",
-      "bb75f42b96dae31b9eae5217f9760d425be669a8"
-    ],
-    "case": [
+    "pytest": [
       "bb75f42b96dae31b9eae5217f9760d425be669a8"
     ],
     "feat": [
@@ -581,12 +581,18 @@
     "error": [
       "bb75f42b96dae31b9eae5217f9760d425be669a8"
     ],
-    "scratch": [
+    "ascend": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
       "898f909f982c0b3639712f535a84417d28a0e2da",
+      "b1e2f99618ecd4ac3e4a0ca7630324b869335d25",
       "bb75f42b96dae31b9eae5217f9760d425be669a8"
     ],
     "revert": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "bb75f42b96dae31b9eae5217f9760d425be669a8"
+    ],
+    "global": [
+      "898f909f982c0b3639712f535a84417d28a0e2da",
       "bb75f42b96dae31b9eae5217f9760d425be669a8"
     ],
     "launch": [
@@ -594,17 +600,11 @@
       "a8ff41745f15230761a50ac7668d0c3cc3486309",
       "bb75f42b96dae31b9eae5217f9760d425be669a8"
     ],
-    "pytest": [
-      "bb75f42b96dae31b9eae5217f9760d425be669a8"
-    ],
-    "ascend": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+    "scratch": [
       "898f909f982c0b3639712f535a84417d28a0e2da",
-      "b1e2f99618ecd4ac3e4a0ca7630324b869335d25",
       "bb75f42b96dae31b9eae5217f9760d425be669a8"
     ],
-    "reverts": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+    "case": [
       "bb75f42b96dae31b9eae5217f9760d425be669a8"
     ],
     "ssbuffer": [
@@ -616,330 +616,330 @@
     "l0c": [
       "00d95a40b55dc60e986a062e279c532797df6047"
     ],
-    "storage": [
+    "torch_npu": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "remove": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "blocks": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "ops": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
     "drop": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
       "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
-    "mask": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5",
+    "rename": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "ffts": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "honor": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "nd2nz": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "veccore": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "kernel": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "code": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "bind": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "mlir": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "size": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "blocks": [
+    "bisheng": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
     "ignore": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "scheduling": [
+    "reconcile": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "warp": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "consumer": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
     "switch": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
       "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
-    "bytecode": [
+    "env": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "optimization": [
+    "count": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "reconcile": [
+    "ffts": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "graph": [
+    "code": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "select": [
+    "stack": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "default": [
+    "mode": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "derive": [
+    "interface": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "blockify": [
+    "cherry": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "disable": [
+    "registration": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "tensor": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "linearize": [
+    "mlir": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
     "options": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
       "b1e2f99618ecd4ac3e4a0ca7630324b869335d25"
     ],
-    "crosscore": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "interface": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "unused": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "cross": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "dynamic": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "mode": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "motion": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "duplicate": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "consumer": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "insert": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "count": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "align": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "picked": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "compile-options": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "blacklist": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "cherry": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "membar": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "refine": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "name": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "retained": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "merge": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "inter": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "centralize": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "sync": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "alongside": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "silently": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "cce": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "slots": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "analysis": [
+    "level": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
     "parallel": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "consolidate": [
+    "centralize": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "remove": [
+    "internalize": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "block": [
+    "align": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "backend": [
+    "cube": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "default": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "nd2nz": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "retain": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
     "rewrite": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5",
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "rename": [
+    "insert": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "retain": [
+    "scheduling": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "limit": [
+    "inter": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "msprof": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "reorder": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "override": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "env": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "target": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "buffer": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "unit": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "registration": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "offset": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "opt": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "dims": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "torch_npu": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "intra": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "pipeline": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "fallback": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "bisheng": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "libdevice": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
     "vector": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5",
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "internalize": [
+    "sync": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "cube": [
+    "dims": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "stack": [
+    "pipeline": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "template": [
+    "intra": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "cache": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "membar": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "derive": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "disable": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "bytecode": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "slots": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "name": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
       "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
-    "warp": [
+    "msprof": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
     "effective": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "root": [
+    "unit": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "llvm": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "auto": [
+    "honor": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
     "tile": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5",
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "docs": [
+    "blacklist": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "backend": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "size": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "tensor": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "target": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "select": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "veccore": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "root": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "optimization": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "libdevice": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
       "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
-    "architecture": [
+    "crosscore": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "budget": [
+    "block": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "cache": [
+    "override": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "subblock": [
+    "alongside": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "motion": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
     "policy": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "ops": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "level": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
     "nfc": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "mask": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "cross": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "docs": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "blockify": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "dynamic": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "linearize": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "template": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "fallback": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "kernel": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "consolidate": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "budget": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "merge": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "refine": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "duplicate": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "retained": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "opt": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "unused": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "llvm": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "architecture": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "cce": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "picked": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "bind": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "storage": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "auto": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "limit": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "compile-options": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "silently": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "analysis": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "buffer": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "graph": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
     "rule": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "reorder": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "subblock": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "offset": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
     "bisheng_options": [
@@ -948,248 +948,136 @@
     "enable_cube_block_merge": [
       "0bd2ad8ab35a5546f1bb2d93e83116b18db80a4e"
     ],
-    "square": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "comparison": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "expand_dims": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "used": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "transfer": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "reject": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "survived": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "place": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "convertmodulotomask": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "block-quantised": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "dot": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "map": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "gather": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "addressing": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "dimension": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "element": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "proved": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "columns": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "transpose": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "broadcast": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "store": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "admits": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "rows": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "weight": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "positive": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
     "uniform": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "divisor": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "lanes": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "wrapped": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "rank-two": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "function": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "three": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "modulo": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "trans": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "rejected": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "guard": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5",
-      "3931511e87ec26e83e98a59d06e835c37a482703"
-    ],
-    "track": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "safe": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "varies": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "negative": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "leaves": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "beside": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "records": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "array": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "fused-moe": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "exactly": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "admitting": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "axis": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "stayed": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "indexes": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "discards": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "stated": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "see": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "approximation": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "miscompile": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "invariant": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "plus": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "two": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "candidate": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "rather": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "contiguous": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "per": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "along": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "needs": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "precise": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "group_n": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "cases": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "path": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "coordinate": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "whose": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "folded": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
     "something": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "shapes": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "old": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
     "past": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "load": [
+    "positive": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "actually": [
+    "rank-two": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "injected": [
+    "map": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "shape": [
+    "place": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "proved": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "store": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "exactly": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "dot": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "track": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "orientation": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "trans": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "offs_bn": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "transpose": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "recorded": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "coordinate": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "folded": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "square": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
     "per-element": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
+    "convertmodulotomask": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "leaves": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "scale": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "emits": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
     "one": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "gather": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "records": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "rejected": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "load": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "survived": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "now": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "expand_dims": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "swapping": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "array": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "broadcast": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "whole": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "admitting": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "dimension": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "tracked": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "per": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "wrap": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "invariant": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "divisor": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
     "derived": [
@@ -1198,89 +1086,213 @@
     "makes": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "whole": [
+    "collectstoremaskguard": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "rank-one": [
+    "path": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "comparison": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "columns": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "shape": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
     "run": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "now": [
+    "plus": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "orientation": [
+    "actually": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "reasoning": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    "guard": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "3931511e87ec26e83e98a59d06e835c37a482703"
     ],
-    "read": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "zeros": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "those": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "veto": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "swapping": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "emits": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "collectstoremaskguard": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "back": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "lane": [
+    "cases": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
     "rejecting": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "operands": [
+    "rank-one": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "recorded": [
+    "candidate": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "offs_bn": [
+    "contiguous": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "scale": [
+    "whose": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "data": [
+    "beside": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "proof": [
+    "zeros": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "old": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "see": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "veto": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "stayed": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "index": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "stated": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "reject": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "those": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "indexes": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "precise": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "needs": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "negative": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "element": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "three": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "fused-moe": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "lanes": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "rather": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "discards": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
     "drops": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "boundary": [
+    "used": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "back": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "proof": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "weight": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
     "lit": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "tracked": [
+    "reasoning": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "wrap": [
+    "rows": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "index": [
+    "shapes": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "function": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "injected": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "admits": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "group_n": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "lane": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "read": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "along": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "addressing": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "axis": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "miscompile": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "data": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "modulo": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "wrapped": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "two": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "varies": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "transfer": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "boundary": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "safe": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "operands": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "approximation": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "block-quantised": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "headroom": [
+      "3931511e87ec26e83e98a59d06e835c37a482703"
+    ],
+    "regressions": [
+      "3931511e87ec26e83e98a59d06e835c37a482703"
+    ],
+    "subprocess": [
+      "3931511e87ec26e83e98a59d06e835c37a482703"
+    ],
+    "init": [
+      "3931511e87ec26e83e98a59d06e835c37a482703"
     ],
     "test": [
       "3931511e87ec26e83e98a59d06e835c37a482703"
@@ -1292,41 +1304,28 @@
     "baseline": [
       "3931511e87ec26e83e98a59d06e835c37a482703"
     ],
-    "subprocess": [
-      "3931511e87ec26e83e98a59d06e835c37a482703"
-    ],
-    "lazy": [
-      "3931511e87ec26e83e98a59d06e835c37a482703"
-    ],
     "asserts": [
-      "3931511e87ec26e83e98a59d06e835c37a482703"
-    ],
-    "pytest_ut": [
-      "3931511e87ec26e83e98a59d06e835c37a482703"
-    ],
-    "fresh": [
-      "3931511e87ec26e83e98a59d06e835c37a482703"
-    ],
-    "regressions": [
-      "3931511e87ec26e83e98a59d06e835c37a482703"
-    ],
-    "measures": [
-      "3931511e87ec26e83e98a59d06e835c37a482703"
-    ],
-    "under": [
-      "3931511e87ec26e83e98a59d06e835c37a482703"
-    ],
-    "triton": [
-      "3931511e87ec26e83e98a59d06e835c37a482703",
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "init": [
       "3931511e87ec26e83e98a59d06e835c37a482703"
     ],
     "against": [
       "3931511e87ec26e83e98a59d06e835c37a482703"
     ],
+    "under": [
+      "3931511e87ec26e83e98a59d06e835c37a482703"
+    ],
     "test_import_time": [
+      "3931511e87ec26e83e98a59d06e835c37a482703"
+    ],
+    "is_compile_on_910_95": [
+      "3931511e87ec26e83e98a59d06e835c37a482703"
+    ],
+    "regression": [
+      "3931511e87ec26e83e98a59d06e835c37a482703"
+    ],
+    "measures": [
+      "3931511e87ec26e83e98a59d06e835c37a482703"
+    ],
+    "pytest_ut": [
       "3931511e87ec26e83e98a59d06e835c37a482703"
     ],
     "import": [
@@ -1335,14 +1334,15 @@
     "stays": [
       "3931511e87ec26e83e98a59d06e835c37a482703"
     ],
-    "headroom": [
+    "lazy": [
       "3931511e87ec26e83e98a59d06e835c37a482703"
     ],
-    "regression": [
+    "fresh": [
       "3931511e87ec26e83e98a59d06e835c37a482703"
     ],
-    "is_compile_on_910_95": [
-      "3931511e87ec26e83e98a59d06e835c37a482703"
+    "triton": [
+      "3931511e87ec26e83e98a59d06e835c37a482703",
+      "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
     "exection": [
       "a8ff41745f15230761a50ac7668d0c3cc3486309"
@@ -1350,190 +1350,190 @@
     "acl": [
       "a8ff41745f15230761a50ac7668d0c3cc3486309"
     ],
-    "rt-": [
+    "reduce": [
       "a8ff41745f15230761a50ac7668d0c3cc3486309"
     ],
-    "reduce": [
+    "rt-": [
       "a8ff41745f15230761a50ac7668d0c3cc3486309"
     ],
     "isolate": [
       "b1e2f99618ecd4ac3e4a0ca7630324b869335d25"
     ],
-    "buttons": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "keeps": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "header": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "overrides": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "api": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "toggle": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
     "page": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "adapted": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "reference": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "center": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "sphinx_book_theme": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "centered": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "github": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "toctrees": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "images": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "click": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "landing": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "field": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "shows": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "sphinx": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "project": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "navbar_persistent": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "cann": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "restyle": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "duplicated": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "watch": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "star": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "gone": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "via": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "title": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "sphinx-copybutton": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "furo-only": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "theme": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "search": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "navbar": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "per-page": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "binding": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "temporarily": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "sectioned": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "hide": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "visible": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "extra": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "language": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "requirements": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "extension": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "html": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "suggest-edit": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "sidebar": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "repository": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "logo": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "favicon": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "top": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "inline": [
       "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
     "furo": [
       "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
+    "per-page": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "navbar_persistent": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "navbar": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "overrides": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "title": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "keeps": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "star": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "cann": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "inline": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "repository": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "requirements": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
     "fork": [
       "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
-    "landing-page": [
+    "html": [
       "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
-    "code-copy": [
+    "buttons": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "favicon": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "new": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "sphinx": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "sidebar": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "click": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "toggle": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "api": [
       "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
     "article": [
       "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
-    "new": [
+    "centered": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "header": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "sphinx-copybutton": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "shows": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "suggest-edit": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "gone": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "adapted": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "hide": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "furo-only": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "temporarily": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "visible": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "top": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "binding": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "project": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "reference": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "field": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "via": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "toctrees": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "search": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "images": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "theme": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "logo": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "sphinx_book_theme": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "restyle": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "sectioned": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "language": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "landing-page": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "watch": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "extension": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "duplicated": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "code-copy": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "center": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "landing": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "github": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "extra": [
       "cfa029a676614b477a7947b515aa2022e64e994f"
     ]
   },
@@ -1542,7 +1542,7 @@
     "detection": "upstream SHA in ascend git history OR cherry-pick marker",
     "ascend_repo_sha": "a4aecc3292d8bdf7ae80165f113a27ea1e89803a",
     "tracking_start_date": "",
-    "detected_at": "2026-08-26T13:12:30.518338+08:00",
+    "detected_at": "2026-08-27T02:34:04.641127+08:00",
     "note": "triton-ascend 无 baseline 文件（人工 cherry-pick 回合）。无标记的人工回合请用 `mark` 命令手动更新。"
   }
 }
