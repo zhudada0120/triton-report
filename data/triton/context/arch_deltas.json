@@ -15,6 +15,18 @@
       "interface_changes": "修复并简化 AMD 后端 scaled_dot 操作中 scale 张量的 CGA 布局处理。之前 B 操作数的 scale 的 CGA 布局未正确转置导致在特定 CGA 布局下静默使用错误的 scale。本次重构将布局推断逻辑集中到 inferDotOperandCGALayout 和 inferDotScaleCGALayoutFromOperand 函数中，并加强了 DotScaledOp 的 verifier，使不兼容的布局在编译期报错。影响范围包括 Triton 方言接口、TritonGPU 方言的布局工具以及 AMD 后端的 AccelerateAMDMatmul pass。",
       "change_summary": "[AMD][GLUON] Fix and simplify CGA layout handling of scaled_dot scales (#11443)",
       "ascend_impact": false
+    },
+    "84741926ac8913b3b8f192f650d49c54d2032493": {
+      "date": "2026-08-27",
+      "affected_modules": [
+        "python/triton/runtime/interpreter.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/runtime/interpreter.py"
+      ],
+      "interface_changes": "该 commit 修复了 Triton 解释器中 `tl.fma` 的双重舍入（double rounding）问题。正确的 FMA 应该在一次舍入中完成乘加操作，而原实现是 `x*y + z`，导致对中间结果进行两次舍入。修复方案：对于 float32 和 float16，先提升到 float64 计算（float64 精度足够），对于 float64，则采用 Python `fractions.Fraction` 进行精确的有理数运算，以确保正确舍入。同时更新了测试用例，增加了 float16 覆盖和特殊值（NaN、inf、over/underflow、signed zero）测试。该变更影响所有使用解释器的后端。",
+      "change_summary": "[INTERPRETER] Fix double rounding in tl.fma (#11424)",
+      "ascend_impact": false
     }
   }
 }

@@ -1,0 +1,166 @@
+{
+  "date": "2026-08-27",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-08-28T05:09:52.515592+08:00",
+  "daily_summary": "当日变更集中于 NVIDIA Blackwell 硬件的 TMEM（张量内存）同步优化、Proton 性能分析器的 AMD PC sampling 支持、ConSan 并发毒化器的本地散射冲突检测与同步修复，以及解释器的 fma 精度修复。NVIDIA TMEM wait 插入 pass 将负载/存储等待下放到 TTGIR 层，减少冗余 barrier 并优化调度；ConSan 增加了对本地 scatter 写入冲突的检测并修复了复制的 scratch 加载的同步问题；Proton 为 AMD ROCProfiler 增加了源行归因的 PC sampling；解释器改用精确有理数算法修复 double rounding。另有 TheRock runtime 共享库发现的小型修复。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 无直接影响。所有修改均落在 NVIDIA 专属（TritonNvidiaGPU 方言、TMEM、TMA、TCGen5）、AMD 专属（HIP/TheRock、ROCProfiler）或通用测试/文档中，未触及 Ascend 依赖的核心抽象接口（BaseBackend、DriverBase、JIT、TTIR 方言等），也无需更新 Ascend 侧测试。",
+  "commits": [
+    {
+      "sha": "e411a7fddbb7ccb2c082d44d7ec48dcd687c0645",
+      "comment": "该 commit 修复了 NVIDIA 后端在集体复制（TMA）前 tensor-map 字段更新的可见性问题。根据 PTX 规范，thread 0 更新 tensor-map 描述符后，必须通过 `__syncwarp` 或 `bar.warp.sync` 确保这些更新对执行集体复制的其他线程可见。该变更在 `TensormapCreateOpConversion` 中于 `tensormap_cp_fenceproxy` 之前插入 `createSyncWarp`，并更新了相应的 lit 测试以验证 barrier 位置。风险低，仅影响 NVIDIA 后端。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "NVIDIA",
+        "TMA",
+        "synchronization"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/TMAToLLVM.cpp，是纯 NVIDIA 专属的 TMA 同步逻辑，不涉及 Ascend 使用的任何接口。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Synchronize tensor-map updates before the collective copy (#11480)\n\nSynchronize the warp after tensor-map field updates so the collective\ndescriptor copy observes them.\n\nSo, [according to\nPTX](https://docs.nvidia.com/cuda/parallel-thread-execution/#parallel-synchronization-and-communication-instructions-tensormap-cp-fenceproxy)\nthat sync makes the threads wait but does not imply synchronisation\n\nIn the [CUDA\nexample](https://docs.nvidia.com/cuda/cuda-programming-guide/04-special-topics/async-copies.html#device-side-encoding-and-modification-of-a-tensor-map)\nthey use a `__syncwarp` after emitting the if."
+    },
+    {
+      "sha": "a47a848f18b1bd3449d5de30801aba0964d18577",
+      "comment": "这是一个较大的功能/性能改进，为 NVIDIA Blackwell 引入 `tmem_wait` 操作和相应的插入 pass。核心思路是：`tcgen05.wait::{ld,st}` 是 per-warp 操作，而 TMEM 操作是 cross-warp 的，因此必须在 CTA barrier 之前插入 wait。新 pass（`TritonNvidiaGPUTMemWaitInsertionPass`）在 TTGIR 层分析 TMEM 访问依赖，并尝试复用已存在的 CTA barrier 来放置 wait，从而减少 01 gluon attention kernel 中的 barrier 数量（从 14 降至 8）。这涉及新增 TTNG dialect 操作和属性、修改 Membar 分析、更新 ConSan 的 TMEM 初始化逻辑、并调整多个 lit 测试。该变更可能影响 Gluon 编译流程，但主要针对 NVIDIA。风险中等，因为涉及新的 pass 管道和同步语义，存在引入潜在并发错误的风险。",
+      "tags": [
+        "feature",
+        "performance",
+        "medium-risk",
+        "NVIDIA",
+        "Blackwell",
+        "TMEM",
+        "synchronization"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更涉及 include/triton/Dialect/TritonNvidiaGPU/、lib/Dialect/TritonNvidiaGPU/Transforms/、lib/Analysis/Membar.cpp 等，全部是 NVIDIA/Blackwell 专属的 TMEM 和 warp-specialization 逻辑。Ascend 使用 TritonToLinalg 路径，不经过 TTGIR 到 LLVM 的 lowering，且不依赖这些 TTNG 操作或 pass。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[MEMBAR] Schedule`tcgen05_wait::{ld,st}` (#11464)\n\nWaits are per-warp and TMEM ops are cross-warp, so we need to follow\nthese with a barrier. For now, to avoid adding more barriers, we keep\ntrack of the last seen barrier op and place the wait before it.\n\nThis reduces these barriers from 14 to 8 in the 01 gluon attention\nkernel\nand enables a better scheduling of the epilogue."
+    },
+    {
+      "sha": "84741926ac8913b3b8f192f650d49c54d2032493",
+      "comment": "该 commit 修复了 Triton 解释器中 `tl.fma` 的双重舍入（double rounding）问题。正确的 FMA 应该在一次舍入中完成乘加操作，而原实现是 `x*y + z`，导致对中间结果进行两次舍入。修复方案：对于 float32 和 float16，先提升到 float64 计算（float64 精度足够），对于 float64，则采用 Python `fractions.Fraction` 进行精确的有理数运算，以确保正确舍入。同时更新了测试用例，增加了 float16 覆盖和特殊值（NaN、inf、over/underflow、signed zero）测试。该变更影响所有使用解释器的后端。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "interpreter",
+        "precision",
+        "fma"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "该变更修改了 python/triton/runtime/interpreter.py 中 `InterpreterBuilder.create_fma` 的实现。triton-ascend 的 `AscendInterpreterBuilder` 继承自 `InterpreterBuilder`，如果它没有覆写 `create_fma` 方法，则会继承此修复行为。如果 Ascend 侧有独立的 `create_fma` 实现，则需要检查是否也存在同样的双重舍入问题。此变更属于行为修正，不改变接口签名。",
+        "testing": "需要检查 triton-ascend 是否有类似的 fma 解释器测试，并可能需要添加类似的精度测试用例以确保行为一致。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/interpreter/test_fma.py（如存在）",
+          "检查 AscendInterpreterBuilder 是否覆写 create_fma，若覆写则需同步修复"
+        ]
+      },
+      "message": "[INTERPRETER] Fix double rounding in tl.fma (#11424)\n\n`tl.fma(x, y, z)` performs a fused multiply-add, so the exact product\nand addend must be rounded together once. The interpreter instead\nevaluated it as `x * y + z`, rounding the product before the addition.\n\nThis can produce different results from the compiled kernel. In\nparticular, if `z` cancels the already-rounded product, the interpreter\nreturns zero while a fused operation retains the rounding residual:\n\n```python\nx = 1.4142135    # float32\ny = 1.7320508\nz = -(x * y)     # cancels the rounded product\nresult = tl.fma(x, y, z)\n```\n\nProduced:\n\n```text\ninterpreter (before)   0.0            0x00000000\ncompiled kernel        6.339208e-08   0x3388222a\n```\n\nCompute float16 and float32 operations through a float64 intermediate,\nwhich has enough precision to produce the correctly rounded target\nresult. Since no NumPy type is wide enough to hold the exact float64\nproduct, compute its exact rational result before converting back to\nfloat64. Preserve the expected IEEE behavior for NaN, infinity,\noverflow, underflow, exact cancellation, and signed zero.\n\nUpdate `test_math_fma_op` to use an exact reference instead of `x * y +\nz`, add float16 coverage, and include cancellation inputs that\ndistinguish fused from non-fused evaluation. Also add focused float64\nspecial-value cases.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/runtime/interpreter.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+      "message": "[AMD] Improve TheRock runtime support (#11398)",
+      "comment": "该 commit 旨在改进 AMD 后端对 TheRock ROCm wheels 的运行时支持。主要修复共享库发现和链接问题：1) 在 `triton_amd.cc` 中使用 `rocm_sdk.find_libraries` 动态查找 hipblaslt 库的绝对路径，替代之前的 `preload_libraries`，并传给 `HipblasLtInstance`；2) 修改 `hipblas_instance.h` 接受库路径参数；3) 在测试和 roofline.py 中通过 `_get_path_to_hip_runtime_dylib` 获取绝对库路径；4) 为 instrumentation 插件添加 `-Wl,-Bsymbolic` 链接选项；5) 移除测试中对 `hip.hipInit(0)` 的显式调用。这些变更全部针对 AMD 和 Proton，风险低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "AMD",
+        "TheRock",
+        "build",
+        "runtime"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。所有变更均位于 third_party/amd/、third_party/proton/test/、python/test/unit/tools/test_aot.py 和 python/triton_kernels/，均为 AMD 专属的 HIP/HSA 库加载逻辑和测试，与 Ascend 无关。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "6eea437de8a269c4e327e146bcd2593c55ae651b",
+      "message": "[ConSan] Detect conflicting non-atomic local scatter writes (#11436)",
+      "comment": "该 commit 增强了 ConSan 并发毒化器（Concurrency Sanitizer）的功能，用于检测非原子本地散射（local scatter）操作中写入同一目的地的冲突值。它通过新增 `createVerifyLocalScatterDestinationsCall`，在每次非原子 `local_scatter` 后执行一个校验函数，该函数使用 `local_gather` 读取目的地，并与写入值比较，不匹配则触发断言。对于多 CTA 情况，会在检查前后插入 cluster barrier 以同步。该功能仅对非原子散射启用，原子散射和相同值重复写入仍然有效。更新了 nvidia 和 amd 的 lit 测试和 Gluon 测试。风险低。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "ConSan",
+        "sanitizer",
+        "local_scatter"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更涉及 include/triton/Dialect/TritonInstrument/、lib/Dialect/TritonInstrument/ 以及相关测试文件，这是 TritonInstrument 方言和 ConSan pass，专为 NVIDIA/AMD 的 TritonGPU 路径设计。Ascend 不使用 TritonGPU 或 ConSan，因此无影响。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "e37a48dc4028302f21bd941c1e99e80b71ec4462",
+      "message": "[Proton][AMD] Add ROCProfiler PC sampling with source attribution (#11040)",
+      "comment": "该 commit 为 Proton 的 AMD ROCProfiler 后端添加了 PC sampling（程序计数器采样）支持，并实现了源码行归因。它利用 rocprofiler-sdk 的 code-object 地址翻译功能（需较新版本），将采样的程序计数器映射回 Triton 源码行。实现包含：1) 新增 `RocprofSDKPCSampling` 类管理采样服务生命周期和异步归因；2) 添加 CMake 特性检测（`PROTON_ROCPROFILER_SDK_HAS_PC_SAMPLING` 和 `PROTON_ROCPROFILER_SDK_HAS_CODEOBJ_ADDRESS_TRANSLATE`）；3) 新增 AMD 专属的 stall reason 枚举（如 StalledALUDependency）；4) 处理 code-object 加载/卸载、内核符号注册和 dispatch 目标关联；5) 如无翻译支持则回退到内核级归因。该变更还包含对库加载顺序的修复（`promoteRocprofilerLibraries`）。风险中等，因为涉及复杂的异步回调、线程安全和外部库（amd_comgr、dw）依赖。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "Proton",
+        "AMD",
+        "ROCProfiler",
+        "profiling",
+        "pcsampling"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更集中与 third_party/proton/csrc/ 和第三方的 rocprofiler-sdk 接口交互，是 AMD 专属的性能分析功能。Ascend 使用的 Proton 后端（如有）无关，也不依赖新的 PC sampling 功能。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "743988104de33107cfd0999676c7133ee42a0b7a",
+      "message": "[ConSan] Synchronize replicated scratch loads (#11459)",
+      "comment": "该 commit 修复了 ConSan 中复制的（replicated）scratch 内存加载可能存在的竞态问题。当多个线程（跨 lane 或 warp）读取相同的状态数据，而另一个线程随后可能写入该数据时，如果不进行同步，会导致部分线程看到旧值、部分看到新值，破坏 barrier 状态更新的一致性。修复方法是在 `createLoadScratchMemory` 函数中，当检测到布局在 lane 或 warp 维度上存在复制（通过检查 LinearLayout 的自由变量掩码）时，立即插入一个 `GlobalRead` barrier，以确保所有复制读取完成。同时移除了 `createClusterBarrierRendezvousCall` 中的冗余 barrier。风险低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "ConSan",
+        "sanitizer",
+        "synchronization"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更涉及 lib/Dialect/TritonInstrument/IR/FunctionBuilder.cpp 和 Utility.cpp，以及相关的 ConSan lit 测试。这是 TritonGPU 和 TritonInstrument 方言的专属同步逻辑，Ascend 不使用这些路径。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

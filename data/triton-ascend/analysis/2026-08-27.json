@@ -1,0 +1,128 @@
+{
+  "date": "2026-08-27",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-08-28T05:10:45.087616+08:00",
+  "daily_summary": "当日变更主要聚焦于 Ascend 后端的正确性修复与 CI/构建基础设施的迁移。核心修复包括：1) 在 TritonToLinalg 转换中修复带掩码的 atomic 操作返回值处理，确保返回值的拷贝与原子更新在同一临界区内，避免竞态条件；2) 修复 ssbuffer 相关 kernel（chunk_gated_delta_rule、chunk_ttt_linear 等）在 DynamicCVPipeline 中的 core type 判定，将其加入 regional 禁用列表；3) 恢复 enable_vf_fusion 编译选项的行为。此外，将 Docker 镜像、wheel 和 LLVM 构建迁移到自托管 runner，并更新了 costmodel 示例与 libdevice 文档。",
+  "test_impact_summary": "当日变更对测试看护有显著影响。atomic 返回值修复引入了新的测试用例（test_indirect_atomic_add.py 中新增 scalar_splat_mask_atomic_add_return_value_1d 及对应测试），且更新了 atomic_rmw_block.mlir 的 FileCheck 断言，需确保这些用例在 CI 中稳定运行。ssbuffer 修复属于配置性变更，现有测试应覆盖相关场景，但建议关注 DynamicCVPipeline 相关测试是否覆盖了新增的 kernel 名称。enable_vf_fusion 选项恢复为编译期行为变更，需验证现有编译测试是否覆盖该选项。CI 迁移涉及构建脚本重构，需确保自托管 runner 上的构建产物与测试环境一致性。",
+  "commits": [
+    {
+      "sha": "872fa1ed68c0fc82846d20bb4393a8a35ae831b3",
+      "comment": "该 commit 是修复 #1296 中 ssbuffer 相关错误的后续补充，将 `chunk_gated_delta_rule_bwd_kernel_dhu_k128_blockdim128` 和 `chunk_gated_delta_rule_fwd_kernel_h_k128_blockdim128` 两个 kernel 加入 `regionalDisabledOps` 列表，使它们在 DynamicCVPipeline 中被标记为 `CoreType::UNDETERMINED`，从而禁用 regional 优化。这是对 DynamicCVPipeline 中 core type 判定逻辑的配置性补充，属于低风险修复，仅影响特定 kernel 的编译路径，不影响其他算子。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "该变更仅向配置列表添加两个 kernel 名称，属于纯配置性修改。现有测试应能覆盖这些 kernel 的编译行为，但建议确认相关 DynamicCVPipeline 测试是否覆盖了新增的 kernel 名称。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/"
+        ]
+      },
+      "message": "[ssbuffer](fix) fix errors in #1296 for chunk_gated_delta_rule_bwd- #1793"
+    },
+    {
+      "sha": "0c580974d4fe718b7e3d8ad76b57ed35a4132724",
+      "comment": "该 commit 修复了 TritonToLinalg 转换中带掩码的 atomic 操作返回值处理问题。当 atomic 操作有返回值且使用连续掩码（subview）时，旧值拷贝与原子更新不再是一个原子操作，可能导致返回的旧值不正确。修复方案引入同步锁（CreateSyncBlockLock/SyncBlockLock/SyncBlockUnlock）来包裹旧值拷贝和原子更新，确保它们在同一临界区内执行。同时，在 hivm::StoreOp 上添加 `already_sync` 属性，防止 HIVM 重复加锁。该修复涉及核心 lowering 逻辑，需谨慎评估对性能的影响，但正确性优先。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "TritonToLinalg"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "变更引入了新的 test case（scalar_splat_mask_atomic_add_return_value_1d）和对应的测试函数，同时更新了 atomic_rmw_block.mlir 的 FileCheck 断言。需要确认新增测试在 CI 中稳定运行，并确保 FileCheck 断言覆盖了新的同步锁和 already_sync 属性。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_indirect_atomic_add.py",
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/atomic_rmw_block.mlir"
+        ]
+      },
+      "message": "[TritonToLinalg](fix) preserve masked atomic return values (#1760)\n\n* [TritonToLinalg](fix) apply masked subviews to atomic return value copies\n\n* [TritonToLinalg](fix) synchronize masked atomic return value copies"
+    },
+    {
+      "sha": "637e384f80d380e4e2eece1f0ad0b50a072a59fe",
+      "comment": "该 commit 恢复了 enable_vf_fusion 编译选项的行为。此前该选项被标记为 deprecated 并忽略，现重新启用它，在编译选项中传递 `--enable-vf-fusion` 标志。同时将 enable_vf_fusion 从 _DEPRECATED_NPU_OPTIONS 和 _DEPRECATED_NPU_OPTION_DETAILS 中移除，并在 NPUOptions 中重新添加该选项。这是一个编译选项功能恢复，涉及编译路径的配置，需确认下游编译工具链（bisheng/npucompiler）支持该标志。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "compiler"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "恢复了编译选项的传递行为，需验证现有编译相关测试是否覆盖 enable_vf_fusion 选项的传递。建议新增测试确保该选项在编译命令行中正确传递。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/"
+        ]
+      },
+      "message": "[compiler](fix) restore enable_vf_fusion option behavior"
+    },
+    {
+      "sha": "63fbcc7ad27414dc8a59dfd0fe7a3a9f8327233b",
+      "comment": "该 commit 将 Docker 镜像、wheel 和 LLVM 构建流程从 GitHub 托管 runner 迁移到自托管 runner，并优化了构建流程。主要变更包括：1) 恢复 Docker 镜像构建的自动触发；2) 引入 buildkit 远程构建，无需 Docker daemon；3) 使用内网 SWR 镜像源和缓存服务；4) 限制并行构建数量以避免资源竞争；5) 重构 LLVM 构建流程，支持 AlmaLinux 的 buildkit 构建。这是纯 CI/基础设施变更，不涉及任何产品代码逻辑，但需要确保新构建流程的稳定性和产物一致性。",
+      "tags": [
+        "ci",
+        "refactor",
+        "low-risk",
+        "build-infrastructure"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯 CI 变更，不涉及产品代码。但需关注自托管 runner 上构建产物与测试环境的一致性，建议在 CI 迁移后运行完整测试套件验证。",
+        "suggested_test_areas": [
+          ".github/workflows/"
+        ]
+      },
+      "message": "[CI](feat) migrate image, wheel and LLVM builds to self-hosted runners #1682"
+    },
+    {
+      "sha": "46c780ce82aae24eb3ef02ee44f27fe35dac37cb",
+      "comment": "该 commit 更新了 costmodel 示例文档，同步了 costmodel_bench API 的新返回值格式（从 dict 改为逐 item 返回 config, latency_us 对），并移除了已废弃的 enable_costmodel_backend 选项。文档更新准确反映了当前 API 行为，属于纯文档变更。",
+      "tags": [
+        "docs",
+        "low-risk",
+        "costmodel"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯文档变更，不涉及代码逻辑，无需更新测试。",
+        "suggested_test_areas": []
+      },
+      "message": "[costmodel](fix) update costmodel example docs (#1777)\n\nCo-authored-by: ZhangZGC <8623924@qq.com>"
+    },
+    {
+      "sha": "a94d79e03d354c0f1b4c8dc9f3e9ebbc113702c8",
+      "comment": "该 commit 修正了 libdevice 文档中 reciprocal 和 atanh 的描述。atanh 的返回值范围从 [-1, 1] 修正为 (-∞, +∞)，reciprocal 的描述更明确。这是纯文档修正，不涉及代码逻辑。",
+      "tags": [
+        "docs",
+        "low-risk",
+        "libdevice"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯文档变更，不涉及代码逻辑，无需更新测试。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](fix) Modify the decription of reciprocal and atanh (#1757)"
+    },
+    {
+      "sha": "e5b52147f1859da4d72bc3ffb60f14f8c07950ee",
+      "comment": "该 commit 是修复 #1296 中 ssbuffer 相关错误，将 `chunk_gated_delta_rule_fwd_kernel_h_blockdim64`、`chunk_ttt_linear_fwd_kernel_h` 和 `chunk_ttt_linear_bwd_kernel_h` 三个 kernel 加入 `regionalDisabledOps` 列表，使它们在 DynamicCVPipeline 中被标记为 `CoreType::UNDETERMINED`，从而禁用 regional 优化。这是对 DynamicCVPipeline 中 core type 判定逻辑的配置性补充，属于低风险修复。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "该变更仅向配置列表添加 kernel 名称，属于纯配置性修改。现有测试应能覆盖这些 kernel 的编译行为，但建议确认相关 DynamicCVPipeline 测试是否覆盖了新增的 kernel 名称。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/"
+        ]
+      },
+      "message": "[ssbuffer](fix) fix errors in #1296 (#1786)\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

@@ -1,4 +1,32 @@
 {
+  "872fa1ed68c0fc82846d20bb4393a8a35ae831b3": {
+    "date": "2026-08-27",
+    "msg": "[ssbuffer](fix) fix errors in #1296 for chunk_gated_delta_rule_bwd- #1793"
+  },
+  "0c580974d4fe718b7e3d8ad76b57ed35a4132724": {
+    "date": "2026-08-27",
+    "msg": "[TritonToLinalg](fix) preserve masked atomic return values (#1760)"
+  },
+  "637e384f80d380e4e2eece1f0ad0b50a072a59fe": {
+    "date": "2026-08-27",
+    "msg": "[compiler](fix) restore enable_vf_fusion option behavior"
+  },
+  "63fbcc7ad27414dc8a59dfd0fe7a3a9f8327233b": {
+    "date": "2026-08-27",
+    "msg": "[CI](feat) migrate image, wheel and LLVM builds to self-hosted runners #1682"
+  },
+  "46c780ce82aae24eb3ef02ee44f27fe35dac37cb": {
+    "date": "2026-08-27",
+    "msg": "[costmodel](fix) update costmodel example docs (#1777)"
+  },
+  "a94d79e03d354c0f1b4c8dc9f3e9ebbc113702c8": {
+    "date": "2026-08-27",
+    "msg": "[Docs](fix) Modify the decription of reciprocal and atanh (#1757)"
+  },
+  "e5b52147f1859da4d72bc3ffb60f14f8c07950ee": {
+    "date": "2026-08-27",
+    "msg": "[ssbuffer](fix) fix errors in #1296 (#1786)"
+  },
   "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0": {
     "date": "2026-08-26",
     "msg": "[ConvertModuloToMask](revert) rollback per-load wrapped dimension tracking"

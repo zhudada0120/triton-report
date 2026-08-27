@@ -1,4 +1,32 @@
 {
+  "e411a7fddbb7ccb2c082d44d7ec48dcd687c0645": {
+    "date": "2026-08-27",
+    "msg": "[NVIDIA] Synchronize tensor-map updates before the collective copy (#11480)"
+  },
+  "a47a848f18b1bd3449d5de30801aba0964d18577": {
+    "date": "2026-08-27",
+    "msg": "[MEMBAR] Schedule`tcgen05_wait::{ld,st}` (#11464)"
+  },
+  "84741926ac8913b3b8f192f650d49c54d2032493": {
+    "date": "2026-08-27",
+    "msg": "[INTERPRETER] Fix double rounding in tl.fma (#11424)"
+  },
+  "040039b88c1f81351253ed4baaf2b0e648c1835f": {
+    "date": "2026-08-27",
+    "msg": "[AMD] Improve TheRock runtime support (#11398)"
+  },
+  "6eea437de8a269c4e327e146bcd2593c55ae651b": {
+    "date": "2026-08-27",
+    "msg": "[ConSan] Detect conflicting non-atomic local scatter writes (#11436)"
+  },
+  "e37a48dc4028302f21bd941c1e99e80b71ec4462": {
+    "date": "2026-08-27",
+    "msg": "[Proton][AMD] Add ROCProfiler PC sampling with source attribution (#11040)"
+  },
+  "743988104de33107cfd0999676c7133ee42a0b7a": {
+    "date": "2026-08-27",
+    "msg": "[ConSan] Synchronize replicated scratch loads (#11459)"
+  },
   "a8909ca037b61934d151062afb134ed259c01c08": {
     "date": "2026-08-26",
     "msg": "[Gluon] Include bases in TensorMemoryLinearLayout mangling (#11201)"
