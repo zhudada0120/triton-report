@@ -972,6 +972,10 @@ def analyze_commits(repo, date, data_dir, confirm, force, local_repo=None):
             save_json_atomic(analysis_path, partial)
             print(f"  [{batch_idx}/{total_batches}] ✓ 完成 (已分析 {total_done}/{num_commits} 个commit)")
             print(f"    └ Saved partial progress ({total_done} LLM + {len(auto_analysis)} auto = {len(partial_commits)}/{num_commits} commits)")
+            # Mark the queue consumed: the after-loop fail-loud check keys
+            # on llm_shas being non-empty, and the break path leaves the
+            # last batch's SHAs behind otherwise.
+            llm_shas = []
             break
         elif not missing_shas and remaining_after_batch:
             partial = {
