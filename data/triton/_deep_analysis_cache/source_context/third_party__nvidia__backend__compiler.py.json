@@ -1,0 +1,19 @@
+{
+  "content_hash": "6a93394ef2672207",
+  "analysis": {
+    "interface_summary": "定义 2 个类；定义 29 个函数",
+    "key_interfaces": [
+      "CUDAOptions",
+      "CUDABackend",
+      "CUDAOptions.__post_init__",
+      "CUDAOptions.hash",
+      "CUDAOptions.enable_iisan",
+      "CUDABackend.supports_target",
+      "CUDABackend._parse_arch",
+      "CUDABackend.get_target_name",
+      "CUDABackend.__init__",
+      "CUDABackend.parse_options"
+    ]
+  },
+  "cached_at": "2026-08-29T05:23:17.395541+08:00"
+}

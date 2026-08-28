@@ -1,4 +1,36 @@
 {
+  "109194a613933119f72f1dc08bf648cef4efc000": {
+    "date": "2026-08-28",
+    "msg": "[KERNELS] Fuse forward FP4 layout conversion (#11495)"
+  },
+  "192c9543f2131fbf6efa7d75d033b5603d8cf364": {
+    "date": "2026-08-28",
+    "msg": "[Backend] Add another SLPVectorizer workaround :( (#11502)"
+  },
+  "7acd3f0bdfb50a746e7a9cc71df80f52555cfa59": {
+    "date": "2026-08-28",
+    "msg": "[KERNELS] Fuse compact Hopper FP4 inverse layout conversion (#11496)"
+  },
+  "ddf8e6c2edea95a64a624613b94de2e674a25efa": {
+    "date": "2026-08-28",
+    "msg": "[FIX] Fence mbarrier initialization from its elected issuer (#11498)"
+  },
+  "d5349472b7d68a245e9077433b30c8437da3e1ad": {
+    "date": "2026-08-28",
+    "msg": "[triton_kernels] Enable CLC inner-loop warp specialization (#11493)"
+  },
+  "0699c93421aaa077667280f69c5dfef68ac629bd": {
+    "date": "2026-08-28",
+    "msg": "[AMD][LAYOUTS] Refine segment computation to support DS_READ_B128 (#11365)"
+  },
+  "8957b9aac23e526fb1252c7c3b592e6f43c175c8": {
+    "date": "2026-08-28",
+    "msg": "[Analysis] Fix membar Python binding in debug builds (#11488)"
+  },
+  "b1233aa326fa485b08de8593da2d08cb853c346b": {
+    "date": "2026-08-28",
+    "msg": "[Analysis] Reuse BufferRegion analysis in Membar (#11468)"
+  },
   "e411a7fddbb7ccb2c082d44d7ec48dcd687c0645": {
     "date": "2026-08-27",
     "msg": "[NVIDIA] Synchronize tensor-map updates before the collective copy (#11480)"

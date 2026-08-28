@@ -27,6 +27,54 @@
       "interface_changes": "该 commit 修复了 Triton 解释器中 `tl.fma` 的双重舍入（double rounding）问题。正确的 FMA 应该在一次舍入中完成乘加操作，而原实现是 `x*y + z`，导致对中间结果进行两次舍入。修复方案：对于 float32 和 float16，先提升到 float64 计算（float64 精度足够），对于 float64，则采用 Python `fractions.Fraction` 进行精确的有理数运算，以确保正确舍入。同时更新了测试用例，增加了 float16 覆盖和特殊值（NaN、inf、over/underflow、signed zero）测试。该变更影响所有使用解释器的后端。",
       "change_summary": "[INTERPRETER] Fix double rounding in tl.fma (#11424)",
       "ascend_impact": false
+    },
+    "192c9543f2131fbf6efa7d75d033b5603d8cf364": {
+      "date": "2026-08-28",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "该提交为NVPTX后端添加了一个新的LLVM IR pass（`VectorizeExtractedAddsPass`），用于重新向量化SLPVectorizer生成的标量`fadd`操作。当向量乘法的每个lane都被提取并加上同一个标量常数时，该pass会将它们合并回一个向量`fadd`操作，使得NVPTX后端可以生成如`fma.f32x2`的向量化指令。此pass通过`triton-llvm-opt`工具和`llvm.optimize_module`的Python绑定（`python/src/llvm.cc`）暴露，并由NVIDIA的`CUDABackend`（`third_party/nvidia/backend/compiler.py`）启用。",
+      "change_summary": "[Backend] Add another SLPVectorizer workaround :( (#11502)",
+      "ascend_impact": false
+    },
+    "0699c93421aaa077667280f69c5dfef68ac629bd": {
+      "date": "2026-08-28",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "这是一个针对AMD GPU后端的布局分析优化。在`include/triton/Tools/GenericSwizzling.h`和`lib/Tools/GenericSwizzling.cpp`中，将原先用整数查找表表示的`LocalMemOpTile`的`laneAddr`字段，替换为更一般的`laneMask`，用线性代数（F2空间运算）来计算segment，以支持DS_READ_B128指令中更复杂的、混合XOR模式的线程分组。这改进了共享内存bank冲突计算的准确性。此更改也涉及了AMD共享内存访问tile的定义（`third_party/amd/lib/TritonAMDGPUToLLVM/TargetInfo.cpp`）以及对现有`computeSegment`逻辑的重构。",
+      "change_summary": "[AMD][LAYOUTS] Refine segment computation to support DS_READ_B128 (#11365)",
+      "ascend_impact": false
+    },
+    "8957b9aac23e526fb1252c7c3b592e6f43c175c8": {
+      "date": "2026-08-28",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "这是对PR #11468的后续bugfix。该PR将`ModuleMembarAnalysis::run<>`的模板实例化移动到了Python绑定（`python/src/passes.cc`），这导致了在Debug构建下链接错误，因为MLIR库是使用`-fno-rtti`构建的。此修复将默认的`run<MembarAnalysis>`实例化移至`lib/Analysis/Membar.cpp`中，并在Python绑定中通过lambda调用非模板的`run()`方法，解决了Debug构建的链接问题。",
+      "change_summary": "[Analysis] Fix membar Python binding in debug builds (#11488)",
+      "ascend_impact": false
+    },
+    "b1233aa326fa485b08de8593da2d08cb853c346b": {
+      "date": "2026-08-28",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "这是一个重大的重构提交，旨在让Membar分析（以及ClusterBarrier、TMEM同步和ProxyFence插入）复用统一的`BufferRegionAnalysis`。此改动将原本在`MembarAnalysis`中维护的`SharedMemoryFootprints`替换为`BufferRegionAnalysis`的`BufferRegionFootprint`。这使得分析能够更精确地处理函数调用（包括参数、返回值和call summary的翻译），并统一了共享内存、TMEM和barrier的footprint表示。虽然改动巨大（+1333/-750），但主体是代码移动和重构，并新增了大量测试。",
+      "change_summary": "[Analysis] Reuse BufferRegion analysis in Membar (#11468)",
+      "ascend_impact": false
     }
   }
 }

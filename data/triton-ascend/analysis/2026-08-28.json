@@ -1,0 +1,167 @@
+{
+  "date": "2026-08-28",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-08-29T05:27:39.016474+08:00",
+  "daily_summary": "当日变更聚焦于 Ascend 后端的编译与运行时稳定性提升。主要工作包括：修复 SplitIfByBlockIdPass 对特定 kernel 的误处理；大幅增强 ControlFlowOpt 的指针控制流解耦能力，涵盖 BlockPtr、TensorPtr 和标量指针的稳定化与 Scope 支持；新增 SplitIfByBlockIdPass 到 DynamicCV pipeline 并扩展其功能；修复 DWARF 调试行信息重写与加载/存储步进问题；启用 A5 架构上的无序锁支持；修复多 yield 操作的转移；并调整了文档和 issue 标签。整体方向是增强编译管线的鲁棒性、扩大新架构支持，并巩固调试基础设施。",
+  "test_impact_summary": "当日多个功能/修复性变更均配套了相应的测试更新，测试覆盖范围从 MLIR lit 测试到端到端 pytest。其中，ControlFlowOpt 的指针解耦重构引入了大量新测试（如 tensor_pointer_rankn_extsi.mlir、scope_pointer_*.mlir、test_control_flow_pointer_boundary.py），但该重构涉及核心编译逻辑，风险较高，需重点看护其在不同 kernel 模式下的回归。此外，SplitIfByBlockIdPass 的复杂逻辑与无序锁的架构适配也需要在 A3/A5 等不同硬件上验证。整体而言，新增测试点较多，但针对高风险重构的跨场景回归测试可能需要持续补充。",
+  "commits": [
+    {
+      "sha": "36f3baeaa16d3c518fcd3764f50bd61db8a10b2d",
+      "comment": "该提交是一个针对性的 bugfix，为 SplitIfByBlockIdPass 增加了一个需要跳过的 kernel 名单，以避免对 `parallel_nsa_fwd_kernel` 进行不正确的变换。此 Pass 位于 DynamicCV pipeline 的 ComputeBlockOpt 阶段，负责按 block id 拆分 if 操作。新增的 kernel 名单表明该 Pass 的变换逻辑可能无法正确处理此 kernel 的模式，跳过是规避风险的保守做法。风险较低，但需注意此名单是硬编码的，后续可能因 kernel 更新而产生维护成本。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "DynamicCVPipeline",
+        "compile"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "该变更仅增加了一个跳过名单，未改变 Pass 的核心逻辑，针对被跳过 kernel 的回归测试已由现有 pipeline 隐含覆盖。",
+        "suggested_test_areas": []
+      },
+      "message": "[SplitIfByBlockId](fix) skip parallel_nsa_fwd_kernel in SplitIfByBlockIdPass"
+    },
+    {
+      "sha": "2bafba14ac7eee242790056bc6dc9a6a27a30233",
+      "comment": "该提交是一次重要的稳定性修复，旨在解决指针在控制流中传递时的多种问题。它通过保持稳定的标量指针基址、为循环回边选择完整的地址载体、保留 rank-N 符号扩展的偏移结构等多种手段，对 TritonControlFlowOpt 中的 TensorPtrDecompose、ReplaceArguments，以及 TritonToLinalg 的 BlockPtrAnalysis 和 TritonToUnstructure 进行了修补。核心是确保指针解耦的重写过程在不同 IR 形态下都能产生正确且一致的结果。该变更涉及多个核心编译阶段，风险较高，但引入了详尽的 MLIR 和端到端回归测试来验证修复的正确性。",
+      "tags": [
+        "bugfix",
+        "high-risk",
+        "ControlFlowOpt",
+        "TritonToLinalg",
+        "pointer"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "修复涉及多个核心编译阶段，且新增了针对符号扩展、指针基址稳定、scan 存储等形式的新测试，因此需要新增测试用例来覆盖修复路径。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonControlFlowOpt/",
+          "third_party/ascend/unittest/Conversion/General/TritonToUnstructure/",
+          "third_party/ascend/unittest/pytest_ut/test_scalar_pointer_control_flow.py"
+        ]
+      },
+      "message": "[ControlFlowOpt](fix) stabilize pointer control-flow lowering\n\nKeep stable scalar pointer bases and select complete-address carriers for opaque scf.if loop backedges.\n\nPreserve rank-N sign-extended offset structure, constrain legacy BlockData address-use discovery, and fold supported scan pointer stores before use analysis.\n\nKeep discrete vector masks attached to extracted memory accesses and include the sparse decode model1 DynamicCV fallback from PR #1791.\n\nAdd focused MLIR and end-to-end regressions for the repaired paths."
+    },
+    {
+      "sha": "a9238f59d36f27e16bae8aae5c9885ee56f1593a",
+      "comment": "这是一个大规模的功能性提交，重新引入了 BlockPtr、TensorPtr 和标量指针在 SCF 区域间的解耦能力。改动核心在于重构 ControlFlowOpt 的架构，使其能够处理更复杂的控制流边界，包括新增对 Scope 方言的支持、引入描述符边界标记（PointerDescriptorBoundary）、改进指针重建策略，并增加对非支持情况的安全回退。同时，TritonToLinalg 和 TritonToUnstructure 也进行了大量联动修改以消费这些新元数据和转换结果。该提交显著提升了编译器对指针控制流的处理能力，但因其涉及面广且逻辑复杂，是高风险变更，需重点测试验证。",
+      "tags": [
+        "feature",
+        "high-risk",
+        "ControlFlowOpt",
+        "TritonToLinalg",
+        "TritonToUnstructure",
+        "Scope"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "这是一次核心功能重构，引入了新的标记、转换和回退逻辑，必须新增大量的 MLIR 和端到端测试来验证新功能的正确性、回归旧逻辑，并确保安全回退路径有效。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonControlFlowOpt/",
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/",
+          "third_party/ascend/unittest/Conversion/General/TritonToUnstructure/",
+          "third_party/ascend/unittest/pytest_ut/test_control_flow_pointer_boundary.py",
+          "third_party/ascend/unittest/pytest_ut/test_scalar_pointer_control_flow.py"
+        ]
+      },
+      "message": "[ControlFlowOpt](feat) restore pointer control-flow decoupling (#1771)\n\nReintroduce BlockPtr, TensorPtr, scalar-pointer, and scope control-flow decoupling with the corresponding T2L and T2U handoff updates.\n\nPreserve conversion failure atomicity, scalar carrier materialization, marked range carriers, and descriptor boundary metadata across SCF regions.\n\nAdd the reviewed MLIR and end-to-end pytest coverage for pointer control-flow boundaries."
+    },
+    {
+      "sha": "daa0844144ad7d2b32425ad14b33d07eebcf6bf0",
+      "comment": "该提交将 SplitIfByBlockIdPass 集成到 DynamicCV pipeline 中，并为其新增了完整的实现和辅助工具。该 Pass 旨在优化算子调度，通过将包含不同 block_id 操作的 if 语句拆分为多个 if，使同一 if 内的操作具有相同的硬件核心类型。新增的 FallbackHelper 提供了模块级备份与恢复机制，以保证 Pass 失败时的安全性。该功能逻辑复杂，涉及跨组依赖分析、yield 增强、场景化处理等，是高风险变更，对于提升混合核心 kernel 的性能具有重要意义。",
+      "tags": [
+        "feature",
+        "high-risk",
+        "DynamicCVPipeline",
+        "ComputeBlockOpt",
+        "performance"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新 Pass 引入了复杂的分组、依赖分析和重写逻辑，需要新增全面的 lit 测试和端到端 pytest 来验证其拆分正确性、yield 处理、失败回退等场景。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/",
+          "third_party/ascend/unittest/pytest_ut/"
+        ]
+      },
+      "message": "[ssbuffer](feat) Add SplitIfByBlockIdPass to pipeline (#1735)\n\n* [ssbuffer](feat) Add SplitIfByBlockIdPass to pipeline\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>\n\n* [ssbuffer](fix) allow matmul placeholder for split if\n\n---------\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>\nCo-authored-by: chenwuyang <chenwuyang1@huawei.com>"
+    },
+    {
+      "sha": "14ba391adb9d258fd532083f9dd72ec761e6d15b",
+      "comment": "该提交旨在修复 DWARF 调试行信息重写功能，特别是针对多 line unit 的解析和加载/存储步进的问题。Python 侧 debug_line_rewriter.py 增强了边界检查、支持解析多个 line unit 并按 unit 处理。C++ 侧 NormalizeDebugLineLocations.cpp 则优化了 debug NOP 指令的定位，确保它们被移动到正确的语义锚点（如 memref.copy 或 store 操作）附近。这些变更共同提升了生成 nprun 的调试信息质量，使调试体验更准确。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "debug_line",
+        "NormalizeDebugLineLocations"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "变更修复了多 unit 解析和 NOP 重定位逻辑，需要更新或新增测试用例，以覆盖多 line unit 的场景以及 NOP 在遇到歧义或被识别为冗余时的处理策略。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLLVM/normalize_debug_line_locations.mlir",
+          "third_party/ascend/backend/test_debug_line_rewriter.py"
+        ]
+      },
+      "message": "[Msdbeug](fix) stabilize DWAF line rewriting and load/store stepping (#1754)"
+    },
+    {
+      "sha": "12827daf87504a350cd0d71d9f4d4a65b5ffa316",
+      "comment": "该提交将无序同步块锁（sync_block_lock_unordered）的支持扩展到了 A5 架构。主要改动在于重构了锁的元数据表示（从 lock_num 到更细粒度的 sync_block_lock_layout）并调整了 launcher 代码生成逻辑，使其能根据 kernel 的混合模式（mix_mode）和子块绑定情况动态计算锁的参与者数量和布局。此外，还针对 A5 架构引入了 `--enable-lib-call-no-inline=false` 编译选项的workaround。此变更提升了锁机制的灵活性，但需要在新硬件上验证其正确性。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "launcher",
+        "sync_block_lock",
+        "A5"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了对 A5 架构的支持和锁布局的动态计算逻辑，因此需要新增针对 A5 架构的端到端测试，并更新现有的 launcher 生成测试以匹配新的元数据字段。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_unorder_block_lock.py",
+          "third_party/ascend/unittest/pytest_ut/test_launcher_export_api.py",
+          "third_party/ascend/unittest/pytest_ut/test_layout_memory_895_closure_differential.py"
+        ]
+      },
+      "message": "[unordered_lock](fix) unordered lock is able to run on A5 (#1636)\n\n* sync_block_lock_unordered is able to run on A5\n\n* [syncblock](fix) resolve code pre-commit issue\n\n---------\n\nCo-authored-by: yangkaixin <yangkaixin1@huawei.com>\nCo-authored-by: liufengsheng-beep <liufengsheng2@h-partners.com>"
+    },
+    {
+      "sha": "de756c69ebcdc166299a4c65f90285ed577216c1",
+      "comment": "这是一个针对 AddMultiBufferInnerScope Pass 的修复，解决了在处理多结果操作（multi-yield op）时，依赖收集逻辑错误地以定义操作（Operation*）而非具体值（Value*）进行去重的问题。原逻辑可能导致属于同一操作但不同结果的依赖被错误地只处理一次，而新逻辑则按值去重，确保每个依赖值都被正确处理。这是对内部算法的一个精确修复，风险较低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "DynamicCVPipeline",
+        "AddMultiBufferInnerScope"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "这是一个针对特定算法的修复，现有测试可能无法覆盖多结果操作的场景，但未新增测试，因此需确认现有测试是否覆盖了此类 case；若无，则可能需要补充。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/"
+        ]
+      },
+      "message": "[ssbuffer](fix) fix multi-yield op transfer (#1744)"
+    },
+    {
+      "sha": "120b97f6f607196c474c65d96ea7f35cb9dec259",
+      "comment": "该提交为文档和 CI 配置变更，将 'tracking' 标签添加到 stale issue 的豁免列表中，并缩短了 issue 的自动关闭时间。此变更纯粹是项目管理和流程上的优化，不涉及任何代码逻辑，无风险。",
+      "tags": [
+        "docs",
+        "ci",
+        "chore",
+        "low-risk",
+        "project-management"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "该变更不涉及任何代码逻辑，仅修改了 CI 工作流配置和文档，对测试无影响。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](feat) add 'tracking' issue label for long-lived work (#1828)\n\n* [Docs](feat) add 'tracking' issue label for long-lived work\n\n* update stale close time to 7"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

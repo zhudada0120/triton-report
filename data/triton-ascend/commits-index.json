@@ -1,4 +1,36 @@
 {
+  "36f3baeaa16d3c518fcd3764f50bd61db8a10b2d": {
+    "date": "2026-08-28",
+    "msg": "[SplitIfByBlockId](fix) skip parallel_nsa_fwd_kernel in SplitIfByBlockIdPass"
+  },
+  "2bafba14ac7eee242790056bc6dc9a6a27a30233": {
+    "date": "2026-08-28",
+    "msg": "[ControlFlowOpt](fix) stabilize pointer control-flow lowering"
+  },
+  "a9238f59d36f27e16bae8aae5c9885ee56f1593a": {
+    "date": "2026-08-28",
+    "msg": "[ControlFlowOpt](feat) restore pointer control-flow decoupling (#1771)"
+  },
+  "daa0844144ad7d2b32425ad14b33d07eebcf6bf0": {
+    "date": "2026-08-28",
+    "msg": "[ssbuffer](feat) Add SplitIfByBlockIdPass to pipeline (#1735)"
+  },
+  "14ba391adb9d258fd532083f9dd72ec761e6d15b": {
+    "date": "2026-08-28",
+    "msg": "[Msdbeug](fix) stabilize DWAF line rewriting and load/store stepping (#1754)"
+  },
+  "12827daf87504a350cd0d71d9f4d4a65b5ffa316": {
+    "date": "2026-08-28",
+    "msg": "[unordered_lock](fix) unordered lock is able to run on A5 (#1636)"
+  },
+  "de756c69ebcdc166299a4c65f90285ed577216c1": {
+    "date": "2026-08-28",
+    "msg": "[ssbuffer](fix) fix multi-yield op transfer (#1744)"
+  },
+  "120b97f6f607196c474c65d96ea7f35cb9dec259": {
+    "date": "2026-08-28",
+    "msg": "[Docs](feat) add 'tracking' issue label for long-lived work (#1828)"
+  },
   "872fa1ed68c0fc82846d20bb4393a8a35ae831b3": {
     "date": "2026-08-27",
     "msg": "[ssbuffer](fix) fix errors in #1296 for chunk_gated_delta_rule_bwd- #1793"

@@ -1,0 +1,202 @@
+{
+  "date": "2026-08-28",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-08-29T05:23:17.164219+08:00",
+  "daily_summary": "今日的提交主要聚焦于性能优化、编译器后端改进以及代码重构。其中，两个针对FP4布局转换的优化（#11495）和（#11496）通过融合和直接转换路径，显著提升了Hopper和Blackwell GPU的转换速度和内存占用。此外，为NVPTX后端新增了一个LLVM IR优化pass（#11502），用于重新向量化SLPVectorizer产生的标量操作，从而提高向量指令的生成效率。在编译器基础设施方面，对内存屏障（membar）分析进行了重大重构（#11468），使其复用BufferRegion分析，减少了大量重复代码并修复了相关问题（#11488）。同时，还包含了一个针对mbarrier初始化的bug修复（#11498），以及为CLC内核启用内层循环warp specialization的改动（#11493）。",
+  "ascend_impact_summary": "今日变更对triton-ascend项目影响有限。核心的影响来自于对Membar分析（#11468、#11488）和GenericSwizzling（#11365）等C++分析/工具模块的重构，这些模块在include/triton/Analysis/路径下，属于'可能影响'范围。由于Ascend的TritonToLinalg转换链可能会在llvm_opt阶段调用TritonLLVMIR相关代码，因此新的LLVM IR pass（#11502）及其在llvm.cc的绑定变更也值得关注。其他变更，如FP4布局优化和CLC warp specialization，因其位于python/triton_kernels/或third_party/nvidia/，属于纯平台特定代码，对Ascend无影响。",
+  "commits": [
+    {
+      "sha": "109194a613933119f72f1dc08bf648cef4efc000",
+      "comment": "该提交在`python/triton_kernels/`目录下实现了FP4布局转换的前向融合。核心思想是避免在从strided布局转换到Hopper/Blackwell专用布局时，先分配一个完整的canonical存储作为中间步骤。通过在`LayoutTransformation`基类中引入`_convert_data_from`方法，并让Hopper和Blackwell布局直接覆写此方法，实现了从strided源到目标布局的直接转换。这包含了对Hopper的专用`_swizzle_from_strided`内核，以及Blackwell的`repack`优化。这一改动大幅减少了峰值内存占用（通常减半）并提升了转换速度（最高40倍）。测试用例也相应扩展，覆盖了更多形状、步长和反向转换场景。",
+      "tags": [
+        "feature",
+        "performance",
+        "low-risk",
+        "triton_kernels",
+        "fp4",
+        "layout-conversion"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。此变更仅涉及python/triton_kernels/目录下的tensor layout转换逻辑，这是一个独立的Python模块，不包含在triton编译器的核心后端接口中。Ascend后端不依赖此模块。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[KERNELS] Fuse forward FP4 layout conversion (#11495)\n\nStrided-to-device FP4 layout conversion currently allocates canonical\nstorage before producing the final encoding. This adds a full-sized\nbuffer and extra copies.\n\nAdd destination dispatch for direct conversion from strided FP4 storage.\nHopper combines repacking, padding, permutation and bit encoding in one\nkernel. Blackwell writes the final allocation through the existing\nrepacking/shuffle code. Other conversions keep their existing paths;\nCPU/meta tensors and unsupported forward packing use the reference\nimplementation.\n\n## Benchmarks\n\nSynthetic FP4 data uses uniform random `uint8` bytes with seed 0 and\nlogical shape `(16, 4096, 4096)`; the output is 128 MiB. Packing is the\n`StridedLayout` major dimension; Hopper uses `mma_version=3`, and\nshuffled Blackwell uses `block_k=128, block_n=256`. Build the source on\nCPU, then copy only that storage to CUDA.\n\n| GPU / layout | MX axis | Packing | Base (ms) | PR (ms) | Speedup |\nPeak MiB, base → PR |\n|---|---:|---:|---:|---:|---:|---:|\n| H100 / Hopper | -1 | -1 | 0.830 | 0.132 | 6.29× | 256.0 → 128.0 |\n| H100 / Hopper | -1 | -2 | 3.350 | 0.164 | 20.45× | 256.0 → 128.0 |\n| H100 / Hopper | -2 | -1 | 2.338 | 0.166 | 14.06× | 256.0 → 128.0 |\n| H100 / Hopper | -2 | -2 | 4.862 | 0.135 | 36.07× | 256.0 → 128.0 |\n| GB300 / Blackwell | — | -1 | 1.564 | 1.545 | 1.01× | 256.0 → 128.0 |\n| GB300 / Blackwell | — | -2 | 3.006 | 0.073 | 41.37× | 256.0 → 128.0 |\n| GB300 / Blackwell shuffled | — | -1 | 0.132 | 0.102 | 1.30× | 256.0 →\n128.0 |\n| GB300 / Blackwell shuffled | — | -2 | 1.600 | 0.080 | 19.93× | 256.0 →\n128.0 |\n\nThe default Blackwell row-packed case is essentially unchanged in\nlatency; it still halves peak allocation. Smaller controls at `(4, 1024,\n1024)` and `(2, 130, 66)` change latency by -85.5% to -12.6% (two\nbalanced rounds each).\n\nWith the CUDA allocator capped at 192 MiB above the resident input, all\neight baseline cases OOM and all eight PR cases succeed. After warmup\nand `empty_cache()`, set\n`set_per_process_memory_fraction((resident_allocated + 192 * 2**20) /\ntotal_memory)`; restore the limit after each probe.\n\nTimes measure the warm public `convert_layout(source, destination)`\ncall, including allocation and synchronization but excluding output\ndestruction. Each main-table value is the median of four fresh-process\nmedians: 25 calls after five warmups, alternating baseline/PR order. For\npeak allocation, release prior outputs, synchronize, empty the cache,\nrecord `memory_allocated()` and reset peak stats; report\n`max_memory_allocated() - resident_allocated`. This includes the output\nand intermediates, not the input. Byte equality against CPU references\nand output metadata are checked outside timing; unspecified Blackwell\npadding is excluded. These are conversion measurements, not matmul or\ncold-compilation results.\n\nMeasured against [[AMD][LAYOUTS] Refine segment computation to support\nDS_READ_B128](https://github.com/triton-lang/triton/commit/0699c93421aaa077667280f69c5dfef68ac629bd),\nusing Python 3.12, a build based on PyTorch 2.11, and CUDA 13.0. Both\nrevisions use the same compiler from [[NVIDIA] Snapshot synthetic\ncluster-barrier counters before\nrendezvous](https://github.com/triton-lang/triton/commit/b3762cc612ff2925d9a81308513b91ff89bac636).\nMeasured PR head: [[KERNELS] Preserve FP4 conversion compile\nwarmup](https://github.com/triton-lang/triton/commit/4bd15e987e393e6e589a6b627c011734e03c13b3).\n\nValidation on H100 and GB300: 1,097 tests passed per GPU setup, plus 180\ncases under Compute Sanitizer memcheck with no errors. Coverage includes\nboth packing axes, Hopper MMA versions, batches, tails, stepped inputs,\nnonzero storage offsets, empty shapes, CPU/meta tensors and a\nnon-current CUDA device. Separate large-address checks cover source\noffsets above 4 GiB and outputs above 2 GiB. All 18 forward allocation\nchecks fail on the baseline and pass with this change. Compile warmup\ncaptures and executes all 100 conversion cases with zero misses on both\nGPU families.\n\n| LoC | Added | Removed | Net |\n|---|---:|---:|---:|\n| Tests | +96 | -26 | +70 |\n| Non-tests | +95 | -1 | +94 |\n| All | +191 | -27 | +164 |\n\n## Reviewer's guide\n\n- `python/triton_kernels/triton_kernels/tensor_details/layout_details/`:\ndestination dispatch, strided eligibility checks and direct\nHopper/Blackwell conversion paths.\n- `python/triton_kernels/tests/`: extend the existing conversion\nmatrices and peak-allocation checks, including reference/meta fallbacks."
+    },
+    {
+      "sha": "192c9543f2131fbf6efa7d75d033b5603d8cf364",
+      "comment": "该提交为NVPTX后端添加了一个新的LLVM IR pass（`VectorizeExtractedAddsPass`），用于重新向量化SLPVectorizer生成的标量`fadd`操作。当向量乘法的每个lane都被提取并加上同一个标量常数时，该pass会将它们合并回一个向量`fadd`操作，使得NVPTX后端可以生成如`fma.f32x2`的向量化指令。此pass通过`triton-llvm-opt`工具和`llvm.optimize_module`的Python绑定（`python/src/llvm.cc`）暴露，并由NVIDIA的`CUDABackend`（`third_party/nvidia/backend/compiler.py`）启用。",
+      "tags": [
+        "feature",
+        "performance",
+        "low-risk",
+        "nvidia",
+        "llvm",
+        "codegen"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "影响有限。虽然新的LLVM pass本身在`lib/Target/LLVMIR/`下，并且`bin/triton-llvm-opt.cpp`工具是平台无关的，但此pass的启用是在NVIDIA的`CUDABackend`中（`third_party/nvidia/backend/compiler.py`），对Ascend无影响。然而，`python/src/llvm.cc`中`optimize_module`函数的签名发生了变更，新增了`vectorize_extracted_adds`参数。Ascend后端如果在调用`llvm.optimize_module`时使用了位置参数或未更新的关键字参数，将导致TypeError。",
+        "testing": "无直接影响。Ascend的测试不需要更新，除非其对`triton._C.libtriton.llvm.optimize_module`的调用方式需要适配新参数。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Backend] Add another SLPVectorizer workaround :( (#11502)\n\nThis is kind of dumb, but for some reason SLPVectorizer can generate\ncode like:\n```llvm\n  %mul = fmul <2 x float> %a, %b\n  %lo = extractelement <2 x float> %mul, i64 0\n  %lo.add = fadd float %lo, 1.0\n  %hi = extractelement <2 x float> %mul, i64 1\n  %hi.add = fadd float %hi, 1.0\n```\n\nSo I add a tiny pass to turn this into:\n```llvm\n  %mul = fmul <2 x float> %a, %b\n  %add = fadd <2 x float> %mul, splat (float 1.000000e+00)\n  %lo.add = extractelement <2 x float> %add, i64 0\n  %hi.add = extractelement <2 x float> %add, i64 1\n```\nwhich in turn becomes a vector fma.f32x2 in ptx.",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "7acd3f0bdfb50a746e7a9cc71df80f52555cfa59",
+      "comment": "该提交是对前一个FP4布局转换优化（#11495）的补充，专门优化Hopper的反向转换（从Hopper布局到strided布局）。此前的融合内核要求源数据是完整填充的padding形状，对于紧凑的（未完全填充）编码，会回退到低效的参考路径。此提交通过校验物理编码是否由完整的4x128字节块组成，并允许跳过不必要的mask，使得融合的反向转换内核也可以处理紧凑的源数据。这避免了为紧凑输入分配完整的中间tensor，从而降低了内存峰值（减半）并提高了性能。",
+      "tags": [
+        "feature",
+        "performance",
+        "low-risk",
+        "triton_kernels",
+        "fp4",
+        "layout-conversion"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。同#11495，此变更仅限于`python/triton_kernels/`下的布局转换实现，不涉及核心编译器接口。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[KERNELS] Fuse compact Hopper FP4 inverse layout conversion (#11496)\n\nHopper's fused FP4 inverse conversion currently requires the full\nnominal padding shape. A compact encoding with complete tiles therefore\nfalls back to full-sized intermediate tensors.\n\nAccept physical encodings made of complete 4×128-byte tiles that cover\nthe logical tensor. Skip source masks only when the physical shape is a\nmultiple of the 16×256-byte kernel tile. The conversion writes directly\ninto the requested strided packing. Unsupported geometry and CPU/meta\ntensors keep the reference path.\n\nThe complementary forward path is covered by [[KERNELS] Fuse forward FP4\nlayout conversion](https://github.com/triton-lang/triton/pull/11495).\n\n## Benchmarks\n\nSynthetic FP4 data uses uniform random `uint8` bytes with seed 0 and\nlogical shape `(16, 4112, 4160)`. Build the Hopper encoding on CPU. With\nthe MX axis oriented last and logical tail shape `(M, K)`, crop encoded\nstorage to `(..., 4*cdiv(M,16), 128*cdiv(K,64))`, make it contiguous,\nand transpose back for MX axis `-2`. Copy only this source to CUDA. The\ndense output is 130.5 MiB; packing is the destination `StridedLayout`\nmajor dimension, and `mma_version=3`.\n\n| GPU / layout | MX axis | Packing | Base (ms) | PR (ms) | Speedup |\nPeak MiB, base → PR |\n|---|---:|---:|---:|---:|---:|---:|\n| H100 / Hopper | -1 | -1 | 0.778 | 0.162 | 4.80× | 261.0 → 130.5 |\n| H100 / Hopper | -1 | -2 | 3.757 | 0.194 | 19.38× | 261.0 → 130.5 |\n| H100 / Hopper | -2 | -1 | 4.270 | 0.189 | 22.60× | 264.1 → 130.5 |\n| H100 / Hopper | -2 | -2 | 7.229 | 0.170 | 42.40× | 264.1 → 130.5 |\n| GB300 / Hopper | -1 | -1 | 0.588 | 0.133 | 4.43× | 261.0 → 130.5 |\n| GB300 / Hopper | -1 | -2 | 2.027 | 0.162 | 12.51× | 261.0 → 130.5 |\n| GB300 / Hopper | -2 | -1 | 2.338 | 0.162 | 14.47× | 264.1 → 130.5 |\n| GB300 / Hopper | -2 | -2 | 3.755 | 0.149 | 25.28× | 264.1 → 130.5 |\n\nFully padded controls at the same large shape change latency by -1.8% to\n+1.0% and keep the same output-only peak allocation. For `(64, 64)`,\ncompact sources improve 2.10–6.73×; fully padded controls change by -1.7\nto +6.4 µs (two balanced rounds each, with visible variation between\nprocesses).\n\nWith the CUDA allocator capped at 192 MiB above the resident input, all\neight baseline compact cases OOM and all eight PR cases succeed. After\nwarmup and `empty_cache()`, set\n`set_per_process_memory_fraction((resident_allocated + 192 * 2**20) /\ntotal_memory)`; restore the limit after each probe.\n\nTimes measure the warm public `convert_layout(source, destination)`\ncall, including allocation and synchronization but excluding output\ndestruction. Each main-table value is the median of four fresh-process\nmedians: 25 calls after five warmups, alternating baseline/PR order. For\npeak allocation, release prior outputs, synchronize, empty the cache,\nrecord `memory_allocated()` and reset peak stats; report\n`max_memory_allocated() - resident_allocated`. This includes the output\nand intermediates, not the input. Cached baseline CPU references check\nexact bytes, shape and strides outside timing. These are conversion\nmeasurements, not matmul or cold-compilation results.\n\nMeasured against [[AMD][LAYOUTS] Refine segment computation to support\nDS_READ_B128](https://github.com/triton-lang/triton/commit/0699c93421aaa077667280f69c5dfef68ac629bd),\nusing Python 3.12, a build based on PyTorch 2.11, and CUDA 13.0. Both\nrevisions use the same compiler from [[NVIDIA] Snapshot synthetic\ncluster-barrier counters before\nrendezvous](https://github.com/triton-lang/triton/commit/b3762cc612ff2925d9a81308513b91ff89bac636).\nMeasured PR head: [[KERNELS] Preserve compact FP4 conversion compile\nwarmup](https://github.com/triton-lang/triton/commit/3c5f3d9be4aaf9797e37044e4ae30225277a759c).\n\nValidation on H100 and GB300: 595 Hopper tests passed per GPU setup,\nplus 144 cases under Compute Sanitizer memcheck with no errors. Coverage\nincludes both MX/packing axes and MMA versions, compact tails, batches,\nstepped storage, empty shapes, malformed encodings and CPU/meta tensors.\nSeparate large-address checks cover source offsets above 4 GiB and\noutputs above 2 GiB. All eight compact peak-allocation checks fail on\nthe baseline and pass with this change. Compile warmup captures and\nexecutes all 128 conversion cases with zero misses on both GPU families.\n\n| LoC | Added | Removed | Net |\n|---|---:|---:|---:|\n| Tests | +63 | -7 | +56 |\n| Non-tests | +25 | -17 | +8 |\n| All | +88 | -24 | +64 |\n\n## Reviewer's guide\n\n-\n`python/triton_kernels/triton_kernels/tensor_details/layout_details/hopper_value.py`:\nvalidate physical tile coverage and bound the inverse kernel's source\nloads.\n-\n`python/triton_kernels/tests/test_tensor_details/test_layout_hopper.py`:\nextend the compact-source matrix and verify output-only peak allocation\nand fallback behavior."
+    },
+    {
+      "sha": "ddf8e6c2edea95a64a624613b94de2e674a25efa",
+      "comment": "这是一个针对NVIDIA Hopper/Blackwell架构的bugfix。修复了`FenceMBarrierInitReleaseClusterOp`（mbarrier初始化fence）的生成逻辑。原先代码使用线程ID等于0作为predicate，但`mbarrier.init`操作使用的是`elect`指令选出的线程。如果执行fence的线程与执行init的线程不一致，内存顺序可能错误。此修复改用`createElectPredicateWarp0`生成的predicate，确保fence由与init相同的线程发出，从而保证了正确的内存同步。",
+      "tags": [
+        "bugfix",
+        "high-risk",
+        "nvidia",
+        "cuda",
+        "synchronization",
+        "mbarrier"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。此变更仅修改了`third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/BarrierOpToLLVM.cpp`，这是NVIDIA后端的专属代码路径。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[FIX] Fence mbarrier initialization from its elected issuer (#11498)\n\nUse elect for init fence as mbarrier.init also uses elect and the fence\nhas to be emitted by the same thread as the init!"
+    },
+    {
+      "sha": "d5349472b7d68a245e9077433b30c8437da3e1ad",
+      "comment": "此提交针对使用CLC（Cluster Launch Control）特性的matmul内核，调整了warp specialization的启用位置。改动点在于`python/triton_kernels/triton_kernels/matmul_details/_p_matmul.py`中，当启用CLC时，不再在外层的持久化循环上请求warp specialization，而是改在内层的K循环上通过`warp_specialize=CLC`显式启用。这样可以在不影响CLC调度器的情况下，保留TMA/MMA producer-consumer的重叠执行能力，从而提升性能。",
+      "tags": [
+        "performance",
+        "low-risk",
+        "triton_kernels",
+        "matmul",
+        "warp-specialization"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。此变更仅涉及`python/triton_kernels/`下的matmul实现，不涉及Ascend使用的任何编译器接口。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[triton_kernels] Enable CLC inner-loop warp specialization (#11493)\n\nCLC replaces the outer persistent loop and disables its\nwarp-specialization request. Request warp specialization on the inner K\nloop so CLC retains TMA/MMA producer-consumer overlap while leaving the\nCLC scheduler loop unchanged.\n\nTested on GB300 with the existing CLC matmul tests: 3 passed, 9\ndeselected. For the dense BF16 `[16384, 12288] @ [12288, 12288]`\nworkload from the KI CLC thread, mean latency was 3.6103 ms for non-CLC\nwith 118 SMs, 3.2535 ms for non-CLC with 152 SMs, and 3.3505 ms for CLC\nwith 152 SMs."
+    },
+    {
+      "sha": "0699c93421aaa077667280f69c5dfef68ac629bd",
+      "comment": "这是一个针对AMD GPU后端的布局分析优化。在`include/triton/Tools/GenericSwizzling.h`和`lib/Tools/GenericSwizzling.cpp`中，将原先用整数查找表表示的`LocalMemOpTile`的`laneAddr`字段，替换为更一般的`laneMask`，用线性代数（F2空间运算）来计算segment，以支持DS_READ_B128指令中更复杂的、混合XOR模式的线程分组。这改进了共享内存bank冲突计算的准确性。此更改也涉及了AMD共享内存访问tile的定义（`third_party/amd/lib/TritonAMDGPUToLLVM/TargetInfo.cpp`）以及对现有`computeSegment`逻辑的重构。",
+      "tags": [
+        "refactor",
+        "performance",
+        "medium-risk",
+        "amd",
+        "analysis",
+        "layout"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "影响有限。`include/triton/Tools/GenericSwizzling.h`是平台无关的通用工具头文件，其`LocalMemOpTile`结构体发生了变化（`laneAddr`被`laneMask`替代），并新增了`getLaneMask`方法。如果Ascend的C++代码（`third_party/ascend/lib`）直接使用了`LocalMemOpTile`或相关的`computeSegment`函数，则需要同步适配。但根据架构上下文，Ascend的lowering主要走TritonToLinalg路径，可能不使用此工具。",
+        "testing": "无直接影响。Ascend的测试不需要更新，除非其C++代码直接依赖此工具。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][LAYOUTS] Refine segment computation to support DS_READ_B128 (#11365)\n\nDS_READ_B128 instruction has swizzled thread grouping in each phase\nreading from LDS.\n\nFor MI300:\nPhase 0: T0-T3, T20-T23\nPhase 1: T32-T35, T52-T55\nPhase 2: T4-T7, T16-T19\nPhase 3: T36-T39, T48-T51\nPhase 4: T8-T11, T28-T31\nPhase 5: T40-T43, T60-T63\nPhase 6: T12-T15, T24-T27\nPhase 7: T44-T47, T56-T59\n\nFor MI350:\nPhase 0: T0-T3, T12-T15, T20-T23, T24-T27\nPhase 1: T32-T35, T44-T47, T52-T55, T56-T59\nPhase 2: T4-T7, T8-T11, T16-T19, T28-T31\nPhase 3: T36-T39, T40-T43, T48-T51, T60-T63\n\nAs @FrederickVu pointed out: Lane basis vectors used for tracking\nconcurrent memory accesses during bank conflict accounting are chosen to\nensure their span defines the phase 0 lane ID subspace. Lane ID subspace\nof other phases is an affine shift of that of phase 0.\n\nFor MI300 we choose:\nV0 = span(l0, l1, l2 ⊕ l4)\nthus:\nV1 = V0 ⊕ l5\nV2 = V0 ⊕ l2\nV3 = V0 ⊕ l5 ⊕ l2\nV4 = V0 ⊕ l3\nV5 = V0 ⊕ l5 ⊕ l3\nV6 = V0 ⊕ l3 ⊕ l2\nV7 = V0 ⊕ l5 ⊕ l3 ⊕ l2\n\nFor MI350 we choose:\nV0 = span(l0, l1, l2 ⊕ l3, l2 ⊕ l4)\nthus:\nV1 = V0 ⊕ l5\nV2 = V0 ⊕ l2\nV3 = V0 ⊕ l5 ⊕ l2\n\nTo support the mixed/XORed basis, we refine computeSegment() by\nreplacing raw integer lookups with proper linear algebra operations over\nF2 to cleanly handle both power-of-two inputs and mixed XOR patterns.\n\ncc: @antiagainst \n\n<!---\nThe core Triton is a small number of people, and we receive many PRs\n(thank\nyou!).  To help us review your code more quickly, **if you are a new\ncontributor (less than 3 PRs merged) we ask that you complete the\nfollowing\ntasks and include the filled-out checklist in your PR description.**\n\nComplete the following tasks before sending your PR, and replace `[ ]`\nwith\n`[x]` to indicate you have done them.\n-->\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)\n\n---------\n\nCo-authored-by: Frederick Vu <100011202+FrederickVu@users.noreply.github.com>",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "8957b9aac23e526fb1252c7c3b592e6f43c175c8",
+      "comment": "这是对PR #11468的后续bugfix。该PR将`ModuleMembarAnalysis::run<>`的模板实例化移动到了Python绑定（`python/src/passes.cc`），这导致了在Debug构建下链接错误，因为MLIR库是使用`-fno-rtti`构建的。此修复将默认的`run<MembarAnalysis>`实例化移至`lib/Analysis/Membar.cpp`中，并在Python绑定中通过lambda调用非模板的`run()`方法，解决了Debug构建的链接问题。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "build",
+        "analysis",
+        "membar"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "影响有限。此变更修改了`include/triton/Analysis/Membar.h`和`lib/Analysis/Membar.cpp`，为`ModuleMembarAnalysis`新增了非模板的`run()`方法，并修正了`python/src/passes.cc`中的绑定。这改变了C++ API，但对Python接口`triton._C.libtriton.analysis.membar.run`的行为没有影响。Ascend如果通过C++代码直接调用`ModuleMembarAnalysis::run<>()`，需要改为调用`run()`。",
+        "testing": "无直接影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Analysis] Fix membar Python binding in debug builds (#11488)\n\n[PR #11468](https://github.com/triton-lang/triton/pull/11468) moved\n`ModuleMembarAnalysis::run<>` instantiation into the RTTI-enabled Python\nbinding. Debug builds then reference RTTI unavailable from MLIR, which\nis built with `-fno-rtti`.\n \nExplicitly instantiate the default specialization in the RTTI-disabled\nanalysis library. This fixes import triton in Debug builds.",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "b1233aa326fa485b08de8593da2d08cb853c346b",
+      "comment": "这是一个重大的重构提交，旨在让Membar分析（以及ClusterBarrier、TMEM同步和ProxyFence插入）复用统一的`BufferRegionAnalysis`。此改动将原本在`MembarAnalysis`中维护的`SharedMemoryFootprints`替换为`BufferRegionAnalysis`的`BufferRegionFootprint`。这使得分析能够更精确地处理函数调用（包括参数、返回值和call summary的翻译），并统一了共享内存、TMEM和barrier的footprint表示。虽然改动巨大（+1333/-750），但主体是代码移动和重构，并新增了大量测试。",
+      "tags": [
+        "refactor",
+        "feature",
+        "high-risk",
+        "analysis",
+        "membar",
+        "buffer-region"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "影响显著。此提交对`include/triton/Analysis/`和`lib/Analysis/`下的核心分析模块（`BufferRegion.h/cpp`, `Membar.h/cpp`, `Allocation.h/cpp`, `Function.h`, `MemoryFrontier.h`）进行了重大重构。关键接口变更包括：`BufferRegionView`新增`allocation`字段，`BufferRegionAccess`被`const BufferRegionFootprint*`替代，`MembarAnalysis`构造函数签名改变，以及`PostOrderFunctionAnalysis`新增`runModule`和`getCallSummary`等模板方法。Ascend的C++代码如果直接使用这些分析接口，特别是自定义的pass或转化，将面临大量编译错误，需要逐一适配。不过，根据基线，Ascend主要走TritonToLinalg路径，可能不直接使用这些GPU-specific的下沉分析。",
+        "testing": "影响显著。`test/`目录下大量与Membar、BufferRegion、ProxyFence相关的lit测试被重写。如果Ascend有类似的C++测试或依赖于这些lit测试的pass行为，需要检查其输出是否因分析结果变化而改变。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/",
+          "test/Analysis/",
+          "test/TritonGPU/",
+          "test/TritonNvidiaGPU/"
+        ]
+      },
+      "message": "[Analysis] Reuse BufferRegion analysis in Membar (#11468)\n\nReuse `BufferRegionAnalysis` footprints across Membar, cluster barriers,\nTMEM synchronization, and proxy fences. Share call-summary handling\nwhile preserving allocation frames, CTA identity, and descriptor views\nwhen checking aliases.\n\nThe diff looks massive, but the non-test code is +565  −608",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}
