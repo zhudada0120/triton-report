@@ -1,4 +1,68 @@
 {
+  "c2e71038e0bb99040ca1595fe624313796df16ef": {
+    "date": "2026-08-29",
+    "msg": "[ssbuffer](fix) Remove fallback by name for certain kernels"
+  },
+  "5930ffd527870dd706c92d2bf54df2693c0455aa": {
+    "date": "2026-08-29",
+    "msg": "Print autotune benchmark timings (#1392)"
+  },
+  "c47ebc7cb074b83bcd72b34f2c3ef5566543c005": {
+    "date": "2026-08-29",
+    "msg": "[Autotune](fix) Enable L2 cache clearing for NPU autotune (#1785)"
+  },
+  "d1f8e2fa47b76f381937d0c4d4d415999bdd816d": {
+    "date": "2026-08-29",
+    "msg": "[simt-template](fix) trace shape-only pointer wrappers in indirect-load analysis (#1727)"
+  },
+  "dd8ae207e22fef67d81fc5a92d264ea63f1ccab7": {
+    "date": "2026-08-29",
+    "msg": "[ssbuffer](fix)remove kernel name (#1753)"
+  },
+  "e93350318bf54c9ec20c588d15dbf4f845960b36": {
+    "date": "2026-08-29",
+    "msg": "[TritonToGraph](feat) log graph optimization rule matches (#1739)"
+  },
+  "0b8d519379cbaef892c0f0227cddc8099dc044bc": {
+    "date": "2026-08-29",
+    "msg": "[Autotune](fix) Resolve conflict between ubtuner and autotune cache (#1664)"
+  },
+  "f61e2fdd9a9baad51655231c69eeb1ee994bb267": {
+    "date": "2026-08-29",
+    "msg": "[Autotune](fix) cache single-config selections (#1827)"
+  },
+  "33943ec258b8646f5ab304f0d5a61d0105376b9b": {
+    "date": "2026-08-29",
+    "msg": "[UT](fix) Add fp16 coverage to exp elementwise test (#1833)"
+  },
+  "ee61c52999fcbc684b736b52c5e2bad0a49cdd0e": {
+    "date": "2026-08-29",
+    "msg": "[API](feat) deprecate unsupported mem ops and clean dead custom ops (#1823)"
+  },
+  "2d8c647cc944ca57a3382de896ba860cf52f711e": {
+    "date": "2026-08-29",
+    "msg": "[Costmodel](fix) remove compile options and env variable (#1704)"
+  },
+  "266a37bea35fff5046cdff3866d5215eeda89469": {
+    "date": "2026-08-29",
+    "msg": "[CI](feat) Migrate the a5 test to the blue zone(sync) (#1820)"
+  },
+  "7300140e31c3531a61836c2d78cb6e894d23de53": {
+    "date": "2026-08-29",
+    "msg": "[SplitIfByBlockId](fix) skip sparse_flash_attention_grad_kernel in SplitIfByBlockIdPass"
+  },
+  "d8436fe5b277fc6d14f96eef900cee4f70918091": {
+    "date": "2026-08-29",
+    "msg": "[docker](feat) release 3.2.2 image (#1548)"
+  },
+  "7117d95de153f355d0b4c493132a590d161ac60b": {
+    "date": "2026-08-29",
+    "msg": "[CI](fix) Fix document build path issue (#1433)"
+  },
+  "221309ff5816dd907ad62860600122232a89798a": {
+    "date": "2026-08-29",
+    "msg": "[Docs](fix) Update Community Activities in Readme.md (#1840)"
+  },
   "36f3baeaa16d3c518fcd3764f50bd61db8a10b2d": {
     "date": "2026-08-28",
     "msg": "[SplitIfByBlockId](fix) skip parallel_nsa_fwd_kernel in SplitIfByBlockIdPass"

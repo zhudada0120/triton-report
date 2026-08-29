@@ -75,6 +75,42 @@
       "interface_changes": "这是一个重大的重构提交，旨在让Membar分析（以及ClusterBarrier、TMEM同步和ProxyFence插入）复用统一的`BufferRegionAnalysis`。此改动将原本在`MembarAnalysis`中维护的`SharedMemoryFootprints`替换为`BufferRegionAnalysis`的`BufferRegionFootprint`。这使得分析能够更精确地处理函数调用（包括参数、返回值和call summary的翻译），并统一了共享内存、TMEM和barrier的footprint表示。虽然改动巨大（+1333/-750），但主体是代码移动和重构，并新增了大量测试。",
       "change_summary": "[Analysis] Reuse BufferRegion analysis in Membar (#11468)",
       "ascend_impact": false
+    },
+    "9628c80f2b854b74a07fdf0138b7ed6ccee70b07": {
+      "date": "2026-08-29",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "该 commit 回退了三个之前的 commit（#11458、#11502、#11513），移除了 LLVM 层的 packed floating-point scalarization（LLVMIRScalarizePackedFOps.cpp）和 extracted-add vectorization（LLVMIRVectorizeExtractedAdds.cpp）两个 workaround pass，并恢复了此前的 NVIDIA 优化流水线。同时，对 python/src/llvm.cc 中的 optimize_module 接口进行了调整，移除了相关的参数和 pass 注册，并对测试文件进行了相应更新。这是一个回退操作，旨在恢复到之前稳定的优化流水线，可能是由于这些 workaround 引入了新的问题。",
+      "change_summary": "[BAKCEND] Revert LLVM vectorization workarounds (#11514)",
+      "ascend_impact": false
+    },
+    "c4b6eebae5cf6e413b49d351778160675279963a": {
+      "date": "2026-08-29",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "该 commit 对 FPSan 进行了增强：1) 在 pass 运行前会诊断那些必须被内联的函数调用（例如隐藏了 TMEM 分配的调用、需要 kernel 上下文的调用等），并报错退出；2) 要求编译器流水线在 FPSan 之前运行 symbol DCE，以移除不可达的私有函数，避免影响后续分析。同时，重构了 TMEM source 溯源逻辑，并增加了相关的测试用例。这增强了 FPSan 的健壮性和错误诊断能力。",
+      "change_summary": "[FPSan] Remove dead helpers and diagnose calls requiring inlining (#11489)",
+      "ascend_impact": false
+    },
+    "a1276836315eeb2caf8073a59dda8a74588dae5e": {
+      "date": "2026-08-29",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "该 commit 是回退操作，将 LLVM 版本从 ce3529423abda3fc4ad0b542daa50af21e539a29 回退到 b010a18d2b648cab83c83967ff26b8fde11acdc6。同时，调整了 `attach_datalayout` 和 `translate_to_asm` 的接口，移除了 `abi` 参数，并将在 NVIDIA 后端设置短指针（short pointer）的方式从传递 ABI 名称改为了新的 `set_short_ptr` 函数。此外，还对多个 lit 测试文件进行了更新，以适配新的 LLVM IR 输出格式。此次回退是为了规避新版 LLVM 可能引入的 ptxas bug。",
+      "change_summary": "Revert \"[BACKEND] Bump to llvm/llvm-project@941a04e (#11277)\" (#11506)",
+      "ascend_impact": false
     }
   }
 }

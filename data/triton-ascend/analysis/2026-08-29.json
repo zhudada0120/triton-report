@@ -1,0 +1,301 @@
+{
+  "date": "2026-08-29",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-08-30T02:06:23.781995+08:00",
+  "daily_summary": "当日变更主要集中在 Ascend 后端的编译优化与运行时调优：一方面通过清理 DynamicCVPipeline 中的 kernel 名单、扩展 SIMT 间接加载分析的指针追踪能力，以及为 TritonToGraph 的图优化规则增加匹配日志来优化编译期行为；另一方面修复了自动调优器（AutoTilingTuner）的缓存失效与开启 L2 缓存清理的问题，并新增了超参调优结果的打印功能。同时，代码库清理了废弃的 costmodel 并行选项和自定义内存操作（index_put/gather/scatter），并为这些函数添加了弃用警告。此外，CI 流程迁移了 A5 测试到蓝区，并发布了 3.2.2 版本的 Docker 镜像。",
+  "test_impact_summary": "当日变更引入了多个需要测试看护的点。自动调优相关的三个 commit 直接修改了 AutoTilingTuner 的核心逻辑（缓存、计时打印、L2 清理），配套的单元测试是确保这些行为正确的关键，特别是新增的单配置缓存、失败不缓存等场景。图优化日志的改动影响了多个 C++ pass，需要通过 lit 测试验证日志输出格式。SIMT 间接加载分析的增强和 custom op 的弃用都需要更新或新增对应的测试用例，以确保后续重构不会引入回归。",
+  "commits": [
+    {
+      "sha": "c2e71038e0bb99040ca1595fe624313796df16ef",
+      "comment": "该 commit 是 DynamicCVPipeline 中 kernel 名单的清理工作，移除了不再需要的特定 kernel 名称（如 `chunk_gated_delta_rule_bwd_kernel_dhu_k128_blockdim128`），这些 kernel 可能已经能通过通用路径处理。变更风险较低，但需要关注这些被移除的 kernel 是否仍能正确通过 DynamicCV 编译，避免回归。",
+      "tags": [
+        "refactor",
+        "low-risk",
+        "ssbuffer",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "移除 kernel 名单后，需要验证这些 kernel 是否仍能被后续的通用逻辑正确处理，避免编译行为发生变化。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/",
+          "third_party/ascend/unittest/pytest_ut/"
+        ]
+      },
+      "message": "[ssbuffer](fix) Remove fallback by name for certain kernels\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>"
+    },
+    {
+      "sha": "5930ffd527870dd706c92d2bf54df2693c0455aa",
+      "comment": "为自动调优器（AutoTilingTuner）增加了打印每个候选配置性能结果的功能，便于用户观察调优过程。新增了 `_print_benchmark_results` 方法并附带单元测试，实现方式清晰。该变更增强了可观测性，但需要注意打印格式与 `TRITON_PRINT_AUTOTUNING` 环境变量的配合。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "autotuner",
+        "runtime"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了打印功能及对应的单元测试，需要确保测试能覆盖不同的 timing 格式（元组或标量）和 config 选择标记。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/autotune_ut/test_do_bench_compat.py"
+        ]
+      },
+      "message": "Print autotune benchmark timings (#1392)\n\nCo-authored-by: zhanwei33 <22679270+zhanwei33@users.noreply.github.com>"
+    },
+    {
+      "sha": "c47ebc7cb074b83bcd72b34f2c3ef5566543c005",
+      "comment": "修复了 NPU 自动调优时未清理 L2 缓存的问题，确保每个被评测的候选配置都在干净的缓存环境下运行，以获得更准确的性能对比。该行为与 CUDA 后端保持一致。变更简单，但可能会改变调优结果，需要验证其不会导致性能退化。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "low-risk",
+        "autotuner",
+        "runtime"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "更新了单元测试以验证 `do_bench_npu` 被调用时 `clear_l2_cache` 参数为 True，需要确保该测试能捕获此行为的回归。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/autotune_ut/test_do_bench_compat.py"
+        ]
+      },
+      "message": "[Autotune](fix) Enable L2 cache clearing for NPU autotune (#1785)\n\nPort the behavior from triton-lang/triton-ascend#969 to main-dev so each profiled autotune candidate starts with a cleared L2 cache.\n\nAdd coverage that verifies the NPU profiling call requests cache clearing.\n\nOriginal-commit: 1189253d1074bd38e70235de0f9165e5f5e6f201\n\nSigned-off-by: zhanwei33 <22679270+zhanwei33@users.noreply.github.com>\nCo-authored-by: zhanwei33 <22679270+zhanwei33@users.noreply.github.com>\nCo-authored-by: weizhan4 <weizhan4@huawei.com>"
+    },
+    {
+      "sha": "d1f8e2fa47b76f381937d0c4d4d415999bdd816d",
+      "comment": "该 commit 增强了间接加载分析的指针追踪能力，使其能识别通过 `broadcast` 和 `expand_dims` 操作包装的指针。这修复了间接加载分析可能漏判某些指针根的情况，从而避免生成错误的代码。变更涉及核心的分析逻辑，并新增了 lit 测试用例进行验证。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "simt-template",
+        "TritonToLinalg",
+        "间接加载分析"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 lit 测试用例来覆盖通过 broadcast/expand_dims 包装的指针场景，需要确保该测试能有效防止后续对该分析逻辑的修改导致回归。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/950PR/TritonToLinalg/indirect_load_rewrite.mlir"
+        ]
+      },
+      "message": "[simt-template](fix) trace shape-only pointer wrappers in indirect-load analysis (#1727)"
+    },
+    {
+      "sha": "dd8ae207e22fef67d81fc5a92d264ea63f1ccab7",
+      "comment": "从 DynamicCVPipeline 的 kernel 名单中移除了 `_parallel_hstu_attn_bwd`，这表明该 kernel 的相关问题可能已通过其他方式解决。变更简单，风险较低。",
+      "tags": [
+        "refactor",
+        "low-risk",
+        "ssbuffer",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅从名单中移除一个 kernel，且已有测试覆盖 DynamicCV 通用逻辑，无需专门为此新增测试。",
+        "suggested_test_areas": []
+      },
+      "message": "[ssbuffer](fix)remove kernel name (#1753)\n\nCo-authored-by: sxm <sunxianmiao@h-partners.com>"
+    },
+    {
+      "sha": "e93350318bf54c9ec20c588d15dbf4f845960b36",
+      "comment": "该 commit 为 TritonToGraph 的多个优化规则增加了匹配日志，包括 ChunkCoalescing、RowCoalescing、StridedAxisCoalescing、ConvertModuloToMask 等。这极大提升了图优化调试的可观测性，能清晰看到哪个规则在什么位置被触发，以及相关的关键参数。同时重构了 StridedLoadStoreRewrite 的日志输出，统一了格式。变更涉及多个文件，但均为日志增强，风险较低。",
+      "tags": [
+        "feature",
+        "refactor",
+        "low-risk",
+        "TritonToGraph",
+        "debugging"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增的日志输出可能影响现有 lit 测试的 FileCheck 检查，需要审查并更新相关测试用例以匹配新的日志格式。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/",
+          "third_party/ascend/unittest/Conversion/950PR/TritonToLinalg/"
+        ]
+      },
+      "message": "[TritonToGraph](feat) log graph optimization rule matches (#1739)\n\nGraph optimization only logs the rule the scheduler applied, so a rule\nthat analysed the IR and produced no candidate reads exactly like one\nwhose candidate lost to a higher-benefit plan or went stale before it\nwas revalidated.\n\nEvery rule now logs its own match under the graph-optimize debug type,\nreusing the sentence the driver already prints and appending the\nparameters that decided the match:\n\n  [graph-optimize] matched graph optimization rule 256 (ConvertModuloToMask) at loc(\"k.py\":12:8): arith.remsi tileSize=64 maskedLoads=2\n\nThe scheduler also reports the candidates it drops on revalidation,\ncovering the remaining case where a match never reaches an applied line.\n\nStridedLoadStoreRewrite routes its eight rewrite variants through one\nhelper. The per-variant banners and op dumps it used predate the shared\nformat and buried the surrounding output.\n\nCo-authored-by: xudezheng <xudezheng1@huawei.com>"
+    },
+    {
+      "sha": "0b8d519379cbaef892c0f0227cddc8099dc044bc",
+      "comment": "该 commit 解决了 ubtuner 与自动调优磁盘缓存之间的冲突。之前启用 ubtuner 会禁用磁盘缓存，现在通过将 `ubtune_cfg` 属性序列化并纳入缓存键，使得缓存可以被安全使用。`_patch_config_init` 允许 Config 对象在反序列化时还原 ubtune_cfg，`_patch_cache_invalidating_env_vars` 确保切换 ubtuner 环境变量会使缓存失效。这是一个功能增强，但涉及对缓存键和 Config 对象的修改，有一定风险。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "autotuner",
+        "cache",
+        "ubtuner"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "修改了 Config 的 __init__ 和缓存键逻辑，需要新增测试用例来覆盖启用 ubtuner 时的缓存读写、缓存键变化以及 Config 属性的序列化/反序列化。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/autotune_ut/test_do_bench_compat.py",
+          "third_party/ascend/unittest/ubtuner_ut/"
+        ]
+      },
+      "message": "[Autotune](fix) Resolve conflict between ubtuner and autotune cache (#1664)"
+    },
+    {
+      "sha": "f61e2fdd9a9baad51655231c69eeb1ee994bb267",
+      "comment": "修复了 AutoTilingTuner 在只有一个配置时，没有将选中的配置写入内存缓存（`self.cache`）的 bug。现在单配置路径也会在成功运行后缓存配置，避免重复的 prune 和编译。同时修复了 GC 收集逻辑，仅在真正进行 benchmark 时才执行。新增了多个单元测试覆盖单配置缓存、失败不缓存等场景。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "medium-risk",
+        "autotuner",
+        "cache"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了多个单元测试以覆盖单配置路径的缓存行为，包括成功缓存、失败不缓存以及 prune 后的缓存，这些测试对于防止缓存逻辑回归至关重要。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/autotune_ut/test_do_bench_compat.py"
+        ]
+      },
+      "message": "[Autotune](fix) cache single-config selections (#1827)\n\nSigned-off-by: zhanwei33 <22679270+zhanwei33@users.noreply.github.com>\nCo-authored-by: zhanwei33 <22679270+zhanwei33@users.noreply.github.com>"
+    },
+    {
+      "sha": "33943ec258b8646f5ab304f0d5a61d0105376b9b",
+      "comment": "为 exp 逐元素测试增加了 fp16 数据类型的覆盖。这是一个简单的测试增强，用于确保 fp16 路径的正确性。",
+      "tags": [
+        "test",
+        "low-risk",
+        "pytest_ut"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "参数化列表中增加了新的 dtype，不需要额外修改，但该测试用例本身需要维护。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_exp.py"
+        ]
+      },
+      "message": "[UT](fix) Add fp16 coverage to exp elementwise test (#1833)"
+    },
+    {
+      "sha": "ee61c52999fcbc684b736b52c5e2bad0a49cdd0e",
+      "comment": "该 commit 弃用了不支持的 `index_put`、`gather_out_to_ub` 和 `scatter_ub_to_out` 三个内存操作，移除了对应的 `_index_put`、`_gather_load`、`_scatter_store` 自定义算子及其测试，并添加了弃用警告。这是一个较大的 API 清理工作，但有助于减少维护成本。变更后，调用这些函数会触发 FutureWarning，且 `builtin_ops_demo.py` 中的相关示例也被删除。",
+      "tags": [
+        "refactor",
+        "breaking-change",
+        "medium-risk",
+        "custom_op",
+        "API"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "删除了相关测试文件（test_gather_load.py），并且对现有测试（test_cann_extension.py）修改了上下文管理器以期待 FutureWarning。需要确保新的弃用警告在测试中被正确捕获。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_cann_extension.py",
+          "third_party/ascend/unittest/custom_op/"
+        ]
+      },
+      "message": "[API](feat) deprecate unsupported mem ops and clean dead custom ops (#1823)"
+    },
+    {
+      "sha": "2d8c647cc944ca57a3382de896ba860cf52f711e",
+      "comment": "该 commit 移除了 costmodel 中已废弃的 `TRITON_COSTMODEL_WORKER_NUM` 环境变量和 `enable_costmodel_backend` 选项，并将 `costmodel_bench` 的接口从批处理改为单配置评估，简化了代码逻辑。同时删除了相关的契约测试。这是一个重构，但接口变更会影响调用方。",
+      "tags": [
+        "refactor",
+        "breaking-change",
+        "medium-risk",
+        "costmodel"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "删除了 `test_compiler_costmodel_contract.py`，并重写了 `test_costmodel_runtime.py` 以适应新的单配置接口。需要确保新的测试覆盖了所有路径，尤其是异常和缺失 TTIR 的情况。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/costmodel_ut/test_costmodel_runtime.py"
+        ]
+      },
+      "message": "[Costmodel](fix) remove compile options and env variable (#1704)\n\nCo-authored-by: ZhangZGC <8623924@qq.com>"
+    },
+    {
+      "sha": "266a37bea35fff5046cdff3866d5215eeda89469",
+      "comment": "这是一个大型 CI 迁移 commit，将 A5 测试迁移到蓝色区域，并更新了相关的 CI 工作流、容器配置、依赖版本和测试配置。具体包括：删除旧的 Ascend950 CI 工作流、更新 integration-tests-ascend.yml 以支持多芯片和 Python 版本、修改 `bisheng-version.txt` 以支持多架构、更新 Dockerfile 和文档、修复 lit 配置（使用内部 shell）。变更范围广，但主要集中在 CI/DevOps 层面，对核心编译逻辑无影响。",
+      "tags": [
+        "ci",
+        "refactor",
+        "high-risk",
+        "infrastructure",
+        "testing"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "测试配置有重大变更：更新了 lit.cfg.py 强制使用内部 shell，删除了两个特定于 A5 的 MLIR 测试文件，并修改了 dedup_nops.mlir 的 RUN 行。需要确保这些变更与新的 CI 流程兼容。",
+        "suggested_test_areas": [
+          "test/lit.cfg.py",
+          "third_party/ascend/unittest/lit.cfg.py",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AddControlFlowCondition/",
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/dedup_nops.mlir"
+        ]
+      },
+      "message": "[CI](feat) Migrate the a5 test to the blue zone(sync) (#1820)\n\n* Migrate the a5 test to the blue zone\n\n* Reduce the torch_npu version to 2.10.0\n\n* [Docs](fix) skip broken A5 doc examples (index_put/scatter/gather/ldexp)\n\n* [unittest](fix) use internal lit shell for ShTest (lit>=23 rejects execute_external)\n\n* fix mlir test\n\n* Roll back some modifications"
+    },
+    {
+      "sha": "7300140e31c3531a61836c2d78cb6e894d23de53",
+      "comment": "在 SplitIfByBlockId 的 kernel 名单中新增了 `sparse_flash_attention_grad_kernel`，以跳过对该 kernel 的处理。这表明该 kernel 在 SplitIfByBlockId 转换中存在问题，需要绕开。变更简单，但需要关注其背后的原因是否已根本解决。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "DynamicCVPipeline",
+        "ssbuffer"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅修改 kernel 名单，已有测试覆盖 SplitIfByBlockId 的常规流程，无需专门为此新增测试。",
+        "suggested_test_areas": []
+      },
+      "message": "[SplitIfByBlockId](fix) skip sparse_flash_attention_grad_kernel in SplitIfByBlockIdPass"
+    },
+    {
+      "sha": "d8436fe5b277fc6d14f96eef900cee4f70918091",
+      "comment": "该 commit 为 triton-ascend 3.2.2 版本发布了一系列 Docker 镜像，包括针对 910b、A3 和 950 芯片，基于 Ubuntu 24.04、Debian 12 和 openEuler 24.03 的多种组合。同时更新了相关文档和 OVERVIEW 文件。这是一个非功能性变更，主要影响部署和分发。",
+      "tags": [
+        "docs",
+        "chore",
+        "low-risk",
+        "docker"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "不涉及代码逻辑，主要是文档和镜像构建配置，无需新增测试。",
+        "suggested_test_areas": []
+      },
+      "message": "[docker](feat) release 3.2.2 image (#1548)\n\n* [docker](feat) release 3.2.2 image\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>\n\n* [docker](feat) release 3.2.2 image\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>\n\n* [docker](feat) resolve issue\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>\n\n---------\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>"
+    },
+    {
+      "sha": "7117d95de153f355d0b4c493132a590d161ac60b",
+      "comment": "修复了文档构建流程中的路径问题。更新了 CI 工作流，使文档预览和检查任务能够在检测到根目录的 Markdown 文件（`*.md`）变更时正确触发，并简化了 codespell 的 whitelist，移除了大量不再需要的条目。变更主要影响 CI 和文档构建，风险较低。",
+      "tags": [
+        "ci",
+        "bugfix",
+        "low-risk",
+        "documentation"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "这是 CI 配置和文档相关的修复，不涉及核心代码逻辑，因此不需要新增测试。",
+        "suggested_test_areas": []
+      },
+      "message": "[CI](fix) Fix document build path issue (#1433)\n\nSigned-off-by: Jiahao Su <damow890@gmail.com>"
+    },
+    {
+      "sha": "221309ff5816dd907ad62860600122232a89798a",
+      "comment": "该 commit 为纯文档更新（README.md 和 README_zh.md），将社区活动信息由原来的两条条目（Meeting Calendar/会议日历 和 Meeting Minutes Board/会议纪要看板）合并为一条（Meeting Time, Link, and Minutes/会议时间、链接及纪要）。从 commit 消息的多个 fix formatting 提交可以看出，该 PR 经过多次格式修正后合入。变更仅涉及文档内容整理，不触碰任何代码文件（.py/.cpp/.h）或构建配置，不影响 triton-ascend 的任何模块（编译流水线、后端抽象、运行时等），也无任何风险。",
+      "tags": [
+        "docs",
+        "low-risk",
+        "readme"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅修改 README 文档，不涉及任何源码、编译逻辑、后端接口或运行时行为，对现有测试没有任何影响。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](fix) Update Community Activities in Readme.md (#1840)\n\n* [CI](feat) Add automatic refreshing of issue information\n\nSigned-off-by: Tian <tt553093031@gmail.com>\n\n* [CI](feat) Add automatic refreshing of issue information\n\nSigned-off-by: Tian <tt553093031@gmail.com>\n\n* [CI](feat) Add automatic refreshing of issue information\n\nSigned-off-by: Tian <tt553093031@gmail.com>\n\n* fix formatting\n\nSigned-off-by: Tian <tt553093031@gmail.com>\n\n* fix formatting\n\nSigned-off-by: Tian <tt553093031@gmail.com>\n\n* fix formatting\n\nSigned-off-by: Tian <tt553093031@gmail.com>\n\n* fix formatting\n\nSigned-off-by: Tian <tt553093031@gmail.com>\n\n* fix formatting\n\nSigned-off-by: Tian <tt553093031@gmail.com>\n\n* fix formatting\n\nSigned-off-by: Tian <tt553093031@gmail.com>\n\n* fix formatting\n\nSigned-off-by: Tian <tt553093031@gmail.com>\n\n* fix formatting\n\nSigned-off-by: Tian <tt553093031@gmail.com>\n\n* fix formatting\n\nSigned-off-by: Tian <tt553093031@gmail.com>\n\n* fix formatting\n\nSigned-off-by: Tian <tt553093031@gmail.com>\n\n* fix formatting\n\nSigned-off-by: Tian <tt553093031@gmail.com>\n\n* fix formatting\n\nSigned-off-by: Tian <tt553093031@gmail.com>\n\n* [Docs](fix) Update Community Activities in Readme.md\n\nSigned-off-by: Tian-Fantasea <Tian-Fantasea@noreply.gitcode.com>\n\n---------\n\nSigned-off-by: Tian <tt553093031@gmail.com>\nSigned-off-by: Tian-Fantasea <Tian-Fantasea@noreply.gitcode.com>\nCo-authored-by: Tian-Fantasea <Tian-Fantasea@noreply.gitcode.com>"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

@@ -1,0 +1,18 @@
+{
+  "content_hash": "61c7adecde81de32",
+  "analysis": {
+    "interface_summary": "定义 2 个类；定义 30 个函数",
+    "key_interfaces": [
+      "HIPOptions",
+      "HIPBackend",
+      "HIPOptions.__post_init__",
+      "HIPOptions.hash",
+      "HIPBackend.supports_target",
+      "HIPBackend.__init__",
+      "HIPBackend.get_target_name",
+      "HIPBackend.parse_options",
+      "HIPBackend.pack_metadata"
+    ]
+  },
+  "cached_at": "2026-08-30T02:04:42.427284+08:00"
+}

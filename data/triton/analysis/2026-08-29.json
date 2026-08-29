@@ -1,0 +1,184 @@
+{
+  "date": "2026-08-29",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-08-30T02:02:55.310933+08:00",
+  "daily_summary": "今日的 Triton 变更主要集中在以下几个方面：1) 优化了 TritonGPU 的 OptimizeThreadLocality pass，使其支持 rank-1、非最内层轴以及跨 CTA 的归约操作，提升了编译器对不同归约模式的覆盖能力；2) 回退了一系列 LLVM 向量化相关的 workaround（包括标量化和提取加法向量化的 pass），恢复了此前的 NVIDIA 优化流水线，以规避 ptxas 的 bug；3) 对 LLVM 版本进行了回退，并调整了相关的数据布局和 ABI 设置方式；4) 在 FPSan 中增加了对需要内联的调用的诊断，并要求编译器流水线在 FPSan 之前运行符号消除（symbol DCE）；5) 为 MEMBAR 相关的分析增加了对跨 CTA load/store 和 gather/scatter 等操作的识别能力，以更精确地处理内存屏障插入；6) 更新了构建系统，以支持使用内部镜像下载依赖项；7) 微调了 Proton 的 ROCProfiler 刷新重试次数以解决 CI 稳定性问题。这些变更主要涉及 NVIDIA/AMD 后端的优化、通用编译器的健壮性改进以及构建基础设施的更新。",
+  "ascend_impact_summary": "今日的 Triton 变更对 triton-ascend 项目总体影响较小。主要风险来自对 LLVM 工具链的版本回退和相关的 API 调整（llvm-info.json、llvm.cc），这需要 Ascend 后端同步适配其 LLVM 依赖。此外，FPSan 中关于符号 DCE 的变更以及 MEMBAR 对跨 CTA 操作的增强都集中在 NVIDIA 专属路径或通用 TritonGPU pass，与 Ascend 使用的 TritonToLinalg 转换链无直接耦合，但需要关注 FPSan 的通用改动是否会影响 Ascend 未来的集成。其余变更（如 Proton 和构建系统）对 Ascend 无影响。",
+  "commits": [
+    {
+      "sha": "657a12b0d708dc654005c05420ab7b3b05f3dd2f",
+      "comment": "该 commit 是对 TritonGPU 的 OptimizeThreadLocality pass 的增强，旨在放宽之前由于 rewriter 实现限制而非正确性或收益性导致的限制。主要改动包括：1) 支持 rank-1 归约，此时 accumulator 和结果变为标量，需要跳过 convert_layout 并使用非张量类型的克隆方式；2) 支持非最内层轴的归约，通过调整轴排列方式实现；3) 支持跨 CTA 归约，修复了 createReduce 中轴重组的逻辑，考虑了 CTA split 和 register-wraparound 同时存在的场景。这些改动提升了该 pass 对归约模式的覆盖能力，属于性能优化和功能增强。风险在于对现有布局变换逻辑的修改可能影响其他场景的代码生成，需要充分的测试验证。",
+      "tags": [
+        "feature",
+        "performance",
+        "TritonGPU",
+        "OptimizeThreadLocality",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。该 commit 修改的是 lib/Dialect/TritonGPU/Transforms/OptimizeThreadLocality.cpp，属于 TritonGPU 方言的 pass，而 triton-ascend 使用 TritonToLinalg 转换链，不经过 TTGIR 和这些优化 pass。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[OptimizeThreadLocality] Support rank-one, non-innermost-axis, and cross CTA reduce (#11503)\n\nFollow up on #11370. Relax more gates that were limited by rewriter\nimplementation rather than actual correctness or profitability.\n\n1. rank = 1: (arguably the more common case than everything already\nhandled)\n    \nIn this case the accumulator in the original pattern, and the result of\nthe post-loop reduction in the transformed pattern are now scalars. this\nrequires 2 changes:\n    \n    - skip the last `convert_layout`  after the post-loop reduction\n- In `createUpdate` , replace the `cloneWithInferType` utility , which\nonly support tensor types\n2. axis ≠ rank - 1:\n    \nHandling this only requires changing the way axes are permuted when\nwriting the reshape - transpose - reshape pattern in `createReduce` .\n    \n3. Multi-CTA:\n    \n(this is a general pre-existing issue, but mostly made reachable by\nenabling rank = 1, as otherwise the nvidia `PlanCTA` pass would avoid\nsplitting CTA across the reduce axis.)\n    \nFor an axis in the blocked encoding layout, the CTA split is the slowest\nvarying dimension, but the current code in `createReduce` assumes the\nregister-wraparound as the slowest dimension. When both ctaSplit and\nregister-wraparound are non-trivial, it trips the `cvtReordersRegisters`\nassert.\n\n\nConsidering both CTA split and axis ≠ rank - 1, the general form of axes\nregrouping in `createReduce` should be:\n\n```\nR := register wraparound\nH := warps & lanes\nS := size per thread\n\n[.., N, ..] \n-> [.., ctaSplit, R, H, S, ..] (reshape)\n-> [.., ctaSplit, H, .., R, S] (transpose)\n-> [.., ctaSplit * H, .., R * S] (reshape)\n```"
+    },
+    {
+      "sha": "9628c80f2b854b74a07fdf0138b7ed6ccee70b07",
+      "comment": "该 commit 回退了三个之前的 commit（#11458、#11502、#11513），移除了 LLVM 层的 packed floating-point scalarization（LLVMIRScalarizePackedFOps.cpp）和 extracted-add vectorization（LLVMIRVectorizeExtractedAdds.cpp）两个 workaround pass，并恢复了此前的 NVIDIA 优化流水线。同时，对 python/src/llvm.cc 中的 optimize_module 接口进行了调整，移除了相关的参数和 pass 注册，并对测试文件进行了相应更新。这是一个回退操作，旨在恢复到之前稳定的优化流水线，可能是由于这些 workaround 引入了新的问题。",
+      "tags": [
+        "refactor",
+        "LLVM",
+        "NVIDIABackend",
+        "revert",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "该 commit 修改了 python/src/llvm.cc 中的 optimize_module 接口，移除了 `scalarize_packed_fops` 和 `vectorize_extracted_adds` 两个参数。虽然 triton-ascend 不使用这两个参数，但接口签名发生变化，如果 AscendBackend 的代码中有调用 `llvm.optimize_module` 并传递这些参数，会导致 TypeError。根据现有架构知识，AscendBackend 不直接调用此接口，但此变更属于 python/src/llvm.cc 的接口变更，属于“必然影响”路径，需要确认 Ascend 是否使用了该绑定接口。同时，bin/triton-llvm-opt.cpp 中的相关命令行选项也被移除，如果 Ascend 依赖这些选项进行调试，也会受到影响。",
+        "testing": "该 commit 删除了 test/LLVMIR/scalarize-packed-fops.ll 和 test/LLVMIR/vectorize-extracted-adds.ll 的测试用例，并更新了 python/test/unit/runtime/test_bindings.py。如果 triton-ascend 有类似测试或依赖这些功能，需要相应更新，但按照现有信息，大概率没有。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BAKCEND] Revert LLVM vectorization workarounds (#11514)\n\nRevert #11458, #11502, and #11513 to remove the packed floating-point\nscalarization and extracted-add vectorization workarounds and restore\nthe prior NVIDIA optimization pipeline.\n\nAll three reverts applied without conflicts. `git diff --check` passed.\nBuild and tests were not run.",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "c5afd63e2633b33fb28313d6aa57bbe8fd340be3",
+      "comment": "该 commit 是一个简单的配置变更，在 NVIDIA 后端将 `scalarize_packed_fops` 参数从 True 改为 False。这是对 #11514 的补充，因为 #11514 已经移除了对 `scalarize_packed_fops` 参数的支持，此 commit 可能是在 #11514 被回退或部分应用后，用来最终禁用该功能。在 #11514 中，该参数已被移除，因此此 commit 已无实际作用。",
+      "tags": [
+        "refactor",
+        "NVIDIABackend",
+        "revert",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。该 commit 只修改了 third_party/nvidia/backend/compiler.py，这是 NVIDIA 专属后端，不被 Ascend 使用。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Disable packed FP scalarization on NVIDIA (#11513)\n\nDisable `scalarize_packed_fops` on NVIDIA. After the LLVM rollback in\n#11506, it prevents packed FMA contraction in softmax backward and\nbreaks bitwise parity. Keep `vectorize_extracted_adds` enabled.\n\nValidated on GB300: all three previously failing parity tests pass with\nfresh kernel caches. Pre-commit checks pass. No test changes."
+    },
+    {
+      "sha": "5f2ca3a88c52b80b601e3e243fb3d6079de0f61f",
+      "comment": "该 commit 是一个微小的调整，将 ROCProfiler 的 dispatch 刷新重试次数从 100 次增加到 250 次，以解决 CI 中偶发的异步 dispatch 记录延迟问题。这是针对 flaky test 的修复，风险极低。",
+      "tags": [
+        "bugfix",
+        "Proton",
+        "CI",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。该 commit 修改的是 third_party/proton/csrc/lib/Profiler/RocprofSDK/RocprofSDKProfiler.cpp，属于 AMD/ROCm 专属的 profiling 工具，Ascend 不依赖。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Proton][AMD] Increase ROCProfiler dispatch flush retries (#11510)\n\nGive asynchronous ROCProfiler dispatch records more time to arrive\nbefore Proton clears correlation state during finalization.\n\nCI has been flaky on `third_party/proton/test/test_profile.py:952: in\ntest_hook_multiple_threads`, probably due to costs of PC sampling\noptimistic initialization. We should turn off optimistic initialization\nonce we can rely on the newer (yet-unreleased) rocprofiler-sdk feature\nfor any-time initialization. But for now I think the best fix is to just\nbump the timeout.\n\n<!---\nThe core Triton is a small number of people, and we receive many PRs\n(thank\nyou!).  To help us review your code more quickly, **if you are a new\ncontributor (less than 3 PRs merged) we ask that you complete the\nfollowing\ntasks and include the filled-out checklist in your PR description.**\n\nComplete the following tasks before sending your PR, and replace `[ ]`\nwith\n`[x]` to indicate you have done them.\n-->\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [ ] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [x] This PR does not need a test because it is fixing a flaky test.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)"
+    },
+    {
+      "sha": "c4b6eebae5cf6e413b49d351778160675279963a",
+      "comment": "该 commit 对 FPSan 进行了增强：1) 在 pass 运行前会诊断那些必须被内联的函数调用（例如隐藏了 TMEM 分配的调用、需要 kernel 上下文的调用等），并报错退出；2) 要求编译器流水线在 FPSan 之前运行 symbol DCE，以移除不可达的私有函数，避免影响后续分析。同时，重构了 TMEM source 溯源逻辑，并增加了相关的测试用例。这增强了 FPSan 的健壮性和错误诊断能力。",
+      "tags": [
+        "feature",
+        "TritonInstrument",
+        "FPSan",
+        "diagnostic",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "该 commit 在 NVIDIA 和 AMD 后端的编译器流水线（third_party/nvidia/backend/compiler.py 和 third_party/amd/backend/compiler.py）中增加了 `passes.common.add_symbol_dce(pm)` 的调用。虽然 Ascend 不使用 FPSan，但此变更修改了 NVIDIA/AMD 后端的编译流水线，属于平台特定代码，不直接影响 Ascend。然而，该 commit 也修改了 lib/Dialect/TritonInstrument/Transforms/FpSanitizer.cpp，这是 TritonInstrument 方言的 pass。虽然 Ascend 不直接使用 TritonInstrument 方言，但此改动可能影响整个编译基础设施的稳定性，需要通过监控来评估。",
+        "testing": "该 commit 修改了 test/TritonGPU/fpsan.mlir 和 test/TritonGPU/nvidia-fpsan.mlir 等测试文件，增加了 symbol DCE 相关的测试。Ascend 没有 FPSan 相关测试，无需更新。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[FPSan] Remove dead helpers and diagnose calls requiring inlining (#11489)\n\nUnreachable private helpers can break backend validation or FPSan, and\nlive calls can hide the TMEM allocation identity or kernel context\nneeded by instrumentation.\n\nRun symbol DCE in the compiler pipelines before those passes. NVIDIA\nGluon removes dead symbols before its general two-CTA check, including\nduring normal compilation. FPSan assumes this cleanup and diagnoses\ncalls requiring inlining, using the same TMEM forwarding, MMA\neligibility, and two-CTA queries as its rewrites.\n\nOrdinary arithmetic and shared-memory helpers remain callable, as do\nhelpers that own their single-CTA TMEM allocations. Direct pass\ninvocations must supply symbol DCE when their input contains unreachable\nprivate functions.",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "2db093e69e8c94d718969d4c1693802b6aad974d",
+      "comment": "该 commit 增强了 MEMBAR 相关的分析能力，在 ClusterBarrierInsertion pass 中新增了对跨 CTA load/store（LocalLoad/LocalStore/LocalAlloc）以及 gather/scatter（LocalGather/LocalScatter/LocalAtomicScatterRMW）操作的识别。通过新的工具函数 `isCrossCTALoadStore` 和 `isCrossCTAGatherScatter`，利用线性布局（LinearLayout）分析判断这些操作是否可能访问其他 CTA 的共享内存，从而更精确地插入集群屏障（cluster barrier）。这提高了对跨 CTA 内存依赖的分析精度，改进了屏障插入的正确性。",
+      "tags": [
+        "feature",
+        "TritonNvidiaGPU",
+        "MEMBAR",
+        "ClusterBarrier",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。该 commit 修改的是 include/triton/Dialect/TritonNvidiaGPU/ 和 lib/Dialect/TritonNvidiaGPU/ 下的文件，属于 NVIDIA 专属的方言和 pass，Ascend 不加载和使用这些代码。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[MEMBAR] Add cross-CTA load/store and gather/scatter utilities for improved memory access handling (#11479)\n\nRewrite after https://github.com/triton-lang/triton/pull/11468 is merged"
+    },
+    {
+      "sha": "a1276836315eeb2caf8073a59dda8a74588dae5e",
+      "comment": "该 commit 是回退操作，将 LLVM 版本从 ce3529423abda3fc4ad0b542daa50af21e539a29 回退到 b010a18d2b648cab83c83967ff26b8fde11acdc6。同时，调整了 `attach_datalayout` 和 `translate_to_asm` 的接口，移除了 `abi` 参数，并将在 NVIDIA 后端设置短指针（short pointer）的方式从传递 ABI 名称改为了新的 `set_short_ptr` 函数。此外，还对多个 lit 测试文件进行了更新，以适配新的 LLVM IR 输出格式。此次回退是为了规避新版 LLVM 可能引入的 ptxas bug。",
+      "tags": [
+        "refactor",
+        "LLVM",
+        "NVIDIABackend",
+        "revert",
+        "high-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "该 commit 回退了 LLVM 版本并修改了 CMake 的 llvm-info.json，这会直接改变 triton-ascend 的依赖版本。此外，python/src/llvm.cc 中的 `attach_datalayout` 和 `translate_to_asm` 接口被修改，移除了 `abi` 参数。虽然 AscendBackend 可能不使用 NVIDIA 的 `set_short_ptr`，但接口的签名变化是“必然影响”路径，需要确认 AscendBackend 是否直接调用了这两个接口。同时，LLVM 版本的改变可能导致编译错误或行为差异，需要重新验证 Ascend 的整个后端编译链。",
+        "testing": "该 commit 对多个 lit 测试文件进行了更新，以适配新的 LLVM IR 打印格式。如果 triton-ascend 依赖这些测试或 LLVM IR 输出格式，可能需要同步更新其测试，但按照现有信息，其 lit 测试主要在 third_party/ascend/unittest/ 下，可能不受影响。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/"
+        ]
+      },
+      "message": "Revert \"[BACKEND] Bump to llvm/llvm-project@941a04e (#11277)\" (#11506)\n\nThis reverts commit b5d2959a7397d1f56eda229eb870d72f88763455, which is\ncausing us to hit some ptxas bugs on internal workloads.",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "4044be4dbad47f9d1eef0af2677b09c62feef666",
+      "comment": "该 commit 重构了 python/build_helpers.py，新增了 `DependencyArchive` 和 `NvidiaToolchainPackage` 数据结构，并将下载逻辑改为基于这些结构。核心改动是引入了对内部镜像的支持，当环境变量 `OAIARTIFACTS_BASE_URL` 存在时，会优先使用内部镜像地址下载依赖（如 LLVM、json、NVIDIA 工具链等），以提高构建的稳定性和速度。这是纯构建基础设施的改进。",
+      "tags": [
+        "chore",
+        "build",
+        "dependencies",
+        "infrastructure",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。该 commit 只修改了构建脚本 python/build_helpers.py，属于构建基础设施，不涉及编译器核心逻辑，不会影响 Ascend 的编译和运行。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Build] Use internal mirror for build dependencies (#11467)\n\nThis changes the build helpers to be aware of the internal package\nmirror, and to use it if `OAIARTIFACTS_BASE_URL` is present in the\nenvironment."
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

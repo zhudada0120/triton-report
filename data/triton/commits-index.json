@@ -1,4 +1,36 @@
 {
+  "657a12b0d708dc654005c05420ab7b3b05f3dd2f": {
+    "date": "2026-08-29",
+    "msg": "[OptimizeThreadLocality] Support rank-one, non-innermost-axis, and cross CTA reduce (#11503)"
+  },
+  "9628c80f2b854b74a07fdf0138b7ed6ccee70b07": {
+    "date": "2026-08-29",
+    "msg": "[BAKCEND] Revert LLVM vectorization workarounds (#11514)"
+  },
+  "c5afd63e2633b33fb28313d6aa57bbe8fd340be3": {
+    "date": "2026-08-29",
+    "msg": "[BACKEND] Disable packed FP scalarization on NVIDIA (#11513)"
+  },
+  "5f2ca3a88c52b80b601e3e243fb3d6079de0f61f": {
+    "date": "2026-08-29",
+    "msg": "[Proton][AMD] Increase ROCProfiler dispatch flush retries (#11510)"
+  },
+  "c4b6eebae5cf6e413b49d351778160675279963a": {
+    "date": "2026-08-29",
+    "msg": "[FPSan] Remove dead helpers and diagnose calls requiring inlining (#11489)"
+  },
+  "2db093e69e8c94d718969d4c1693802b6aad974d": {
+    "date": "2026-08-29",
+    "msg": "[MEMBAR] Add cross-CTA load/store and gather/scatter utilities for improved memory access handling (#11479)"
+  },
+  "a1276836315eeb2caf8073a59dda8a74588dae5e": {
+    "date": "2026-08-29",
+    "msg": "Revert \"[BACKEND] Bump to llvm/llvm-project@941a04e (#11277)\" (#11506)"
+  },
+  "4044be4dbad47f9d1eef0af2677b09c62feef666": {
+    "date": "2026-08-29",
+    "msg": "[Build] Use internal mirror for build dependencies (#11467)"
+  },
   "109194a613933119f72f1dc08bf648cef4efc000": {
     "date": "2026-08-28",
     "msg": "[KERNELS] Fuse forward FP4 layout conversion (#11495)"
