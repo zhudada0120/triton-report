@@ -1,0 +1,50 @@
+{
+  "date": "2026-08-30",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-08-31T02:02:37.037193+08:00",
+  "daily_summary": "当日 Triton 上游共包含两个 commit。第一个 commit 为 NVIDIA 后端新增了 per-kernel NVPTX 寄存器压力调度功能（`sched4reg` 编译选项），通过线程局部状态和自定义 LLVM SelectionDAG 调度器实现，并附带并发安全测试。第二个 commit 为临时性回退，撤销了之前对 `OptimizeThreadLocality` pass 的线程局部性归约优化（涉及 accumulate reduce、布局优化和 shape 变换），以追踪并修复引入的性能/正确性回归。",
+  "ascend_impact_summary": "当日两个 commit 对 triton-ascend 均无直接影响。第一个 commit 修改的是 NVIDIA 后端（`third_party/nvidia/backend/compiler.py`）和 LLVM 绑定（`python/src/llvm.cc`），其中 LLVM 绑定中 `translate_to_asm` 新增了一个默认参数 `sched4reg=false`，但 Ascend 后端不调用此函数，因此不受影响。第二个 commit 回退的是 `lib/Dialect/TritonGPU/Transforms/OptimizeThreadLocality.cpp` 中的线程局部性优化，该 pass 属于 TritonGPU 核心 passes，但 Ascend 后端不走 TritonGPU 路径（使用 TritonToLinalg 替代），因此无影响。",
+  "commits": [
+    {
+      "sha": "c349ce522e996cf0662249caa47b5d97a1748330",
+      "comment": "该 commit 为 NVIDIA 后端新增了 per-kernel 寄存器压力调度（register-pressure scheduling）功能。实现方式是在 `python/src/llvm.cc` 中：1) 定义一个线程局部变量 `scheduleForRegisters` 和一个自定义的 SelectionDAG 调度器创建函数 `createTritonDAGScheduler`，当线程局部标志为 true 且目标为 NVPTX 时，使用 `createBURRListDAGScheduler`（一种偏向于降低寄存器压力的调度器）替代默认调度器；2) 通过 `installTritonDAGScheduler` 注册该调度器并设置 `pre-RA-sched` 选项；3) 修改 `translate_to_asm` 绑定，新增 `sched4reg` 参数，并在 GIL 释放期间使用 `llvm::SaveAndRestore` 设置线程局部标志。同时，在 `third_party/nvidia/backend/compiler.py` 中新增了 `sched4reg: bool = False` 的 `CUDAOptions` 字段，并将其传递给 `llvm.translate_to_asm`。测试方面，新增了单元测试验证该选项在默认和启用时会产生不同的 PTX 输出，并测试了并发场景下不同线程使用不同调度策略的正确性。该功能允许用户在编译内核时选择更保守的调度策略以降低寄存器压力，从而实现更高的占用率。潜在风险：`installTritonDAGScheduler` 在 `init_targets` 中只调用一次，但会全局设置 `pre-RA-sched` 选项，这可能会影响其他（非 Triton）使用 LLVM 编译的路径，但注释说明该调度器本身是线程安全的（通过线程局部变量读取策略）。",
+      "tags": [
+        "performance",
+        "feature",
+        "nvidia-backend",
+        "scheduler",
+        "llvm"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。该 commit 修改了 NVIDIA 后端（`third_party/nvidia/backend/compiler.py`）和通用 LLVM 绑定（`python/src/llvm.cc`）。虽然 `translate_to_asm` 的签名发生变化（新增了 `sched4reg` 参数），但 Ascend 后端不使用 `translate_to_asm`（其编译链为 TTIR -> Linalg -> Bisheng IR -> npubin，不经过 LLVM IR -> PTX 阶段）。`init_triton_llvm` 中新增的 scheduler 安装逻辑也是全局的，但不依赖 Ascend 侧的代码，且不会改变 LLVM 基础 API 的兼容性，因此对 Ascend 无影响。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Add per-kernel NVPTX register-pressure scheduling (#11477)"
+    },
+    {
+      "sha": "f8851de139c8217548db3da9a06df9f879fe724c",
+      "comment": "该 commit 是一个临时性回退（revert），撤销了提交 `e3674d2b8a86c9e4dd859e1710abedcb8d8d54fd` 和 `657a12b0d708dc654005c05420ab7b3b05f3dd2f` 中对 `OptimizeThreadLocality` pass 的简化/增强。回退后的代码恢复到更保守的模式：1) `matchAccumulatedReduce` 辅助结构被移除，恢复为在 `runOnOperation` 中内联匹配逻辑，且增加了更严格的约束（reduce 操作数必须直接来自 `tt.load`，reduce 轴必须是最后一维，累加器的初始化必须是常量）；2) `getThreadLocalityOptimizedEncoding` 中的 shape/transpose 计算逻辑被替换为更简单的版本（不再处理 CTA split 和任意轴）；3) 移除了对 `MaxNumFOp`/`MinNumFOp` 的 `getNeutralElement` 支持（恢复为使用 `arith::getNeutralElement`，但其本身不支持这两个 op，所以其实该优化对 maxnum/minnum 不再生效）；4) 测试文件 `test/TritonGPU/optimize-locality.mlir` 大幅删减，移除了大量新增加的分支测试（如 non_constant_accumulator_init、maxnum_accumulator、integer_accumulator、two_operand_reduce 等）。此回退说明之前的优化引入了回归（可能是正确性或性能问题），作者选择回退到稳定版本以便排查。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "revert",
+        "tritongpu",
+        "thread-locality",
+        "high-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。该 commit 修改的是 `lib/Dialect/TritonGPU/Transforms/OptimizeThreadLocality.cpp` 和其对应的 lit 测试文件 `test/TritonGPU/optimize-locality.mlir`。此 pass 属于 TritonGPU 专用优化，triton-ascend 后端的编译链为 TTIR -> Linalg，不经过 TritonGPU IR 及相关的 transform passes。因此，虽然该 commit 涉及核心 IR 的 shape 变换，但不影响 Ascend 的编译和运行。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BAKCEND] Temporarily revert thread locality reduction changes (#11516)\n\nThis temporarily reverts e3674d2b8a86c9e4dd859e1710abedcb8d8d54fd and\n657a12b0d708dc654005c05420ab7b3b05f3dd2f while we track regressions."
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

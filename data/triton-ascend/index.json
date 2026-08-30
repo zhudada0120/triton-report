@@ -1,7 +1,7 @@
 {
   "repo": "triton-ascend",
   "source_repo": "triton-lang/triton-ascend",
-  "built_at": "2026-08-30T02:06:23.843157+08:00",
+  "built_at": "2026-08-31T02:02:37.548523+08:00",
   "total_dates": 5,
   "date_range": [
     "2026-08-25",
@@ -676,57 +676,10 @@
   },
   "architecture_impact_index": {},
   "keyword_index": {
-    "simt": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
-    ],
-    "fusion": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
-    ],
     "compile_on_910_95": [
       "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
     ],
-    "compatibility": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a",
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef",
-      "e1314a246d4ef73de98ba2c9333f4f7a42f3aeb1"
-    ],
-    "compiler": [
-      "0bd2ad8ab35a5546f1bb2d93e83116b18db80a4e",
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "637e384f80d380e4e2eece1f0ad0b50a072a59fe",
-      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a",
-      "b1e2f99618ecd4ac3e4a0ca7630324b869335d25",
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef",
-      "e1314a246d4ef73de98ba2c9333f4f7a42f3aeb1"
-    ],
-    "force": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
-    ],
     "multiple-consumer": [
-      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
-    ],
-    "precedence": [
-      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
-    ],
-    "restore": [
-      "0bd2ad8ab35a5546f1bb2d93e83116b18db80a4e",
-      "637e384f80d380e4e2eece1f0ad0b50a072a59fe",
-      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a",
-      "a9238f59d36f27e16bae8aae5c9885ee56f1593a",
-      "e1314a246d4ef73de98ba2c9333f4f7a42f3aeb1"
-    ],
-    "compile": [
-      "2d8c647cc944ca57a3382de896ba860cf52f711e",
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a",
-      "b1e2f99618ecd4ac3e4a0ca7630324b869335d25",
-      "e1314a246d4ef73de98ba2c9333f4f7a42f3aeb1"
-    ],
-    "constructor": [
       "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
     ],
     "behavior": [
@@ -745,91 +698,60 @@
       "2bafba14ac7eee242790056bc6dc9a6a27a30233",
       "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
     ],
+    "compile": [
+      "2d8c647cc944ca57a3382de896ba860cf52f711e",
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a",
+      "b1e2f99618ecd4ac3e4a0ca7630324b869335d25",
+      "e1314a246d4ef73de98ba2c9333f4f7a42f3aeb1"
+    ],
     "preserve": [
       "0c580974d4fe718b7e3d8ad76b57ed35a4132724",
       "2bafba14ac7eee242790056bc6dc9a6a27a30233",
       "a4aecc3292d8bdf7ae80165f113a27ea1e89803a",
       "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
     ],
-    "messages": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    "fusion": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
     ],
-    "enable_select_analysis": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    "force": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
     ],
-    "enable_ub_refine_opt": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "graph_optimize_emit_remarks": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "enable_mask_fallback_conversion": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "triton_register_tensor_msprof": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "hfusion_enable_multiple_consumer_fusion": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "variable": [
-      "2d8c647cc944ca57a3382de896ba860cf52f711e",
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "adapt": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "triton_ascend_compile_speed_opt": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "enable_vf_fusion": [
+    "compiler": [
+      "0bd2ad8ab35a5546f1bb2d93e83116b18db80a4e",
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
       "637e384f80d380e4e2eece1f0ad0b50a072a59fe",
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "triton_disable_ffts": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "deprecated": [
+      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a",
       "b1e2f99618ecd4ac3e4a0ca7630324b869335d25",
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef",
       "e1314a246d4ef73de98ba2c9333f4f7a42f3aeb1"
     ],
-    "arch": [
+    "compatibility": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a",
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef",
+      "e1314a246d4ef73de98ba2c9333f4f7a42f3aeb1"
     ],
-    "kernel_name": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    "precedence": [
+      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
     ],
-    "enable_linearize": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    "constructor": [
+      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
     ],
-    "optimize_dynamic_offset": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    "restore": [
+      "0bd2ad8ab35a5546f1bb2d93e83116b18db80a4e",
+      "637e384f80d380e4e2eece1f0ad0b50a072a59fe",
+      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a",
+      "a9238f59d36f27e16bae8aae5c9885ee56f1593a",
+      "e1314a246d4ef73de98ba2c9333f4f7a42f3aeb1"
     ],
-    "enable_cce_vf_auto_sync": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "enable_auto_blockify": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "warnings": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "mix_mode": [
+    "simt": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+      "a4aecc3292d8bdf7ae80165f113a27ea1e89803a"
     ],
-    "enable_buffer_insert_optimization": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "detailed": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "auto_tile_and_bind_subblock": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "environment": [
+    "disable_size_align_for_cast": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
@@ -840,70 +762,65 @@
     "add_auto_scheduling": [
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
-    "graph_optimize_max_rewrites_per_function": [
+    "enable_vf_fusion": [
+      "637e384f80d380e4e2eece1f0ad0b50a072a59fe",
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
-    "llvm_version": [
+    "environment": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "enable_sync_block_lock": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "describe": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "warning": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "triton_all_blocks_parallel": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "code_motion": [
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
     "mlir_root": [
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
-    "triton_ascend_arch": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "enable_cross_if_fusion": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "disable_size_align_for_cast": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "enable_nd2nz_on_vector": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "ops_reorder": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "has_auto_blockify_blacklist_op": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "allow_fp8e4nv": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "enable_drop_unit_dims": [
+    "triton_ascend_compile_speed_opt": [
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
     "warp_size": [
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
+    "enable_select_analysis": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "mix_mode": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "warning": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "enable_drop_unit_dims": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "auto_tile_and_bind_subblock": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "use_bytecode": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "triton_disable_ffts": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "enable_auto_blockify": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "arch": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
     "parallel_mode": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "enable_cce_vf_remove_membar": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "ops_reorder": [
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
     "auto_blockify_size": [
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
-    "assertion": [
-      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
-    ],
-    "enable_cce_vf_remove_membar": [
+    "describe": [
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
     "graph_optimize_ub_capacity_bytes": [
@@ -912,10 +829,28 @@
     "llvm_root": [
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
+    "messages": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "graph_optimize_emit_remarks": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "adapt": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "enable_nd2nz_on_vector": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "detailed": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "enable_ub_refine_opt": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
     "storage_align": [
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
-    "triton_backend": [
+    "assertion": [
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
     "format": [
@@ -923,40 +858,96 @@
       "e93350318bf54c9ec20c588d15dbf4f845960b36",
       "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
     ],
+    "enable_cce_vf_auto_sync": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "triton_register_tensor_msprof": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "triton_all_blocks_parallel": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "triton_backend": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "has_auto_blockify_blacklist_op": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "variable": [
+      "2d8c647cc944ca57a3382de896ba860cf52f711e",
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "enable_mask_fallback_conversion": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "code_motion": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "warnings": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
     "graph_optimize_rule_mask": [
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
     ],
-    "use_bytecode": [
+    "llvm_version": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
       "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "kernel_name": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "triton_ascend_arch": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "hfusion_enable_multiple_consumer_fusion": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "optimize_dynamic_offset": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "allow_fp8e4nv": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "graph_optimize_max_rewrites_per_function": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "enable_cross_if_fusion": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "enable_buffer_insert_optimization": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "deprecated": [
+      "b1e2f99618ecd4ac3e4a0ca7630324b869335d25",
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef",
+      "e1314a246d4ef73de98ba2c9333f4f7a42f3aeb1"
+    ],
+    "enable_sync_block_lock": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "enable_linearize": [
+      "cb5b9d5509872b84b0c70bf7458e1ffd615ec1ef"
+    ],
+    "totalworkspacesize": [
+      "bd1f00862288b88865231b4859dcac85831c9fce"
     ],
     "overflow": [
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
       "bd1f00862288b88865231b4859dcac85831c9fce"
     ],
-    "precommit": [
+    "uint32": [
       "bd1f00862288b88865231b4859dcac85831c9fce"
     ],
-    "uint32": [
+    "precommit": [
       "bd1f00862288b88865231b4859dcac85831c9fce"
     ],
     "driver": [
       "bd1f00862288b88865231b4859dcac85831c9fce",
       "e93350318bf54c9ec20c588d15dbf4f845960b36"
     ],
-    "totalworkspacesize": [
-      "bd1f00862288b88865231b4859dcac85831c9fce"
-    ],
-    "launch": [
-      "898f909f982c0b3639712f535a84417d28a0e2da",
-      "a8ff41745f15230761a50ac7668d0c3cc3486309",
-      "b1187ec820e877099cea379fc8378233c37b8caf",
-      "bb75f42b96dae31b9eae5217f9760d425be669a8"
-    ],
-    "revert": [
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
-      "1fc41dbbe1bf029da55e4582b2b1bcb704f47e84",
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "8ec15cb8e4a7bbdb73d4159553387e7ac841ddea",
+    "pytest": [
+      "a9238f59d36f27e16bae8aae5c9885ee56f1593a",
       "bb75f42b96dae31b9eae5217f9760d425be669a8"
     ],
     "reverts": [
@@ -966,16 +957,35 @@
       "8ec15cb8e4a7bbdb73d4159553387e7ac841ddea",
       "bb75f42b96dae31b9eae5217f9760d425be669a8"
     ],
-    "ascend": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+    "scratch": [
       "898f909f982c0b3639712f535a84417d28a0e2da",
-      "b1e2f99618ecd4ac3e4a0ca7630324b869335d25",
       "bb75f42b96dae31b9eae5217f9760d425be669a8"
     ],
     "case": [
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
       "bb75f42b96dae31b9eae5217f9760d425be669a8",
       "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "global": [
+      "898f909f982c0b3639712f535a84417d28a0e2da",
+      "bb75f42b96dae31b9eae5217f9760d425be669a8"
+    ],
+    "launch": [
+      "898f909f982c0b3639712f535a84417d28a0e2da",
+      "a8ff41745f15230761a50ac7668d0c3cc3486309",
+      "b1187ec820e877099cea379fc8378233c37b8caf",
+      "bb75f42b96dae31b9eae5217f9760d425be669a8"
+    ],
+    "skip": [
+      "266a37bea35fff5046cdff3866d5215eeda89469",
+      "36f3baeaa16d3c518fcd3764f50bd61db8a10b2d",
+      "5f159e26bc31a7a51d369896dfd9003d15fb5792",
+      "7300140e31c3531a61836c2d78cb6e894d23de53",
+      "8ec15cb8e4a7bbdb73d4159553387e7ac841ddea",
+      "bb75f42b96dae31b9eae5217f9760d425be669a8"
+    ],
+    "error": [
+      "bb75f42b96dae31b9eae5217f9760d425be669a8"
     ],
     "feat": [
       "120b97f6f607196c474c65d96ea7f35cb9dec259",
@@ -998,30 +1008,23 @@
       "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0",
       "ee61c52999fcbc684b736b52c5e2bad0a49cdd0e"
     ],
-    "skip": [
-      "266a37bea35fff5046cdff3866d5215eeda89469",
-      "36f3baeaa16d3c518fcd3764f50bd61db8a10b2d",
-      "5f159e26bc31a7a51d369896dfd9003d15fb5792",
-      "7300140e31c3531a61836c2d78cb6e894d23de53",
+    "ascend": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "898f909f982c0b3639712f535a84417d28a0e2da",
+      "b1e2f99618ecd4ac3e4a0ca7630324b869335d25",
+      "bb75f42b96dae31b9eae5217f9760d425be669a8"
+    ],
+    "revert": [
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+      "1fc41dbbe1bf029da55e4582b2b1bcb704f47e84",
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
       "8ec15cb8e4a7bbdb73d4159553387e7ac841ddea",
       "bb75f42b96dae31b9eae5217f9760d425be669a8"
     ],
-    "error": [
-      "bb75f42b96dae31b9eae5217f9760d425be669a8"
-    ],
-    "global": [
-      "898f909f982c0b3639712f535a84417d28a0e2da",
-      "bb75f42b96dae31b9eae5217f9760d425be669a8"
-    ],
-    "scratch": [
-      "898f909f982c0b3639712f535a84417d28a0e2da",
-      "bb75f42b96dae31b9eae5217f9760d425be669a8"
-    ],
-    "pytest": [
-      "a9238f59d36f27e16bae8aae5c9885ee56f1593a",
-      "bb75f42b96dae31b9eae5217f9760d425be669a8"
-    ],
     "l0c": [
+      "00d95a40b55dc60e986a062e279c532797df6047"
+    ],
+    "l0c-": [
       "00d95a40b55dc60e986a062e279c532797df6047"
     ],
     "ssbuffer": [
@@ -1042,16 +1045,46 @@
       "e5b52147f1859da4d72bc3ffb60f14f8c07950ee",
       "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
     ],
-    "l0c-": [
-      "00d95a40b55dc60e986a062e279c532797df6047"
-    ],
-    "blockify": [
+    "override": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "silently": [
+    "warp": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "consumer": [
+    "scheduling": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "libdevice": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "ignore": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "subblock": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "insert": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "refine": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "5f159e26bc31a7a51d369896dfd9003d15fb5792"
+    ],
+    "motion": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "registration": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "retained": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "offset": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233",
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "crosscore": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
     "tile": [
@@ -1059,62 +1092,108 @@
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
       "5f159e26bc31a7a51d369896dfd9003d15fb5792"
     ],
-    "options": [
-      "2d8c647cc944ca57a3382de896ba860cf52f711e",
+    "drop": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "b1e2f99618ecd4ac3e4a0ca7630324b869335d25"
+      "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
-    "align": [
+    "unused": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "blocks": [
+    "graph": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
     ],
-    "scheduling": [
+    "root": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "reorder": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "consolidate": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "ops": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "5f159e26bc31a7a51d369896dfd9003d15fb5792",
+      "ee61c52999fcbc684b736b52c5e2bad0a49cdd0e"
+    ],
+    "picked": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "rename": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "cherry": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "level": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "block": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "5f159e26bc31a7a51d369896dfd9003d15fb5792"
+    ],
+    "mode": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "duplicate": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "switch": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "code": [
+      "12827daf87504a350cd0d71d9f4d4a65b5ffa316",
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "alongside": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "mask": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "count": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "linearize": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "silently": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "policy": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "cross": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "storage": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
     "template": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
       "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
-    "honor": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "cache": [
-      "0b8d519379cbaef892c0f0227cddc8099dc044bc",
+    "optimization": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "c47ebc7cb074b83bcd72b34f2c3ef5566543c005",
-      "f61e2fdd9a9baad51655231c69eeb1ee994bb267"
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
     ],
-    "derive": [
+    "sync": [
+      "266a37bea35fff5046cdff3866d5215eeda89469",
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
     "merge": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
       "a7ce4f57dfe729afceb527aa21f4591a64530c24"
     ],
-    "vector": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5",
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233",
+    "buffer": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
+      "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
-    "offset": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233",
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "architecture": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "sync": [
-      "266a37bea35fff5046cdff3866d5215eeda89469",
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "stack": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "ffts": [
+    "inter": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
     "docs": [
@@ -1126,48 +1205,27 @@
       "a94d79e03d354c0f1b4c8dc9f3e9ebbc113702c8",
       "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
-    "intra": [
+    "effective": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "ignore": [
+    "centralize": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "blacklist": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "interface": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "refine": [
+    "cube": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "5f159e26bc31a7a51d369896dfd9003d15fb5792"
-    ],
-    "linearize": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "rename": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+      "a7ce4f57dfe729afceb527aa21f4591a64530c24"
     ],
     "compile-options": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "warp": [
+    "torch_npu": [
+      "266a37bea35fff5046cdff3866d5215eeda89469",
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "bind": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "budget": [
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "kernel": [
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+    "options": [
+      "2d8c647cc944ca57a3382de896ba860cf52f711e",
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "dd8ae207e22fef67d81fc5a92d264ea63f1ccab7"
-    ],
-    "override": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+      "b1e2f99618ecd4ac3e4a0ca7630324b869335d25"
     ],
     "fallback": [
       "01d4c9db893ecfde5078c01edfbace4f59430a22",
@@ -1175,29 +1233,83 @@
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
       "c2e71038e0bb99040ca1595fe624313796df16ef"
     ],
-    "consolidate": [
+    "parallel": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "crosscore": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "buffer": [
+    "remove": [
+      "2d8c647cc944ca57a3382de896ba860cf52f711e",
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "cfa029a676614b477a7947b515aa2022e64e994f"
+      "c2e71038e0bb99040ca1595fe624313796df16ef",
+      "dd8ae207e22fef67d81fc5a92d264ea63f1ccab7"
     ],
-    "centralize": [
+    "derive": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "drop": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "motion": [
+    "tensor": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "switch": [
+    "select": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233",
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "bytecode": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "opt": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "cfa029a676614b477a7947b515aa2022e64e994f"
+      "5f159e26bc31a7a51d369896dfd9003d15fb5792",
+      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
+    ],
+    "retain": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "veccore": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "dynamic": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "kernel": [
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "dd8ae207e22fef67d81fc5a92d264ea63f1ccab7"
+    ],
+    "budget": [
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "msprof": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "nd2nz": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "consumer": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "ffts": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "blockify": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "stack": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "unit": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "limit": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "nfc": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "cache": [
+      "0b8d519379cbaef892c0f0227cddc8099dc044bc",
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "c47ebc7cb074b83bcd72b34f2c3ef5566543c005",
+      "f61e2fdd9a9baad51655231c69eeb1ee994bb267"
     ],
     "pipeline": [
       "12560d811374b08412d66e4e55012576b186b1c0",
@@ -1205,7 +1317,36 @@
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
       "daa0844144ad7d2b32425ad14b33d07eebcf6bf0"
     ],
-    "dynamic": [
+    "membar": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "blacklist": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "bisheng": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "analysis": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233",
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "d1f8e2fa47b76f381937d0c4d4d415999bdd816d"
+    ],
+    "vector": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233",
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
+    ],
+    "rewrite": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "architecture": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "size": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
     "rule": [
@@ -1214,93 +1355,10 @@
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
       "e93350318bf54c9ec20c588d15dbf4f845960b36"
     ],
-    "subblock": [
+    "target": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "parallel": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "membar": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "duplicate": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "rewrite": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5",
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "block": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "5f159e26bc31a7a51d369896dfd9003d15fb5792"
-    ],
-    "reorder": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "size": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "storage": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "registration": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "graph": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "inter": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "alongside": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "effective": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "retain": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "analysis": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233",
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "d1f8e2fa47b76f381937d0c4d4d415999bdd816d"
-    ],
-    "remove": [
-      "2d8c647cc944ca57a3382de896ba860cf52f711e",
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "c2e71038e0bb99040ca1595fe624313796df16ef",
-      "dd8ae207e22fef67d81fc5a92d264ea63f1ccab7"
-    ],
-    "auto": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "nd2nz": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "mode": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "cherry": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "unused": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "level": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "limit": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "bisheng": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "cross": [
+    "disable": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
     "name": [
@@ -1309,36 +1367,18 @@
       "cfa029a676614b477a7947b515aa2022e64e994f",
       "dd8ae207e22fef67d81fc5a92d264ea63f1ccab7"
     ],
-    "target": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    "llvm": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "63fbcc7ad27414dc8a59dfd0fe7a3a9f8327233b"
     ],
-    "select": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233",
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "nfc": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "mask": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5",
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "slots": [
+    "intra": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
     "default": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "policy": [
+    "bind": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "code": [
-      "12827daf87504a350cd0d71d9f4d4a65b5ffa316",
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "llvm": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "63fbcc7ad27414dc8a59dfd0fe7a3a9f8327233b"
     ],
     "mlir": [
       "266a37bea35fff5046cdff3866d5215eeda89469",
@@ -1346,83 +1386,43 @@
       "452e8717e4aa8f64b36336bdcffb84027cb9135a",
       "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
     ],
-    "tensor": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "msprof": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "cce": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "root": [
+    "backend": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
     "reconcile": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "picked": [
+    "cce": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "bytecode": [
+    "interface": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "disable": [
+    "slots": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "optimization": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "insert": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "retained": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "libdevice": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "env": [
-      "2d8c647cc944ca57a3382de896ba860cf52f711e",
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "opt": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "5f159e26bc31a7a51d369896dfd9003d15fb5792",
-      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
-    ],
-    "veccore": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "cube": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "a7ce4f57dfe729afceb527aa21f4591a64530c24"
-    ],
-    "ops": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
-      "5f159e26bc31a7a51d369896dfd9003d15fb5792",
-      "ee61c52999fcbc684b736b52c5e2bad0a49cdd0e"
-    ],
-    "backend": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "unit": [
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "torch_npu": [
-      "266a37bea35fff5046cdff3866d5215eeda89469",
-      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
-    ],
-    "dims": [
+    "auto": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
     "internalize": [
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
     ],
-    "count": [
+    "env": [
+      "2d8c647cc944ca57a3382de896ba860cf52f711e",
       "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "honor": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "align": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "dims": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a"
+    ],
+    "blocks": [
+      "452e8717e4aa8f64b36336bdcffb84027cb9135a",
+      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
     ],
     "bisheng_options": [
       "0bd2ad8ab35a5546f1bb2d93e83116b18db80a4e"
@@ -1430,291 +1430,27 @@
     "enable_cube_block_merge": [
       "0bd2ad8ab35a5546f1bb2d93e83116b18db80a4e"
     ],
-    "group_n": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "rejecting": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "one": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5",
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "dot": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "broadcast": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "admitting": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "makes": [
+    "dimension": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5",
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
-    ],
-    "stayed": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "emits": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "tracked": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5",
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
-    ],
-    "needs": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "track": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "index": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5",
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
-    ],
-    "positive": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "rows": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "wrap": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "expand_dims": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "convertmodulotomask": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5",
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "block-quantised": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "rather": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "transfer": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5",
-      "de756c69ebcdc166299a4c65f90285ed577216c1",
-      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
-    ],
-    "wrapped": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5",
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
-    ],
-    "safe": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "veto": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "load": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5",
-      "14ba391adb9d258fd532083f9dd72ec761e6d15b",
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
-    ],
-    "reject": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "indexes": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "columns": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "addressing": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "exactly": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5",
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "three": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "map": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "function": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "square": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "data": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5",
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
-    ],
-    "used": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5",
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "candidate": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5",
-      "c47ebc7cb074b83bcd72b34f2c3ef5566543c005",
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "per": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5",
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
-    ],
-    "read": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "gather": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5",
-      "266a37bea35fff5046cdff3866d5215eeda89469"
-    ],
-    "folded": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "negative": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "contiguous": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "swapping": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "now": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5",
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "operands": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "trans": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "along": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "path": [
-      "01d4c9db893ecfde5078c01edfbace4f59430a22",
-      "02fa3fd710e457af1366615ed5e911781b4a51f5",
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
-      "7117d95de153f355d0b4c493132a590d161ac60b"
-    ],
-    "records": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "miscompile": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "place": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "proof": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "rank-two": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "invariant": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "something": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "reasoning": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "orientation": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "element": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
     "per-element": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "varies": [
+    "operands": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "weight": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "scale": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5",
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
-    ],
-    "whose": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5",
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "coordinate": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "past": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "recorded": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "store": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5",
-      "14ba391adb9d258fd532083f9dd72ec761e6d15b"
-    ],
-    "those": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "array": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "shapes": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "injected": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "survived": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "lane": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "old": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "lit": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5",
-      "266a37bea35fff5046cdff3866d5215eeda89469"
-    ],
-    "see": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "shape": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "beside": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "axis": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "actually": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "whole": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
-    "admits": [
+    "place": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
     "run": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5",
       "12827daf87504a350cd0d71d9f4d4a65b5ffa316"
     ],
-    "stated": [
+    "something": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "approximation": [
+    "leaves": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
     "guard": [
@@ -1722,48 +1458,172 @@
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
       "3931511e87ec26e83e98a59d06e835c37a482703"
     ],
-    "discards": [
+    "negative": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "fused-moe": [
+    "reject": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "derived": [
+    "survived": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "folded": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "proved": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "approximation": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "beside": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "injected": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "rejected": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "rank-two": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "back": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+      "266a37bea35fff5046cdff3866d5215eeda89469"
+    ],
+    "wrapped": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5",
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
-    "dimension": [
+    "whole": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "along": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "wrap": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "square": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "convertmodulotomask": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "load": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "14ba391adb9d258fd532083f9dd72ec761e6d15b",
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
-    "offs_bn": [
+    "function": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "zeros": [
+    "safe": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "modulo": [
+    "cases": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "collectstoremaskguard": [
+    "three": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "precise": [
+    "divisor": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "two": [
+    "dot": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "plus": [
+    "shape": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
     "transpose": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5",
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
-    "boundary": [
+    "recorded": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "admits": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "element": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "two": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "emits": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "read": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "comparison": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "swapping": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "tracked": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5",
-      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
+    ],
+    "proof": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "lane": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "contiguous": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "data": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
+    ],
+    "columns": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "coordinate": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "now": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "veto": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "track": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "per": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
+    ],
+    "weight": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "one": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "stated": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "drops": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "whose": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
     ],
     "lanes": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
@@ -1772,38 +1632,223 @@
       "02fa3fd710e457af1366615ed5e911781b4a51f5",
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
-    "divisor": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5"
-    ],
     "uniform": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "leaves": [
+    "trans": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "back": [
-      "02fa3fd710e457af1366615ed5e911781b4a51f5",
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
-      "266a37bea35fff5046cdff3866d5215eeda89469"
+    "group_n": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "drops": [
+    "addressing": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "axis": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "indexes": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "block-quantised": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "discards": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "actually": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "admitting": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "reasoning": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "shapes": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "exactly": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5",
       "e93350318bf54c9ec20c588d15dbf4f845960b36"
     ],
-    "rejected": [
+    "gather": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "266a37bea35fff5046cdff3866d5215eeda89469"
+    ],
+    "candidate": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "c47ebc7cb074b83bcd72b34f2c3ef5566543c005",
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "records": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "cases": [
+    "precise": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "comparison": [
+    "stayed": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
     ],
-    "proved": [
+    "path": [
+      "01d4c9db893ecfde5078c01edfbace4f59430a22",
+      "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+      "7117d95de153f355d0b4c493132a590d161ac60b"
+    ],
+    "see": [
       "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "index": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
+    ],
+    "map": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "scale": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
+    ],
+    "collectstoremaskguard": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "expand_dims": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "boundary": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
+    ],
+    "varies": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "offs_bn": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "invariant": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "modulo": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "used": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "store": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "14ba391adb9d258fd532083f9dd72ec761e6d15b"
+    ],
+    "fused-moe": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "orientation": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "transfer": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "de756c69ebcdc166299a4c65f90285ed577216c1",
+      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
+    ],
+    "makes": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
+    ],
+    "past": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "rows": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "those": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "array": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "rejecting": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "lit": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "266a37bea35fff5046cdff3866d5215eeda89469"
+    ],
+    "derived": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5",
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
+    ],
+    "miscompile": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "plus": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "needs": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "old": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "positive": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "zeros": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "broadcast": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "rather": [
+      "02fa3fd710e457af1366615ed5e911781b4a51f5"
+    ],
+    "triton": [
+      "3931511e87ec26e83e98a59d06e835c37a482703",
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "is_compile_on_910_95": [
+      "3931511e87ec26e83e98a59d06e835c37a482703"
+    ],
+    "import": [
+      "3931511e87ec26e83e98a59d06e835c37a482703"
+    ],
+    "regressions": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233",
+      "3931511e87ec26e83e98a59d06e835c37a482703"
     ],
     "headroom": [
       "3931511e87ec26e83e98a59d06e835c37a482703"
+    ],
+    "measures": [
+      "3931511e87ec26e83e98a59d06e835c37a482703"
+    ],
+    "test_import_time": [
+      "3931511e87ec26e83e98a59d06e835c37a482703"
+    ],
+    "against": [
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+      "3931511e87ec26e83e98a59d06e835c37a482703"
+    ],
+    "init": [
+      "3931511e87ec26e83e98a59d06e835c37a482703"
+    ],
+    "subprocess": [
+      "3931511e87ec26e83e98a59d06e835c37a482703"
+    ],
+    "fresh": [
+      "3931511e87ec26e83e98a59d06e835c37a482703"
+    ],
+    "stays": [
+      "3931511e87ec26e83e98a59d06e835c37a482703"
+    ],
+    "time": [
+      "120b97f6f607196c474c65d96ea7f35cb9dec259",
+      "3931511e87ec26e83e98a59d06e835c37a482703",
+      "a8ff41745f15230761a50ac7668d0c3cc3486309"
+    ],
+    "under": [
+      "3931511e87ec26e83e98a59d06e835c37a482703",
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
     ],
     "pytest_ut": [
       "3931511e87ec26e83e98a59d06e835c37a482703"
@@ -1811,8 +1856,10 @@
     "baseline": [
       "3931511e87ec26e83e98a59d06e835c37a482703"
     ],
-    "regressions": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233",
+    "lazy": [
+      "3931511e87ec26e83e98a59d06e835c37a482703"
+    ],
+    "regression": [
       "3931511e87ec26e83e98a59d06e835c37a482703"
     ],
     "asserts": [
@@ -1824,61 +1871,14 @@
       "3931511e87ec26e83e98a59d06e835c37a482703",
       "8ec15cb8e4a7bbdb73d4159553387e7ac841ddea"
     ],
-    "import": [
-      "3931511e87ec26e83e98a59d06e835c37a482703"
-    ],
-    "lazy": [
-      "3931511e87ec26e83e98a59d06e835c37a482703"
-    ],
-    "stays": [
-      "3931511e87ec26e83e98a59d06e835c37a482703"
-    ],
-    "triton": [
-      "3931511e87ec26e83e98a59d06e835c37a482703",
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "time": [
-      "120b97f6f607196c474c65d96ea7f35cb9dec259",
-      "3931511e87ec26e83e98a59d06e835c37a482703",
-      "a8ff41745f15230761a50ac7668d0c3cc3486309"
-    ],
-    "is_compile_on_910_95": [
-      "3931511e87ec26e83e98a59d06e835c37a482703"
-    ],
-    "measures": [
-      "3931511e87ec26e83e98a59d06e835c37a482703"
-    ],
-    "init": [
-      "3931511e87ec26e83e98a59d06e835c37a482703"
-    ],
-    "against": [
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
-      "3931511e87ec26e83e98a59d06e835c37a482703"
-    ],
-    "under": [
-      "3931511e87ec26e83e98a59d06e835c37a482703",
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "subprocess": [
-      "3931511e87ec26e83e98a59d06e835c37a482703"
-    ],
-    "fresh": [
-      "3931511e87ec26e83e98a59d06e835c37a482703"
-    ],
-    "test_import_time": [
-      "3931511e87ec26e83e98a59d06e835c37a482703"
-    ],
-    "regression": [
-      "3931511e87ec26e83e98a59d06e835c37a482703"
-    ],
-    "exection": [
-      "a8ff41745f15230761a50ac7668d0c3cc3486309"
-    ],
     "rt-": [
       "a8ff41745f15230761a50ac7668d0c3cc3486309"
     ],
     "reduce": [
       "266a37bea35fff5046cdff3866d5215eeda89469",
+      "a8ff41745f15230761a50ac7668d0c3cc3486309"
+    ],
+    "exection": [
       "a8ff41745f15230761a50ac7668d0c3cc3486309"
     ],
     "acl": [
@@ -1887,43 +1887,174 @@
     "isolate": [
       "b1e2f99618ecd4ac3e4a0ca7630324b869335d25"
     ],
+    "reference": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "visible": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "via": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "project": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "center": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "code-copy": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "extra": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "restyle": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "article": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "favicon": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "sidebar": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "suggest-edit": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "new": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "html": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "toggle": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "duplicated": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "landing-page": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "title": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "sectioned": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "sphinx_book_theme": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "page": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "requirements": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "logo": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "star": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "watch": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "repository": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "header": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "gone": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "language": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "binding": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "keeps": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "hide": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "extension": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "api": [
+      "cfa029a676614b477a7947b515aa2022e64e994f",
+      "ee61c52999fcbc684b736b52c5e2bad0a49cdd0e"
+    ],
+    "centered": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "overrides": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
     "search": [
       "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
     "landing": [
       "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
-    "code-copy": [
+    "buttons": [
       "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
-    "navbar_persistent": [
+    "sphinx": [
       "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
     "inline": [
       "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
-    "article": [
+    "images": [
       "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
-    "per-page": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "binding": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "extra": [
+    "click": [
       "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
     "furo-only": [
       "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
-    "html": [
+    "cann": [
+      "b1187ec820e877099cea379fc8378233c37b8caf",
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "temporarily": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "navbar_persistent": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "toctrees": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "theme": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "per-page": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "fork": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "shows": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "adapted": [
+      "cfa029a676614b477a7947b515aa2022e64e994f"
+    ],
+    "top": [
       "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
     "github": [
       "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
-    "logo": [
+    "furo": [
       "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
     "navbar": [
@@ -1932,270 +2063,139 @@
     "field": [
       "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
-    "top": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "toggle": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "reference": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "sphinx_book_theme": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "adapted": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "click": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "visible": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "landing-page": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "favicon": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "sectioned": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "gone": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "toctrees": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
     "sphinx-copybutton": [
       "cfa029a676614b477a7947b515aa2022e64e994f"
     ],
-    "sidebar": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "watch": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "project": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "hide": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "api": [
-      "cfa029a676614b477a7947b515aa2022e64e994f",
-      "ee61c52999fcbc684b736b52c5e2bad0a49cdd0e"
-    ],
-    "requirements": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "temporarily": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "star": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "overrides": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "centered": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "keeps": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "buttons": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "theme": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "furo": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "shows": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "header": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "new": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "images": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "center": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "suggest-edit": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "sphinx": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "page": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "extension": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "fork": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "via": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "language": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "duplicated": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "cann": [
-      "b1187ec820e877099cea379fc8378233c37b8caf",
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "title": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "restyle": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "repository": [
-      "cfa029a676614b477a7947b515aa2022e64e994f"
-    ],
-    "f32": [
+    "comes": [
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
-    "reuse": [
+    "room": [
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
+    ],
+    "once": [
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
     "tiles": [
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
+    "sit": [
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
+    ],
+    "ceiling": [
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
+    ],
+    "catch": [
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
+    ],
+    "admit": [
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
+    ],
     "kernel_matmul_fp8_row_non_persistent": [
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
-    "costs": [
+    "either": [
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
-    "touches": [
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
-    ],
-    "bits": [
+    "widening": [
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
     "carries": [
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
-    "reaches": [
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "byte": [
+    "costs": [
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
-    "cost": [
+    "mechanism": [
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
-    "unblock": [
+    "compilation": [
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
-    "epilogue": [
+    "rollback": [
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
-    "rewrites": [
+    "decline": [
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
-    "widening": [
+    "bits": [
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
     "roll": [
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
       "266a37bea35fff5046cdff3866d5215eeda89469"
     ],
-    "fails": [
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
-    ],
-    "either": [
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
-    ],
-    "once": [
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
-    ],
-    "mechanism": [
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
-    ],
-    "buffers": [
+    "unblock": [
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
     "cannot": [
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
-    "re-land": [
+    "understood": [
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
+    ],
+    "per-load": [
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
+    ],
+    "epilogue": [
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
+    ],
+    "byte": [
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
+    ],
+    "fire": [
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
+    ],
+    "fails": [
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
+    ],
+    "reaches": [
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "around": [
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
+    ],
+    "price": [
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
+    ],
+    "touches": [
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
+    ],
+    "model": [
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
+    ],
+    "ubcapacitybytes": [
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
+    ],
+    "fbgemm": [
+      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
+    ],
+    "reuse": [
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
     "tracking": [
       "120b97f6f607196c474c65d96ea7f35cb9dec259",
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
-    "per-load": [
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
-    ],
-    "decline": [
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
-    ],
-    "model": [
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
-    ],
-    "ceiling": [
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
-    ],
     "x256": [
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
-    "compilation": [
+    "buffers": [
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
-    "catch": [
+    "rewrites": [
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
-    "around": [
+    "cost": [
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
-    "fbgemm": [
+    "f32": [
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
-    "room": [
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
-    ],
-    "understood": [
+    "re-land": [
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
     "storecoalescing": [
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
-    ],
-    "admit": [
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
-    ],
-    "ubcapacitybytes": [
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
-    ],
-    "fire": [
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
-    ],
-    "comes": [
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
-    ],
-    "sit": [
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
-    ],
-    "rollback": [
-      "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
-    ],
-    "price": [
       "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0"
     ],
     "errors": [
@@ -2206,21 +2206,21 @@
       "872fa1ed68c0fc82846d20bb4393a8a35ae831b3",
       "e5b52147f1859da4d72bc3ffb60f14f8c07950ee"
     ],
-    "adapter": [
-      "5f159e26bc31a7a51d369896dfd9003d15fb5792",
-      "b1187ec820e877099cea379fc8378233c37b8caf"
-    ],
     "version": [
       "266a37bea35fff5046cdff3866d5215eeda89469",
+      "b1187ec820e877099cea379fc8378233c37b8caf"
+    ],
+    "adapter": [
+      "5f159e26bc31a7a51d369896dfd9003d15fb5792",
       "b1187ec820e877099cea379fc8378233c37b8caf"
     ],
     "precision": [
       "39b5644c1188b99700cb91867c16f826ee971633"
     ],
-    "attr": [
+    "intradeps": [
       "bb30d768fec05e1966a0ed671662c8370e64de3e"
     ],
-    "intradeps": [
+    "attr": [
       "bb30d768fec05e1966a0ed671662c8370e64de3e"
     ],
     "nz2nz": [
@@ -2230,16 +2230,13 @@
       "8ec15cb8e4a7bbdb73d4159553387e7ac841ddea",
       "e93350318bf54c9ec20c588d15dbf4f845960b36"
     ],
-    "rewriter": [
-      "8ec15cb8e4a7bbdb73d4159553387e7ac841ddea"
-    ],
     "line": [
       "14ba391adb9d258fd532083f9dd72ec761e6d15b",
       "8ec15cb8e4a7bbdb73d4159553387e7ac841ddea",
       "e93350318bf54c9ec20c588d15dbf4f845960b36"
     ],
-    "mult-region": [
-      "01d4c9db893ecfde5078c01edfbace4f59430a22"
+    "rewriter": [
+      "8ec15cb8e4a7bbdb73d4159553387e7ac841ddea"
     ],
     "precsion": [
       "01d4c9db893ecfde5078c01edfbace4f59430a22"
@@ -2247,44 +2244,33 @@
     "multi-region": [
       "01d4c9db893ecfde5078c01edfbace4f59430a22"
     ],
+    "mult-region": [
+      "01d4c9db893ecfde5078c01edfbace4f59430a22"
+    ],
     "fixpipe": [
       "2eee2238d57314d200b9fc99b8c795653b88ac7b",
       "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
     ],
-    "no-interruptive": [
+    "unifystoreblock": [
       "5f159e26bc31a7a51d369896dfd9003d15fb5792"
     ],
-    "checks": [
+    "copy": [
       "5f159e26bc31a7a51d369896dfd9003d15fb5792"
     ],
-    "alloc_tensor": [
-      "5f159e26bc31a7a51d369896dfd9003d15fb5792"
-    ],
-    "migrate": [
-      "266a37bea35fff5046cdff3866d5215eeda89469",
-      "5f159e26bc31a7a51d369896dfd9003d15fb5792",
-      "63fbcc7ad27414dc8a59dfd0fe7a3a9f8327233b"
-    ],
-    "pass": [
-      "5f159e26bc31a7a51d369896dfd9003d15fb5792"
-    ],
-    "unifyallocblock": [
-      "5f159e26bc31a7a51d369896dfd9003d15fb5792"
-    ],
-    "pattern": [
+    "multi-result": [
       "5f159e26bc31a7a51d369896dfd9003d15fb5792"
     ],
     "better": [
       "12560d811374b08412d66e4e55012576b186b1c0",
       "5f159e26bc31a7a51d369896dfd9003d15fb5792"
     ],
-    "memref": [
+    "checks": [
       "5f159e26bc31a7a51d369896dfd9003d15fb5792"
     ],
-    "multi-result": [
+    "broadcastuboptpass": [
       "5f159e26bc31a7a51d369896dfd9003d15fb5792"
     ],
-    "module": [
+    "sinki1": [
       "5f159e26bc31a7a51d369896dfd9003d15fb5792"
     ],
     "view": [
@@ -2293,26 +2279,20 @@
     "planvectorblockpass": [
       "5f159e26bc31a7a51d369896dfd9003d15fb5792"
     ],
-    "unifystoreblock": [
-      "5f159e26bc31a7a51d369896dfd9003d15fb5792"
-    ],
-    "move": [
-      "5f159e26bc31a7a51d369896dfd9003d15fb5792",
-      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
-    ],
     "unify": [
       "5f159e26bc31a7a51d369896dfd9003d15fb5792"
     ],
-    "sinki1": [
+    "posencoding": [
       "5f159e26bc31a7a51d369896dfd9003d15fb5792"
     ],
-    "copy": [
-      "5f159e26bc31a7a51d369896dfd9003d15fb5792"
-    ],
-    "dep": [
+    "memref": [
       "5f159e26bc31a7a51d369896dfd9003d15fb5792"
     ],
     "moveloadintouserpass": [
+      "5f159e26bc31a7a51d369896dfd9003d15fb5792"
+    ],
+    "clone": [
+      "12560d811374b08412d66e4e55012576b186b1c0",
       "5f159e26bc31a7a51d369896dfd9003d15fb5792"
     ],
     "scf": [
@@ -2320,21 +2300,41 @@
       "5f159e26bc31a7a51d369896dfd9003d15fb5792",
       "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
     ],
+    "dep": [
+      "5f159e26bc31a7a51d369896dfd9003d15fb5792"
+    ],
+    "pass": [
+      "5f159e26bc31a7a51d369896dfd9003d15fb5792"
+    ],
+    "unifyallocblock": [
+      "5f159e26bc31a7a51d369896dfd9003d15fb5792"
+    ],
     "sinki1producersintouserspass": [
       "5f159e26bc31a7a51d369896dfd9003d15fb5792"
     ],
-    "posencoding": [
+    "module": [
+      "5f159e26bc31a7a51d369896dfd9003d15fb5792"
+    ],
+    "no-interruptive": [
+      "5f159e26bc31a7a51d369896dfd9003d15fb5792"
+    ],
+    "pattern": [
+      "5f159e26bc31a7a51d369896dfd9003d15fb5792"
+    ],
+    "move": [
+      "5f159e26bc31a7a51d369896dfd9003d15fb5792",
+      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
+    ],
+    "alloc_tensor": [
       "5f159e26bc31a7a51d369896dfd9003d15fb5792"
     ],
     "cut": [
       "5f159e26bc31a7a51d369896dfd9003d15fb5792"
     ],
-    "clone": [
-      "12560d811374b08412d66e4e55012576b186b1c0",
-      "5f159e26bc31a7a51d369896dfd9003d15fb5792"
-    ],
-    "broadcastuboptpass": [
-      "5f159e26bc31a7a51d369896dfd9003d15fb5792"
+    "migrate": [
+      "266a37bea35fff5046cdff3866d5215eeda89469",
+      "5f159e26bc31a7a51d369896dfd9003d15fb5792",
+      "63fbcc7ad27414dc8a59dfd0fe7a3a9f8327233b"
     ],
     "splitifbyblockidpass": [
       "12560d811374b08412d66e4e55012576b186b1c0",
@@ -2343,40 +2343,16 @@
       "7300140e31c3531a61836c2d78cb6e894d23de53",
       "daa0844144ad7d2b32425ad14b33d07eebcf6bf0"
     ],
+    "reviews": [
+      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
+    ],
     "dependencyhelper": [
       "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
     ],
-    "passes": [
-      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
-    ],
-    "unifystore": [
-      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
-    ],
-    "block_id": [
-      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
-    ],
-    "intercore": [
-      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
-    ],
-    "update": [
-      "120b97f6f607196c474c65d96ea7f35cb9dec259",
-      "221309ff5816dd907ad62860600122232a89798a",
-      "46c780ce82aae24eb3ef02ee44f27fe35dac37cb",
-      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
-    ],
-    "interrupt": [
-      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
-    ],
-    "closure": [
-      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
-    ],
-    "computeblockopt": [
-      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
-    ],
-    "staring": [
-      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
-    ],
     "front": [
+      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
+    ],
+    "regional": [
       "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
     ],
     "non-interruptive": [
@@ -2385,56 +2361,80 @@
     "calculation": [
       "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
     ],
+    "allocation": [
+      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
+    ],
+    "passes": [
+      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
+    ],
+    "update": [
+      "120b97f6f607196c474c65d96ea7f35cb9dec259",
+      "221309ff5816dd907ad62860600122232a89798a",
+      "46c780ce82aae24eb3ef02ee44f27fe35dac37cb",
+      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
+    ],
+    "block_id": [
+      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
+    ],
+    "intercore": [
+      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
+    ],
+    "computeblockopt": [
+      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
+    ],
+    "interrupt": [
+      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
+    ],
+    "closure": [
+      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
+    ],
+    "unifystore": [
+      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
+    ],
+    "staring": [
+      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
+    ],
     "scalar": [
       "2bafba14ac7eee242790056bc6dc9a6a27a30233",
       "a9238f59d36f27e16bae8aae5c9885ee56f1593a",
       "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
     ],
-    "regional": [
-      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
+    "true": [
+      "12560d811374b08412d66e4e55012576b186b1c0"
     ],
-    "allocation": [
-      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
-    ],
-    "reviews": [
-      "ed7bd07fa2449c854d0a0c6bd4075c61b630f1c0"
-    ],
-    "structure": [
+    "loop": [
       "12560d811374b08412d66e4e55012576b186b1c0",
       "2bafba14ac7eee242790056bc6dc9a6a27a30233"
     ],
-    "loop": [
+    "main": [
+      "12560d811374b08412d66e4e55012576b186b1c0"
+    ],
+    "alloc": [
+      "12560d811374b08412d66e4e55012576b186b1c0"
+    ],
+    "alloca": [
+      "12560d811374b08412d66e4e55012576b186b1c0"
+    ],
+    "erase": [
+      "12560d811374b08412d66e4e55012576b186b1c0"
+    ],
+    "structure": [
       "12560d811374b08412d66e4e55012576b186b1c0",
       "2bafba14ac7eee242790056bc6dc9a6a27a30233"
     ],
     "contains": [
       "12560d811374b08412d66e4e55012576b186b1c0"
     ],
-    "main": [
-      "12560d811374b08412d66e4e55012576b186b1c0"
-    ],
-    "true": [
-      "12560d811374b08412d66e4e55012576b186b1c0"
-    ],
-    "erase": [
-      "12560d811374b08412d66e4e55012576b186b1c0"
-    ],
-    "alloca": [
-      "12560d811374b08412d66e4e55012576b186b1c0"
-    ],
-    "alloc": [
-      "12560d811374b08412d66e4e55012576b186b1c0"
-    ],
     "chunk_gated_delta_rule_bwd-": [
       "872fa1ed68c0fc82846d20bb4393a8a35ae831b3"
     ],
-    "copies": [
+    "value": [
+      "0c580974d4fe718b7e3d8ad76b57ed35a4132724"
+    ],
+    "subviews": [
       "0c580974d4fe718b7e3d8ad76b57ed35a4132724"
     ],
     "return": [
-      "0c580974d4fe718b7e3d8ad76b57ed35a4132724"
-    ],
-    "values": [
       "0c580974d4fe718b7e3d8ad76b57ed35a4132724"
     ],
     "masked": [
@@ -2443,13 +2443,7 @@
     "tritontolinalg": [
       "0c580974d4fe718b7e3d8ad76b57ed35a4132724"
     ],
-    "apply": [
-      "0c580974d4fe718b7e3d8ad76b57ed35a4132724"
-    ],
-    "subviews": [
-      "0c580974d4fe718b7e3d8ad76b57ed35a4132724"
-    ],
-    "value": [
+    "values": [
       "0c580974d4fe718b7e3d8ad76b57ed35a4132724"
     ],
     "synchronize": [
@@ -2458,15 +2452,21 @@
     "atomic": [
       "0c580974d4fe718b7e3d8ad76b57ed35a4132724"
     ],
-    "wheel": [
-      "63fbcc7ad27414dc8a59dfd0fe7a3a9f8327233b"
+    "copies": [
+      "0c580974d4fe718b7e3d8ad76b57ed35a4132724"
     ],
-    "runners": [
+    "apply": [
+      "0c580974d4fe718b7e3d8ad76b57ed35a4132724"
+    ],
+    "wheel": [
       "63fbcc7ad27414dc8a59dfd0fe7a3a9f8327233b"
     ],
     "image": [
       "63fbcc7ad27414dc8a59dfd0fe7a3a9f8327233b",
       "d8436fe5b277fc6d14f96eef900cee4f70918091"
+    ],
+    "runners": [
+      "63fbcc7ad27414dc8a59dfd0fe7a3a9f8327233b"
     ],
     "self-hosted": [
       "63fbcc7ad27414dc8a59dfd0fe7a3a9f8327233b"
@@ -2481,108 +2481,133 @@
     "example": [
       "46c780ce82aae24eb3ef02ee44f27fe35dac37cb"
     ],
-    "modify": [
-      "a94d79e03d354c0f1b4c8dc9f3e9ebbc113702c8"
-    ],
     "reciprocal": [
-      "a94d79e03d354c0f1b4c8dc9f3e9ebbc113702c8"
-    ],
-    "atanh": [
       "a94d79e03d354c0f1b4c8dc9f3e9ebbc113702c8"
     ],
     "decription": [
       "a94d79e03d354c0f1b4c8dc9f3e9ebbc113702c8"
     ],
-    "splitifbyblockid": [
-      "36f3baeaa16d3c518fcd3764f50bd61db8a10b2d",
-      "7300140e31c3531a61836c2d78cb6e894d23de53"
+    "atanh": [
+      "a94d79e03d354c0f1b4c8dc9f3e9ebbc113702c8"
+    ],
+    "modify": [
+      "a94d79e03d354c0f1b4c8dc9f3e9ebbc113702c8"
     ],
     "parallel_nsa_fwd_kernel": [
       "36f3baeaa16d3c518fcd3764f50bd61db8a10b2d"
     ],
-    "end-to-end": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233",
-      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
+    "splitifbyblockid": [
+      "36f3baeaa16d3c518fcd3764f50bd61db8a10b2d",
+      "7300140e31c3531a61836c2d78cb6e894d23de53"
     ],
-    "stores": [
+    "focused": [
       "2bafba14ac7eee242790056bc6dc9a6a27a30233"
     ],
-    "keep": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
-    ],
-    "stabilize": [
-      "14ba391adb9d258fd532083f9dd72ec761e6d15b",
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
-    ],
-    "model1": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
-    ],
-    "complete-address": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
-    ],
-    "rank-n": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
-    ],
-    "control-flow": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233",
-      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
-    ],
-    "address-use": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
-    ],
-    "paths": [
+    "fold": [
       "2bafba14ac7eee242790056bc6dc9a6a27a30233"
     ],
     "opaque": [
       "2bafba14ac7eee242790056bc6dc9a6a27a30233"
     ],
-    "memory": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
-    ],
-    "include": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
-    ],
-    "backedges": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
-    ],
-    "extracted": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
-    ],
-    "constrain": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
-    ],
-    "sparse": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
-    ],
-    "lowering": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
-    ],
-    "dynamiccv": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
-    ],
     "repaired": [
       "2bafba14ac7eee242790056bc6dc9a6a27a30233"
     ],
-    "focused": [
+    "lowering": [
       "2bafba14ac7eee242790056bc6dc9a6a27a30233"
     ],
     "carriers": [
       "2bafba14ac7eee242790056bc6dc9a6a27a30233",
       "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
     ],
-    "fold": [
+    "stabilize": [
+      "14ba391adb9d258fd532083f9dd72ec761e6d15b",
       "2bafba14ac7eee242790056bc6dc9a6a27a30233"
     ],
-    "masks": [
+    "stores": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
+    ],
+    "end-to-end": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233",
+      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
+    ],
+    "scan": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
+    ],
+    "sparse": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
+    ],
+    "constrain": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
+    ],
+    "dynamiccv": [
       "2bafba14ac7eee242790056bc6dc9a6a27a30233"
     ],
     "sign-extended": [
       "2bafba14ac7eee242790056bc6dc9a6a27a30233"
     ],
-    "accesses": [
+    "address-use": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
+    ],
+    "blockdata": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
+    ],
+    "extracted": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
+    ],
+    "decode": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
+    ],
+    "memory": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
+    ],
+    "discovery": [
       "2bafba14ac7eee242790056bc6dc9a6a27a30233"
     ],
     "stable": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
+    ],
+    "control-flow": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233",
+      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
+    ],
+    "masks": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
+    ],
+    "complete-address": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
+    ],
+    "paths": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
+    ],
+    "backedges": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
+    ],
+    "attached": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
+    ],
+    "discrete": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
+    ],
+    "model1": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
+    ],
+    "controlflowopt": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233",
+      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
+    ],
+    "bases": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
+    ],
+    "include": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
+    ],
+    "keep": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
+    ],
+    "rank-n": [
+      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
+    ],
+    "accesses": [
       "2bafba14ac7eee242790056bc6dc9a6a27a30233"
     ],
     "pointer": [
@@ -2590,32 +2615,36 @@
       "a9238f59d36f27e16bae8aae5c9885ee56f1593a",
       "d1f8e2fa47b76f381937d0c4d4d415999bdd816d"
     ],
-    "bases": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
+    "coverage": [
+      "33943ec258b8646f5ab304f0d5a61d0105376b9b",
+      "a9238f59d36f27e16bae8aae5c9885ee56f1593a",
+      "c47ebc7cb074b83bcd72b34f2c3ef5566543c005"
     ],
-    "discrete": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
-    ],
-    "blockdata": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
-    ],
-    "attached": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
-    ],
-    "decode": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
-    ],
-    "scan": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
-    ],
-    "discovery": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233"
-    ],
-    "controlflowopt": [
-      "2bafba14ac7eee242790056bc6dc9a6a27a30233",
+    "handoff": [
       "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
     ],
-    "materialization": [
+    "tensorptr": [
+      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
+    ],
+    "scope": [
+      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
+    ],
+    "decoupling": [
+      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
+    ],
+    "t2l": [
+      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
+    ],
+    "regions": [
+      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
+    ],
+    "atomicity": [
+      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
+    ],
+    "scalar-pointer": [
+      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
+    ],
+    "failure": [
       "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
     ],
     "across": [
@@ -2624,79 +2653,53 @@
     "metadata": [
       "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
     ],
-    "failure": [
-      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
-    ],
-    "blockptr": [
-      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
-    ],
-    "atomicity": [
-      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
-    ],
     "boundaries": [
-      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
-    ],
-    "decoupling": [
-      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
-    ],
-    "scalar-pointer": [
-      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
-    ],
-    "handoff": [
-      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
-    ],
-    "tensorptr": [
-      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
-    ],
-    "t2u": [
-      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
-    ],
-    "conversion": [
-      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
-    ],
-    "range": [
-      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
-    ],
-    "marked": [
-      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
-    ],
-    "reviewed": [
-      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
-    ],
-    "coverage": [
-      "33943ec258b8646f5ab304f0d5a61d0105376b9b",
-      "a9238f59d36f27e16bae8aae5c9885ee56f1593a",
-      "c47ebc7cb074b83bcd72b34f2c3ef5566543c005"
-    ],
-    "scope": [
-      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
-    ],
-    "regions": [
-      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
-    ],
-    "reintroduce": [
       "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
     ],
     "corresponding": [
       "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
     ],
-    "t2l": [
+    "reintroduce": [
       "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
     ],
-    "descriptor": [
+    "blockptr": [
+      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
+    ],
+    "reviewed": [
+      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
+    ],
+    "t2u": [
+      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
+    ],
+    "marked": [
+      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
+    ],
+    "materialization": [
       "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
     ],
     "carrier": [
       "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
     ],
-    "placeholder": [
-      "daa0844144ad7d2b32425ad14b33d07eebcf6bf0"
+    "range": [
+      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
+    ],
+    "conversion": [
+      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
+    ],
+    "descriptor": [
+      "a9238f59d36f27e16bae8aae5c9885ee56f1593a"
     ],
     "split": [
       "daa0844144ad7d2b32425ad14b33d07eebcf6bf0"
     ],
+    "placeholder": [
+      "daa0844144ad7d2b32425ad14b33d07eebcf6bf0"
+    ],
     "matmul": [
       "daa0844144ad7d2b32425ad14b33d07eebcf6bf0"
+    ],
+    "stepping": [
+      "14ba391adb9d258fd532083f9dd72ec761e6d15b"
     ],
     "rewriting": [
       "14ba391adb9d258fd532083f9dd72ec761e6d15b"
@@ -2707,25 +2710,16 @@
     "msdbeug": [
       "14ba391adb9d258fd532083f9dd72ec761e6d15b"
     ],
-    "stepping": [
-      "14ba391adb9d258fd532083f9dd72ec761e6d15b"
-    ],
-    "syncblock": [
+    "unordered": [
       "12827daf87504a350cd0d71d9f4d4a65b5ffa316"
     ],
-    "sync_block_lock_unordered": [
+    "able": [
       "12827daf87504a350cd0d71d9f4d4a65b5ffa316"
     ],
     "pre-commit": [
       "12827daf87504a350cd0d71d9f4d4a65b5ffa316"
     ],
-    "lock": [
-      "12827daf87504a350cd0d71d9f4d4a65b5ffa316"
-    ],
-    "unordered_lock": [
-      "12827daf87504a350cd0d71d9f4d4a65b5ffa316"
-    ],
-    "able": [
+    "sync_block_lock_unordered": [
       "12827daf87504a350cd0d71d9f4d4a65b5ffa316"
     ],
     "resolve": [
@@ -2733,14 +2727,17 @@
       "12827daf87504a350cd0d71d9f4d4a65b5ffa316",
       "d8436fe5b277fc6d14f96eef900cee4f70918091"
     ],
-    "unordered": [
+    "lock": [
+      "12827daf87504a350cd0d71d9f4d4a65b5ffa316"
+    ],
+    "syncblock": [
+      "12827daf87504a350cd0d71d9f4d4a65b5ffa316"
+    ],
+    "unordered_lock": [
       "12827daf87504a350cd0d71d9f4d4a65b5ffa316"
     ],
     "multi-yield": [
       "de756c69ebcdc166299a4c65f90285ed577216c1"
-    ],
-    "work": [
-      "120b97f6f607196c474c65d96ea7f35cb9dec259"
     ],
     "stale": [
       "120b97f6f607196c474c65d96ea7f35cb9dec259",
@@ -2749,19 +2746,25 @@
     "close": [
       "120b97f6f607196c474c65d96ea7f35cb9dec259"
     ],
+    "work": [
+      "120b97f6f607196c474c65d96ea7f35cb9dec259"
+    ],
     "long-lived": [
       "120b97f6f607196c474c65d96ea7f35cb9dec259"
     ],
     "label": [
       "120b97f6f607196c474c65d96ea7f35cb9dec259"
     ],
-    "kernels": [
-      "c2e71038e0bb99040ca1595fe624313796df16ef"
-    ],
     "certain": [
       "c2e71038e0bb99040ca1595fe624313796df16ef"
     ],
-    "benchmark": [
+    "kernels": [
+      "c2e71038e0bb99040ca1595fe624313796df16ef"
+    ],
+    "print": [
+      "5930ffd527870dd706c92d2bf54df2693c0455aa"
+    ],
+    "timings": [
       "5930ffd527870dd706c92d2bf54df2693c0455aa"
     ],
     "autotune": [
@@ -2770,53 +2773,56 @@
       "c47ebc7cb074b83bcd72b34f2c3ef5566543c005",
       "f61e2fdd9a9baad51655231c69eeb1ee994bb267"
     ],
-    "print": [
+    "benchmark": [
       "5930ffd527870dd706c92d2bf54df2693c0455aa"
     ],
-    "timings": [
-      "5930ffd527870dd706c92d2bf54df2693c0455aa"
-    ],
-    "requests": [
-      "c47ebc7cb074b83bcd72b34f2c3ef5566543c005"
-    ],
-    "npu": [
-      "c47ebc7cb074b83bcd72b34f2c3ef5566543c005"
-    ],
-    "triton-ascend": [
+    "call": [
       "c47ebc7cb074b83bcd72b34f2c3ef5566543c005"
     ],
     "cleared": [
       "c47ebc7cb074b83bcd72b34f2c3ef5566543c005"
     ],
-    "main-dev": [
+    "profiled": [
+      "c47ebc7cb074b83bcd72b34f2c3ef5566543c005"
+    ],
+    "triton-ascend": [
       "c47ebc7cb074b83bcd72b34f2c3ef5566543c005"
     ],
     "starts": [
       "c47ebc7cb074b83bcd72b34f2c3ef5566543c005"
     ],
-    "profiled": [
-      "c47ebc7cb074b83bcd72b34f2c3ef5566543c005"
-    ],
-    "port": [
+    "npu": [
       "c47ebc7cb074b83bcd72b34f2c3ef5566543c005"
     ],
     "verifies": [
       "c47ebc7cb074b83bcd72b34f2c3ef5566543c005"
     ],
-    "triton-lang": [
-      "c47ebc7cb074b83bcd72b34f2c3ef5566543c005"
-    ],
-    "original-commit": [
-      "c47ebc7cb074b83bcd72b34f2c3ef5566543c005"
-    ],
-    "clearing": [
+    "main-dev": [
       "c47ebc7cb074b83bcd72b34f2c3ef5566543c005"
     ],
     "profiling": [
       "c47ebc7cb074b83bcd72b34f2c3ef5566543c005"
     ],
-    "call": [
+    "original-commit": [
       "c47ebc7cb074b83bcd72b34f2c3ef5566543c005"
+    ],
+    "requests": [
+      "c47ebc7cb074b83bcd72b34f2c3ef5566543c005"
+    ],
+    "port": [
+      "c47ebc7cb074b83bcd72b34f2c3ef5566543c005"
+    ],
+    "clearing": [
+      "c47ebc7cb074b83bcd72b34f2c3ef5566543c005"
+    ],
+    "triton-lang": [
+      "c47ebc7cb074b83bcd72b34f2c3ef5566543c005"
+    ],
+    "indirect-load": [
+      "d1f8e2fa47b76f381937d0c4d4d415999bdd816d"
+    ],
+    "trace": [
+      "d1f8e2fa47b76f381937d0c4d4d415999bdd816d"
     ],
     "simt-template": [
       "d1f8e2fa47b76f381937d0c4d4d415999bdd816d"
@@ -2827,163 +2833,157 @@
     "shape-only": [
       "d1f8e2fa47b76f381937d0c4d4d415999bdd816d"
     ],
-    "indirect-load": [
-      "d1f8e2fa47b76f381937d0c4d4d415999bdd816d"
-    ],
-    "trace": [
-      "d1f8e2fa47b76f381937d0c4d4d415999bdd816d"
-    ],
-    "surrounding": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "like": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
     "higher-benefit": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "parameters": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "variants": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "helper": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "buried": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "arith": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "tilesize": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "graph-optimize": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "banners": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "prints": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "type": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "sentence": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "matches": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "candidates": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "applied": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "log": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "logs": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "reads": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "covering": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "plan": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "produced": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "dumps": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "per-variant": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "predate": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "appending": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "loc": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "tritontograph": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "shared": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "revalidation": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "scheduler": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "match": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "remaining": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "analysed": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "output": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "decided": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "reports": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "remsi": [
-      "e93350318bf54c9ec20c588d15dbf4f845960b36"
-    ],
-    "went": [
       "e93350318bf54c9ec20c588d15dbf4f845960b36"
     ],
     "own": [
       "e93350318bf54c9ec20c588d15dbf4f845960b36"
     ],
-    "routes": [
+    "decided": [
       "e93350318bf54c9ec20c588d15dbf4f845960b36"
     ],
-    "matched": [
+    "revalidation": [
       "e93350318bf54c9ec20c588d15dbf4f845960b36"
     ],
-    "reusing": [
+    "matches": [
       "e93350318bf54c9ec20c588d15dbf4f845960b36"
     ],
-    "stridedloadstorerewrite": [
+    "went": [
       "e93350318bf54c9ec20c588d15dbf4f845960b36"
     ],
-    "eight": [
+    "predate": [
       "e93350318bf54c9ec20c588d15dbf4f845960b36"
     ],
-    "maskedloads": [
+    "graph-optimize": [
       "e93350318bf54c9ec20c588d15dbf4f845960b36"
     ],
-    "lost": [
+    "remsi": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "parameters": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "dumps": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "scheduler": [
       "e93350318bf54c9ec20c588d15dbf4f845960b36"
     ],
     "revalidated": [
       "e93350318bf54c9ec20c588d15dbf4f845960b36"
     ],
-    "between": [
-      "0b8d519379cbaef892c0f0227cddc8099dc044bc"
+    "analysed": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "arith": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "shared": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "maskedloads": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "surrounding": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "produced": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "appending": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "remaining": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "variants": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "plan": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "buried": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "matched": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "reports": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "applied": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "reads": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "lost": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "reusing": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "routes": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "tritontograph": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "output": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "candidates": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "covering": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "match": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "tilesize": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "eight": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "loc": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "banners": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "sentence": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "prints": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "helper": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "per-variant": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "type": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "stridedloadstorerewrite": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "logs": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "like": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
+    ],
+    "log": [
+      "e93350318bf54c9ec20c588d15dbf4f845960b36"
     ],
     "conflict": [
+      "0b8d519379cbaef892c0f0227cddc8099dc044bc"
+    ],
+    "between": [
       "0b8d519379cbaef892c0f0227cddc8099dc044bc"
     ],
     "ubtuner": [
@@ -2998,73 +2998,73 @@
     "fp16": [
       "33943ec258b8646f5ab304f0d5a61d0105376b9b"
     ],
-    "elementwise": [
-      "33943ec258b8646f5ab304f0d5a61d0105376b9b"
-    ],
     "exp": [
       "33943ec258b8646f5ab304f0d5a61d0105376b9b"
     ],
-    "custom": [
+    "elementwise": [
+      "33943ec258b8646f5ab304f0d5a61d0105376b9b"
+    ],
+    "mem": [
       "ee61c52999fcbc684b736b52c5e2bad0a49cdd0e"
     ],
     "unsupported": [
       "ee61c52999fcbc684b736b52c5e2bad0a49cdd0e"
     ],
-    "mem": [
-      "ee61c52999fcbc684b736b52c5e2bad0a49cdd0e"
-    ],
-    "dead": [
+    "clean": [
       "ee61c52999fcbc684b736b52c5e2bad0a49cdd0e"
     ],
     "deprecate": [
       "ee61c52999fcbc684b736b52c5e2bad0a49cdd0e"
     ],
-    "clean": [
+    "custom": [
       "ee61c52999fcbc684b736b52c5e2bad0a49cdd0e"
     ],
-    "broken": [
-      "266a37bea35fff5046cdff3866d5215eeda89469"
+    "dead": [
+      "ee61c52999fcbc684b736b52c5e2bad0a49cdd0e"
     ],
-    "examples": [
-      "266a37bea35fff5046cdff3866d5215eeda89469"
-    ],
-    "doc": [
-      "266a37bea35fff5046cdff3866d5215eeda89469"
-    ],
-    "scatter": [
+    "execute_external": [
       "266a37bea35fff5046cdff3866d5215eeda89469"
     ],
     "shtest": [
       "266a37bea35fff5046cdff3866d5215eeda89469"
     ],
-    "zone": [
+    "ldexp": [
       "266a37bea35fff5046cdff3866d5215eeda89469"
     ],
-    "internal": [
-      "266a37bea35fff5046cdff3866d5215eeda89469"
-    ],
-    "modifications": [
-      "266a37bea35fff5046cdff3866d5215eeda89469"
-    ],
-    "unittest": [
-      "266a37bea35fff5046cdff3866d5215eeda89469"
-    ],
-    "execute_external": [
+    "broken": [
       "266a37bea35fff5046cdff3866d5215eeda89469"
     ],
     "blue": [
       "266a37bea35fff5046cdff3866d5215eeda89469"
     ],
-    "ldexp": [
-      "266a37bea35fff5046cdff3866d5215eeda89469"
-    ],
-    "shell": [
+    "zone": [
       "266a37bea35fff5046cdff3866d5215eeda89469"
     ],
     "rejects": [
       "266a37bea35fff5046cdff3866d5215eeda89469"
     ],
+    "doc": [
+      "266a37bea35fff5046cdff3866d5215eeda89469"
+    ],
+    "shell": [
+      "266a37bea35fff5046cdff3866d5215eeda89469"
+    ],
+    "scatter": [
+      "266a37bea35fff5046cdff3866d5215eeda89469"
+    ],
     "index_put": [
+      "266a37bea35fff5046cdff3866d5215eeda89469"
+    ],
+    "modifications": [
+      "266a37bea35fff5046cdff3866d5215eeda89469"
+    ],
+    "examples": [
+      "266a37bea35fff5046cdff3866d5215eeda89469"
+    ],
+    "internal": [
+      "266a37bea35fff5046cdff3866d5215eeda89469"
+    ],
+    "unittest": [
       "266a37bea35fff5046cdff3866d5215eeda89469"
     ],
     "sparse_flash_attention_grad_kernel": [
@@ -3082,22 +3082,22 @@
     "build": [
       "7117d95de153f355d0b4c493132a590d161ac60b"
     ],
-    "information": [
-      "221309ff5816dd907ad62860600122232a89798a"
-    ],
-    "community": [
-      "221309ff5816dd907ad62860600122232a89798a"
-    ],
     "automatic": [
       "221309ff5816dd907ad62860600122232a89798a"
     ],
     "refreshing": [
       "221309ff5816dd907ad62860600122232a89798a"
     ],
-    "formatting": [
+    "information": [
       "221309ff5816dd907ad62860600122232a89798a"
     ],
     "activities": [
+      "221309ff5816dd907ad62860600122232a89798a"
+    ],
+    "community": [
+      "221309ff5816dd907ad62860600122232a89798a"
+    ],
+    "formatting": [
       "221309ff5816dd907ad62860600122232a89798a"
     ],
     "readme": [
@@ -3109,7 +3109,7 @@
     "detection": "upstream SHA in ascend git history OR cherry-pick marker",
     "ascend_repo_sha": "a4aecc3292d8bdf7ae80165f113a27ea1e89803a",
     "tracking_start_date": "",
-    "detected_at": "2026-08-29T05:27:39.209197+08:00",
+    "detected_at": "2026-08-30T02:06:23.974554+08:00",
     "note": "triton-ascend 无 baseline 文件（人工 cherry-pick 回合）。无标记的人工回合请用 `mark` 命令手动更新。"
   }
 }

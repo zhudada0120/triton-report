@@ -1,4 +1,12 @@
 {
+  "c349ce522e996cf0662249caa47b5d97a1748330": {
+    "date": "2026-08-30",
+    "msg": "[BACKEND] Add per-kernel NVPTX register-pressure scheduling (#11477)"
+  },
+  "f8851de139c8217548db3da9a06df9f879fe724c": {
+    "date": "2026-08-30",
+    "msg": "[BAKCEND] Temporarily revert thread locality reduction changes (#11516)"
+  },
   "657a12b0d708dc654005c05420ab7b3b05f3dd2f": {
     "date": "2026-08-29",
     "msg": "[OptimizeThreadLocality] Support rank-one, non-innermost-axis, and cross CTA reduce (#11503)"
