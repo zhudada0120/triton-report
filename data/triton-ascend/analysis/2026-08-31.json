@@ -1,0 +1,183 @@
+{
+  "date": "2026-08-31",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-09-01T02:04:09.135197+08:00",
+  "daily_summary": "本日变更主要聚焦于Ascend后端编译器与运行时优化：修复了DynamicCVPipeline中memdep同步点的插入逻辑（从使用producer/consumer的单个op改为使用范围区间，并引入白名单kernel机制以免除特定kernel的额外同步）；新增ExpSubfPatternPass优化exp(subf)模式，统一相关op的block id以改善调度；修复TritonToLinalg中sin/cos在950上的SIMT路由问题；改进了NPU utils的懒加载与缓存路径刷新机制；同时加强构建脚本的git重试机制与patch警告、优化CI任务合并、补充大量libdevice API文档及示例，并移除不再需要的API doc CI测试。",
+  "test_impact_summary": "本日变更对测试看护有显著影响：新增的ExpSubfPatternPass及其在ComputeBlockOptPass中的集成需要新的lit测试来验证block id统一逻辑（已有exp_subf_pattern.mlir测试覆盖）；TritonToLinalg的sin/cos路由变更需要更新现有测试以覆盖SIMT/SIMD不同路径；memdep sync的多次迭代修改（#1818、#1841、#1831）可能影响DynamicCV相关测试的预期结果，需运行相关测试确保正确性；NPU utils懒加载重构引入多个单元测试，需在新的测试环境下验证；此外，libdevice文档示例的大量增加需要确保示例代码的正确性和可运行性，且移除API doc CI测试后需关注文档质量维护。",
+  "commits": [
+    {
+      "sha": "e9f9b169f8ffd6dda35a6853135c83d7e66df25f",
+      "comment": "该commit是memdep sync插入逻辑的后续修复，将insertMemDepSync的签名从接收producer/consumer的单个op扩展为接收producerStart/producerEnd/consumerStart/consumerEnd四个op，允许同步点在op区间内更精确地放置。同时将写同步（waitOpForWrite/setOpForWrite等）的插入逻辑封装在hasMemDepSyncWhitelistKernel()判断内，仅对特定kernel（如_hstu_attn_fwd）插入额外的写同步，以避免对其他kernel造成不必要的性能开销。另外，对getOpBlockId失败的情况改为可选处理（不再直接返回失败），而是仅在成功获取block id时attach tag。handleMemoryDependency中新增了当producer和consumer在同一block内且为白名单kernel时，将同步点提前到predOp的处理。该变更是对DynamicCVPipeline中跨核内存依赖同步逻辑的精细化调整，降低了对特定kernel的同步开销，但引入了基于kernel名字的硬编码白名单，存在维护性和通用性风险。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "DynamicCVPipeline",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "该commit修改了memdep同步插入的核心逻辑，新增了whitelist kernel机制和同步点范围参数，现有测试可能未覆盖白名单kernel的行为和新的同步点放置逻辑。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/",
+          "third_party/ascend/unittest/pytest_ut/DynamicCVPipeline_ut/"
+        ]
+      },
+      "message": "[ssbuffer](fix) fix mem wait insert point"
+    },
+    {
+      "sha": "fec8b8ff99885b8e1d965d1e6b30c5775858ec06",
+      "comment": "该commit为DynamicCVPipeline新增了ExpSubfPatternPass优化pass，用于匹配exp(subf)计算模式，并通过ComputeBlockIdManager将exp及相关可选extf op的block id统一为subf op的block id。该优化旨在将计算链中的相关op调度到同一block，减少跨核数据传输和同步开销。实现上通过模式匹配（subf单用户且为exp，extf输入类型为f16->f32且单用户）来避免误匹配，并更新ComputeBlockOptPass的pipeline顺序。该pass的引入是解决特定计算模式调度优化的通用方案，但模式匹配的条件可能过于严格或松散，需要关注其对不同kernel的影响。",
+      "tags": [
+        "feature",
+        "performance",
+        "ComputeBlockOpt",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增pass需要对应的lit测试来验证模式匹配和block id统一逻辑的正确性，以及边界情况（多用户、错误类型等）。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/exp_subf_pattern.mlir"
+        ]
+      },
+      "message": "[ssbuffer](feat) Optimization for EXP(SUB(EXT)) pattern (#1837)\n\nCo-authored-by: shaoyiyang <shaoyiyang1@huawei.com>"
+    },
+    {
+      "sha": "017cdf0d9e806296b774e6cda9afa0ac6e165d77",
+      "comment": "该commit增强了setup_ascend.py构建脚本的健壮性。新增了_get_git_check_call_with_retry函数用于git clone/fetch等网络操作失败时的自动重试机制，间隔5秒重试3次，提高网络不稳定环境下的构建成功率。同时新增_print_patch_restore_warning函数，在构建完成后输出醒目的警告，提示用户工作区因应用补丁而变脏，需通过python3 init_code.py恢复源码，避免后续git pull失败。该变更属于构建流程的体验优化和可靠性提升，对核心编译链无影响。",
+      "tags": [
+        "chore",
+        "build",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "该commit仅涉及构建脚本的健壮性增强（git重试和警告提示），不影响运行时逻辑，现有测试无需变更。",
+        "suggested_test_areas": []
+      },
+      "message": "[build](feat) add git retry mechanism and patch warning (#1842)\n\nSigned-off-by: LH-123L <liuhuan261@huawei.com>"
+    },
+    {
+      "sha": "112cb903c8baffb1cce5bada444ef31d800d1e51",
+      "comment": "该commit是对memdep sync插入逻辑的进一步修正，**回退**了之前commit(e9f9b169)引入的whitelist kernel机制，改为对所有kernel无条件插入写同步（waitOpForWrite/setOpForWrite等）。这意味着之前针对特定kernel的性能优化被取消，回归到更保守但更正确的同步策略，以确保所有kernel的内存依赖关系都得到正确同步。同时，代码也移除了对getOpBlockId失败的可选处理，恢复为必须成功获取block id否则直接返回失败并设置fallback属性。该变更主要修复了之前whitelist机制可能导致的同步遗漏问题，但可能对性能有负面影响。",
+      "tags": [
+        "bugfix",
+        "DynamicCVPipeline",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "该commit改变了memdep同步的插入条件（从白名单变为所有kernel），现有测试若覆盖了非白名单kernel的同步缺失场景，可能需要更新预期。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/",
+          "third_party/ascend/unittest/pytest_ut/DynamicCVPipeline_ut/"
+        ]
+      },
+      "message": "[ssbuffer](fix) insert memdep sync for write in all cases (#1841)"
+    },
+    {
+      "sha": "8f6b2f22f52d19cb298e05384592c7e98eac7d99",
+      "comment": "该commit重构了.github/workflows/auto-labeling.yml这个CI工作流，将原先分离的ensure-labels、issue、pr三个job合并为单个label job，减少了CI workflow的执行开销（避免重复启动多个job）。同时为job配置了更精确的permissions（contents/read, issues/write, pull-requests/write），并分别为Ensure labels、Issue labeling、PR labeling步骤添加了明确的步骤名称。该变更是纯CI配置优化，不影响运行时逻辑。",
+      "tags": [
+        "ci",
+        "chore",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "该commit仅修改CI workflow配置，不涉及代码逻辑，无需更新测试。",
+        "suggested_test_areas": []
+      },
+      "message": "[CI](fix) Merge tasks into one job (#1300)\n\nSigned-off-by: Jiahao Su <damow890@gmail.com>"
+    },
+    {
+      "sha": "a674a6f85f9c7ee4449d82ee258407fb29ddb9b9",
+      "comment": "该commit为TritonToLinalgPass的isSIMTOp函数新增了math.sin/math.cos op在编译目标为910/95(Ascend950)且输入为f16/f32类型时的SIMT路由逻辑。注释说明，在A5(950)上，高精度sin/cos会被重写为使用320x i32查表的Payne-Hanek range reduction，涉及hfusion.gather操作，必须运行在SIMT模板中，否则可能触发VEC UB越界错误(error 341)。通过将此场景路由到SIMT，kernel以mix_simd_simt模式启动，为SIMT模板预留localMemorySize。bf16作为负向控制（不会触发高精度表查询）。该变更修复了特定硬件上sin/cos计算可能导致错误的问题，但通过硬编码硬件和类型条件，需要谨慎维护。",
+      "tags": [
+        "bugfix",
+        "TritonToLinalg",
+        "SIMT",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "该commit新增了关键的SIMT路由逻辑，需要对应的lit测试来验证在编译选项开启/关闭时sin/cos op的SIMT/SIMD路由是否正确，以及bf16等非匹配类型的负向控制。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/950PR/TritonToLinalg/sin_cos_simt_route.mlir"
+        ]
+      },
+      "message": "[TritonToLinalg](fix) bugfix for route SinOp to simt template (#1829)"
+    },
+    {
+      "sha": "fb23bbe90dd710f8c0a241e7ad630182b135a80a",
+      "comment": "该commit重构了NPUUtils的加载机制，从模块导入时立即构建/加载改为懒加载。主要变更包括：1. NPUUtils.__init__只计算并缓存.so文件路径(_cache_path)，不立即执行模块导入；2. 新增_get_so_path方法，确保在任何时刻获取路径时都使用最新的TRITON_CACHE_DIR(解决PyTorch Inductor可能滞后设置缓存目录的问题)；3. 新增_load_mod方法，在首次调用load_binary/get_arch等方法时才真正加载.so；4. 将从torch/torch_npu模块__file__推导include路径改为使用importlib.util.find_spec，避免直接导入框架包；5. 原version_hash注册函数被移除，改用importlib.metadata.version。该重构旨在解决进程fork时加载torch_npu可能引发的问题，并提升启动性能。",
+      "tags": [
+        "refactor",
+        "performance",
+        "Launcher",
+        "NPUDriver",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "该重构涉及NPUUtils生命周期、缓存路径和依赖注入方式的重大调整，现有测试需补充验证懒加载行为、缓存路径变化时的刷新逻辑、以及不导入torch_npu也能正确获取include路径。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_backend_npu_utils_build_flags.py",
+          "third_party/ascend/unittest/pytest_ut/test_launcher_export_api.py"
+        ]
+      },
+      "message": "[Launcher](fix) prebuild NPU utils without eager loading (#1788)\n\n* [Launcher](fix) defer NPU utils initialization before fork\n\n* [Launcher](fix) update lazy NPU utils test stub\n\n* [Launcher](fix) load NPU utils from resolved cache path\n\nSigned-off-by: zhanwei33 <22679270+zhanwei33@users.noreply.github.com>\n\n* [Launcher](NFC) remove unused version hash strategies\n\nSigned-off-by: zhanwei33 <22679270+zhanwei33@users.noreply.github.com>\n\n* [Launcher](fix) prebuild NPU utils without loading\n\nSigned-off-by: zhanwei33 <22679270+zhanwei33@users.noreply.github.com>\n\n* [Launcher](fix) restore unlocked NPU utils build\n\nSigned-off-by: zhanwei33 <22679270+zhanwei33@users.noreply.github.com>\n\n* [Launcher](fix) defer NPU utils load until launch\n\nSigned-off-by: zhanwei33 <22679270+zhanwei33@users.noreply.github.com>\n\n* [Launcher](fix) load NPU utils during launcher initialization\n\nSigned-off-by: zhanwei33 <22679270+zhanwei33@users.noreply.github.com>\n\n* [Launcher](fix) simplify NPU utils cache key\n\n* [Launcher](fix) include TorchNPU version in cache key\n\n* [Launcher](revert) restore module-init NPU utils loading\n\n* [Launcher](fix) require explicit mix mode for binary loading\n\n* [Launcher](fix) refresh NPU utils cache path\n\n---------\n\nSigned-off-by: zhanwei33 <22679270+zhanwei33@users.noreply.github.com>\nCo-authored-by: zhanwei33 <22679270+zhanwei33@users.noreply.github.com>"
+    },
+    {
+      "sha": "84337cd52b34c57e8a44f846c300762c70153fb0",
+      "comment": "该commit为memdep sync引入了whitelist kernel机制和consumerEndOp参数。其目标是在以下两个特定kernel（_hstu_attn_fwd, parallel_path_fwd_kernel）中，额外插入一些写同步（waitOpForWrite/setOpForWrite）以及主循环前后的同步（setOpForStart/waitOpForEnd），以确保正确的内存读写顺序。同时，将prodCoreType/consCoreType的获取逻辑从if条件中提取出来并提前声明，使得在prodBlockIdOpt/consBlockIdOpt为空时也能正确构建core type字符串，但仅在获得block id时才attach tag。该变更是对特定kernel的针对性优化，可能基于对这两个kernel的分析发现常规同步不足。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "DynamicCVPipeline",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "该commit引入了基于kernel名字的whitelist机制，新增了多组SyncBlockSet/WaitOp的插入逻辑，需要专门的测试来验证这些新增同步是否被正确插入到正确的代码位置，以及非白名单kernel是否不受影响。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/",
+          "third_party/ascend/unittest/pytest_ut/DynamicCVPipeline_ut/"
+        ]
+      },
+      "message": "[ssbuffer](fix) memdep sync for write (#1818)"
+    },
+    {
+      "sha": "749e2bbef83e4ed8942a153248e2005523bdcb3d",
+      "comment": "该commit从CI工作流中移除了在NPU上运行API文档示例测试的任务。移除的原因可能是这些测试不稳定或维护成本高，使用-pytest-命令可以运行文档示例，但可能需要频繁更新以匹配API变更。该变更是CI流程的简化，降低了CI的维护负担，但同时也意味着这些文档示例的正确性不再有自动化保障。",
+      "tags": [
+        "ci",
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "该commit移除了一个CI测试步骤，不涉及代码逻辑，但需要关注的是，文档示例的可运行性可能因缺乏自动化测试而退化。",
+        "suggested_test_areas": []
+      },
+      "message": "[CI](fix) Remove API Doc CI test (#1880)"
+    },
+    {
+      "sha": "ec04a00819d5dcfccbd9de46e4753d322252dda8",
+      "comment": "该commit是一次大规模文档更新，主要包括：1. 为CANN libdevice模块补全了几乎所有函数的API文档（约束、示例），新增了上百个示例脚本；2. 重构了文档侧边栏布局，为triton.language下的各类op创建了独立的rst页面（如Atomic Ops, Math Ops等），以改善导航体验；3. 在index.rst中将libdevice文档加入可见的toctree；4. 增加了一个docstring patching机制，确保autosummary在表格中能显示从guide生成的摘要；5. 对文档做了文字规范化（如'实例'改为'示例'）。该commit极大地完善了libdevice API的文档覆盖，有助于提升用户使用体验，但新增的大量示例脚本需要确保与当前API和硬件环境兼容。同时，由于删除了API doc CI测试，这些文档的正确性维护需要人工关注。",
+      "tags": [
+        "docs",
+        "feature",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "该commit主要涉及文档更新，不改变运行时逻辑。新增的示例脚本虽然可能包含可运行的测试，但已从CI中移除，因此对测试看护影响有限。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](fix) Add libdevice doc rendering and language api sidebar (#1782)\n\n* [Docs](fix) Add libdevice doc rendering and language api sidebar\n\n* [Docs](feat) Complete libdevice API docs and examples for all libdevice ops"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

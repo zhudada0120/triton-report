@@ -1,4 +1,44 @@
 {
+  "e9f9b169f8ffd6dda35a6853135c83d7e66df25f": {
+    "date": "2026-08-31",
+    "msg": "[ssbuffer](fix) fix mem wait insert point"
+  },
+  "fec8b8ff99885b8e1d965d1e6b30c5775858ec06": {
+    "date": "2026-08-31",
+    "msg": "[ssbuffer](feat) Optimization for EXP(SUB(EXT)) pattern (#1837)"
+  },
+  "017cdf0d9e806296b774e6cda9afa0ac6e165d77": {
+    "date": "2026-08-31",
+    "msg": "[build](feat) add git retry mechanism and patch warning (#1842)"
+  },
+  "112cb903c8baffb1cce5bada444ef31d800d1e51": {
+    "date": "2026-08-31",
+    "msg": "[ssbuffer](fix) insert memdep sync for write in all cases (#1841)"
+  },
+  "8f6b2f22f52d19cb298e05384592c7e98eac7d99": {
+    "date": "2026-08-31",
+    "msg": "[CI](fix) Merge tasks into one job (#1300)"
+  },
+  "a674a6f85f9c7ee4449d82ee258407fb29ddb9b9": {
+    "date": "2026-08-31",
+    "msg": "[TritonToLinalg](fix) bugfix for route SinOp to simt template (#1829)"
+  },
+  "fb23bbe90dd710f8c0a241e7ad630182b135a80a": {
+    "date": "2026-08-31",
+    "msg": "[Launcher](fix) prebuild NPU utils without eager loading (#1788)"
+  },
+  "84337cd52b34c57e8a44f846c300762c70153fb0": {
+    "date": "2026-08-31",
+    "msg": "[ssbuffer](fix) memdep sync for write (#1818)"
+  },
+  "749e2bbef83e4ed8942a153248e2005523bdcb3d": {
+    "date": "2026-08-31",
+    "msg": "[CI](fix) Remove API Doc CI test (#1880)"
+  },
+  "ec04a00819d5dcfccbd9de46e4753d322252dda8": {
+    "date": "2026-08-31",
+    "msg": "[Docs](fix) Add libdevice doc rendering and language api sidebar (#1782)"
+  },
   "c2e71038e0bb99040ca1595fe624313796df16ef": {
     "date": "2026-08-29",
     "msg": "[ssbuffer](fix) Remove fallback by name for certain kernels"

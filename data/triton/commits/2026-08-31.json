@@ -1,0 +1,230 @@
+{
+  "date": "2026-08-31",
+  "repo": "triton-lang/triton",
+  "branch": "main",
+  "commits": [
+    {
+      "sha": "b734173ff239e6c6ddf330c4878bd408f423a002",
+      "author": {
+        "name": "Alessandro Potenza",
+        "email": "ap.alessandro.potenza@gmail.com"
+      },
+      "date": "2026-08-31T11:33:40+08:00",
+      "message": "[TRITON] Fold split(join(a,b)) -> (a,b) and join(split(x)) -> x (#10766)\n\n`tt.join` and `tt.split` are inverses, but neither had a folder, so a\nround-trip survived `-canonicalize`:\n\n- `split(join(a, b)) -> (a, b)`\n- `join(split(x)[0], split(x)[1]) -> x`\n\nThe join is a real use of both operands, so a surviving round-trip keeps\nthe unused half's producer chain alive. On a kernel whose unused half is\na `tl.dot`, folding takes shared memory from 16384 B to 0 and SASS from\n224 to 72 instructions. `ptxas` deletes the dead HMMA itself, but not\nthe shared-memory allocation, which Triton sizes before `ptxas` runs.\n\nBoth folds require exact type equality. Since #10749 a join/split pair\nmay differ by register broadcast, and a folder cannot materialise a\n`ttg.convert_layout`, so it declines there, as `TransOp::fold` does.\n\nTests in `test/Triton/canonicalize.mlir`. `ws_data_partition.mlir` used\nthe round-trip as a data-partition vehicle and is updated.",
+      "parents": [
+        "d2bc7317906080547b870acf2acc9009c05c159a"
+      ],
+      "stats": {
+        "total_additions": 75,
+        "total_deletions": 1,
+        "files_changed": 4
+      },
+      "files": [
+        {
+          "filename": "include/triton/Dialect/Triton/IR/TritonOps.td",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 0,
+          "patch": "@@ -549,6 +549,7 @@ def TT_JoinOp : TT_Op<\"join\", [\n     let results = (outs TT_Tensor:$result);\n     let assemblyFormat = \"$lhs `,` $rhs attr-dict `:` type($lhs) `->` type($result)\";\n     let hasVerifier = 1;\n+    let hasFolder = 1;\n }\n \n def TT_SplitOp : TT_Op<\"split\", [\n@@ -569,6 +570,7 @@ def TT_SplitOp : TT_Op<\"split\", [\n     let arguments = (ins TT_Tensor:$src);\n     let results = (outs TT_Tensor:$outLHS, TT_Tensor:$outRHS);\n     let assemblyFormat = \"$src attr-dict `:` type($src) `->` type($outLHS)\";\n+    let hasFolder = 1;\n }\n \n def TT_TransOp : TT_Op<\"trans\", [Pure,"
+        },
+        {
+          "filename": "lib/Dialect/Triton/IR/Ops.cpp",
+          "status": "modified",
+          "additions": 28,
+          "deletions": 0,
+          "patch": "@@ -1438,6 +1438,19 @@ LogicalResult JoinOp::verify() {\n   return success();\n }\n \n+OpFoldResult JoinOp::fold(FoldAdaptor adaptor) {\n+  // join(split(x)[0], split(x)[1]) -> x\n+  // Only fold when both operands are exactly the two results of a single split\n+  // and the reconstructed type matches, so layout encodings are preserved.\n+  auto lhsSplit = getLhs().getDefiningOp<SplitOp>();\n+  auto rhsSplit = getRhs().getDefiningOp<SplitOp>();\n+  if (lhsSplit && lhsSplit == rhsSplit && getLhs() == lhsSplit.getOutLHS() &&\n+      getRhs() == lhsSplit.getOutRHS() &&\n+      lhsSplit.getSrc().getType() == getType())\n+    return lhsSplit.getSrc();\n+  return {};\n+}\n+\n // -- SplitOp --\n bool SplitOp::isCompatibleReturnTypes(TypeRange lhs, TypeRange rhs) {\n   for (auto [lhs, rhs] : llvm::zip_equal(lhs, rhs)) {\n@@ -1490,6 +1503,21 @@ LogicalResult SplitOp::inferReturnTypes(\n   return success();\n }\n \n+LogicalResult SplitOp::fold(FoldAdaptor adaptor,\n+                            SmallVectorImpl<OpFoldResult> &results) {\n+  // split(join(a, b)) -> (a, b)\n+  // Guard on exact type equality so we never silently drop a layout conversion.\n+  if (auto join = getSrc().getDefiningOp<JoinOp>()) {\n+    if (join.getLhs().getType() == getOutLHS().getType() &&\n+        join.getRhs().getType() == getOutRHS().getType()) {\n+      results.push_back(join.getLhs());\n+      results.push_back(join.getRhs());\n+      return success();\n+    }\n+  }\n+  return failure();\n+}\n+\n // -- ElementwiseInlineAsmOp --\n void ElementwiseInlineAsmOp::getEffects(\n     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>"
+        },
+        {
+          "filename": "test/Hopper/WarpSpecialization/ws_data_partition.mlir",
+          "status": "modified",
+          "additions": 4,
+          "deletions": 1,
+          "patch": "@@ -132,9 +132,12 @@ module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32, ttg.targ\n     // CHECK: tt.join {{.*}} : tensor<64x64xf16,\n     // CHECK: tt.join {{.*}} : tensor<64x64xf16,\n     %0 = tt.join %r1, %r1 {async_task_id = array<i32: 0, 1, 2>} : tensor<128x64xf16, #blocked> -> tensor<128x64x2xf16, #blocked2>\n+    // Keep the round-trip from folding away, so the partitioning of both ops\n+    // stays under test.\n+    %mid = arith.addf %0, %0 {async_task_id = array<i32: 0, 1, 2>} : tensor<128x64x2xf16, #blocked2>\n     // CHECK: tt.split {{.*}} : tensor<64x64x2xf16,\n     // CHECK: tt.split {{.*}} : tensor<64x64x2xf16,\n-    %1:2 = tt.split %0 {async_task_id = array<i32: 0, 1, 2>} : tensor<128x64x2xf16, #blocked2> -> tensor<128x64xf16, #blocked>\n+    %1:2 = tt.split %mid {async_task_id = array<i32: 0, 1, 2>} : tensor<128x64x2xf16, #blocked2> -> tensor<128x64xf16, #blocked>\n     // CHECK: ttg.local_alloc {{.*}} : (tensor<64x64xf16,\n     // CHECK: ttg.local_alloc {{.*}} : (tensor<64x64xf16,\n     %2 = ttg.local_alloc %1#0 {async_task_id = array<i32: 1, 2>} : (tensor<128x64xf16, #blocked>) -> !ttg.memdesc<128x64xf16, #shared, #smem>"
+        },
+        {
+          "filename": "test/Triton/canonicalize.mlir",
+          "status": "modified",
+          "additions": 41,
+          "deletions": 0,
+          "patch": "@@ -260,3 +260,44 @@ tt.func @no_canonicalize_indivisible_offset(%base: tensor<128x!tt.ptr<f32>>) ->\n   %result = tt.int_to_ptr %offset_ptr_int : tensor<128xi64> -> tensor<128x!tt.ptr<f32>>\n   tt.return %result : tensor<128x!tt.ptr<f32>>\n }\n+\n+// -----\n+\n+// CHECK-LABEL: split_join\n+tt.func @split_join(%a: tensor<8x4xf32>, %b: tensor<8x4xf32>) -> (tensor<8x4xf32>, tensor<8x4xf32>) {\n+  // split(join(a, b)) -> (a, b)\n+  // CHECK-NOT: tt.join\n+  // CHECK-NOT: tt.split\n+  // CHECK: tt.return %arg0, %arg1\n+  %j = tt.join %a, %b : tensor<8x4xf32> -> tensor<8x4x2xf32>\n+  %o:2 = tt.split %j : tensor<8x4x2xf32> -> tensor<8x4xf32>\n+  tt.return %o#0, %o#1 : tensor<8x4xf32>, tensor<8x4xf32>\n+}\n+\n+// -----\n+\n+// CHECK-LABEL: join_split\n+tt.func @join_split(%x: tensor<8x4x2xf32>) -> tensor<8x4x2xf32> {\n+  // join(split(x)[0], split(x)[1]) -> x\n+  // CHECK-NOT: tt.split\n+  // CHECK-NOT: tt.join\n+  // CHECK: tt.return %arg0\n+  %s:2 = tt.split %x : tensor<8x4x2xf32> -> tensor<8x4xf32>\n+  %j = tt.join %s#0, %s#1 : tensor<8x4xf32> -> tensor<8x4x2xf32>\n+  tt.return %j : tensor<8x4x2xf32>\n+}\n+\n+// -----\n+\n+// CHECK-LABEL: split_join_folds_through_discardable_attr\n+tt.func @split_join_folds_through_discardable_attr(%a: tensor<8x4xf32>, %b: tensor<8x4xf32>) -> (tensor<8x4xf32>, tensor<8x4xf32>) {\n+  // The fold is a pure algebraic identity and is intentionally agnostic to\n+  // discardable attributes (e.g. a warp-specialization async_task_id): the\n+  // round-trip is removed and the original operands flow through.\n+  // CHECK-NOT: tt.join\n+  // CHECK-NOT: tt.split\n+  // CHECK: tt.return %arg0, %arg1\n+  %j = tt.join %a, %b : tensor<8x4xf32> -> tensor<8x4x2xf32>\n+  %o:2 = tt.split %j {async_task_id = array<i32: 0>} : tensor<8x4x2xf32> -> tensor<8x4xf32>\n+  tt.return %o#0, %o#1 : tensor<8x4xf32>, tensor<8x4xf32>\n+}\n"
+        }
+      ]
+    },
+    {
+      "sha": "d2bc7317906080547b870acf2acc9009c05c159a",
+      "author": {
+        "name": "neildhar",
+        "email": "neildhar@users.noreply.github.com"
+      },
+      "date": "2026-08-31T09:40:11+08:00",
+      "message": "Block remat of non-pure ops (#11001)\n\nIn general, we should not remat non-pure ops (e.g. non-pure inline asm).",
+      "parents": [
+        "4b15f36953116d842602effbddae8d796d64c294"
+      ],
+      "stats": {
+        "total_additions": 12,
+        "total_deletions": 1,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "lib/Dialect/TritonGPU/Transforms/RemoveLayoutConversions.cpp",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -680,7 +680,7 @@ bool canBeRemat(Operation *op) {\n   if (isa<scf::WhileOp, scf::ConditionOp>(op))\n     return false;\n \n-  return true;\n+  return !hasEffect<MemoryEffects::Write>(op);\n }\n \n void LayoutRematerialization::updateRematMapping("
+        },
+        {
+          "filename": "test/TritonGPU/combine.mlir",
+          "status": "modified",
+          "additions": 11,
+          "deletions": 0,
+          "patch": "@@ -4267,6 +4267,17 @@ module attributes {\"ttg.num-warps\" = 1 : i32, \"ttg.num-ctas\" = 1 : i32} {\n     // CHECK: tt.return\n     tt.return %cvt, %exp : tensor<1x32xf32, #blocked1>, tensor<1x32xf32, #blocked>\n   }\n+\n+  // CHECK-LABEL: @side_effecting_inline_asm\n+  tt.func @side_effecting_inline_asm() -> (tensor<1x32xi32, #blocked1>, tensor<1x32xi32, #blocked>) {\n+    %cst = arith.constant dense<0> : tensor<1x32xi32, #blocked>\n+    // CHECK: %[[ASM:.+]] = tt.elementwise_inline_asm {{.*}}pure = false\n+    %asm = tt.elementwise_inline_asm \"mov.u32 $0, %clock;\" {constraints = \"=r,r\", packed_element = 1 : i32, pure = false} %cst : tensor<1x32xi32, #blocked> -> tensor<1x32xi32, #blocked>\n+    // CHECK-NEXT: %[[CONVERT:.+]] = ttg.convert_layout %[[ASM]]\n+    %converted = ttg.convert_layout %asm : tensor<1x32xi32, #blocked> -> tensor<1x32xi32, #blocked1>\n+    // CHECK-NEXT: tt.return %[[CONVERT]], %[[ASM]]\n+    tt.return %converted, %asm : tensor<1x32xi32, #blocked1>, tensor<1x32xi32, #blocked>\n+  }\n }\n \n // -----\n"
+        }
+      ]
+    },
+    {
+      "sha": "4b15f36953116d842602effbddae8d796d64c294",
+      "author": {
+        "name": "Mario Lezcano Casado",
+        "email": "3291265+lezcano@users.noreply.github.com"
+      },
+      "date": "2026-08-31T03:37:26+08:00",
+      "message": "[BACKEND] Reuse the trailing warp-specialization launch barrier (#11499)\n\nWe remove `triton::gpu::WarpSpecializePartitionsOp` as technically it\ndoesn't synchronise anything, it's `WarpSpecialize` that synchronises.",
+      "parents": [
+        "95c417addbf71dbbaaa603cacfaea5a199c5dda1"
+      ],
+      "stats": {
+        "total_additions": 32,
+        "total_deletions": 4,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "lib/Analysis/Membar.cpp",
+          "status": "modified",
+          "additions": 6,
+          "deletions": 4,
+          "patch": "@@ -200,17 +200,19 @@ triton::BarrierStages getLocalBarrierStages(Operation *op,\n   // immediately before the operation.\n   stages.betweenMemoryEffects = hasScratchBarrier;\n   stages.beforeMemoryEffects =\n-      isa<gpu::BarrierOp, ttng::ClusterBarrierOp,\n-          triton::gpu::WarpSpecializePartitionsOp, triton::gpu::WarpYieldOp,\n+      isa<gpu::BarrierOp, ttng::ClusterBarrierOp, triton::gpu::WarpYieldOp,\n           triton::gpu::WarpReturnOp, ttng::ArriveBarrierOp,\n           ttng::BarrierExpectOp, ttng::TCGen5CommitOp>(op);\n \n   // Tensor-map acquire ends with a CTA barrier after the descriptor fence.\n   stages.afterMemoryEffects = isa<ttng::TensormapFenceproxyAcquireOp>(op);\n \n-  // Warp specialization writes its captures before the launch rendezvous.\n-  if (isa<triton::gpu::WarpSpecializeOp>(op))\n+  // The first launch rendezvous publishes captures. The second finishes their\n+  // reads before any partition starts its body and reuses capture storage.\n+  if (isa<triton::gpu::WarpSpecializeOp>(op)) {\n     stages.beforeMemoryEffects = !hasScratchBarrier;\n+    stages.afterMemoryEffects = true;\n+  }\n   // Fused MMA completion synchronizes the partition before issuing the MMA.\n   if (auto mma = dyn_cast<ttng::MMAv5OpInterface>(op))\n     stages.beforeMemoryEffects = !mma.getCompletionBarriers().empty();"
+        },
+        {
+          "filename": "test/Analysis/test-membar-ttng.mlir",
+          "status": "modified",
+          "additions": 26,
+          "deletions": 0,
+          "patch": "@@ -406,3 +406,29 @@ module attributes {\"ttg.num-warps\" = 4 : i32, \"ttg.num-ctas\" = 1 : i32} {\n     tt.return\n   }\n }\n+\n+// -----\n+\n+#rows = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>\n+#cols = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [4, 8], warpsPerCTA = [1, 4], order = [1, 0]}>\n+\n+module attributes {\"ttg.num-warps\" = 4 : i32, \"ttg.num-ctas\" = 1 : i32, \"ttg.threads-per-warp\" = 32 : i32} {\n+  // The conversion reuses capture storage. The second launch rendezvous\n+  // completes capture reads before the conversion starts writing its scratch.\n+  // CHECK-LABEL: @capture_scratch_reused_in_default\n+  tt.func @capture_scratch_reused_in_default(%ptr: !tt.ptr<i32>, %input: tensor<16x16xf32, #rows>) -> tensor<16x16xf32, #cols> {\n+    // CHECK: ttg.warp_specialize{{.*}}allocation.offset = [[CAPTURE:[0-9]+]]\n+    %result = ttg.warp_specialize(%ptr)\n+    default {\n+      // CHECK-NEXT: default {\n+      // CHECK-NEXT: {{.*}} = ttg.convert_layout{{.*}}allocation.offset = [[CAPTURE]]\n+      %converted = ttg.convert_layout %input : tensor<16x16xf32, #rows> -> tensor<16x16xf32, #cols>\n+      ttg.warp_yield %converted : tensor<16x16xf32, #cols>\n+    }\n+    partition0(%address: !tt.ptr<i32>) num_warps(4) {\n+      %value = tt.load %address : !tt.ptr<i32>\n+      ttg.warp_return\n+    } : (!tt.ptr<i32>) -> tensor<16x16xf32, #cols>\n+    tt.return %result : tensor<16x16xf32, #cols>\n+  }\n+}\n"
+        }
+      ]
+    },
+    {
+      "sha": "95c417addbf71dbbaaa603cacfaea5a199c5dda1",
+      "author": {
+        "name": "Mario Lezcano Casado",
+        "email": "3291265+lezcano@users.noreply.github.com"
+      },
+      "date": "2026-08-31T03:37:18+08:00",
+      "message": "[OPS] Require contiguous layouts for CLC and mbarriers (#11501)\n\nWe now check that the layout is the obvious one without subviews, and we\ncentralise this check in the trait verifier.",
+      "parents": [
+        "c349ce522e996cf0662249caa47b5d97a1748330"
+      ],
+      "stats": {
+        "total_additions": 195,
+        "total_deletions": 106,
+        "files_changed": 13
+      },
+      "files": [
+        {
+          "filename": "include/triton/Dialect/TritonGPU/IR/Dialect.h",
+          "status": "modified",
+          "additions": 3,
+          "deletions": 0,
+          "patch": "@@ -398,6 +398,9 @@ bool areLayoutsEquivalent(ArrayRef<int64_t> shape, LayoutEncodingTrait lhs,\n // Return true if the innermost numElems are contiguous.\n bool isInnermostContiguous(MemDescType type, unsigned numElems);\n \n+// Return true for a full buffer with rank-one swizzled_shared(1, 1, 1).\n+bool isContiguousSharedMemoryLayout(MemDescType type);\n+\n LinearLayout inferReshapeLinearLayout(TensorOrMemDesc srcTy,\n                                       ArrayRef<int64_t> dstShape);\n "
+        },
+        {
+          "filename": "include/triton/Dialect/TritonGPU/IR/TritonGPUInterfaces.h",
+          "status": "modified",
+          "additions": 4,
+          "deletions": 0,
+          "patch": "@@ -4,6 +4,10 @@\n #include \"mlir/IR/OpDefinition.h\"\n #include \"triton/Dialect/TritonGPU/IR/CGAEncodingAttr.h\"\n \n+namespace mlir::triton::gpu {\n+LogicalResult verifyMBarrierOpInterface(Operation *op);\n+}\n+\n // clang-format off\n #include \"triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h\"\n #include \"triton/Dialect/TritonGPU/IR/AttrInterfaces.h.inc\""
+        },
+        {
+          "filename": "include/triton/Dialect/TritonGPU/IR/TritonGPUOpInterfaces.td",
+          "status": "modified",
+          "additions": 4,
+          "deletions": 0,
+          "patch": "@@ -50,6 +50,10 @@ def MBarrierOpInterface : OpInterface<\"MBarrierOpInterface\"> {\n     backend-agnostic barrier identification without direct dialect dependencies.\n   }];\n \n+  let verify = [{\n+    return ::mlir::triton::gpu::verifyMBarrierOpInterface($_op);\n+  }];\n+\n   let cppNamespace = \"::mlir::triton::gpu\";\n \n   let methods = ["
+        },
+        {
+          "filename": "include/triton/Dialect/TritonGPU/Transforms/Utility.h",
+          "status": "modified",
+          "additions": 0,
+          "deletions": 4,
+          "patch": "@@ -292,10 +292,6 @@ bool comesFromLoadOrBlockArg(Value v);\n // `resultIdx`th result.\n SmallVector<Value> getTiedArgs(Operation *op, int resultIdx);\n \n-// Verifies the provided memory descriptor type used for barrier allocation\n-LogicalResult verifyBarrierType(Operation *op,\n-                                mlir::triton::gpu::MemDescType barrierType);\n-\n // Get a boolean if the Value is an arith::ConstantOp\n std::optional<bool> getBoolFromConstant(Value cst);\n "
+        },
+        {
+          "filename": "include/triton/Dialect/TritonNvidiaGPU/IR/TritonNvidiaGPUOps.td",
+          "status": "modified",
+          "additions": 0,
+          "deletions": 2,
+          "patch": "@@ -315,7 +315,6 @@ def TTNG_InvalBarrierOp : TTNG_Op<\"inval_barrier\", [\n     https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#parallel-synchronization-and-communication-instructions-mbarrier-inval\n   }];\n \n-  let hasVerifier = 1;\n   let arguments = (ins Arg<TTG_MemDescType, \"\", GenericSharedWrite>:$alloc);\n   let assemblyFormat = \"$alloc attr-dict `:` qualified(type($alloc))\";\n }\n@@ -400,7 +399,6 @@ def TTNG_WaitBarrierOp : TTNG_Op<\"wait_barrier\", [AttrSizedOperandSegments,\n     $alloc `,` $phase (`,` $pred^)? (`deps` $deps^)?\n     attr-dict `:` qualified(type($alloc)) (`,` type($deps)^)?\n   }];\n-  let hasVerifier = 1;\n }\n \n def TTNG_ArriveBarrierOp : TTNG_Op<\"arrive_barrier\", ["
+        },
+        {
+          "filename": "lib/Dialect/TritonGPU/IR/Dialect.cpp",
+          "status": "modified",
+          "additions": 32,
+          "deletions": 0,
+          "patch": "@@ -4488,6 +4488,38 @@ bool triton::gpu::isInnermostContiguous(MemDescType type, unsigned numElems) {\n   return actual.getNumConsecutiveInOut() >= numElems;\n }\n \n+bool triton::gpu::isContiguousSharedMemoryLayout(MemDescType type) {\n+  auto layout = dyn_cast<SwizzledSharedEncodingAttr>(type.getEncoding());\n+  return layout && layout.getOrder().size() == 1 && layout.getVec() == 1 &&\n+         layout.getPerPhase() == 1 && layout.getMaxPhase() == 1 &&\n+         type.getShape() == dropPipeliningDim(type.getAllocShape(), layout);\n+}\n+\n+LogicalResult triton::gpu::verifyMBarrierOpInterface(Operation *op) {\n+  for (Value barrier : cast<MBarrierOpInterface>(op).getBarriers()) {\n+    auto type = cast<MemDescType>(barrier.getType());\n+    if (!(type.getElementType().isInteger(64) && type.getRank() == 1 &&\n+          type.getShape()[0] <= lookupNumCTAs(op)))\n+      return op->emitOpError(\"barrier allocation must be a descriptor of \"\n+                             \"Nxi64 type with N <= number of CTAs\");\n+    if (!isContiguousSharedMemoryLayout(type))\n+      return op->emitOpError(\"barrier must have a contiguous shared-memory \"\n+                             \"layout without subviews\");\n+    auto cgaLayout = getCGALayout(type.getEncoding()).getLinearLayout();\n+    auto kBlock = StringAttr::get(op->getContext(), \"block\");\n+    int i = 0;\n+    for (const auto &basis : cgaLayout.getBases().lookup(kBlock)) {\n+      if (basis[0] != 0 && basis[0] != int64_t(1) << i)\n+        return op->emitOpError(\n+            \"broadcasted cluster barriers require bases to be the sequence \"\n+            \"1, 2, 4, 8, ... perhaps with zero bases interleaved.\");\n+      if (basis[0] != 0)\n+        ++i;\n+    }\n+  }\n+  return success();\n+}\n+\n LinearLayout triton::gpu::inferReshapeLinearLayout(TensorOrMemDesc srcTy,\n                                                    ArrayRef<int64_t> dstShape) {\n   auto *ctx = srcTy.getContext();"
+        },
+        {
+          "filename": "lib/Dialect/TritonGPU/Transforms/Utility.cpp",
+          "status": "modified",
+          "additions": 0,
+          "deletions": 24,
+          "patch": "@@ -1607,30 +1607,6 @@ SmallVector<Value> getTiedArgs(Operation *op, int resultIdx) {\n   return {};\n }\n \n-LogicalResult verifyBarrierType(Operation *op,\n-                                mlir::triton::gpu::MemDescType barrierType) {\n-  auto numCTAs = triton::gpu::lookupNumCTAs(op);\n-  if (!(barrierType.getElementType().isInteger(64) &&\n-        barrierType.getRank() == 1 && barrierType.getShape()[0] <= numCTAs))\n-    return op->emitOpError(\"barrier allocation must be a descriptor of \"\n-                           \"Nxi64 type with N <= number of CTAs\");\n-\n-  auto kBlock = StringAttr::get(op->getContext(), \"block\");\n-  auto ll = toLinearLayout(barrierType).flattenOuts();\n-  const auto &blockBases = ll.getBases().lookup(kBlock);\n-  int i = 0;\n-  for (const auto &basis : blockBases) {\n-    if (basis[0] != 0 && basis[0] != int64_t(1) << i) {\n-      return op->emitOpError(\n-          \"broadcasted cluster barriers require bases to be the sequence\"\n-          \"1, 2, 4, 8, ... perhaps with zero bases interleaved.\");\n-    }\n-    if (basis[0] != 0)\n-      ++i;\n-  }\n-  return success();\n-}\n-\n std::optional<bool> getBoolFromConstant(Value cst) {\n   auto constantOp = cst.getDefiningOp<arith::ConstantOp>();\n   if (!constantOp) {"
+        },
+        {
+          "filename": "lib/Dialect/TritonNvidiaGPU/IR/Ops.cpp",
+          "status": "modified",
+          "additions": 4,
+          "deletions": 33,
+          "patch": "@@ -374,8 +374,6 @@ LogicalResult WarpGroupDotWaitOp::verify() {\n \n // -- InitBarrierOp --\n LogicalResult InitBarrierOp::verify() {\n-  if (failed(verifyBarrierType(*this, getAlloc().getType())))\n-    return failure();\n   if (getCount() < 1)\n     return emitOpError(\"count must be greater than or equal to 1\");\n   auto barrierTy = cast<MemDescType>(getAlloc().getType());\n@@ -392,12 +390,6 @@ LogicalResult InitBarrierOp::verify() {\n TypedValue<MemDescType> InitBarrierOp::getBarrier() { return getAlloc(); }\n \n // -- InvalBarrierOp --\n-LogicalResult InvalBarrierOp::verify() {\n-  if (failed(verifyBarrierType(*this, getAlloc().getType())))\n-    return failure();\n-  return success();\n-}\n-\n TypedValue<MemDescType> InvalBarrierOp::getBarrier() { return getAlloc(); }\n \n static LogicalResult verifyBarrierFromCTA(Operation *op, Value barrier,\n@@ -430,8 +422,6 @@ static LogicalResult canonicalizeBarrierFromCTA(BarrierOp op,\n \n // -- BarrierExpectOp --\n LogicalResult BarrierExpectOp::verify() {\n-  if (failed(verifyBarrierType(*this, getAlloc().getType())))\n-    return failure();\n   if (failed(verifyBarrierFromCTA(*this, getAlloc(), getFromCTA())))\n     return failure();\n   return success();\n@@ -455,12 +445,6 @@ Type BarrierExpectOp::getPredicateOperandTypeLike() {\n }\n \n // -- WaitBarrierOp --\n-LogicalResult WaitBarrierOp::verify() {\n-  if (failed(verifyBarrierType(*this, getAlloc().getType())))\n-    return failure();\n-  return success();\n-}\n-\n TypedValue<MemDescType> WaitBarrierOp::getBarrier() { return getAlloc(); }\n \n Value WaitBarrierOp::getPredicateOperand() { return getPred(); }\n@@ -479,8 +463,6 @@ static LogicalResult verifyBarrierCGALayout(Operation *op, Value barrier,\n \n // -- ArriveBarrierOp --\n LogicalResult ArriveBarrierOp::verify() {\n-  if (failed(verifyBarrierType(*this, getAlloc().getType())))\n-    return failure();\n   if (getCount() < 1)\n     return emitOpError(\"count must be greater than or equal to 1\");\n   if (isMulticast()) {\n@@ -530,8 +512,6 @@ LogicalResult AsyncSharedStoreOp::verify() {\n   if (failed(triton::gpu::verifyMemoryOpTypes(*this, getSrc().getType(),\n                                               getDst().getType())))\n     return failure();\n-  if (failed(verifyBarrierType(*this, getMbarrier().getType())))\n-    return failure();\n \n   auto srcTy = getSrc().getType();\n   auto dstTy = getDst().getType();\n@@ -684,8 +664,6 @@ static LogicalResult verifyAsyncTMALoadOp(Operation *op,\n                                           TensorDescInterface desc,\n                                           TypedValue<MemDescType> barrier,\n                                           MemDescType resultType) {\n-  if (failed(verifyBarrierType(op, barrier.getType())))\n-    return failure();\n   if (failed(verifyTMABarrierLayout(op, barrier)))\n     return failure();\n   if (!resultType.getMutableMemory())\n@@ -1072,9 +1050,6 @@ LogicalResult TCGen5MMAOp::verify() {\n     return emitOpError(\"The op is synchronous but a barrier is present.\");\n   }\n   for (auto barrier : getBarriers()) {\n-    auto barrierTy = cast<MemDescType>(barrier.getType());\n-    if (failed(verifyBarrierType(*this, barrierTy)))\n-      return failure();\n     if (failed(verifyCompletionBarrierLayout(getOperation(), barrier)))\n       return failure();\n   }\n@@ -1306,9 +1281,6 @@ LogicalResult TCGen5CommitOp::verify() {\n   auto numDescs = getDescs().size();\n   if (numDescs > 4)\n     return emitOpError(\"expected 0 to 4 descriptors, got \") << numDescs;\n-  auto barrierTy = getBarrier().getType();\n-  if (failed(verifyBarrierType(*this, barrierTy)))\n-    return failure();\n   if (failed(verifyCompletionBarrierLayout(getOperation(), getBarrier())))\n     return failure();\n   return success();\n@@ -1408,9 +1380,6 @@ LogicalResult TCGen5MMAScaledOp::verify() {\n     return emitOpError(\"The op is synchronous but a barrier is present.\");\n   }\n   for (auto barrier : getBarriers()) {\n-    auto barrierTy = cast<MemDescType>(barrier.getType());\n-    if (failed(verifyBarrierType(*this, barrierTy)))\n-      return failure();\n     if (failed(verifyCompletionBarrierLayout(getOperation(), barrier)))\n       return failure();\n   }\n@@ -2006,6 +1975,10 @@ static LogicalResult verifyCLCResultMemdesc(Location loc, MemDescType desc) {\n                              \"single dimension equal to 2, but got \"\n                           << desc.getShape() << \".\";\n   }\n+  if (!isContiguousSharedMemoryLayout(desc))\n+    return emitError(loc)\n+           << \"CLC result buffer must have a contiguous shared-memory layout \"\n+              \"without subviews\";\n   auto cgaLayout = getCGALayout(layout);\n   auto kBlock = StringAttr::get(cgaLayout.getContext(), \"block\");\n   if (!llvm::all_of(cgaLayout.getLinearLayout().getBases().lookup(kBlock),\n@@ -2022,8 +1995,6 @@ static LogicalResult verifyCLCResultMemdesc(Location loc, MemDescType desc) {\n LogicalResult CLCTryCancelOp::verify() {\n   if (failed(verifyCLCResultMemdesc(getLoc(), getResult().getType())))\n     return failure();\n-  if (failed(verifyBarrierType(*this, getMbarrier().getType())))\n-    return failure();\n   return verifyCompletionBarrierLayout(getOperation(), getMbarrier());\n }\n "
+        },
+        {
+          "filename": "test/TritonGPU/amd/invalid.mlir",
+          "status": "modified",
+          "additions": 13,
+          "deletions": 0,
+          "patch": "@@ -808,3 +808,16 @@ module attributes {\"ttg.num-warps\" = 4 : i32, \"ttg.threads-per-warp\" = 64 : i32}\n     tt.return\n   }\n }\n+\n+// -----\n+\n+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>\n+#padded = #ttg.padded_shared<[1:+1] {order = [0], shape = [1]}>\n+#smem = #ttg.shared_memory\n+module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32, \"ttg.threads-per-warp\" = 64 : i32} {\n+  tt.func @tdm_copy_padded_barrier(%desc: !tt.tensordesc<16x64xf16, #shared>, %dst: !ttg.memdesc<16x64xf16, #shared, #smem, mutable>, %barrier: !ttg.memdesc<1xi64, #padded, #smem>) {\n+    // expected-error @below {{barrier must have a contiguous shared-memory layout}}\n+    %0 = amdg.async_tdm_copy_global_to_local %desc into %dst, barrier = %barrier : !tt.tensordesc<16x64xf16, #shared>, !ttg.memdesc<1xi64, #padded, #smem> -> !ttg.memdesc<16x64xf16, #shared, #smem, mutable>\n+    tt.return\n+  }\n+}"
+        },
+        {
+          "filename": "test/TritonGPU/proxy_fence_insertion.mlir",
+          "status": "modified",
+          "additions": 16,
+          "deletions": 24,
+          "patch": "@@ -1465,49 +1465,41 @@ module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32, ttg.targ\n \n // -----\n \n+#blocked = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [1], order = [0]}>\n #inner = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0]}>\n #partitioned = #ttg.partitioned_shared<{numPartitions = 2, numGroups = 1, partitionDim = 0, partitionLayout = #inner}>\n #smem = #ttg.shared_memory\n module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 1 : i32, ttg.target = \"cuda:100\", \"ttg.threads-per-warp\" = 32 : i32} {\n-  tt.func private @callee_proxy_write_to_second_partition(\n-      %bar: !ttg.memdesc<1xi64, #inner, #smem, mutable>) {\n+  tt.func private @callee_generic_read_from_second_partition() -> tensor<2xi64, #blocked> {\n     %parent = ttg.local_alloc {allocation.offset = [0 : i32, 1024 : i32]} : () -> !ttg.memdesc<4xi64, #partitioned, #smem, mutable>\n     %second = ttg.memdesc_subslice %parent [2] : !ttg.memdesc<4xi64, #partitioned, #smem, mutable> -> !ttg.memdesc<2xi64, #partitioned, #smem, mutable, 4>\n-    ttng.clc_try_cancel %second, %bar : !ttg.memdesc<2xi64, #partitioned, #smem, mutable, 4>, !ttg.memdesc<1xi64, #inner, #smem, mutable>\n-    tt.return\n+    %result = ttg.local_load %second : !ttg.memdesc<2xi64, #partitioned, #smem, mutable, 4> -> tensor<2xi64, #blocked>\n+    tt.return %result : tensor<2xi64, #blocked>\n   }\n \n   // CHECK-LABEL: callee_partition_frame_does_not_alias_caller_buffer\n-  tt.func public @callee_partition_frame_does_not_alias_caller_buffer() {\n+  tt.func public @callee_partition_frame_does_not_alias_caller_buffer() -> tensor<2xi64, #blocked> {\n+    // CHECK-NOT: ttng.fence_async_shared\n+    %result = tt.call @callee_generic_read_from_second_partition() {allocation.offset = 3072 : i32} : () -> tensor<2xi64, #blocked>\n     %buffer = ttg.local_alloc {allocation.offset = 8192 : i32} : () -> !ttg.memdesc<2xi64, #inner, #smem, mutable>\n     %bar = ttg.local_alloc {allocation.offset = 16384 : i32} : () -> !ttg.memdesc<1xi64, #inner, #smem, mutable>\n-    // CHECK: ttng.clc_load_result\n-    %result = ttng.clc_load_result %buffer : !ttg.memdesc<2xi64, #inner, #smem, mutable> -> i128\n-    \"test.keep\"(%result) : (i128) -> ()\n-    // CHECK-NOT: ttng.fence_async_shared\n-    // CHECK: tt.call @callee_proxy_write_to_second_partition\n-    tt.call @callee_proxy_write_to_second_partition(%bar) {allocation.offset = 3072 : i32} : (!ttg.memdesc<1xi64, #inner, #smem, mutable>) -> ()\n-    tt.return\n-  }\n-\n-  tt.func private @callee_generic_read_from_second_partition() {\n-    %parent = ttg.local_alloc {allocation.offset = [0 : i32, 1024 : i32]} : () -> !ttg.memdesc<4xi64, #partitioned, #smem, mutable>\n-    %second = ttg.memdesc_subslice %parent [2] : !ttg.memdesc<4xi64, #partitioned, #smem, mutable> -> !ttg.memdesc<2xi64, #partitioned, #smem, mutable, 4>\n-    %result = ttng.clc_load_result %second : !ttg.memdesc<2xi64, #partitioned, #smem, mutable, 4> -> i128\n-    \"test.keep\"(%result) : (i128) -> ()\n-    tt.return\n+    // CHECK: ttng.clc_try_cancel\n+    // CHECK-NEXT: tt.return\n+    ttng.clc_try_cancel %buffer, %bar : !ttg.memdesc<2xi64, #inner, #smem, mutable>, !ttg.memdesc<1xi64, #inner, #smem, mutable>\n+    tt.return %result : tensor<2xi64, #blocked>\n   }\n \n   // CHECK-LABEL: callee_partition_summary_translates_selected_base\n-  tt.func public @callee_partition_summary_translates_selected_base() {\n+  tt.func public @callee_partition_summary_translates_selected_base() -> tensor<2xi64, #blocked> {\n     // CHECK: tt.call @callee_generic_read_from_second_partition\n-    tt.call @callee_generic_read_from_second_partition() {allocation.offset = 3072 : i32} : () -> ()\n+    %result = tt.call @callee_generic_read_from_second_partition() {allocation.offset = 3072 : i32} : () -> tensor<2xi64, #blocked>\n+    // The second partition starts at 3072 + 1024 = 4096 in the caller.\n     %buffer = ttg.local_alloc {allocation.offset = 4096 : i32} : () -> !ttg.memdesc<2xi64, #inner, #smem, mutable>\n     %bar = ttg.local_alloc {allocation.offset = 8192 : i32} : () -> !ttg.memdesc<1xi64, #inner, #smem, mutable>\n     // CHECK: ttng.fence_async_shared {bCluster = false}\n-    // CHECK: ttng.clc_try_cancel\n+    // CHECK-NEXT: ttng.clc_try_cancel\n     ttng.clc_try_cancel %buffer, %bar : !ttg.memdesc<2xi64, #inner, #smem, mutable>, !ttg.memdesc<1xi64, #inner, #smem, mutable>\n-    tt.return\n+    tt.return %result : tensor<2xi64, #blocked>\n   }\n }\n "
+        },
+        {
+          "filename": "test/TritonNvidiaGPU/invalid.mlir",
+          "status": "modified",
+          "additions": 119,
+          "deletions": 0,
+          "patch": "@@ -967,6 +967,11 @@ module attributes {\"ttg.num-ctas\" = 8 : i32, \"ttg.num-warps\" = 4 : i32} {\n     ttng.wait_barrier %bar, %phase : !ttg.memdesc<4xi64, #shared_bad, #smem, mutable>\n     tt.return\n   }\n+  tt.func @async_copy_mbarrier_arrive_invalid_cga_layout(%bar: !ttg.memdesc<4xi64, #shared_bad, #smem, mutable>) {\n+    // expected-error @below {{broadcasted cluster barriers require bases to be the sequence}}\n+    ttng.async_copy_mbarrier_arrive %bar : !ttg.memdesc<4xi64, #shared_bad, #smem, mutable>\n+    tt.return\n+  }\n }\n \n // -----\n@@ -1635,3 +1640,117 @@ module attributes {\"ttg.num-ctas\" = 2 : i32, \"ttg.num-warps\" = 4 : i32, ttg.targ\n     tt.return\n   }\n }\n+\n+// -----\n+\n+#padded = #ttg.padded_shared<[1:+1] {order = [0], shape = [2]}>\n+#smem = #ttg.shared_memory\n+module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32} {\n+  tt.func @clc_load_result_padded(%result: !ttg.memdesc<2xi64, #padded, #smem>) {\n+    // expected-error @below {{CLC result buffer must have a contiguous shared-memory layout}}\n+    %0 = ttng.clc_load_result %result : !ttg.memdesc<2xi64, #padded, #smem> -> i128\n+    tt.return\n+  }\n+}\n+\n+// -----\n+\n+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0]}>\n+#partitioned = #ttg.partitioned_shared<{numPartitions = 2, numGroups = 1, partitionDim = 0, partitionLayout = #shared}>\n+#smem = #ttg.shared_memory\n+module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32} {\n+  tt.func @clc_try_cancel_partitioned(%result: !ttg.memdesc<2xi64, #partitioned, #smem>, %barrier: !ttg.memdesc<1xi64, #shared, #smem>) {\n+    // expected-error @below {{CLC result buffer must have a contiguous shared-memory layout}}\n+    ttng.clc_try_cancel %result, %barrier : !ttg.memdesc<2xi64, #partitioned, #smem>, !ttg.memdesc<1xi64, #shared, #smem>\n+    tt.return\n+  }\n+}\n+\n+// -----\n+\n+#padded = #ttg.padded_shared<[1:+1] {order = [0], shape = [1]}>\n+#smem = #ttg.shared_memory\n+module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32} {\n+  tt.func @async_copy_mbarrier_arrive_padded(%barrier: !ttg.memdesc<1xi64, #padded, #smem>) {\n+    // expected-error @below {{barrier must have a contiguous shared-memory layout}}\n+    ttng.async_copy_mbarrier_arrive %barrier : !ttg.memdesc<1xi64, #padded, #smem>\n+    tt.return\n+  }\n+}\n+\n+// -----\n+\n+#linear = #ttg.shared_linear<{offset = [[1]], block = [[0]]}, alignment = 16>\n+#smem = #ttg.shared_memory\n+module attributes {\"ttg.num-ctas\" = 2 : i32, \"ttg.num-warps\" = 4 : i32} {\n+  tt.func @init_barrier_shared_linear(%barrier: !ttg.memdesc<2xi64, #linear, #smem>) {\n+    // expected-error @below {{barrier must have a contiguous shared-memory layout}}\n+    ttng.init_barrier %barrier, 1 : !ttg.memdesc<2xi64, #linear, #smem>\n+    tt.return\n+  }\n+  tt.func @clc_load_result_shared_linear(%result: !ttg.memdesc<2xi64, #linear, #smem>) {\n+    // expected-error @below {{CLC result buffer must have a contiguous shared-memory layout}}\n+    %0 = ttng.clc_load_result %result : !ttg.memdesc<2xi64, #linear, #smem> -> i128\n+    tt.return\n+  }\n+}\n+\n+// -----\n+\n+#vec = #ttg.swizzled_shared<{vec = 2, perPhase = 1, maxPhase = 1, order = [0]}>\n+#perPhase = #ttg.swizzled_shared<{vec = 1, perPhase = 2, maxPhase = 1, order = [0]}>\n+#maxPhase = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 2, order = [0]}>\n+#scalar = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = []}>\n+#smem = #ttg.shared_memory\n+module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32} {\n+  tt.func @init_barrier_nonunit_vec(%barrier: !ttg.memdesc<1xi64, #vec, #smem>) {\n+    // expected-error @below {{barrier must have a contiguous shared-memory layout}}\n+    ttng.init_barrier %barrier, 1 : !ttg.memdesc<1xi64, #vec, #smem>\n+    tt.return\n+  }\n+  tt.func @clc_load_result_nonunit_per_phase(%result: !ttg.memdesc<2xi64, #perPhase, #smem>) {\n+    // expected-error @below {{CLC result buffer must have a contiguous shared-memory layout}}\n+    %0 = ttng.clc_load_result %result : !ttg.memdesc<2xi64, #perPhase, #smem> -> i128\n+    tt.return\n+  }\n+  tt.func @init_barrier_nonunit_max_phase(%barrier: !ttg.memdesc<1xi64, #maxPhase, #smem>) {\n+    // expected-error @below {{barrier must have a contiguous shared-memory layout}}\n+    ttng.init_barrier %barrier, 1 : !ttg.memdesc<1xi64, #maxPhase, #smem>\n+    tt.return\n+  }\n+  tt.func @init_barrier_scalar_layout(%barrier: !ttg.memdesc<1xi64, #scalar, #smem>) {\n+    // expected-error @below {{barrier must have a contiguous shared-memory layout}}\n+    ttng.init_barrier %barrier, 1 : !ttg.memdesc<1xi64, #scalar, #smem>\n+    tt.return\n+  }\n+}\n+\n+// -----\n+\n+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0], CGALayout = [[0], [1]]}>\n+#smem = #ttg.shared_memory\n+module attributes {\"ttg.num-ctas\" = 4 : i32, \"ttg.num-warps\" = 4 : i32} {\n+  tt.func @init_barrier_interleaved_cta_broadcast(%barrier: !ttg.memdesc<2xi64, #shared, #smem>) {\n+    ttng.init_barrier %barrier, 1 : !ttg.memdesc<2xi64, #shared, #smem>\n+    tt.return\n+  }\n+}\n+\n+// -----\n+\n+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0]}>\n+#smem = #ttg.shared_memory\n+module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32} {\n+  tt.func @clc_load_result_subview(%alloc: !ttg.memdesc<4xi64, #shared, #smem>) {\n+    %view = ttg.memdesc_subslice %alloc [2] : !ttg.memdesc<4xi64, #shared, #smem> -> !ttg.memdesc<2xi64, #shared, #smem, 4>\n+    // expected-error @below {{CLC result buffer must have a contiguous shared-memory layout without subviews}}\n+    %0 = ttng.clc_load_result %view : !ttg.memdesc<2xi64, #shared, #smem, 4> -> i128\n+    tt.return\n+  }\n+  tt.func @init_barrier_subview(%alloc: !ttg.memdesc<2xi64, #shared, #smem>) {\n+    %view = ttg.memdesc_subslice %alloc [1] : !ttg.memdesc<2xi64, #shared, #smem> -> !ttg.memdesc<1xi64, #shared, #smem, 2>\n+    // expected-error @below {{barrier must have a contiguous shared-memory layout without subviews}}\n+    ttng.init_barrier %view, 1 : !ttg.memdesc<1xi64, #shared, #smem, 2>\n+    tt.return\n+  }\n+}"
+        },
+        {
+          "filename": "third_party/amd/include/Dialect/TritonAMDGPU/IR/TritonAMDGPUOps.td",
+          "status": "modified",
+          "additions": 0,
+          "deletions": 2,
+          "patch": "@@ -1333,7 +1333,6 @@ def WaitBarrierOp : TT_AMDGPU_Op<\"wait_barrier\", [\n   let assemblyFormat = [{\n     $alloc `,` $phase attr-dict `:` qualified(type($alloc))\n   }];\n-  let hasVerifier = 1;\n }\n \n //===----------------------------------------------------------------------===//\n@@ -1385,7 +1384,6 @@ def AsyncCopyMbarrierArriveOp : TT_AMDGPU_Op<\"async_copy_mbarrier_arrive\", [\n     Arg<TTG_MemDescType, \"\", BarrierSharedReadWrite>:$barrier\n   );\n   let assemblyFormat = \"$barrier attr-dict `:` qualified(type($barrier))\";\n-  let hasVerifier = 1;\n }\n \n //===----------------------------------------------------------------------===//"
+        },
+        {
+          "filename": "third_party/amd/lib/Dialect/TritonAMDGPU/IR/Dialect.cpp",
+          "status": "modified",
+          "additions": 0,
+          "deletions": 17,
+          "patch": "@@ -1541,8 +1541,6 @@ LogicalResult UpdateTensorDescriptorOp::verify() {\n \n // -- InitBarrierOp --\n LogicalResult InitBarrierOp::verify() {\n-  if (failed(verifyBarrierType(*this, getAlloc().getType())))\n-    return failure();\n   if (getCount() < 1)\n     return emitOpError(\"count must be greater than or equal to 1\");\n   return success();\n@@ -1551,18 +1549,10 @@ LogicalResult InitBarrierOp::verify() {\n TypedValue<gpu::MemDescType> InitBarrierOp::getBarrier() { return getAlloc(); }\n \n // -- WaitBarrierOp --\n-LogicalResult WaitBarrierOp::verify() {\n-  if (failed(verifyBarrierType(*this, getAlloc().getType())))\n-    return failure();\n-  return success();\n-}\n-\n TypedValue<gpu::MemDescType> WaitBarrierOp::getBarrier() { return getAlloc(); }\n \n // -- ArriveBarrierOp --\n LogicalResult ArriveBarrierOp::verify() {\n-  if (failed(verifyBarrierType(*this, getAlloc().getType())))\n-    return failure();\n   if (getCount() < 1)\n     return emitOpError(\"count must be greater than or equal to 1\");\n   return success();\n@@ -1572,13 +1562,6 @@ TypedValue<gpu::MemDescType> ArriveBarrierOp::getBarrier() {\n   return getAlloc();\n }\n \n-// -- AsyncCopyMbarrierArriveOp --\n-LogicalResult AsyncCopyMbarrierArriveOp::verify() {\n-  if (failed(verifyBarrierType(*this, getBarrier().getType())))\n-    return failure();\n-  return success();\n-}\n-\n // -- TDMPrefetchOp --\n // This op optionally returns the prefetch offsets (testing-only). When\n // `returnOffsets` is absent, it produces no results. When present, it yields an\n"
+        }
+      ]
+    }
+  ]
+}

@@ -1,4 +1,20 @@
 {
+  "b734173ff239e6c6ddf330c4878bd408f423a002": {
+    "date": "2026-08-31",
+    "msg": "[TRITON] Fold split(join(a,b)) -> (a,b) and join(split(x)) -> x (#10766)"
+  },
+  "d2bc7317906080547b870acf2acc9009c05c159a": {
+    "date": "2026-08-31",
+    "msg": "Block remat of non-pure ops (#11001)"
+  },
+  "4b15f36953116d842602effbddae8d796d64c294": {
+    "date": "2026-08-31",
+    "msg": "[BACKEND] Reuse the trailing warp-specialization launch barrier (#11499)"
+  },
+  "95c417addbf71dbbaaa603cacfaea5a199c5dda1": {
+    "date": "2026-08-31",
+    "msg": "[OPS] Require contiguous layouts for CLC and mbarriers (#11501)"
+  },
   "c349ce522e996cf0662249caa47b5d97a1748330": {
     "date": "2026-08-30",
     "msg": "[BACKEND] Add per-kernel NVPTX register-pressure scheduling (#11477)"
