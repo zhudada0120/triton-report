@@ -41,12 +41,13 @@
   let currentRepo = REPOS[0];
   let availableDates = [];
   let currentDateIndex = -1;
+  let viewMode = 'range'; // 'range' | 'daily' — 默认 Range（先看一周总览）
+  let rangeData = null;   // { commits: [...], analysis: {...} } for Range mode
   let commitsData = null;
   let analysisData = null;
   let activeFilter = 'all';
   let searchQuery = '';
   let analysisDates = [];
-  let crossDayResults = null; // { commits: [...], analysis: {...} } from cross-day search
   let sectionsExpanded = { ascend: true, code: false, chore: false, 'needs-test': true, other: false, 'false-positive': true }; // per-section collapse state
 
   // ── New data shared across enhancements ──
@@ -166,7 +167,6 @@
     showLoading(true);
     commitsData = null;
     analysisData = null;
-    crossDayResults = null;
     searchQuery = '';
     sectionsExpanded = { ascend: true, code: false, chore: false, 'needs-test': true, other: false };
     $('#searchInput').value = '';
@@ -211,6 +211,7 @@
       if (commitResults[i] && commitResults[i].commits) {
         commitResults[i].commits.forEach(function (c) {
           c._exportDate = datesInRange[i];
+          c._date = datesInRange[i];
           allCommits.push(c);
         });
       }
@@ -228,8 +229,15 @@
   }
 
   async function exportToExcel() {
-    var startDate = $('#rangeStart').value;
-    var endDate = $('#rangeEnd').value;
+    // Export follows the current view mode: Daily exports the selected day,
+    // Range exports the selected date range.
+    var startDate, endDate;
+    if (viewMode === 'daily') {
+      startDate = endDate = availableDates[currentDateIndex] || cnDateStr(new Date());
+    } else {
+      startDate = $('#rangeStart').value;
+      endDate = $('#rangeEnd').value;
+    }
 
     if (!startDate || !endDate) {
       alert('Please select both start and end dates');
@@ -432,7 +440,7 @@
     $('#statFiles').textContent = totalFiles;
   }
 
-  function updateFilterChips(allCommits) {
+  function updateFilterChips(allCommits, analysisMap) {
     var filters = ['all', 'needs-test', 'affects-ascend', 'high-risk', 'feature', 'bugfix', 'refactor', 'performance'];
     // Add adaptation status filters (only for triton repo, where upstream commits are tracked)
     if (currentRepo === 'triton-lang/triton' && adaptationStatus) {
@@ -442,7 +450,7 @@
     var counts = {};
     for (var i = 0; i < filters.length; i++) {
       activeFilter = filters[i];
-      counts[filters[i]] = filterCommits(allCommits).length;
+      counts[filters[i]] = filterCommits(allCommits, analysisMap).length;
     }
     activeFilter = saved;
     $$('.filter-chip').forEach(function (chip) {
@@ -635,93 +643,6 @@
     }
   }
 
-  // ── Search Acceleration (P2) ──────────────────
-  async function searchAcrossDates() {
-    if (!searchQuery) return;
-    showLoading(true);
-
-    // Try to use cached index.json for fast pre-filtering
-    var index = cachedIndex || await fetchJSON(`${DATA_BASE}/${repoDir(currentRepo)}/index.json`);
-    var matchedDates = null;
-
-    if (index && index.keyword_index) {
-      // Use keyword_index to find matching SHAs first
-      var kw = searchQuery.toLowerCase();
-      var kwIndex = index.keyword_index;
-      var matchingShas = new Set();
-
-      // Check if keyword directly matches any index entry
-      for (var key in kwIndex) {
-        if (key.indexOf(kw) !== -1 || kw.indexOf(key) !== -1) {
-          kwIndex[key].forEach(function (sha) { matchingShas.add(sha); });
-        }
-      }
-
-      // If no keyword match, try tags_index
-      if (matchingShas.size === 0 && index.tags_index) {
-        var tagsIndex = index.tags_index;
-        for (var tag in tagsIndex) {
-          if (tag.indexOf(kw) !== -1 || kw.indexOf(tag) !== -1) {
-            tagsIndex[tag].forEach(function (sha) { matchingShas.add(sha); });
-          }
-        }
-      }
-
-      // Resolve SHAs to dates using commits-index
-      if (matchingShas.size > 0) {
-        var commitsIndex = await fetchJSON(`${DATA_BASE}/${repoDir(currentRepo)}/commits-index.json`);
-        if (commitsIndex) {
-          var dateSet = new Set();
-          matchingShas.forEach(function (sha) {
-            var info = commitsIndex[sha];
-            if (info && info.date) dateSet.add(info.date);
-          });
-          matchedDates = Array.from(dateSet).sort().reverse();
-        }
-      }
-    }
-
-    // If index didn't help, fall back to scanning all dates
-    if (!matchedDates) {
-      matchedDates = availableDates.slice();
-    }
-
-    var allCommits = [];
-    var allAnalysis = {};
-
-    // Fetch in parallel batches of 10
-    var batchSize = 10;
-    for (var i = 0; i < matchedDates.length; i += batchSize) {
-      var batch = matchedDates.slice(i, i + batchSize);
-      var results = await Promise.all(batch.map(function (date) {
-        return Promise.all([
-          fetchJSON(dataUrl(currentRepo, 'commits', date)),
-          fetchJSON(dataUrl(currentRepo, 'analysis', date)),
-        ]);
-      }));
-      for (var j = 0; j < results.length; j++) {
-        var commitsData2 = results[j][0];
-        var analysisData2 = results[j][1];
-        if (commitsData2 && commitsData2.commits) {
-          for (var k = 0; k < commitsData2.commits.length; k++) {
-            commitsData2.commits[k]._date = batch[j];
-            allCommits.push(commitsData2.commits[k]);
-          }
-        }
-        if (analysisData2 && analysisData2.commits) {
-          for (var m = 0; m < analysisData2.commits.length; m++) {
-            allAnalysis[analysisData2.commits[m].sha] = analysisData2.commits[m];
-          }
-        }
-      }
-    }
-
-    var filtered = filterCommits(allCommits, allAnalysis);
-    crossDayResults = { commits: filtered, analysis: allAnalysis };
-    sectionsExpanded = { ascend: true, code: true, chore: true, 'needs-test': true, other: true, 'false-positive': true }; // cross-day search expands all
-    showLoading(false);
-    render();
-  }
 
   // ── Render ─────────────────────────────────────
   function renderCommitCard(commit) {
@@ -1024,7 +945,68 @@
     renderHeatmap(commits);
   }
 
+  function computeContributors(commits) {
+    if (!commits || !commits.length) return [];
+    var counts = {};
+    commits.forEach(function (c) {
+      var name = (c.author && c.author.name) || 'unknown';
+      counts[name] = (counts[name] || 0) + 1;
+    });
+    return Object.keys(counts).map(function (k) { return { name: k, count: counts[k] }; })
+      .sort(function (a, b) { return b.count - a.count; })
+      .slice(0, 10);
+  }
+
+  function renderTopList(el, items) {
+    if (!items || !items.length) {
+      el.innerHTML = '<span class="coverage-text">No data</span>';
+      return;
+    }
+    var maxCount = items[0].count;
+    var html = '';
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      var w = Math.round(it.count / maxCount * 100);
+      html += '<div class="heatmap-row"><span class="heatmap-path">' + escapeHtml(it.label) + '</span>' +
+        '<div class="heatmap-track"><div class="heatmap-fill" style="width:' + w + '%"></div></div>' +
+        '<span class="heatmap-count">' + it.count + '</span></div>';
+    }
+    el.innerHTML = html;
+  }
+
+  function renderRangeStats(commits) {
+    var modules = computeModuleHeatmap(commits).map(function (m) { return { label: m.path, count: m.count }; });
+    var contributors = computeContributors(commits).map(function (c) { return { label: c.name, count: c.count }; });
+    renderTopList($('#rangeModuleBar'), modules);
+    renderTopList($('#contribBar'), contributors);
+  }
+
   function render() {
+    if (viewMode === 'range') {
+      renderRangeView();
+    } else {
+      renderDailyView();
+    }
+  }
+
+  function renderViewLabel() {
+    var el = $('#viewLabel');
+    if (viewMode === 'daily') {
+      el.textContent = '单日视图 · ' + (commitsData && commitsData.date ? commitsData.date : availableDates[currentDateIndex]);
+    } else {
+      el.textContent = '多日视图 · ' + $('#rangeStart').value + ' ~ ' + $('#rangeEnd').value +
+        '　｜　⚑ 单日 AI 摘要请在 Daily 查看';
+    }
+    el.style.display = 'block';
+  }
+
+  function renderDailyView() {
+    // Coverage 是"全量日期的分析覆盖"概念，属于 Range 视图的维度
+    $('#coverageSection').style.display = 'none';
+    // Module Top10 / Contributors 两栏只在 Range 模式出现
+    $('#rangeStatsRow').style.display = 'none';
+    renderViewLabel();
+
     if (!commitsData || !commitsData.commits) {
       $('#emptyState').style.display = 'block';
       $('#emptyState').querySelector('.title').textContent = 'No data available';
@@ -1049,19 +1031,108 @@
       return;
     }
 
-    if (crossDayResults) {
-      renderGroupedCommitList(crossDayResults.commits, crossDayResults.analysis);
-      return;
-    }
-
     $('#emptyState').style.display = 'none';
     renderSummary();
     renderStats(commitsData.commits);
     renderDateBar();
     renderSidebar(commitsData.commits);
 
-    updateFilterChips(commitsData.commits);
+    updateFilterChips(commitsData.commits, null);
     renderGroupedCommitList(commitsData.commits);
+  }
+
+  function renderRangeView() {
+    // Range mode: aggregate stats + cross-day heatmap + date-grouped list.
+    // Single-day AI summary only exists in Daily mode.
+    $('#dailySummary').style.display = 'none';
+    $('#coverageSection').style.display = '';
+    $('#emptyState').style.display = 'none';
+    renderViewLabel();
+
+    if (!rangeData || !rangeData.commits || rangeData.commits.length === 0) {
+      renderStats([]);
+      renderCoverageBar();
+      $('#heatmapSection').style.display = 'none';
+      $('#rangeStatsRow').style.display = 'none';
+      $('#commitList').innerHTML = '<div class="empty-state"><div class="title">区间内没有 commit 数据</div><div class="subtitle">调整右上角日期区间，或换一个仓库</div></div>';
+      return;
+    }
+
+    renderStats(rangeData.commits);
+    renderCoverageBar();
+    // 侧栏窄热力图在 Range 下换成主内容区的两栏统计（Module + Contributors）
+    $('#heatmapSection').style.display = 'none';
+    $('#rangeStatsRow').style.display = 'flex';
+    renderRangeStats(rangeData.commits);
+    updateFilterChips(rangeData.commits, rangeData.analysis);
+    renderRangeCommitList();
+  }
+
+  function renderRangeCommitList() {
+    var filtered = filterCommits(rangeData.commits, rangeData.analysis);
+    if (filtered.length === 0) {
+      $('#commitList').innerHTML = '<div class="empty-state"><div class="title">No matching commits in range</div><div class="subtitle">Try adjusting your filter or search</div></div>';
+      return;
+    }
+    var byDate = {};
+    filtered.forEach(function (c) {
+      var d = c._date || c._exportDate || '';
+      if (!byDate[d]) byDate[d] = [];
+      byDate[d].push(c);
+    });
+    var dates = Object.keys(byDate).sort(); // 日期字符串正序 = 时间正序
+    var html = '';
+    dates.forEach(function (d) {
+      var list = byDate[d];
+      html += '<div class="commit-section">';
+      html += '<div class="section-header section-other" data-range-date="' + d + '" style="cursor:pointer">';
+      html += '<span class="section-arrow">▼</span> ' + d + ' · ' + list.length + ' commits';
+      html += '</div><div class="section-body">';
+      list.forEach(function (c) {
+        html += renderCommitCardForCommit(c, rangeData.analysis);
+      });
+      html += '</div></div>';
+    });
+    $('#commitList').innerHTML = html;
+  }
+
+  function loadRange() {
+    var s = $('#rangeStart').value;
+    var e = $('#rangeEnd').value;
+    if (!s || !e) return;
+    if (s > e) {
+      alert('Start date must be before end date');
+      return;
+    }
+    showLoading(true);
+    loadCommitsForRange(s, e).then(function (result) {
+      rangeData = result;
+      showLoading(false);
+      render();
+    });
+  }
+
+  function setViewMode(mode) {
+    viewMode = mode;
+    $$('.mode-tab').forEach(function (t) {
+      t.classList.toggle('active', t.dataset.mode === mode);
+    });
+    $('#rangeInputs').style.display = mode === 'range' ? 'flex' : 'none';
+    $('#dateCard').style.display = mode === 'daily' ? '' : 'none';
+    if (mode === 'range') {
+      if (!rangeData) {
+        loadRange();
+        return;
+      }
+    } else if (!commitsData) {
+      // 首次切到 Daily：默认加载最新一天（availableDates[0] 为最新）
+      if (availableDates.length > 0) {
+        currentDateIndex = 0;
+        loadDate(availableDates[0]);
+        return;
+      }
+    }
+    render();
   }
 
   function renderGroupedCommitList(commits, analysisMap) {
@@ -1071,7 +1142,7 @@
 
     if (allFiltered.length === 0) {
       if (searchQuery) {
-        $('#commitList').innerHTML = '<div class="empty-state"><div class="title">No matching commits today</div><div class="subtitle">Try adjusting your filter or <button class="cross-search-btn" id="crossSearchBtn">Search across all dates</button></div></div>';
+        $('#commitList').innerHTML = '<div class="empty-state"><div class="title">No matching commits today</div><div class="subtitle">Try adjusting your filter，或切换到 Range 模式查看多天</div></div>';
       } else {
         $('#commitList').innerHTML = '<div class="empty-state"><div class="title">No matching commits</div><div class="subtitle">Try adjusting your filter or search</div></div>';
       }
@@ -1172,10 +1243,6 @@
       html += '</div></div>';
     }
 
-    if (searchQuery) {
-      html += '<div style="text-align:center;padding:16px 0;"><button class="cross-search-btn" id="crossSearchBtn">Search across all dates</button></div>';
-    }
-
     $('#commitList').innerHTML = html;
     restoreExpanded();
   }
@@ -1200,7 +1267,7 @@
         currentRepo = tab.dataset.repo;
         activeFilter = 'all';
         searchQuery = '';
-        crossDayResults = null;
+        rangeData = null;
         sectionsExpanded = { ascend: true, code: false, chore: false, 'needs-test': true, other: false, 'false-positive': true };
         $('#searchInput').value = '';
         $('#searchClear').style.display = 'none';
@@ -1213,7 +1280,9 @@
         await loadBaseline();
         currentDateIndex = 0;
         currentMonth = null;
-        if (availableDates.length > 0) {
+        if (viewMode === 'range') {
+          loadRange();
+        } else if (availableDates.length > 0) {
           await loadDate(availableDates[0]);
         }
       });
@@ -1260,7 +1329,6 @@
     $('#searchInput').addEventListener('input', (e) => {
       searchQuery = e.target.value;
       $('#searchClear').style.display = searchQuery ? 'flex' : 'none';
-      crossDayResults = null;
       render();
     });
 
@@ -1269,7 +1337,6 @@
       $('#searchInput').value = '';
       $('#searchClear').style.display = 'none';
       $('#searchInput').focus();
-      crossDayResults = null;
       render();
     });
 
@@ -1295,9 +1362,17 @@
         return;
       }
 
-      const crossBtn = e.target.closest('#crossSearchBtn');
-      if (crossBtn) {
-        searchAcrossDates();
+      // Range mode: date header toggles that day's commit list
+      const rangeHeader = e.target.closest('[data-range-date]');
+      if (rangeHeader) {
+        var section = rangeHeader.closest('.commit-section');
+        var body = section ? section.querySelector('.section-body') : null;
+        var arrow = rangeHeader.querySelector('.section-arrow');
+        if (body) {
+          var isHidden = body.style.display === 'none';
+          body.style.display = isHidden ? '' : 'none';
+          if (arrow) arrow.textContent = isHidden ? '▼' : '▶';
+        }
         return;
       }
 
@@ -1311,6 +1386,23 @@
     });
 
     $('#exportBtn').addEventListener('click', exportToExcel);
+
+    // ── Mode switching (Daily / Range) ──────────────────
+    $$('.mode-tab').forEach((tab) => {
+      tab.addEventListener('click', () => setViewMode(tab.dataset.mode));
+    });
+    $('#rangeStart').addEventListener('change', () => {
+      if (viewMode === 'range') { rangeData = null; loadRange(); }
+    });
+    $('#rangeEnd').addEventListener('change', () => {
+      if (viewMode === 'range') { rangeData = null; loadRange(); }
+    });
+    // 初始 UI 状态与默认模式（range）对齐
+    $('#rangeInputs').style.display = viewMode === 'range' ? 'flex' : 'none';
+    $('#dateCard').style.display = viewMode === 'daily' ? '' : 'none';
+    $$('.mode-tab').forEach(function (t) {
+      t.classList.toggle('active', t.dataset.mode === viewMode);
+    });
 
     // Set default date range to last 7 days
     var today = cnDateStr(new Date());
@@ -1326,7 +1418,9 @@
         await loadBaseline();
         loadAnalysisDates().then(function () {
           currentDateIndex = 0;
-          if (availableDates.length > 0) {
+          if (viewMode === 'range') {
+            loadRange();
+          } else if (availableDates.length > 0) {
             loadDate(availableDates[0]);
           } else {
             showLoading(false);

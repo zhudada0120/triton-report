@@ -16,10 +16,16 @@
         <button class="repo-tab" data-repo="triton-lang/triton-ascend">triton-ascend</button>
       </div>
       <div class="controls">
+        <div class="mode-tabs" id="modeTabs">
+          <button class="mode-tab active" data-mode="range" id="modeRange">Range</button>
+          <button class="mode-tab" data-mode="daily" id="modeDaily">Daily</button>
+        </div>
         <div class="export-group">
-          <input type="date" id="rangeStart" class="date-input" title="Start date">
-          <span class="date-separator">~</span>
-          <input type="date" id="rangeEnd" class="date-input" title="End date">
+          <div class="range-inputs" id="rangeInputs">
+            <input type="date" id="rangeStart" class="date-input" title="Start date">
+            <span class="date-separator">~</span>
+            <input type="date" id="rangeEnd" class="date-input" title="End date">
+          </div>
           <button id="exportBtn" class="export-btn">Export Excel</button>
         </div>
         <a href="https://github.com/zhudada0120/triton-report" target="_blank" class="github-link" title="Source Code on GitHub">
@@ -41,11 +47,11 @@
   <div class="page-layout">
     <div class="page-main">
       <div class="date-section">
-        <div class="date-card">
+        <div class="date-card" id="dateCard">
           <div class="date-bar" id="dateBar"></div>
         </div>
         <div class="date-sidebar" id="dateSidebar">
-          <div class="sidebar-section">
+          <div class="sidebar-section" id="coverageSection">
             <div class="sidebar-label">Analysis Coverage</div>
             <div class="coverage-bar" id="sideCoverageBar"></div>
           </div>
@@ -57,9 +63,22 @@
       </div>
 
       <main class="main">
+        <div id="viewLabel" class="view-label" style="display:none;"></div>
+
         <div id="dailySummary" class="daily-summary" style="display:none;">
           <div class="label">AI Summary</div>
           <div class="text" id="summaryText"></div>
+        </div>
+
+        <div id="rangeStatsRow" class="range-stats-row" style="display:none;">
+          <div class="range-stat-col">
+            <div class="sidebar-label">Module Top 10</div>
+            <div class="heatmap-bar" id="rangeModuleBar"></div>
+          </div>
+          <div class="range-stat-col">
+            <div class="sidebar-label">Top Contributors</div>
+            <div class="heatmap-bar" id="contribBar"></div>
+          </div>
         </div>
 
         <div class="stats-row" id="statsRow">
