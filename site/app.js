@@ -873,14 +873,21 @@
 
   function renderCoverageBar() {
     var el = $('#sideCoverageBar');
-    if (!availableDates.length || !analysisDates.length) {
-      el.innerHTML = '<span class="coverage-text">No data</span>';
+    // 该栏只在 Range 模式展示，统计口径 = 所选区间内的天数，而不是全量有数据的天数
+    var s = $('#rangeStart').value;
+    var e = $('#rangeEnd').value;
+    var dates = availableDates;
+    if (viewMode === 'range' && s && e) {
+      dates = availableDates.filter(function (d) { return d >= s && d <= e; });
+    }
+    if (!dates.length || !analysisDates.length) {
+      el.innerHTML = '<span class="coverage-text">No data in range</span>';
       return;
     }
-    var total = availableDates.length;
+    var total = dates.length;
     var analyzed = 0;
-    for (var i = 0; i < availableDates.length; i++) {
-      if (analysisDates.indexOf(availableDates[i]) !== -1) {
+    for (var i = 0; i < dates.length; i++) {
+      if (analysisDates.indexOf(dates[i]) !== -1) {
         analyzed++;
       }
     }
@@ -889,7 +896,7 @@
     var color = missing === 0 ? 'var(--accent)' : (missing < 5 ? 'var(--accent-orange)' : 'var(--accent-red)');
     el.innerHTML = '<span class="coverage-label">Analysis Coverage</span>' +
       '<div class="coverage-track"><div class="coverage-fill" style="width:' + pct + '%;background:' + color + '"></div></div>' +
-      '<span class="coverage-text">' + analyzed + '/' + total + ' days</span>';
+      '<span class="coverage-text">' + analyzed + '/' + total + ' days（区间内）</span>';
   }
 
   function computeModuleHeatmap(commits) {
