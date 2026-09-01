@@ -1,0 +1,57 @@
+{
+  "date": "2026-09-01",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-09-02T02:03:22.321998+08:00",
+  "daily_summary": "当日变更包含两个 NVIDIA/通用后端优化：一是修复了 warp-specialized 场景下 TMEM 释放前使用对齐屏障导致同指令约束违反的问题，通过将单 CTA 屏障设为非对齐；二是让 Triton LICM pass 尊重前端 tl.range(disable_licm=True) 的设置，避免不必要的不变代码提升，并补充了对应回归测试。",
+  "ascend_impact_summary": "两个 commit 均不涉及 Triton Ascend 后端使用的核心接口或路径。第一个 commit 修改 NVIDIA 专属的 NVGPUToLLVM pass 与测试；第二个 commit 修改通用 Triton LICM pass，但其行为变更基于前端显式提供的 disable_licm 选项，不影响 Ascend 使用的默认 LICM 行为。因此对 triton-ascend 无功能影响，无需更新测试。",
+  "commits": [
+    {
+      "sha": "58895270e6230491acc15fe7ba6d4c849e838db1",
+      "comment": "该 commit 修复了 NVIDIA Blackwell 架构上 warp-specialized TMEM 释放时屏障使用错误的问题。由于不同的 warp-specialized 组可能到达不同的返回块，使用对齐屏障（aligned=true）会违反 PTX 的 same-instruction 要求，故将单 CTA 屏障改为非对齐（aligned=false）。仅修改了 NVIDIA 专属的 NVGPUToLLVM lowering 代码和对应的 lit 测试，这是纯平台特定代码，不涉及任何平台无关接口或 Ascend 后端使用的路径。风险等级低，因为改动小而明确，且已通过编译测试验证。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "nvidia",
+        "nvvm",
+        "warp-specialization",
+        "tmem"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Use non-aligned barrier before TMEM deallocation (#11525)\n\nPR description written by Codex\n\nWarp-specialized groups can reach different return blocks, so an aligned\nbarrier before TMEM deallocation violates the same-instruction\nrequirement. The production change sets this single-CTA barrier to\n`aligned = false`; allocation barriers and multi-CTA handling are\nunchanged.\n\nThe test-only change updates the existing TMEM lowering checks to\nrequire a non-aligned barrier immediately before deallocation.\n\nRebuilt with `make`; `nvgpu_to_llvm.mlir` and\n`warp_specialize_to_llvm.mlir` passed. A compile-only warp-specialized\nTMEM probe emits `barrier.sync 0` before both deallocation paths. No GPU\nexecution was performed."
+    },
+    {
+      "sha": "801136e0e90fbd0ace918963b48da64a13554d8e",
+      "comment": "该 commit 修复了 Triton LICM pass 忽略前端 disable_licm 选项的问题。前端会将该选项记录在循环的 llvm.loop_annotation 中，但 Triton 的 LICM pass 之前不检查此属性，仍会提升不变代码。现在 pass 会检查循环的 LoopAnnotationAttr，若 licm.disable 为 true 则跳过该循环的 LICM。这为需要保持循环结构（例如依赖编译器保守行为）的用户提供更精确的控制。同时新增了对应的 lit 测试。修改的文件位于 lib/Dialect/Triton/Transforms/，属于平台无关的 TTIR 优化 pass。对 Ascend 的影响：虽然 LICM pass 是通用平台无关的，但该变更只是增加对显式选项的尊重，默认行为不变（无 disable_licm 时仍会进行 LICM）。Ascend 后端的 lowering 链（TritonToLinalg）会消费 TTIR，若生成的 TTIR 不包含 disable_licm 设置，则不会受到影响。由于 Ascend 的前端复用（通过 patch），其生成的循环默认不带该选项，所以影响极小。但该文件被 patch 机制直接涉及，且任何 TTIR 优化 pass 的行为变化都可能间接影响下游转换，因此标记为可能影响，但实际功能影响为无。风险等级低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "optimizer",
+        "licm",
+        "ttir"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。该变更仅修改 Triton LICM pass 以尊重前端显式设置的 disable_licm 循环注解，未改变任何抽象接口（BaseBackend/DriverBase/TargetInfoBase 等）或编译流水线契约。Ascend 后端复用前端生成的 TTIR，若未显式设置 disable_licm 则 LICM 行为与之前完全一致。该文件被 Ascend 的 patch 机制直接涉及（Patch 影响映射：include/triton/Dialect/Triton/ 和 lib/Dialect/Triton/ 中的 op 定义/优化 pass 是 TTIR 的唯一来源，Ascend 从此处开始 TritonToLinalg 转换），但此变更仅增加对显式选项的尊重，不改变 TTIR 语义或变换 pass 的默认行为，因此对 Ascend 的实际功能无影响。",
+        "testing": "无影响。该变更新增的 lit 测试 (loop-invariant-code-motion.mlir) 是平台无关的 TTIR 测试，不涉及 Ascend 特有的编译链或测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[OPTIMIZER] Respect disable_licm in Triton LICM (#11520)\n\nTriton LICM still occurs even through `tl.range(..., disable_licm=True)`\nis used. The frontend records this option in the loop's\nllvm.loop_annotation, but Triton's LICM pass previously ignored the\nsetting and hoisted invariant operations out of the loop.\n\nThe issue can be reproduced with:\n```\nimport triton\nimport triton.language as tl\nfrom triton.runtime import MockTensor\n\n\n@triton.jit\ndef kernel(output, n, a, b):\n    product = 0\n    for _ in tl.range(0, n, disable_licm=True):\n        product += a * b\n    tl.store(output, product)\n\n\ncompiled = kernel.warmup(MockTensor(tl.int32), 10, 3, 4, grid=(1, ))\nprint(compiled.asm[\"ttgir\"])\n```\n\nBefore this commit, a * b is hoisted outside the loop:\n```\n%invariant = arith.muli %a, %b\n%result = scf.for ... {\n  %next = arith.addi %acc, %invariant\n}\n```\nAfter this commit, the multiplication remains inside the loop as\nrequested:\n```\n%result = scf.for ... {\n  %invariant = arith.muli %a, %b\n  %next = arith.addi %acc, %invariant\n}\n```\nLoops without disable_licm=True retain the existing LICM behavior. A\nminimal scf.for regression test is included.\n\n\n<!---\nThe core Triton is a small number of people, and we receive many PRs\n(thank\nyou!).  To help us review your code more quickly, **if you are a new\ncontributor (less than 3 PRs merged) we ask that you complete the\nfollowing\ntasks and include the filled-out checklist in your PR description.**\n\nComplete the following tasks before sending your PR, and replace `[ ]`\nwith\n`[x]` to indicate you have done them.\n-->\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [ ] I have not added any `lit` tests.\n- [x] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "lib/Dialect/Triton/"
+        ],
+        "recommend_refresh": true
+      }
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

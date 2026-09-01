@@ -1,4 +1,12 @@
 {
+  "58895270e6230491acc15fe7ba6d4c849e838db1": {
+    "date": "2026-09-01",
+    "msg": "[NVIDIA] Use non-aligned barrier before TMEM deallocation (#11525)"
+  },
+  "801136e0e90fbd0ace918963b48da64a13554d8e": {
+    "date": "2026-09-01",
+    "msg": "[OPTIMIZER] Respect disable_licm in Triton LICM (#11520)"
+  },
   "b734173ff239e6c6ddf330c4878bd408f423a002": {
     "date": "2026-08-31",
     "msg": "[TRITON] Fold split(join(a,b)) -> (a,b) and join(split(x)) -> x (#10766)"

@@ -1,0 +1,73 @@
+{
+  "date": "2026-09-01",
+  "repo": "triton-lang/triton",
+  "branch": "main",
+  "commits": [
+    {
+      "sha": "58895270e6230491acc15fe7ba6d4c849e838db1",
+      "author": {
+        "name": "jeffniu-openai",
+        "email": "jeffniu@openai.com"
+      },
+      "date": "2026-09-01T09:45:09+08:00",
+      "message": "[NVIDIA] Use non-aligned barrier before TMEM deallocation (#11525)\n\nPR description written by Codex\n\nWarp-specialized groups can reach different return blocks, so an aligned\nbarrier before TMEM deallocation violates the same-instruction\nrequirement. The production change sets this single-CTA barrier to\n`aligned = false`; allocation barriers and multi-CTA handling are\nunchanged.\n\nThe test-only change updates the existing TMEM lowering checks to\nrequire a non-aligned barrier immediately before deallocation.\n\nRebuilt with `make`; `nvgpu_to_llvm.mlir` and\n`warp_specialize_to_llvm.mlir` passed. A compile-only warp-specialized\nTMEM probe emits `barrier.sync 0` before both deallocation paths. No GPU\nexecution was performed.",
+      "parents": [
+        "801136e0e90fbd0ace918963b48da64a13554d8e"
+      ],
+      "stats": {
+        "total_additions": 10,
+        "total_deletions": 5,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "test/Conversion/nvgpu_to_llvm.mlir",
+          "status": "modified",
+          "additions": 6,
+          "deletions": 3,
+          "patch": "@@ -84,7 +84,8 @@ module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32, ttg.shar\n   //      CHECK:    nvvm.barrier\n   //      CHECK:    \"@$0 tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;\", \"b\" %[[PRED]]  : (i1) -> !llvm.void\n   //      CHECK:    nvvm.barrier\n-  //      CHECK:    llvm.inline_asm has_side_effects asm_dialect = att operand_attrs = [] \"@$0 tcgen05.dealloc.cta_group::1.sync.aligned.b32 $1, 128;\", \"b,r\" %[[PRED]], %{{.+}} : (i1, !llvm.ptr<6>) -> !llvm.void\n+  // CHECK-SAME:    aligned = false\n+  // CHECK-NEXT:    llvm.inline_asm has_side_effects asm_dialect = att operand_attrs = [] \"@$0 tcgen05.dealloc.cta_group::1.sync.aligned.b32 $1, 128;\", \"b,r\" %[[PRED]], %{{.+}} : (i1, !llvm.ptr<6>) -> !llvm.void\n   llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>\n   llvm.func @tensor_memory_base_lowering() -> i32 attributes {nvvm.kernel = 1 : ui1, nvvm.maxntid = array<i32: 128>} {\n     %263 = nvg.tensor_memory_base\n@@ -133,7 +134,8 @@ module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32, ttg.shar\n   //      CHECK:    nvvm.barrier\n   //      CHECK:    \"@$0 tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;\", \"b\" %[[PRED]]  : (i1) -> !llvm.void\n   //      CHECK:    nvvm.barrier\n-  //      CHECK:    llvm.inline_asm has_side_effects asm_dialect = att operand_attrs = [] \"@$0 tcgen05.dealloc.exclusive.cta_group::1.sync.aligned.b32 $1, 576;\", \"b,r\" %[[PRED]], %{{.+}} : (i1, !llvm.ptr<6>) -> !llvm.void\n+  // CHECK-SAME:    aligned = false\n+  // CHECK-NEXT:    llvm.inline_asm has_side_effects asm_dialect = att operand_attrs = [] \"@$0 tcgen05.dealloc.exclusive.cta_group::1.sync.aligned.b32 $1, 576;\", \"b,r\" %[[PRED]], %{{.+}} : (i1, !llvm.ptr<6>) -> !llvm.void\n   llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>\n   llvm.func @tensor_memory_exclusive_rubin() -> i32 attributes {nvvm.kernel = 1 : ui1, nvvm.maxntid = array<i32: 128>} {\n     %263 = nvg.tensor_memory_base\n@@ -157,7 +159,8 @@ module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32, ttg.shar\n   //      CHECK:    nvvm.barrier\n   //      CHECK:    \"@$0 tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;\", \"b\" %[[PRED]]  : (i1) -> !llvm.void\n   //      CHECK:    nvvm.barrier\n-  //      CHECK:    llvm.inline_asm has_side_effects asm_dialect = att operand_attrs = [] \"@$0 tcgen05.dealloc.cta_group::1.sync.aligned.b32 $1, 512;\", \"b,r\" %[[PRED]], %{{.+}} : (i1, !llvm.ptr<6>) -> !llvm.void\n+  // CHECK-SAME:    aligned = false\n+  // CHECK-NEXT:    llvm.inline_asm has_side_effects asm_dialect = att operand_attrs = [] \"@$0 tcgen05.dealloc.cta_group::1.sync.aligned.b32 $1, 512;\", \"b,r\" %[[PRED]], %{{.+}} : (i1, !llvm.ptr<6>) -> !llvm.void\n   //      CHECK-NOT:  .exclusive\n   llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>\n   llvm.func @tensor_memory_no_exclusive_rubin() -> i32 attributes {nvvm.kernel = 1 : ui1, nvvm.maxntid = array<i32: 128>} {"
+        },
+        {
+          "filename": "third_party/nvidia/lib/NVGPUToLLVM/NVGPUToLLVMPass.cpp",
+          "status": "modified",
+          "additions": 4,
+          "deletions": 2,
+          "patch": "@@ -565,8 +565,10 @@ void freeTMAlloc(LLVM::LLVMFuncOp func, Value alloc, std::string exclusive,\n     auto ctx = ret->getContext();\n     auto loc = ret.getLoc();\n     // Multi-CTA kernels already synchronize the cluster before every return.\n-    if (!twoCTAs)\n-      NVVM::BarrierOp::create(b, loc);\n+    if (!twoCTAs) {\n+      // Warp-specialized groups may reach different copies of this barrier.\n+      NVVM::BarrierOp::create(b, loc, Value{}, Value{}, /*aligned=*/false);\n+    }\n     PTXBuilder ptxBuilder;\n     // Calculate the predicate in the inline asm to avoid creating long\n     // liveranges.\n"
+        }
+      ]
+    },
+    {
+      "sha": "801136e0e90fbd0ace918963b48da64a13554d8e",
+      "author": {
+        "name": "sinan-flash",
+        "email": "619545323@qq.com"
+      },
+      "date": "2026-09-01T05:23:37+08:00",
+      "message": "[OPTIMIZER] Respect disable_licm in Triton LICM (#11520)\n\nTriton LICM still occurs even through `tl.range(..., disable_licm=True)`\nis used. The frontend records this option in the loop's\nllvm.loop_annotation, but Triton's LICM pass previously ignored the\nsetting and hoisted invariant operations out of the loop.\n\nThe issue can be reproduced with:\n```\nimport triton\nimport triton.language as tl\nfrom triton.runtime import MockTensor\n\n\n@triton.jit\ndef kernel(output, n, a, b):\n    product = 0\n    for _ in tl.range(0, n, disable_licm=True):\n        product += a * b\n    tl.store(output, product)\n\n\ncompiled = kernel.warmup(MockTensor(tl.int32), 10, 3, 4, grid=(1, ))\nprint(compiled.asm[\"ttgir\"])\n```\n\nBefore this commit, a * b is hoisted outside the loop:\n```\n%invariant = arith.muli %a, %b\n%result = scf.for ... {\n  %next = arith.addi %acc, %invariant\n}\n```\nAfter this commit, the multiplication remains inside the loop as\nrequested:\n```\n%result = scf.for ... {\n  %invariant = arith.muli %a, %b\n  %next = arith.addi %acc, %invariant\n}\n```\nLoops without disable_licm=True retain the existing LICM behavior. A\nminimal scf.for regression test is included.\n\n\n<!---\nThe core Triton is a small number of people, and we receive many PRs\n(thank\nyou!).  To help us review your code more quickly, **if you are a new\ncontributor (less than 3 PRs merged) we ask that you complete the\nfollowing\ntasks and include the filled-out checklist in your PR description.**\n\nComplete the following tasks before sending your PR, and replace `[ ]`\nwith\n`[x]` to indicate you have done them.\n-->\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [ ] I have not added any `lit` tests.\n- [x] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)",
+      "parents": [
+        "b734173ff239e6c6ddf330c4878bd408f423a002"
+      ],
+      "stats": {
+        "total_additions": 31,
+        "total_deletions": 0,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "lib/Dialect/Triton/Transforms/LoopInvariantCodeMotion.cpp",
+          "status": "modified",
+          "additions": 17,
+          "deletions": 0,
+          "patch": "@@ -1,3 +1,4 @@\n+#include \"mlir/Dialect/LLVMIR/LLVMAttrs.h\"\n #include \"mlir/Transforms/LoopInvariantCodeMotionUtils.h\"\n #include \"triton/Dialect/Triton/IR/Dialect.h\"\n #include \"triton/Dialect/Triton/IR/Utility.h\"\n@@ -19,6 +20,20 @@ class LoopInvariantCodeMotionPass\n \n   DenseMap<LoopLikeOpInterface, bool> isLoopMemoryEffectFreeOrOnlyRead;\n \n+  bool isLICMDisabled(LoopLikeOpInterface loopLike) {\n+    auto loopMD = loopLike->getAttrOfType<LLVM::LoopAnnotationAttr>(\n+        LLVM::LoopAnnotationAttr::name);\n+    if (!loopMD)\n+      return false;\n+\n+    auto licmMD = loopMD.getLicm();\n+    if (!licmMD)\n+      return false;\n+\n+    auto disable = licmMD.getDisable();\n+    return disable && disable.getValue();\n+  }\n+\n   bool isMemoryEffectFreeOrOnlyRead(Operation *op) {\n     std::optional<SmallVector<MemoryEffects::EffectInstance>> effects =\n         getEffectsRecursively(op);\n@@ -35,6 +50,8 @@ class LoopInvariantCodeMotionPass\n     // This way, we first LICM from the inner loop, and place the ops in the\n     // outer loop, which in turn can be further LICM'ed.\n     getOperation()->walk([&](LoopLikeOpInterface loopLike) {\n+      if (isLICMDisabled(loopLike))\n+        return;\n       moveLoopInvariantCode(\n           loopLike.getLoopRegions(),\n           // isDefinedOutsideOfRegion"
+        },
+        {
+          "filename": "test/Triton/loop-invariant-code-motion.mlir",
+          "status": "modified",
+          "additions": 14,
+          "deletions": 0,
+          "patch": "@@ -167,3 +167,17 @@ tt.func @hoist_cond_no_hoist_load_from_scf_while(%ptr: tensor<1024x!tt.ptr<f32>>\n   tt.store %ptr, %1 : tensor<1024x!tt.ptr<f32>>\n   tt.return\n }\n+\n+// -----\n+\n+tt.func @do_not_hoist_from_for_with_licm_disabled(%lb: i32, %ub: i32, %step: i32, %a: i32, %b: i32) -> i32 {\n+  // CHECK-LABEL: do_not_hoist_from_for_with_licm_disabled\n+  // CHECK-NOT: arith.addi\n+  // CHECK: scf.for\n+  // CHECK: arith.addi\n+  %result = scf.for %i = %lb to %ub step %step iter_args(%value = %a) -> i32 : i32 {\n+    %sum = arith.addi %a, %b : i32\n+    scf.yield %sum : i32\n+  } {llvm.loop_annotation = #llvm.loop_annotation<licm = <disable = true>>}\n+  tt.return %result : i32\n+}\n"
+        }
+      ]
+    }
+  ]
+}
