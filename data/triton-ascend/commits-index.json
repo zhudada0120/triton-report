@@ -1,4 +1,12 @@
 {
+  "5377005e8f980a1a8ad8d02fe53b85d1f503c424": {
+    "date": "2026-09-02",
+    "msg": "[Docs](feat) update libdevice developer guide docs (#1844)"
+  },
+  "645c748bc01d2e46d4e6fb8ecc796f3a088f3fb4": {
+    "date": "2026-09-02",
+    "msg": "Enable the yellow zone pipeline function for the mixed branch (#1911)"
+  },
   "e9f9b169f8ffd6dda35a6853135c83d7e66df25f": {
     "date": "2026-08-31",
     "msg": "[ssbuffer](fix) fix mem wait insert point"

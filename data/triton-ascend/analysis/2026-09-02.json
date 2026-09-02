@@ -1,0 +1,46 @@
+{
+  "date": "2026-09-02",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-09-03T04:16:33.254892+08:00",
+  "daily_summary": "今日提交主要围绕文档与CI流程两个方面。第一个commit（5377005）对libdevice开发者指南进行了大规模更新，包含中英文两版文档的全面刷新，重点包括：统一将'force_simt_only'启动参数迁移为'compile_mode=simt_only'、系统性地将大量libdevice算子（如abs, cos, exp, mul等）的编译模式注释从SIMT/SIMD统一标注为SIMD/SIMT、新增fast_tanhf、float2half_rn、half2float、max、min、nan等新算子的API文档及相关Python示例文件。同时，为配合文档更新，重构了docs/zh/python-api/_examples/目录下的示例测试代码，普遍将输入数据从npu设备转移至CPU计算参考值，再迁移回设备，并在kernel调用时统一传入compile_mode='simt_only'参数。第二个commit（645c748）是新增一个为Ascend950硬件定制的GitHub Actions CI工作流（Ascend950-ci.yml），该工作流在feature/simd-simt-compile-mode分支上，通过pull_request_target事件触发，构建wheel包并通过华为云的Blue/Yellow工具链在Ascend950设备上执行测试，实现了对昇腾设备侧测试的自动化覆盖。",
+  "test_impact_summary": "第一个commit对libdevice示例测试进行了大规模但结构统一的修改，重构了测试数据的生成与验证方式，将参考值的计算移至CPU，提高了测试稳定性和可运行性；同时新添加了多个算子的示例测试文件，但核心测试用例逻辑与原有模式一致，无明显风险点。第二个commit引入了新的CI工作流，将测试扩展到Ascend950真机设备，但该工作流目前仅针对特定的feature分支，不覆盖主分支的常规开发，且涉及对华为云内部工具的调用。总体上，文档更新测试应无回归风险，新增的CI流程有望拦截Ascend950专属的backend（compiler.py，driver.py）相关代码在合并到主分支前可能出现的回归，尤其是simt/simd模式相关的路径。",
+  "commits": [
+    {
+      "sha": "5377005e8f980a1a8ad8d02fe53b85d1f503c424",
+      "comment": "该commit的核心目标是为`libdevice_developer_guide.md`（中英两版）添加和修正169个CANN libdevice算子的开发说明文档，涉及内容十分广泛。变更包含2个关键方面：一是有意义的语义修改，将kernel启动参数从`force_simt_only`替换为`compile_mode='simt_only'`。这与此前PR中引入的编译模式架构调整保持一致，为开发者提供了更结构化、可扩展的方式来指定不同的编译模式。同时，将大量算子的支持编译模式从“SIMT”或“SIMT, SIMD”统一改正为“SIMD, SIMT”，反映了编译器和算子在Ascend架构上实际能力的更新。同时新增了`fast_tanhf`, `float2half_rn`, `half2float`, `max`, `min`, `nan`等算子的文档与示例代码。第二个方面是大量但模式统一的示例代码修改。这些修改不仅是为了让示例代码能够运行在SIMT模式下并进行CPU/GPU比对，还引入了一种新的测试方法：它普遍提高了测试代码的模块化 (提取`torch_*_reference`函数)，并改善了可运行性（调用后`cpu()`拉回数据再断言，及对j0, j1, yn等有特殊数学行为算子的参考实现进行了精细模拟，修正了sinpi等算子的参考结果来自scipy）。这些重构的辅助函数不仅有助于自动化测试，也为使用者在CPU上建立预期行为提供了明确指引。总体而言，虽然变更触及的示例数量庞大，但本质上是文档和测试代码的更新，并不直接改变任何编译流水线、runtime数据结构或dlopen逻辑，因此对于编译流程本身风险较低。",
+      "tags": [
+        "docs",
+        "test",
+        "refactor"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "该commit对docs/zh/python-api/_examples/下的大量测试文件进行了重构，虽然并未直接改变后端编译/运行时的核心代码，但引入了新的libdevice算子文档示例（如fast_tanhf、half2float、max/min等），修正了ldexp在910_95上的行为，并重构了大部分示例的参考值计算方式使其与设备实现对齐。原有的自动化测试主要跑在Ascend设备上，而这批文档中的示例代码现在本身充当了更精确的单元测试，因此需要更新或增加测试来确保其能正确运行并通过比对，以验证未引入回归。",
+        "suggested_test_areas": [
+          "docs/zh/python-api/_examples/",
+          "docs/zh/python-api/_ascend_constraints.py",
+          ".github/docs-ci/codespell.whitelist.json"
+        ]
+      },
+      "message": "[Docs](feat) update libdevice developer guide docs (#1844)"
+    },
+    {
+      "sha": "645c748bc01d2e46d4e6fb8ecc796f3a088f3fb4",
+      "comment": "此commit的变更**仅**涉及新增一个CI工作流文件`.github/workflows/Ascend950-ci.yml`，未触及任何产品代码。该工作流的核心功能是针对Ascend950硬件集成自动化测试：由于github官方runner无法直接跑在Ascend设备上，它采用混合模式——先在x86容器中构建triton-ascend wheel包，然后将wheel上传到OBS对象存储，最后通过调用华为云内部的Blue/Yellow工具链来触发在真实Ascend950设备上的编译与测试并同步轮询测试结果。需关注的潜在风险点包括：1) 此CI基于`pull_request_target`事件，该事件会使用主分支上的workflow定义，但会检查PR的合并后代码。为了安全起见，工作流做了细致的处理：wheels-build任务仅授予contents: read权限且没有传任何secrets，而pipeline-tests任务则仅在下载wheel后触发外部工具链，避免执行PR中不可信代码。2) 代码依赖一些内部Secret和变量（OBS_AK, BLUE_YELLOW_*等），但缺少这些变量时，任务将以如`echo \"OBS credentials are empty\"; exit 1`逻辑优雅退出而非无限卡住。3) 该功能仅针对`feature/simd-simt-compile-mode`分支，是为了特定功能分支验证而设计，不会对主干开发流程产生直接影响。由于不涉及源码改动，该commits的影响范围较窄，且主要服务于验证编译模式和特性在半代（simt/simd）分支的稳定性，对于主干代码的风险较低。",
+      "tags": [
+        "ci",
+        "chore"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "该commit只修改了CI配置文件，没有修改任何产品代码或测试代码，因此没有直接新增测试用例的需求。但是，它通过自动化方式将现有测试扩展到新的Ascend950硬件流中，有效扩展现有测试覆盖范围，增强了对未来质量风险的预警能力。但此CI仅作用于特定feature分支，对当前主干的常规CI测试矩阵没有影响，因此无需在主干的测试体系中新增或修改用例。",
+        "suggested_test_areas": [
+          ".github/workflows/Ascend950-ci.yml"
+        ]
+      },
+      "message": "Enable the yellow zone pipeline function for the mixed branch (#1911)"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

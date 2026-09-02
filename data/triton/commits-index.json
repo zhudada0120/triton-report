@@ -1,4 +1,52 @@
 {
+  "36cb2499e0e7a61c406efaff1957048f1481cd99": {
+    "date": "2026-09-02",
+    "msg": "[Analysis] Account for masked load's `other` constancy (#11548)"
+  },
+  "4af25c84e8cd9672cac1ad2eb4301fe86f612c9a": {
+    "date": "2026-09-02",
+    "msg": "[Analysis] Fix remainder divisibility at result group boundaries (#11546)"
+  },
+  "61c02bcdba0ccc1cdfc89ba608aa1a1221a59e1f": {
+    "date": "2026-09-02",
+    "msg": "[AMD] Enable buffer atomics on RDNA3 (#11535)"
+  },
+  "b48db4a5ae4e2017cf53b7318153460370fe254b": {
+    "date": "2026-09-02",
+    "msg": "[Backend] Fix spurious iterator warning (#11536)"
+  },
+  "290d7da33057b6b1087e9e73d7acd8e5d0989bb1": {
+    "date": "2026-09-02",
+    "msg": "[AMD] Use subarchitecture-aware target triples (#11532)"
+  },
+  "41b1893f311e963df111658c67d1bbad5f5962c8": {
+    "date": "2026-09-02",
+    "msg": "[AMD][CI] Add AMD CI image builds (#11274)"
+  },
+  "528fece5304c654941b1a810057a0aa7de86757a": {
+    "date": "2026-09-02",
+    "msg": "[AMD] Avoid false HIP runtime mismatch with TheRock (#11492)"
+  },
+  "9354a70711fee1afb27bc347d5be1ec3b58503c4": {
+    "date": "2026-09-02",
+    "msg": "[ConSan] Disable operation-local scratch instrumentation (#11533)"
+  },
+  "e3ed292bbe20de638d8cd63799ad06d24e466aa2": {
+    "date": "2026-09-02",
+    "msg": "[KERNELS] Allow layout conversion into existing storage (#11504)"
+  },
+  "e3727de537f80af2147309ce20b58cdec95d8362": {
+    "date": "2026-09-02",
+    "msg": "[BACKEND] Avoid duplicated side effects in inline assembly (#11511)"
+  },
+  "d4eb2dd39c5f4c1cf0229c69959960f2eba11314": {
+    "date": "2026-09-02",
+    "msg": "[TEST] Fix pytest warnings (#11507)"
+  },
+  "5c88256de5dfd6a64896421a9b4816515144e664": {
+    "date": "2026-09-02",
+    "msg": "[INTERPRETER] Fix integer overflow in tl.sum (#11531)"
+  },
   "58895270e6230491acc15fe7ba6d4c849e838db1": {
     "date": "2026-09-01",
     "msg": "[NVIDIA] Use non-aligned barrier before TMEM deallocation (#11525)"

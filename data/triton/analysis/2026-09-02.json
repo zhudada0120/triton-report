@@ -1,0 +1,261 @@
+{
+  "date": "2026-09-02",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-09-03T04:12:45.614550+08:00",
+  "daily_summary": "当日变更主要围绕编译器正确性修复（AxisInfo 分析的 masked load 'other' constancy 处理、remainder divisibility 边界修复）、AMD 后端增强（RDNA3 buffer atomics、子架构感知 target triple）、运行时与工具链改进（修复 LLVM 模块迭代器 DeprecationWarning、避免 TheRock HIP 运行时误判）、ConSan 检测器精简（禁用 operation-local scratch 插桩）、triton_kernels 功能增强（convert_layout 支持 out 参数）、interpreter 整数溢出修复及若干测试警告清理。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 影响较小。核心影响是 lib/Analysis/AxisInfo.cpp 的两处修复，这属于 Ascend 复用 TTIR 前端必经的分析层，可能影响其 TritonToLinalg 转换链的输入质量，但 Ascend 不使用 TritonGPU 路径，因此影响有限。其余变更涉及 AMD 后端、ConSan、triton_kernels 等 Ascend 不使用的模块。",
+  "commits": [
+    {
+      "sha": "36cb2499e0e7a61c406efaff1957048f1481cd99",
+      "comment": "该提交修复了 AxisInfo 分析中 masked load 的一个正确性问题。原实现仅考虑 mask 的 constancy，忽略 other（fallback value）的 constancy，可能导致对结果 constancy 的错误推断。修复后遍历所有非 pointer 操作数（mask, other），取所有操作数 constancy 的 gcd。测试同步更新，增加对带 other 的 load 的 constancy 验证。这是对共享分析基础设施的低风险改进，可提升依赖该分析的优化（如向量化）的保守性与正确性。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "analysis",
+        "compiler"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "AxisInfo 分析是通用分析层，被 TTIR 的前端生成路径消费，Ascend 复用 AST→TTIR 并依赖该分析进行后续 lowering（TritonToLinalg）。此修改改变了 AxisInfo 对 masked load 的 constancy 推断结果（从仅考虑 mask 变为同时考虑 mask 和 other），可能影响 Ascend 的 linalg 生成时对 constancy 的依赖，但 Ascend 不走 TritonGPU 的向量化路径，实际影响有限。属于'可能影响'类别。",
+        "testing": "上游新增测试在 test/Analysis/test-alignment.mlir，为 lit 测试。Ascend 有类似的分析测试可同步参考，但非强制。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Analysis] Account for masked load's `other` constancy (#11548)\n\nWe were miscompiling when `other` is a non-constant tensor.\nWe were just considering the `mask` constancy.",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "4af25c84e8cd9672cac1ad2eb4301fe86f612c9a",
+      "comment": "该提交修复 remainder (arith.remsi/remui) 操作在结果组边界处的 divisibility 分析缺陷。原实现在 rhs 具有高 constancy 时才保守地返回 gcd，但在某些边界（如 lhs 的 contiguous group 被 rhs 打断）会过度推断 divisibility。修复后通过 contiguity 比较判断是否存在组边界，并在边界处将 divisibility 限制为 contiguity 的倍数。测试覆盖了多种部分组边界场景。此修复增强了分析的保守性（更少错误的高 divisibility），是低风险的 bugfix。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "analysis",
+        "compiler"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "同为 lib/Analysis/AxisInfo.cpp 的修正，影响 arith.rem 相关操作的 AxisInfo 推断。Ascend 的 TritonToLinalg 转换链若依赖 arith.rem 操作的分析结果进行优化决策，此修复将改变其可用的 divisibility 信息（更保守），但属于正确性方向的改进。属于'可能影响'类别。",
+        "testing": "上游新增加入 test/Analysis/test-alignment.mlir。Ascend 若有基于该分析的优化或测试，可参考更新。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Analysis] Fix remainder divisibility at result group boundaries (#11546)\n\nFixes https://github.com/triton-lang/triton/issues/11544",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "61c02bcdba0ccc1cdfc89ba608aa1a1221a59e1f",
+      "comment": "该提交为 AMD 后端启用 RDNA3 (gfx1100) 的 buffer atomic RMW 支持，并限制 RDNA3 的浮点 buffer atomic add 仅支持 f32。修改了 TargetFeatures.cpp 的支持判定和 TargetInfo.h 的注释，同时更新了相关 lit 测试以覆盖 gfx1100 的 F32 路径。变更局限于 AMD 后端，风险集中在 AMD 指令集的功能特性范围界定。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "amd-backend",
+        "compiler"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Enable buffer atomics on RDNA3 (#11535)\n\nEnable AMD buffer atomic lowering for RDNA3 targets. RDNA3 supports\nbuffer atomic RMW operations, but floating-point buffer atomic add\nsupport is limited to f32. Unsupported RDNA3 floating-point types\ncontinue to use the existing fallback path."
+    },
+    {
+      "sha": "b48db4a5ae4e2017cf53b7318153460370fe254b",
+      "comment": "这是一个纯工程性修复，消除 python/src/llvm.cc 中迭代 LLVM Module 函数列表时产生的无关 DeprecationWarning。通过传递绑定的 llvm::Module::FunctionListType 类型作为迭代器的 Python scope，替代空 handle，使生成的迭代器具有有效的 Python 类型信息，不影响迭代器的引用策略和生命周期。低风险、无功能变化的代码质量改进。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "compiler",
+        "python-binding"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Backend] Fix spurious iterator warning (#11536)\n\nFix a `DeprecationWarning` emitted while iterating over an LLVM module's\nfunction list:\n\n  ```text\n  DeprecationWarning: builtin type iterator has no __module__ attribute\n  ```\n\nPass the bound llvm::Module::FunctionListType as the scope when creating\nthe iterator instead of using an empty handle. This gives the generated\niterator a valid Python scope and prevents the unrelated warning.\n\nThe iterator's reference policy and lifetime handling remain unchanged."
+    },
+    {
+      "sha": "290d7da33057b6b1087e9e73d7acd8e5d0989bb1",
+      "comment": "该提交为 AMD 后端引入子架构感知的 target triple。原使用统一的 'amdgcn-amd-amdhsa'，现根据 arch 生成如 'amdgpu9.42-amd-amdhsa' 的三元组（将 gfx942 映射为 amdgpu9.42）。具体实现通过 llvm::AMDGPU::parseArchAMDGCN 获取 GPUKind 并映射到 SubArchType。修改了 HIPBackend 的 LLVM 模块设置、汇编调用及相关测试。这是为上游 LLVM 对 target triple 中 subarch 的新要求做准备。变更涉及 AMD 后端的编译流程，对代码生成有影响。",
+      "tags": [
+        "refactor",
+        "medium-risk",
+        "amd-backend",
+        "compiler"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Use subarchitecture-aware target triples (#11532)\n\nThis is in preparation to upstream llvm changes requiring\nsubarch in target triples."
+    },
+    {
+      "sha": "41b1893f311e963df111658c67d1bbad5f5962c8",
+      "message": "[AMD][CI] Add AMD CI image builds (#11274)\n\nAdd dockerfile to specify AMD CI images.\nCreating our own CI images will allow for more fine-grained access to\nROCm versions (eg. nightlies) for CI, faster CI with more dependencies\npre-loaded, etc, vs using more generic published ROCm images. The\ndockerfile also comes with a build script that specifies bundles\nversions for building an image. We can check in the specific arguments\nin the builder for each image that is published and used for CI,\nallowing some reproducibility of the images.\n\nOne thing that this doesn't do but that might be worth doing, is\npre-installing `requirements.txt` python dependencies. These could go\nstale more quickly than other dependencies (eg. apt packages), since\nsome of these change frequently (eg. the pinned llvm version). However,\nit would be a pretty big time save in CI. As long as the CI runner\ninstalls those in a way that will update them, it could be a speed\nupdate when the versions are in sync without causing problems when they\nare out of sync.",
+      "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 triton-ascend。",
+      "tags": [
+        "feature",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "528fece5304c654941b1a810057a0aa7de86757a",
+      "comment": "该提交修复 AMD 后端 TheRock ROCm 安装的 HIP runtime 检测误判问题。原用 os.path.realpath 比较已加载的 HIP runtime 与 TheRock 提供的路径，但 TheRock 用硬链接提供同一文件的多个路径，realpath 不识别硬链接。改用 os.path.samefile 比较底层 device+inode，正确识别同一文件。变更仅在 third_party/amd/backend/driver.py，修复 PyTorch CI 中因误报导致的初始化失败。低风险精确修复。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "amd-backend",
+        "runtime"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Avoid false HIP runtime mismatch with TheRock (#11492)\n\n# Problem\n\nThe AMD jobs on PyTorch PR\nhttps://github.com/pytorch/pytorch/pull/190440 fail when TorchInductor\ninitializes Triton. One example is\nhttps://github.com/pytorch/pytorch/actions/runs/33027829505/job/98404275210.\n\nTriton reports that TheRock provides\n`.../_rocm_sdk_core/lib/libamdhip64.so.7` while\n`.../_rocm_sdk_devel/lib/libamdhip64.so.7` is already loaded, then\nrefuses to continue.\n\n# Root Cause\n\nTriton PR https://github.com/triton-lang/triton/pull/11028 compares the\ntwo real paths and treats them as different ROCm installations. TheRock\ngives the same HIP runtime two hard-link names: one under\n`_rocm_sdk_core` and one under `_rocm_sdk_devel`. `realpath` does not\nrecognize that hard links identify the same file.\n\n# This Diff\n\nBefore: `realpath(core) != realpath(devel)`, so Triton rejects the\nruntime.\n\nAfter: `samefile(core, devel)` is true because both paths have the same\ndevice and inode, so Triton accepts the runtime. Different files are\nstill rejected.\n\n# Test Plan\n\n- `pre-commit run --files third_party/amd/backend/driver.py`\n- `HIP_VISIBLE_DEVICES=0 python tools/dynamo/verify_dynamo.py`\n\nReproduced on MI300X with PyTorch\n`01c0ad24e4c6e0bcae4847351630ff641968926e` and TheRock ROCm 7.14. The\n`core` and `devel` paths have the same device and inode, and\n`os.path.samefile` returns true.\n\nAuthored with assistance from Codex."
+    },
+    {
+      "sha": "9354a70711fee1afb27bc347d5be1ec3b58503c4",
+      "comment": "该提交禁用 ConSan 中 operation-local scratch 的插桩以规避内部负载的挂起问题，同时保留 callee-frame 摘要和显式 shared-memory/TMEM 插桩。删除了对被禁功能的支持代码、文档和大量相关测试，调整 getConSanMemEffectsOpInfo 仅对 CallOp 生成 frame summary。重命名 getAtomicScratchBroadcastMask 为 getScratchBroadcastMask 并缩小其使用范围。高风险性修复，禁用部分检测能力换取稳定性，但影响面集中在 TritonInstrument/ConSan 和 Gluon 的调试路径。",
+      "tags": [
+        "bugfix",
+        "high-risk",
+        "sanitizer",
+        "compiler"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ConSan] Disable operation-local scratch instrumentation (#11533)\n\nOperation-local scratch instrumentation causes hangs in internal\nworkloads. Disable these checks while the root cause of the hang is\nunder investigation.\n\nKeep callee-frame summaries and explicit shared-memory/TMEM\ninstrumentation enabled. Races involving operation-local compiler\nscratch may go undetected while these checks are disabled."
+    },
+    {
+      "sha": "e3ed292bbe20de638d8cd63799ad06d24e466aa2",
+      "comment": "该提交为 triton_kernels 的 convert_layout 增加 out 参数以写入已存在存储，避免额外分配和最终拷贝。涉及多个 backend（Hopper/Blackwell FP4、strided）的 direct dispatch 和 repacking helper 的 out 支持，包含存储别名/重叠安全检查和全面测试修正。主要权衡是转换为现有 dest 时节省 33-35µs，但单独转换时多 8-11µs 开销。变更仅限 python/triton_kernels，是独立于核心编译器的库功能增强。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "triton_kernels"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[KERNELS] Allow layout conversion into existing storage (#11504)\n\nAdd `convert_layout(..., out=destination)` to write conversions into\nexisting storage, avoiding a converted-result allocation and final copy.\nStrided reorders reuse the copy/repacking helper directly, also removing\nthe canonical intermediate; CUDA Hopper/Blackwell FP4 value kernels\nwrite into the supplied buffer, including shuffled Blackwell layouts.\nDestination identity, dtype, and strides are preserved, with\nmetadata/overlap checks guarding unsafe writes.\n\nTimings and peak extra GPU allocation when filling an existing 128 MiB\ndestination on GB300:\n\n| Conversion and logical shape | Allocate + copy: ms / extra MiB |\n`out`: ms / extra MiB |\n|---|---:|---:|\n| Hopper FP4, 8192×32768 | 0.192 / 128 | 0.157 / 0 |\n| Strided FP4, 16384×16384 | 1.595 / 128 | 1.563 / 0 |\n| Strided BF16, 8192×8192 | 0.332 / 128 | 0.296 / 0 |\n\nFor these strided cases, the previous route needed 256 MiB extra; direct\ndispatch needs only the returned result (128 MiB), or zero with `out`.\nMedian paired timings show **33–35 µs saved when filling a\ndestination**, but **8–11 µs overhead for conversion alone**.\n\nMeasurements use warm, resident buffers and GPU-local CPU/memory\nplacement, with three processes × 31 randomized ABBA blocks. Timings\ninclude host dispatch and completion, excluding transfers/loader work;\nno H100 timings. Hopper uses C-order bytes packed on axis −2; strided\ncases reorder column-major to row-major.\n\nDirect strided conversion covers FP4, FP8, FP16/BF16, and integers. FP4\n`out` requires uint8 storage; other routes, including scale conversions,\nmay still allocate intermediates.\n\n**1,619 CPU/CUDA/meta/fake tests passed.** All 16 new strided allocation\nchecks fail on the previous route and pass with direct dispatch.\n\n| Files | Added | Removed | Net |\n|---|---:|---:|---:|\n| Test | +302 | -23 | +279 |\n| Non-test | +140 | -53 | +87 |\n| All | +442 | -76 | +366 |\n\n## Reviewer's guide\n\n- `python/triton_kernels/triton_kernels`: output validation and direct\ndispatch/kernels; CPU Hopper decoding also avoids copying aligned row\ngaps.\n- `python/triton_kernels/tests`: byte-preservation and allocation tests,\nincluding NaN payloads, aliases, empty/scalar tensors, singleton\ndimensions, and device/stream coverage."
+    },
+    {
+      "sha": "e3727de537f80af2147309ce20b58cdec95d8362",
+      "comment": "这是一个涉及面较广的修复，确保 impure 的 elementwise_inline_asm 不会因 layout rematerialization 或冗余线程/CTA 执行而重复副作用。核心改动：1) 在 lowering 时将 impure asm 限制在 canonical owner 执行（通过 control flow 和 thread predicate）；2) 对有 live result 的 impure asm 分配 scratch（Allocation 分析中新增 ElementwiseInlineAsmOp 处理），并复用 broadcastTensorResult 基础设施广播结果到所有者之外的 reader；3) 在 rematerialization 前阻止 impure asm 的复制（通过 membar 和 cluster barrier 语义）。同时将 getAtomicScratchBroadcastMask 重命名为 getScratchBroadcastMask 并扩展支持 inline asm，影响 Allocation.h/cpp、BufferRegion.cpp、Utility.cpp 和 ConSanNVIDIA.cpp。风险中等偏高，涉及 TritonGPU 通用 lowering 路径，可能影响所有后端。",
+      "tags": [
+        "bugfix",
+        "high-risk",
+        "compiler",
+        "TritonGPU",
+        "lowering"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Avoid duplicated side effects in inline assembly (#11511)\n\nImpure elementwise inline assembly can be duplicated during layout\nrematerialization or executed by redundant threads and CTAs, repeating\nside effects for the same logical input.\n\nPrevent rematerialization of operations with write effects, execute\nimpure asm on the unique owners, and broadcast live results through\nshared memory. This handles cross-CTA and warp-specialized execution\nwhile avoiding scratch allocation for unused results. Pointer and\nboolean results are converted to integer storage types for broadcasting.\nPartial packs continue to round up with undefined inputs and discarded\npadded outputs.\n\nBuilds on #11001 and #11089. Validation passed: 248 lit tests and 8\nGluon-to-PTX compilation cases. One assertion-dependent lit test was\nexcluded from the Release build. The 13 inline-asm GPU tests passed\nbefore the review follow-ups.\n\n---------\n\nCo-authored-by: Thomas Raoux <24322263+ThomasRaoux@users.noreply.github.com>",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "include/triton/Dialect/Triton/"
+        ],
+        "recommend_refresh": true
+      }
+    },
+    {
+      "sha": "d4eb2dd39c5f4c1cf0229c69959960f2eba11314",
+      "comment": "该提交是纯测试清理，修复 pytest 警告：将生成器和迭代器参数物化为列表以避免 PytestRemovedIn10Warning，删除空字符串 regex 的 pytest.raises(match=\"\") 避免警告。覆盖文件涉及 Gluon、language、core 测试和 AMD 测试。无功能变化，仅测试基础设施改进。",
+      "tags": [
+        "test",
+        "low-risk",
+        "test-infra"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TEST] Fix pytest warnings (#11507)\n\n- materialize generator and iterator parameter sources before passing\nthem to pytest\n- remove an empty pytest.raises match that pytest warns will always\nsucceed\n- cover the affected Gluon, language, and AMD test parametrizations\n- avoid PytestRemovedIn10Warning and PytestWarning diagnostics"
+    },
+    {
+      "sha": "5c88256de5dfd6a64896421a9b4816515144e664",
+      "comment": "该提交修复 interpreter 模式下 tl.sum 在 int32 溢出时抛 Python OverflowError 而非像编译内核那样 wrap around 的问题。修复路径：ReduceScanOpInterface.to_tensor 的标量路径，将 np.array([ret], dtype=np_dtype) 改为 np.array([ret]).astype(np_dtype)，匹配 shaped path 的 astype 窄化行为。测试放宽为整数 sum 用 assert_equal 精确比较。变更影响 python/triton/runtime/interpreter.py。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "interpreter",
+        "runtime"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "影响 interpreter.py 中的 ReduceScanOpInterface 基类，该基类被 Ascend 的 AscendReduceOps 和 AscendScanOps 基于以实现 NPU kernel 的 CPU 模拟。此变更修改了标量 reduce 路径的 dtype 转换方式（从 np.array with dtype 到 astype），改变了窄化的语义（wrap 而非报错）。Ascend 的 reduce 解释路径若依赖该基类，其行为将同步改变。属于'可能影响'类别（interpreter 是 Ascend 有对应实现的路径）。",
+        "testing": "Ascend 若有 scalar reduce 的解释执行测试，应增加整数溢出环绕（wrap-around）场景的用例。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/ 下 interpreter 相关测试"
+        ]
+      },
+      "message": "[INTERPRETER] Fix integer overflow in tl.sum (#11531)\n\nUnder `TRITON_INTERPRET=1`, a scalar integer reduction can raise\n`OverflowError` when its result exceeds the target dtype, while the\ncompiled kernel wraps around.\n\n```python\n@triton.jit\ndef kernel(X, Z, SIZE: tl.constexpr):\n    x = tl.load(X + tl.arange(0, SIZE))\n    tl.store(Z, tl.sum(x))\n\nx = torch.full((128,), 2**30, dtype=torch.int32, device=\"cuda\")\nz = torch.zeros(1, dtype=torch.int32, device=\"cuda\")\nkernel[(1, )](x, z, SIZE=128)\n```\n\nproduces:\n\n```text\ncompiled:            0\nTRITON_INTERPRET=1:  InterpreterError(\"OverflowError('Python integer 137438953472 out of bounds for int32')\")\n```\n\nNumPy promotes the int32 accumulator to int64. In\n`ReduceScanOpInterface.to_tensor`, shaped results are narrowed\nseparately with `astype`, which performs the expected fixed-width\ninteger conversion. The scalar path instead passed the target dtype\ndirectly to `np.array`, which NumPy 2 rejects for an out-of-range\nscalar.\n\nInfer the intermediate dtype first and then narrow it with `astype`,\nmatching the shaped-result path. The NumPy deprecation warning that\npreceded this NumPy 2 behavior recommended the same two-step conversion:\n`np.array(value).astype(dtype)`.\n\n#7470 worked around the same failure by limiting the integer inputs in\nthe reduce tests. Remove that restriction and compare integer sums\nexactly, since a relative tolerance is inappropriate for wrapped integer\nresults. Reverting only the interpreter change makes the\n`test_reduce1d[sum-int32-*]` cases fail again.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/runtime/interpreter.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

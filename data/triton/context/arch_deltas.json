@@ -111,6 +111,42 @@
       "interface_changes": "该 commit 是回退操作，将 LLVM 版本从 ce3529423abda3fc4ad0b542daa50af21e539a29 回退到 b010a18d2b648cab83c83967ff26b8fde11acdc6。同时，调整了 `attach_datalayout` 和 `translate_to_asm` 的接口，移除了 `abi` 参数，并将在 NVIDIA 后端设置短指针（short pointer）的方式从传递 ABI 名称改为了新的 `set_short_ptr` 函数。此外，还对多个 lit 测试文件进行了更新，以适配新的 LLVM IR 输出格式。此次回退是为了规避新版 LLVM 可能引入的 ptxas bug。",
       "change_summary": "Revert \"[BACKEND] Bump to llvm/llvm-project@941a04e (#11277)\" (#11506)",
       "ascend_impact": false
+    },
+    "36cb2499e0e7a61c406efaff1957048f1481cd99": {
+      "date": "2026-09-02",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "该提交修复了 AxisInfo 分析中 masked load 的一个正确性问题。原实现仅考虑 mask 的 constancy，忽略 other（fallback value）的 constancy，可能导致对结果 constancy 的错误推断。修复后遍历所有非 pointer 操作数（mask, other），取所有操作数 constancy 的 gcd。测试同步更新，增加对带 other 的 load 的 constancy 验证。这是对共享分析基础设施的低风险改进，可提升依赖该分析的优化（如向量化）的保守性与正确性。",
+      "change_summary": "[Analysis] Account for masked load's `other` constancy (#11548)",
+      "ascend_impact": false
+    },
+    "4af25c84e8cd9672cac1ad2eb4301fe86f612c9a": {
+      "date": "2026-09-02",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "该提交修复 remainder (arith.remsi/remui) 操作在结果组边界处的 divisibility 分析缺陷。原实现在 rhs 具有高 constancy 时才保守地返回 gcd，但在某些边界（如 lhs 的 contiguous group 被 rhs 打断）会过度推断 divisibility。修复后通过 contiguity 比较判断是否存在组边界，并在边界处将 divisibility 限制为 contiguity 的倍数。测试覆盖了多种部分组边界场景。此修复增强了分析的保守性（更少错误的高 divisibility），是低风险的 bugfix。",
+      "change_summary": "[Analysis] Fix remainder divisibility at result group boundaries (#11546)",
+      "ascend_impact": false
+    },
+    "5c88256de5dfd6a64896421a9b4816515144e664": {
+      "date": "2026-09-02",
+      "affected_modules": [
+        "python/triton/runtime/interpreter.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/runtime/interpreter.py"
+      ],
+      "interface_changes": "该提交修复 interpreter 模式下 tl.sum 在 int32 溢出时抛 Python OverflowError 而非像编译内核那样 wrap around 的问题。修复路径：ReduceScanOpInterface.to_tensor 的标量路径，将 np.array([ret], dtype=np_dtype) 改为 np.array([ret]).astype(np_dtype)，匹配 shaped path 的 astype 窄化行为。测试放宽为整数 sum 用 assert_equal 精确比较。变更影响 python/triton/runtime/interpreter.py。",
+      "change_summary": "[INTERPRETER] Fix integer overflow in tl.sum (#11531)",
+      "ascend_impact": false
     }
   }
 }
