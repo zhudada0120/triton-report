@@ -1,4 +1,48 @@
 {
+  "5c3efd76ab88959a37c7307824bf67fc02a94a30": {
+    "date": "2026-09-03",
+    "msg": "[AMD] Always readfirstlane in non-direct warp_id lowering (#11570)"
+  },
+  "39d2e100fdd8019c849183930fc36fa6477d4678": {
+    "date": "2026-09-03",
+    "msg": "[INSTRUMENT] Unify pass instrumentation interface (#11522)"
+  },
+  "e51f653d5f33068f059d9ebb26a17288f11a6f32": {
+    "date": "2026-09-03",
+    "msg": "[RUNTIME] Clear failed async compile futures (#11552)"
+  },
+  "e08ec196b4abae13c40ee73fbffe9ad70db7582c": {
+    "date": "2026-09-03",
+    "msg": "[KERNELS] Convert between Blackwell FP4 layouts directly (#11563)"
+  },
+  "f4b2da9547fcc6ff8b5e7003ab8ee946be766f63": {
+    "date": "2026-09-03",
+    "msg": "[BAKCEND] Revert inline assembly side-effect deduplication (#11564)"
+  },
+  "7ff97e310935b4a79794878dbc911f9af25d38d9": {
+    "date": "2026-09-03",
+    "msg": "[BC BREAKING] Remove zero register bases from blocked layouts  (#11541)"
+  },
+  "0b1ef3be704d5f8f3e994c33cf8c0bc5ab2a98f7": {
+    "date": "2026-09-03",
+    "msg": "[BACKEND] Fix layout propagation for while-loop yields (#11558)"
+  },
+  "0b859826322d2e3c13b6e050b521e40a2dd86ef2": {
+    "date": "2026-09-03",
+    "msg": "[CI][AMD] Add rocm10.1 support for gfx950 (#11487)"
+  },
+  "e2f26d2201a2b9a09d8a7cdaee61111d5005f939": {
+    "date": "2026-09-03",
+    "msg": "[BACKEND] Preserve NVPTX scheduler across HIP linking (#11547)"
+  },
+  "d66e9c0980615247fa193e52eba8f265fa06f48c": {
+    "date": "2026-09-03",
+    "msg": "[BACKEND] Generalize atomic_poll to tensor pointers (#11540)"
+  },
+  "57d94efc5318446b759101ed1a59e509bd90432b": {
+    "date": "2026-09-03",
+    "msg": "[BACKEND] Canonicalize abs + redux.{min,max} (#11537)"
+  },
   "36cb2499e0e7a61c406efaff1957048f1481cd99": {
     "date": "2026-09-02",
     "msg": "[Analysis] Account for masked load's `other` constancy (#11548)"

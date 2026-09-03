@@ -4,7 +4,7 @@
     "detection": "upstream SHA in ascend git history OR cherry-pick marker",
     "ascend_repo_sha": "a4aecc3292d8bdf7ae80165f113a27ea1e89803a",
     "tracking_start_date": "",
-    "detected_at": "2026-09-03T04:16:33.509231+08:00",
+    "detected_at": "2026-09-04T04:15:33.383948+08:00",
     "note": "triton-ascend 无 baseline 文件（人工 cherry-pick 回合）。无标记的人工回合请用 `mark` 命令手动更新。"
   },
   "commits": [

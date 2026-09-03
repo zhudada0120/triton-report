@@ -1,0 +1,363 @@
+{
+  "date": "2026-09-03",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-09-04T04:15:33.141217+08:00",
+  "daily_summary": "今日变更主要聚焦于 Ascend 动态 CV 编译器优化流（DynamicCVPipeline）的稳定性增强与功能扩展，核心方向包括：1) 重构同步原语处理——新增 SyncWall 基础设施与 ssbuffer.external_sync 属性标记，确保 block_id 分组不会跨越同步屏障，避免调度死循环；新增 RelocateMemrefDeclPass 将跨同步墙的 memref 定义下沉至消费端；2) 新增 conv2d 语言扩展与方言 Op，打通 Triton → HFusion 的 2D 卷积编译链并正确标记为 cube（mix）模式 kernel；3) 多个 bugfix——修复 forOp step 类型不匹配、MoveLoadIntoUserPass 顶点排序算法错误、FlagIdManager 预算计算逻辑、以及 fixpipe 优化对 scf.for 的感知能力；4) NPUDriver launcher 修复参数槽位动态分配导致的 ABI 不匹配、补充纯 SIMT 路径的保留槽位；此外还有若干小规模修复、代码清理与文档/教程迁移。总体来说，本日变更表明项目在拓宽算子支持（conv2d）的同时，正重点强化 CV 编译流对同步语义的正确性保障，属中低风险且偏质量加固的演进方向。",
+  "test_impact_summary": "本日变更对测试看护提出了明确要求。核心新增测试点聚焦于同步墙下的调度正确性：新增的 RelocateMemrefDeclPass 完全依赖其新加的 lit 测试 relocate_memref_decl.mlir 验证跨同步墙 relocation 行为，后续任何对该 pass 的修改都必须保持该测试绿色；AddMultiBufferOuterScope 预算回退的新逻辑已被 Outer-scope-flag-budget-fallback.mlir 覆盖，确保 flag ID 超限时安全降级为单缓冲。次要点包括：conv2d 作为新算子需用例覆盖 IR lowering 正确性（新增 conv2d.mlir 为起点，但建议补充端到端算子精度用例覆盖 conv1d/conv2d 在 3D/4D 输入、有效/非对称 padding 等场景）；OpClassifier 同步分类逻辑改动与新测试 relocate_memref_decl.mlir 中的 barrier 标注存在依赖，需保持该类测试的一致性。libdevice 变更删除了若干 API（brevll/clzll/llabs/mul64hi/popcll/powif）并重构通用 API，需检查现有 libdevice 测试是否覆盖这些旧 API 调用以避免回归。整体测试策略需将同步语义相关的 C++ pass 变更（SyncWall、RelocateMemrefDecl、FixpipeOpt、OpClassifier）视为高看护区，建议在 CI 中确保相关 lit 与端到端用例的完整运行。",
+  "commits": [
+    {
+      "sha": "984e1453756aa43cc47082ccf8c386c1ebcf791b",
+      "comment": "该 commit 引入 'ssbuffer.external_sync' 属性标记，用于区分由 PlanComputeBlock 阶段标记出的同步原语与内部的数据同步操作。通过新增 kExternalSync 属性和 isExternalSyncOp() 帮助函数，将原本的 isSyncOp() 调用点（DependencyCycleDetector、SyncWall::构造函数）精确限定到外部同步操作上，避免内部同步（如 hivm sync_block_set/wait）干扰这些分析方法对同步点附近依赖的推理。同时将 ComputeBlockOpt/Common.h 中声明的 groupWouldStraddleSync 改为内部 static 函数（该函数已在 commit 6286e671 中作为新基础设施的一部分被引入，此处还原其可见性），并同步更新 relocation 相关的 lit 测试以匹配新 attribute 的预期输出。实现上，OpClassifierPass::markSynchronizationOp() 在给同步操作分配 block_id 后打上该属性，这使得后续 pass（cycle 检测、sync wall）可以准确识别外部同步操作，而不会误伤内部同步操作。此改动本质是前一 commit（6286e67）中引入的同步墙分析的一个细化/修正，通过给同步操作打标来区分不同角色，属于 bugfix + refactor 性质改动，风险较低。",
+      "tags": [
+        "bugfix",
+        "dynamic-cv-pipeline",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "修改了 OpClassifierPass 为同步操作添加新属性 ssbuffer.external_sync，因此所有以 gpu.barrier 或 hivm.sync_block_set/wait 为输入的 dynamic-cv-pipeline lit 测试的 FileCheck 期望都需要更新，以匹配新增的属性。同时新增的 isExternalSyncOp 调用点（CycleDetector、SyncWall）行为发生变化，需要确保相关测试覆盖外部同步操作被正确识别且不影响原有 cycle 检测。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/relocate_memref_decl.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AllocMultiCache/Outer-scope-flag-budget-fallback.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ 下所有涉及 gpu.barrier/sync_block_set/wait 的测试文件"
+        ]
+      },
+      "message": "[ssbuffer](fix) Add attribute for external sync ops"
+    },
+    {
+      "sha": "f06354b535c04565a63d286a6166c4e9fce154fe",
+      "comment": "此变更修复了 UpdateConditionInfoPass 中的一个类型不一致问题。原代码在 forOp 的步长值并非 `CONST_INT_TYPE`（i64）时，仍用该常量类型硬创建整型常量，导致类型不匹配。修复后通过 `dyn_cast` 获取步长的实际整型宽度来创建相同宽度的 `arith.ConstantIntOp`，从源头避免类型冲突。该修复能防止在特定 IR 输入（步长为其他整型宽度）下出现的编译崩溃。PR #1892 完成。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "DynamicCV"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "此修改未引入新功能，且下游编译链的 IR 类型检查通过会隐式防回归，现有 lit/编译测试已可覆盖，无需新增专门用例。",
+        "suggested_test_areas": []
+      },
+      "message": "[ssbuffer](fix) Fix the type inconsistency between constant and forOp step value (#1892)\n\nSigned-off-by: fishofnanqi <1074959344@qq.com>"
+    },
+    {
+      "sha": "1d0c129a71662916daeacfdf3d006d211eb48bb7",
+      "message": "[ssbuffer](fix) Remove fallback by name for some kernel (#1896)",
+      "comment": "该 commit 调整了 getCoreTypeOfSimpleOpOrCf 中针对特殊 kernel 名称的后备策略。原代码对六个命名 kernel（chunk_gated_delta_rule_bwd_kernel_dhu_blockdim64、..._fwd_kernel_h_blockdim64、backward_dkdv、pcb10_tc01_kernel、chunk_ttt_linear_fwd/bwd_kernel_h）都返回 UNDETERMINED。新的改动从列表中移除了 pcb10_tc01_kernel，并移除了一条新 kernel 名（pcb10_tc01_kernel 被移除），这看似是从后备列表中移除对该 kernel 的豁免，使其正常参与 CUBE/VECTOR 分类。这属于针对特定 kernel 的性能或正确性微调，可能因为 pcb10_tc01_kernel 的相关问题已修复，不再需要该后备策略。改动影响较小，但需关注 pcb10_tc01_kernel 的 lower 行为。",
+      "tags": [
+        "bugfix",
+        "dynamic-cv-pipeline",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "该变更仅影响特定 kernel 命名的后备判断，不涉及 IR 结构或 pass 逻辑的通用改动。现有针对 core_type 分配的 lit 测试或相关 kernel 的端到端用例仍可覆盖该路径，无需专门新增测试。但如果 pcb10_tc01_kernel 有特定单测，需在该 kernel 用例中确认无回归。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/ 下针对 pcb10_tc01_kernel 或相关 fusion 场景的端到端测试（如有）"
+        ]
+      }
+    },
+    {
+      "sha": "86daea7f3ee2c80bd0045d9ae524c152afc5bdc6",
+      "comment": "该 commit 扩展了 SplitMatmulPattern 对 splitmatmul 场景的支持范围，主要针对 L0C→L0C 级联（cascade）的跨块场景。改动的核心逻辑：1) 在 SplitInfo 结构中新增 supported 字段，用于标记 mayNotExec 场景是否真正需要 select 处理；2) 新增 hanldMayNotExecSelect 函数：当 matmul 结果被后续跨块级联 matmul 使用（且当前块为 zero-broadcast 初始化），则生成级联循环执行条件的 select 来控制结果是否被清零，避免无意义的循环执行；3) 新增 collectCascadeForOps 函数，通过递归回溯 L0C 生产者，收集所有参与级联的 scf.for；4) 调整 handleMayNotExec 与 shouldSplit 的分支逻辑，识别支持与不支持的级联场景，对不支持的场景（如 zero-init+级联消费者、跨块级联生产者）分别处理。总体意图是让 mayNotExec 的 matmul 在满足级联条件时能安全 split 并配合 select 语义。注意新逻辑也引入了新的依赖关系遍历（hivm::traceDefOp）和属性设置（may_not_exec），存在一定实现复杂度，但相关逻辑均在静态 IR 层面，风险总体可控。该改动本身没带新测试文件，是标准算子 IR 结构的扩展变更，可能因错误处理不当引发问题。",
+      "tags": [
+        "feature",
+        "dynamic-cv-pipeline",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "该 commit 扩展了 SplitMatmulPattern 的匹配逻辑和代码生成路径，新增了 mayNotExec select 场景处理，其实际效果依赖于特定 IR 模式（matmul 结果被跨块级联 matmul 使用等）的触发。当前 commit 没有附带针对新行为的 lit 测试文件，为验证上述新场景（级联 L0C 消费者/生产者、不同级联 for 的采集等），应新增 SplitMatmulPattern 的专项测试，覆盖各分支（保守利用 mayNotExec 标记 vs. 走 handleMayNotExecSelect）。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/StandardizeOp/SplitMatmulPattern/ 下新增测试文件：split_matmul_may_not_exec_select.mlir、split_matmul_cascade_l0c.mlir"
+        ]
+      },
+      "message": "[ssbuffer](feat) extend scenario in splitmatmul (#1617)\n\n* [ssbuffer](feat) extend scenario in splitmatmul\n\nSigned-off-by: fishofnanqi <1074959344@qq.com>\n\n* [ssbuffer](fix) fix operationIsFillZero coredump\n\nSigned-off-by: fishofnanqi <1074959344@qq.com>\n\n---------\n\nSigned-off-by: fishofnanqi <1074959344@qq.com>"
+    },
+    {
+      "sha": "6ff6d725a66a09a30b5fd1fa0de4216436244341",
+      "comment": "该 commit 为 Ascend 后端新增了 al.conv2d（2D 卷积）语言扩展，涵盖了完整的前端到 IR 定义到 HFusion 转换链：1) ascend_ir.cc 注册了 create_conv2d pybind builder 方法，负责构造 TritonAscend 方言的 Conv2dOp；2) TritonAscendOps.td 定义 Conv2dOp，包含 input/weight/可选 bias 操作数及相关属性（stride/padding/dilation/groups），并带 verifier、inferReturnTypes 实现（支持 3D 与 4D input）；3) cann extension 模块加入 conv2d 算子实现，支持 int/2元素 tuple/list、'same'/'valid' 字符串 padding 等细节处理，并计算出正确的 output shape；4) TritonToHFusion 增加 TritonConv2dToHFusionConversion pattern，将 Conv2dOp 转为 hfusion::Conv2DOp；5) TritonToLinalgPass 的 existDot 检测逻辑被扩展，将 conv1d/conv2d 等 hfusion op 一并视为 cube（mix）kernel 标记，避免被当作纯 AIV handling。同时新增了 conv2d.mlir lit 测试验证端到端 lowering。整体改动结构完整，是标准的算子移植模式，但新的 Conv2dOp 未在 Conversion（TritonToLinalg）pass 中被显式处理，而是依赖 TritonToHFusion 中的 conversion pattern，该链路的位置在新架构中需要持续验证。",
+      "tags": [
+        "feature",
+        "ascend-language-extension",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 conv2d 算子，带来了完整的新 IR 类型、自定义语言扩展 API 与 conversion pattern。当前仅新增了 conv2d.mlir 验证 TTIR→HFusion 的 lowering，但缺少对 conv2d 的端到端精度测试、不同 shape/padding 模式（same/valid/asymmetric）、以及 3D/4D 输入类型的 coverage，这些场景应被新增的 Python 端单测用例覆盖。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/ 下新增 conv2d 端到端精度测试，覆盖 (N,C,H,W)/(C,H,W)、stride=(1,1)/(2,2)、padding='valid'/'same'/4元素 tuple",
+          "third_party/ascend/unittest/Conversion/General/TritonAscendAllPass/conv2d.mlir 补充 bias 存在/不存在、dimension 校验失败等技术用例"
+        ]
+      },
+      "message": "[TritonOP](feat) Add al.conv2d op (#1819)\n\n* feat(conv2d): add conv2d op\n\nAdd al.conv2d operation for TA.\n\n* fix(conv2d): tag conv2d kernels as mix (cube) kernels\n\nAdd Conv2dOp to the existDot walk so it gets mix_mode=\"mix\".\n\n* keep original stride and padding type"
+    },
+    {
+      "sha": "54bb7c0405a2734a34838d37274fe34d94da2d91",
+      "comment": "复合提交：1) 修复 AddMultiBufferOuterScope 中 flag budget 回退逻辑。原代码将 'flag count > 15' 判断与 'worst-case estimate' 混用，导致某些合法 IR 被错误降级或误报错误。修复后以实际获得的 output flag 最大值（maxOutputFlag）为准，超出 MAX_FLAG_ID（14）时仅降级为单缓冲模式，不报告fallback错误；而输入 IR 本身已携带 flag id > 15 时则直接返回 ERRCODE_IGNORED (rc=2)。此外将 LDBG 宏补全换行便于调试、将 step summary 移到建立 transfer group 数据之后。2) 新增 lit 测试 Outer-scope-flag-budget-fallback.mlir，用已使用 flag 1..8 并请求双缓冲的 IR 验证回退不产生新 flag。整体是一个针对循环双缓冲 flag 分配错误的正确性修复，风险可控。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "dynamic-cv-pipeline",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "修改了 flag budget 评估逻辑（从基于 flag count 变为基于实际获取的 output flag 最大 id），新增的 lit 测试只覆盖了输入 flags 较小导致双缓冲被抑制的场景，但未能覆盖原代码触发回退 errcode 的边界场景（如输入 flag id > 15 但无新分配 flag 时）。同时，由于 LDBG 输出变为可见，可能存在针对日志的测试场景，建议补充。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AllocMultiCache/ 下新增测试场景：输入 flag id 超限导致 ERRCODE_IGNORED 回退、不超过最大范围时仍然执行双缓冲的用例"
+        ]
+      },
+      "message": "[ssbuffer](fix) Fallback when outer-scope double-buffer run out of flag (#1866)\n\n* [ssbuffer](fix) Fall back when outer-scope double-buffer flag budget is exceeded\n\nInter-core double-buffering in AddMultiBufferOuterScope allocates one\noutput flag per transfer group via FlagIdManager::acquireId(), which\nstarts above every existing sync flag (both inter-core transfer syncs\nand inter-core memref-dependency syncs). Hardware provides 15 usable\nflag IDs (0..14); flag ID 15 is reserved for pipe synchronization and\nmust not be allocated to cross-core transfers.\n\nThe pass now estimates the final max flag ID from the output flags\nactually acquired for the transfer groups and, when it would reach 15:\n- keeps the module in single-buffer mode (skipping only the\n  double-buffer transformation and its load/store crossDeps tagging)\n  if the budget pressure comes from the double-buffer itself, or\n- falls back with return code 2 (ERRCODE_IGNORED) if the input IR\n  already carries a flag ID above 15, which this pass cannot fix.\n\nPreviously the pass used a worst-case (maxFlagId + groupCount)\nestimate and either silently downgraded or failed on a distinct-flag\ncount check that miscounted the legitimate pipe flag.\n\nCo-Authored-By: DeLong code\n\n* [UT](feat) add outer-scope flag-budget fallback test\n\nAdd Outer-scope-flag-budget-fallback.mlir: input IR uses flags 1..8 across 8 transfer groups and requests inter-core double-buffering (inter_core_buf_count=2). AddMultiBufferOuterScope would push the output flag past MAX_FLAG_ID (14) and must fall back to single-buffer mode, leaving the IR unchanged (no new output flags 9+).\n\n* [ssbuffer](style) fix clang-format on flag-budget LDBG lines"
+    },
+    {
+      "sha": "237e60d9efd5a6626a33fa12d0ac365379f8caf8",
+      "comment": "该 commit 是一个纯测试恢复。它从 test_indirect_load_pointer_cast_precise_size.py 中移除了 pytest.mark.skip 装饰器，恢复了之前被跳过（A5 上不支持）的端到端测试用例的默认执行。这可能意味着 A5 相关问题已解决或测试平台已切换，因此恢复执行。测试恢复通常伴随其对特定硬件或特性的支持状态变化。风险极低，文档性质。",
+      "tags": [
+        "test",
+        "test-restoration",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "此次变更直接恢复了被跳过的端到端测试，使该测试用例在 CI 中再次执行。无需新增或修改测试逻辑，但需确保恢复的测试在测试环境中能稳定通过（可能涉及 A5 平台的特定设备支持），否则会导致持续失败而需要再次跳过。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_indirect_load_pointer_cast_precise_size.py"
+        ]
+      },
+      "message": "[ControlFlowOpt](test) Restore indirect pointer cast test (#1890)"
+    },
+    {
+      "sha": "6686cb656fa28a94842de67f1f29c531bde5edad",
+      "comment": "该 commit 增强了 FixpipeOptPass，使其 matchFixpipePattern 能正确处理包裹在 scf.for 内部的 matmul 结果。新增 getFirstResultAfterLoop 工具：递归地沿着循环携带值链查找最内层循环退出后的第一个使用者（即循环结果），确保其用户被正确分析。该函数假设 block arg 在循环体内只有单一使用，且该 use 是定义 nowV 的 op，并进一步沿着 yield 链路回溯。此外，重命名了 matchFixpipePattern 的参数（matchedOps -> toMergeWithMatmul），并将配 block id 的过程上移到 matchFixpipePattern 中，使得对跨循环的 matmul result 也能拿到准确的 targetBlockId（而非原先在 applyFixpipeOpt 中再取一次，可能因取到内层 matmul 的 blockId 而导致错误）。同时将 allMatchedPatterns 扩展为 (ops, targetBlockId) pair 以处理多组场景并与 SplitMatmulPattern 保持同一思路；对 scf op walk 增加 sync op 的跳过逻辑，确保不因 sync 而分割 block id group。改动使 fixpipe 优化对 loop-carried matmul 场景更鲁棒。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "dynamic-cv-pipeline",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "该 pass 逻辑涉及嵌套 loop 情景下的 block_id 分配变更，特别是 getFirstResultAfterLoop 会新增循环结果解析。patch 本身未附带新增测试，容易发生回归。建议在 DynamicCVPipeline lit 测试中加入针对 fixpipe 的 scf.for 场景（loop-carried matmul + trunc/mul + store）的用例，以验证外层 block id 分配和跨循环的 block id 匹配。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/FixpipeOptPass/ 下新增 fixpipe_loop_op.mlir、fixpipe_nested_loop.mlir 等测试"
+        ]
+      },
+      "message": "[ssbuffer](fix) fixpipe should consider scf.for (#1885)\n\nCo-authored-by: shaoyiyang <shaoyiyang1@huawei.com>"
+    },
+    {
+      "sha": "e00857dc15059a464e187c7fcad2f99f960eeea0",
+      "comment": "该 commit 将 gather_2d_simd kernel 从 third_party/ascend/language/kernels/gather.py 迁移到 tutorials/10-gather-2d-simd.py，并在原位置添加 static_print 弃用警告。教程中保留了该 kernel 的完整实现与示例 test_gather_2d_simd 调用，便于用户基于教程示例工作。由于使用 tl.static_print 方式，该警告是在 JIT 编译时打印，可能在每个编译实例中出现。属于代码清理/文档迁移，风险低。",
+      "tags": [
+        "chore",
+        "docs",
+        "language",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "该 kernel 被移出语言库，原有依赖 gather.py 的测试或用户应迁移到新的 tutorial 版本。虽然用户代码不再受影响，但需确保没有其他内部代码或测试仍从 gather.py 导入 gather_2d_simd，若有此类引用需一并清理。",
+        "suggested_test_areas": [
+          "third_party/ascend/tutorials/10-gather-2d-simd.py 新增后应确保其示例逻辑可独立运行，并考虑有无针对该 kernel 的已有语言测试被移除而需要补充（如有）。"
+        ]
+      },
+      "message": "[tritonop](NFC) move gather_2d_simd to tutorials and add depreca… (#1868)\n\n* [tritonop](refactor) move gather_2d_simd to tutorials and add deprecation warning\n\n* fix precommit"
+    },
+    {
+      "sha": "dbce52f72b23f1b93191bfc9c7e42c45e1025b4c",
+      "comment": "该 commit 修复了 PlanCubeBlock 中一处筛选逻辑的错误。原代码用 std::remove_if 删除同段（sameSegment）的 seed，但 combined with 后续逻辑实际上应保留同段的但移除不同段的，新的代码使用 llvm::erase_if 并转为保留同段的（!sameSegment），即保留与 dot 同属一个 sync 段的 seed（不同段的 seed 被删除），使逻辑语义清晰且避免函数返回值被误用。llvm::erase_if 自带 erase，避免 remove_if 后仍未手动 erase 的陷阱。小改动，低风险。",
+      "tags": [
+        "bugfix",
+        "dynamic-cv-pipeline",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "修复了 PlanCubeBlock 中对 dotSeeds 的误筛选逻辑（原本可能误删同段 seeds，导致 cube 块遗漏；或未正确删除跨段 seeds），对 IR 输出可能有实际影响。该修复对现有测试的正确性有增强，但可能使某些使用跨段 seeds 的既有 IR 不再被优化（预期），建议确保现有 lit 测试不因该修复而引入意外失败。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/PlanComputeBlock/PlanCubeBlock/ 下相关 lit 测试"
+        ]
+      },
+      "message": "[ssbuffer](fix) Use llvm::erase_if instead of std::remove_if (#1888)\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>"
+    },
+    {
+      "sha": "97b4e252ca7cba9d0ca864b7645dcb52fceba215",
+      "comment": "该 commit 修复了 AscendBackend 在 launch ABI 中的参数槽位预留问题。变更前，launcher 的 C++ 参数结构体成员动态取决于 enable_device_print 和 is_pure_simt：非纯 SIMT 时需额外 workspace 槽；打印开启时需 DTData 槽。这样导致同一 kernel 在开启/关闭打印或不同 is_pure_simt 下结构体布局不一致，进而使 host 侧与 device ABI 不匹配。修复后，统一在结构体中预留三个固定槽位：两个全局/profile scratch（仅纯 SIMT 生成，但普通模式通过条件生成保留对应 slot），一个 DTData（总是生成）。同时补齐了在参数列表中的对应常量（nullptr 或真实指针）。这保证了 kernel ABI 的稳定性，消除了编译/链接期可能由布局不一致导致的严重错误。",
+      "tags": [
+        "bugfix",
+        "driver-launcher",
+        "backend",
+        "high-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "该变更直接修改了 launcher 源代码生成，影响 kernel ABI 参数结构体布局，若系统内已有依赖旧 ABI 的编译缓存（如旧 kernel binary 和新 launcher 混合），可能造成运行错误。建议新增或更新与 launcher ABI 相关的测试，确保所有可能的 参数组合（print on/off * pure_simt 是/否）下生成的 launcher 结构体大小与 layout 和生成方一致，并通过端到端用例验证设备执行不崩溃，重点覆盖原有可能是组合 bug 的场景。",
+        "suggested_test_areas": [
+          "端到端 launch 测试（含 debug 打印开启/关闭）；parameterized smoke test 验证不同 backend options 下的参数加载",
+          "third_party/ascend/unittest/device_ut/ 下 kernel launch 相关用例"
+        ]
+      },
+      "message": "[Ascend](fix) preserve hidden launch argument slots (#1722)\n\nKeep the two reserved pure-SIMT scratch pointers null until scratch allocation support is ready. Always append the DTData slot, using nullptr when device printing is disabled, so both launch paths match the kernel ABI.\n\nSigned-off-by: Ritsuka314 <Ritsuka@huawei.com>"
+    },
+    {
+      "sha": "6286e671c24bf8f15fc3dbd3d0abb903b170f466",
+      "comment": "该 commit 为 DynamicCVPipeline 引入了完整的同步墙（sync wall）分析与对应处理逻辑，目标是确保排布后的 block_id 不会跨越同步屏障。新增：1) SyncWall 类（utils.h/cpp）：对一个 block 内每个 op 做线性 source order 索引并记录同步点在 ordinal 上的位置，提供 hasSyncBetween/segmentOf/sameSegment 查询；2) MemoryEffectsTracker 的改动：RecordEdges 时丢弃跨 sync 的依赖边（通过 isSyncSeparated），以保证依赖图不会跨 sync 建立；3) CycleDetector 跳过 isSyncOp；4) OpClassifierPass 增加 markSynchronizationOp 步骤，在 pipeline 最前面给 sync 操作分配自己的 block_id 并打上 core_type（基于 tcore_type/mode 属性判定），防止被后续 BFS 或后续阶段误合并；5) PlanCubeBlock / PlanVectorBlock 中的拓扑 partition 调度器按 segment 进行组分割，避免跨 sync；6) FixpipeOpt / MergeCube / MergeVector 等 pass 对 sync op 跳过 block_id 更新；7) 新增 RelocateMemrefDeclPass：遍历 op 寻找跨 sync 的 memref producer，并将其及关联的 closure 下沉到消费者 block 内部，并重设 block_id，保证声明与使用在同一侧。通过该 pass 的 worklist 顺序下沉，并处理了 dominance。注意该实现对循环内 sync 的语义不做更深验证（默认同步点就是排序依据），并且 RelocateMemrefDecl 的 closure 构建逻辑可能存在复杂 IR 中 anchor 找不到导致的保守行为，整体贡献显著。代码质量看着还不错，但逻辑较复杂，需要充分测试。",
+      "tags": [
+        "feature",
+        "refactor",
+        "dynamic-cv-pipeline",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "该 commit 大量修改了 block_id 分配、依赖构建与同步处理逻辑，新增 SyncWall 概念并引入 RelocateMemrefDeclPass。虽已新增 relocate_memref_decl.mlir 覆盖跨 sync alloc 移动场景，但变更影响范围极大（OpClassifier、PlanCubeBlock、PlanVectorBlock、SyncWall、MemoryEffectsTracker、ComputeBlockOpt 各阶段），未对全部受影响 pass 的行为变化做回归测试。建议在以下范围中补充或更新 lit 测试确保无回归，并验证不同 sync 类型（gpu.barrier hivm.sync_block_set/wait/all）的混合场景。",
+        "suggested_test_areas": [
+          "DynamicCVPipeline/PlanComputeBlock/ 下的 PlanCubeBlock/PlanVectorBlock/OpClassifier lit 测试，覆盖带 sync op 的复杂 IR",
+          "DynamicCVPipeline/ComputeBlockOpt/ 下的 ReorderOpsByBlockId、MergeCubeForBlock、MergeVectorIfBlock/FixpipeOpt 中的 sync-skip 行为",
+          "DynamicCVPipeline/AllocMultiCache/ 下测试同步墙屏蔽装载后的依赖图行为",
+          "DynamicCVPipeline/ComputeBlockOpt/RelocateMemrefDeclPass/ 补充多 sync、嵌套循环及不同 core type 场景跨墙 relocation 的用例"
+        ]
+      },
+      "message": "feat: support debug operations (#1826)"
+    },
+    {
+      "sha": "6b587d1a516f96ad1ae22a36ab32497a461a6493",
+      "comment": "增强 MoveLoadIntoUserPass：1) getOriginAlloc 允许 copy 的目标 memref 是 subview/reinterpret_cast 等 view 类型，以追溯到原始的 alloc；2) 在 matchLoadPattern 中，转为检查 first user 是否为 VECTOR_ONLY，若 first user 不是纯 VECTOR 则拒绝移动，而此前未检查；3) 收集依赖时，由基于 operand def-use 的 collectAllDependencies 改为基于 memGraph 的 DependencyHelper，能正确沿 memory dependence 连带收集依赖；4) LOG_DEBUG 输出增强。该 pass 更稳健。逻辑变更可能影响 load 上移的条件，但预期是修复边界情况。",
+      "tags": [
+        "bugfix",
+        "dynamic-cv-pipeline",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "依赖收集方式替换后，pattern 匹配范围可能扩大或缩小（例如原来只考虑 operand，现在考虑 memory deps 可能多收集 ops）。如果该 pass 已有相关 lit 测试，需确保新收集法则不破坏已有 case 的期望结果。若缺少针对该 pass 的测试，建议新增 pass 在 view-related copy 与 load+to_tensor 场景、且 first user 非 VECTOR_ONLY 场景的用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/MoveLoadIntoUserPass/ 下新增/更新 lit 测试"
+        ]
+      },
+      "message": "[ssbuffer](feat) Enhance MoveLoadIntoUserPass (#1865)\n\nCo-authored-by: shaoyiyang <shaoyiyang1@huawei.com>"
+    },
+    {
+      "sha": "c92c5585a6f671349104d22f1013fa2fe6d06afc",
+      "comment": "该 commit 将 NPU_DEVICE_LIMIT 环境变量相关提示从默认 INFO 打印改为仅在 TRITON_DEBUG=1 时输出 DEBUG 信息。修改了同级 else 分支的 print 逻辑，改动非常简单，属于日志治理/体验优化，无功能影响。",
+      "tags": [
+        "chore",
+        "driver",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "变更仅影响日志输出级别，不涉及核心逻辑，无需新增测试或修改现有测试。但如果存在针对标准输出/错误日志的测试用例，需检查是否有用例断言了该 INFO 日志。",
+        "suggested_test_areas": []
+      },
+      "message": "[NPU_DEVICE_LIMIT](feat) print msg when debug (#1859)\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>"
+    },
+    {
+      "sha": "7d0fd45332a6da04d6ad9e8f0388580079e90af8",
+      "message": "[libdevice](fix) Standardized libdevice operation interface (#1871)",
+      "comment": "该 commit 旨在标准化 Ascend CANN libdevice 的函数接口，修复已发布的接口与内部实现的一致性和兼容性。主要包含：1) 统一/修正函数名称拼写错误（livdevice->libdevice）及表述统一；2) 为 mulhi/mul24/hadd/rhadd/sad 等函数在 SIMD 模式下扩展了对 unsigned 类型的支持（如 __hmf_mulhi_u32/__hmf_umul24_u32 等），并为新版 CanonicalNpuCompiler libdevice 增加对应符号映射；3) pow 在 A5 目标 fp32+int32 场景新增 _powi 映射；4) 引入 _deprecated 装饰器，将 uhadd/umul24/umulhi/urhadd/usad 等旧接口标记为过期并委托到新的标准实现，以维持兼容性；5) 删除多个非标准/不支持建议保留的 64 位变体接口（brevll/clzll/llabs/mul64hi/popcll/powif/umul64hi）。会破坏使用被删除 API 的旧用户代码编译。同时上传了新编译的 libdevice.10.bc，与 python 接口定义保持一致。整体是好的演进，但属 breaking change。",
+      "tags": [
+        "refactor",
+        "bugfix",
+        "libdevice",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "该更改对 libdevice 接口进行了大量重构：包含删除若干已导出的 API（如 brevll/clzll/llabs/mul64hi/popcll/powif 等），引入废弃警告，以及对多次调用函数（mulhi/mul24/hadd/rhadd/sad）扩展 uint 支持。需要在语言层测试中确认 1) 被删除 API 已无任何依赖；2) 其余旧 API（uhadd/umul24 等）仍能通过 DeprecationWarning 正常工作；3) 新增 uint 分支能覆盖 simd 路径的 func 名正确绑定到新 libdevice。还应对 simd + simt 路径的 mapped function 名新增集成测试。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/ 下 libdevice 相关测试或新增 libdevice_standard_api_test.py",
+          "指定编译模式（simd）下使用 uint32 参数的 mulhi/mul24/hadd/rhadd/sad 用例",
+          "确认将旧接口标记 deprecated 后，对应用例在静默忽略 warning 的情况下仍能通过。"
+        ]
+      }
+    },
+    {
+      "sha": "15bc21853f568f8f2aeb1e5d6ccfe3949aa83faa",
+      "comment": "此变更修复了 `getBoundarySizes()` 的两个缺陷。一是当 `boundary_check` 未包含某非零 stride 轴时，其 offset 贡献未被从总 offset 中剥除，导致已检查的后续轴的边界被过度裁剪，静默丢失数据；二是当 `boundary_check` 包含零 stride（广播）轴时，代码会执行除零并输出错误。修复统一在循环中处理所有非零 stride 轴对 offset 的剥除，并对零 stride 轴发出警告、跳过处理。这一修复直接规避了 make_block_ptr 自动边界检查在特定形状下的错误编译与数据丢失。变更连带新增了覆盖两种缺陷的 lit 与 pytest 测试。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "TritonToLinalg"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "修复直接修正了数据丢失与除零的编译行为，新增了针对未检查轴和零步长广播轴的 lit 测试及端到端 Python 测试，两者对修复均构成直接验证。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/test_make_block_ptr_boundary_size.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_make_block_ptr_boundary_size.py"
+        ]
+      },
+      "message": "[TritonToLinalg](fix) boundary size Error for make_block_ptr (#1850)"
+    },
+    {
+      "sha": "fe023724668d339bc7524b40ec2960c5099517cf",
+      "comment": "纯文档变更，为快速入门文档（英文+中文）在末尾新增了“下一步”开发引导，指引用户从算子开发、Autotune、调试到迁移的全流程路径，并罗列了对应的开发指南链接表格。便于用户从安装验证过度到实际算子开发，提升文档可操作性。",
+      "tags": [
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "该提交仅做文档增补（新增章节），没有变更代码逻辑或测试相关文件。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](fix) extend quick start with next-step development index (#1927)"
+    },
+    {
+      "sha": "3834dda528a1bee00b348e68191e4f12a89f84c9",
+      "comment": "此 CI 变更有两部分：1. 在 documentation workflow 上新增了 `docs-examples-npu` 测试任务，对文档中 Python API 示例进行端到端测试；2. 对受 A3/950 芯片限制的 libdevice SIMT 示例加入了精确的 skipif/if 守卫，按 `triton_enable_libdevice_simt()` 判断跳过。还包括 A3 上无法运行的示例的统一开关设置，以及修正了 `sad` 示例的 assert dtype。此变更确保了文档示例不再因硬件适配问题而在 CI 中失败，让文档具备了可验证、易维护的特性。",
+      "tags": [
+        "ci",
+        "test",
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增的 `docs-examples-npu` CI 任务直接运行文档中 Python API 示例（docs/zh/python-api/_examples/），需要这些示例作为可执行测试来保持库稳定。此外，各 libdevice 示例文件均被修改以适配不同硬件上的跳过逻辑，确保测试矩阵正确执行。",
+        "suggested_test_areas": [
+          ".github/workflows/documentation.yml",
+          "docs/zh/python-api/_examples/"
+        ]
+      },
+      "message": "[CI](feat) Add docs-example test job to documentation workflow (#1926)\n\n* [CI](feat) Add docs-example test job to documentation workflow\n\n* [Docs](fix) Skip SIMT libdevice examples on A3\n\n---------\n\nCo-authored-by: TA Sync Bot <ta-sync-bot@users.noreply.github.com>"
+    },
+    {
+      "sha": "d248ffbdcd666f4afb9ffe7ad3bdc1c0782d069f",
+      "comment": "此为与编译器选项治理配套的文档同步变更。核心是删除了大量已废弃的编译选项与相关环境变量（如 TRITON_ALL_BLOCKS_PARALLEL、enable_linearize、stream 等）的说明，并新增了兼容性指南，解释了新旧选项的映射与未来移除计划。同时更新了默认 `compile_mode` 为 `unstructured_in_simt` 的新等价值 `simd_simt_template`，并新增了 `enable_graph_optimize`、`bisheng_options`、`enable_cube_block_merge`、`enable_vf_fusion`、`buf_slot_num_of_*` 等新选项。这是一篇大规模文档修订，反映了后端编译选项管理的重大变化。注意本提交是纯文档改动。",
+      "tags": [
+        "docs",
+        "low-risk",
+        "compiler"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "本提交仅包含文档变更，没有修改任何编译或测试代码，无直接的测试更新需求。但作为编译选项清理的一部分，后续如有 test 使用旧选项，则需对应更新（当前暂无）。",
+        "suggested_test_areas": [
+          "docs/en/",
+          "docs/zh/"
+        ]
+      },
+      "message": "[compiler](docs) modify docs for compile options cleanup (#1902)"
+    },
+    {
+      "sha": "6fe4fa05100155f0795c6814877f6557a5e9e507",
+      "comment": "此变更移除了在 bishengir-compile 中对 Ascend 950 目标强制追加的 `--enable-lib-call-no-inline=false` 选项。该选项会改变 vendor 代码生成方式并导致内核性能回退。提交同时删除了为支持该选项而引入的 `_needs_lib_call_no_inline()` 和 `_npu_compiler_supports_option()` 两个辅助函数。由于这些函数与选项均为本后端回归的根源，移除后编译路径更干净，避免因编译器版本不同导致的行为差异，减少了特定目标的代码生成隐患。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "medium-risk",
+        "compiler",
+        "bisheng"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "此变更仅关闭了可能导致 vendor 编译器后端行为回归的选项，并移除了辅助函数，未改变 IR 生成逻辑层面行为，因此无新建测试需求。现有 910/950 后端的编译链路测试仍可验证此改动。",
+        "suggested_test_areas": []
+      },
+      "message": "[backend](fix) remove lib-call no-inline option (#1923)\n\nStop passing --enable-lib-call-no-inline=false to bishengir-compile for Ascend950 targets. The explicit override changes vendor code generation and regresses kernels that worked before it was introduced.\n\nRemove the target and compiler-capability helpers that were only used to append this option.\n\n\n(cherry picked from commit 8e833b8f77d66f9c26978b285cedf7a442f67735)\n\nSigned-off-by: zhanwei33 <22679270+zhanwei33@users.noreply.github.com>\nCo-authored-by: zhanwei33 <22679270+zhanwei33@users.noreply.github.com>"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

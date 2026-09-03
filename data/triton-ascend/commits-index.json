@@ -1,4 +1,84 @@
 {
+  "984e1453756aa43cc47082ccf8c386c1ebcf791b": {
+    "date": "2026-09-03",
+    "msg": "[ssbuffer](fix) Add attribute for external sync ops"
+  },
+  "f06354b535c04565a63d286a6166c4e9fce154fe": {
+    "date": "2026-09-03",
+    "msg": "[ssbuffer](fix) Fix the type inconsistency between constant and forOp step value (#1892)"
+  },
+  "1d0c129a71662916daeacfdf3d006d211eb48bb7": {
+    "date": "2026-09-03",
+    "msg": "[ssbuffer](fix) Remove fallback by name for some kernel (#1896)"
+  },
+  "86daea7f3ee2c80bd0045d9ae524c152afc5bdc6": {
+    "date": "2026-09-03",
+    "msg": "[ssbuffer](feat) extend scenario in splitmatmul (#1617)"
+  },
+  "6ff6d725a66a09a30b5fd1fa0de4216436244341": {
+    "date": "2026-09-03",
+    "msg": "[TritonOP](feat) Add al.conv2d op (#1819)"
+  },
+  "54bb7c0405a2734a34838d37274fe34d94da2d91": {
+    "date": "2026-09-03",
+    "msg": "[ssbuffer](fix) Fallback when outer-scope double-buffer run out of flag (#1866)"
+  },
+  "237e60d9efd5a6626a33fa12d0ac365379f8caf8": {
+    "date": "2026-09-03",
+    "msg": "[ControlFlowOpt](test) Restore indirect pointer cast test (#1890)"
+  },
+  "6686cb656fa28a94842de67f1f29c531bde5edad": {
+    "date": "2026-09-03",
+    "msg": "[ssbuffer](fix) fixpipe should consider scf.for (#1885)"
+  },
+  "e00857dc15059a464e187c7fcad2f99f960eeea0": {
+    "date": "2026-09-03",
+    "msg": "[tritonop](NFC) move gather_2d_simd to tutorials and add depreca… (#1868)"
+  },
+  "dbce52f72b23f1b93191bfc9c7e42c45e1025b4c": {
+    "date": "2026-09-03",
+    "msg": "[ssbuffer](fix) Use llvm::erase_if instead of std::remove_if (#1888)"
+  },
+  "97b4e252ca7cba9d0ca864b7645dcb52fceba215": {
+    "date": "2026-09-03",
+    "msg": "[Ascend](fix) preserve hidden launch argument slots (#1722)"
+  },
+  "6286e671c24bf8f15fc3dbd3d0abb903b170f466": {
+    "date": "2026-09-03",
+    "msg": "feat: support debug operations (#1826)"
+  },
+  "6b587d1a516f96ad1ae22a36ab32497a461a6493": {
+    "date": "2026-09-03",
+    "msg": "[ssbuffer](feat) Enhance MoveLoadIntoUserPass (#1865)"
+  },
+  "c92c5585a6f671349104d22f1013fa2fe6d06afc": {
+    "date": "2026-09-03",
+    "msg": "[NPU_DEVICE_LIMIT](feat) print msg when debug (#1859)"
+  },
+  "7d0fd45332a6da04d6ad9e8f0388580079e90af8": {
+    "date": "2026-09-03",
+    "msg": "[libdevice](fix) Standardized libdevice operation interface (#1871)"
+  },
+  "15bc21853f568f8f2aeb1e5d6ccfe3949aa83faa": {
+    "date": "2026-09-03",
+    "msg": "[TritonToLinalg](fix) boundary size Error for make_block_ptr (#1850)"
+  },
+  "fe023724668d339bc7524b40ec2960c5099517cf": {
+    "date": "2026-09-03",
+    "msg": "[Docs](fix) extend quick start with next-step development index (#1927)"
+  },
+  "3834dda528a1bee00b348e68191e4f12a89f84c9": {
+    "date": "2026-09-03",
+    "msg": "[CI](feat) Add docs-example test job to documentation workflow (#1926)"
+  },
+  "d248ffbdcd666f4afb9ffe7ad3bdc1c0782d069f": {
+    "date": "2026-09-03",
+    "msg": "[compiler](docs) modify docs for compile options cleanup (#1902)"
+  },
+  "6fe4fa05100155f0795c6814877f6557a5e9e507": {
+    "date": "2026-09-03",
+    "msg": "[backend](fix) remove lib-call no-inline option (#1923)"
+  },
   "5377005e8f980a1a8ad8d02fe53b85d1f503c424": {
     "date": "2026-09-02",
     "msg": "[Docs](feat) update libdevice developer guide docs (#1844)"

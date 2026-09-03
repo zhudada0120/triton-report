@@ -1,0 +1,236 @@
+{
+  "date": "2026-09-03",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-09-04T04:13:26.485443+08:00",
+  "daily_summary": "当日提交主要集中在 AMD 后端优化（warp_id 降低统一使用 readfirstlane 提升性能）、公共 instrumentation 基础设施重构（统一 pass 插桩接口，AMD/NVIDIA 后端及 Proton 迁移至新接口，同时修复异步编译中异常 future 的资源泄漏问题）。此外还包括多个 bugfix/优化：NVIDIA FP4 布局转换直接路径绕过中间存储大幅提速、回滚内联汇编副作用去重逻辑、移除 blocked layout 中零寄存器基、修复 while 循环 yield 的 layout 传播、支持 tensor 类型 atomic_poll、冗余 abs+redux 融合、HIP 链接后 NVPTX 调度器设置恢复，以及 CI 新增 ROCm 10.1 支持。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 整体影响较小。涉及公共基础设施的变更（instrumentation 新接口、async compile 修复）均向后兼容，Ascend 后端可无修改继续使用。AMD 与 NVIDIA 相关优化（warp_id lowering、FP4 布局转换、revert、layout 变更、atomic_poll 扩展）均为平台特定逻辑，不影响 Ascend。CI 变更仅影响 AMD 测试流程。",
+  "commits": [
+    {
+      "sha": "5c3efd76ab88959a37c7307824bf67fc02a94a30",
+      "comment": "重构 AMD warp_id lowering，移除仅 CDNA3/CDNA4 才使用 readfirstlane 的 gating，改为所有架构统一使用 v_readfirstlane 包裹 udiv 结果。同时将测试覆盖扩展至 gfx90a/gfx1100，并新增 WAVEID（gfx1200/gfx1250）独立检查。目的是利用 readfirstlane 将数据移入 SGPR，从而让 LLVM 的 uniformity analysis 能更好地识别 warp 均匀数据并生成更高效的 SALU 指令。变更安全，readfirstlane 自 gfx6 起可用且无架构限制，风险较低，属于性能优化。",
+      "tags": [
+        "performance",
+        "amd-backend",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Always readfirstlane in non-direct warp_id lowering (#11570)\n\nTriton currently lowers `ttg.warp_id` in 3 different ways, depending on\nISAFamily\n\n1. With `rocdl.wave.id` instruction when supportsWaveId()\n(RDNA4/GFX1250) only\n2. With `v_readfirstlane` wrapped around the udiv for CDNA3/CDNA4\n3. With a plain `udiv` otherwise\n\nThe 2nd lowering allows LLVM's uniformity analysis to understand better\nwhen data is warp uniform, therefore generating more efficient code.\nHowever it's currently gated to CDNA3/CDNA4 for the wrong reason,\nmissing performance optimization opportunities.\n\nThe `readfirstlane` instruction is supported in all archs since gfx6.\nAlso note that `ROCDL::ReadfirstlaneOp` has no arch target predicate, so\nremoving this gate is safe.\n\nBy removing this gate, we have seen solid performance improvements\n(~10%) in our end on archs that fall outside this ISAFamily gate"
+    },
+    {
+      "sha": "39d2e100fdd8019c849183930fc36fa6477d4678",
+      "comment": "在 `python/triton/_instrumentation.py` 引入统一的 API 并迁移 AMD/NVIDIA 后端及 Proton 插件。新增模块 `_instrumentation.py` 提供 `register_instrumentation`、`unregister_instrumentation`、`instrument`、`is_enabled` 等接口，基于 (point, backend) 键维护回调字典。原 `backend.instrumentation` 类属性被移除，改为在编译流程中的特定位置（load-dialects、ttgpuir-to-llvmir、llvmir-to-llvm）调用 `instrument()`。同时将 `language/core.py` 和各个后端/驱动中直接判断 `instrumentation_mode` 的逻辑统一改为使用 `is_enabled()` 工具函数（支持 mapping 或 object 两种 options 形态）。测试新增对 instrumentation 动态注册、生效与取消的校验。该重构统一了扩展点并简化后端注入方式，对自定义 instrumentation 的注册语义有所增强（重复注册会报错）。",
+      "tags": [
+        "refactor",
+        "backend",
+        "proton",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "为新增的 `_instrumentation.py` 模块，新增公共工具函数 `is_enabled` 等；不影响现有 BaseBackend/DriverBase 接口面，后端抽象（BaseBackend/DriverBase）未新增抽象方法，Ascend 后端可继续工作。仅当未来需要接入相同机制时才可能受益。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[INSTRUMENT] Unify pass instrumentation interface (#11522)"
+    },
+    {
+      "sha": "e51f653d5f33068f059d9ebb26a17288f11a6f32",
+      "comment": "修复异步编译资源泄漏问题。核心问题：当未来尚未解析（exception）或已解析后，Future 对象及其持有的异常 traceback 会间接引用 compiler 内部对象（如编译 module/context 等）造成泄漏。解决方法：FutureKernel 增加 `cleanup_compile` 回调，在异常时调用（清理 kernel_cache 中的占位），并在成功或失败后置空 self.future；清理汇总的 raw_futures 与 future_kernels 状态。同时在测试中验证失败 future 从 cache 中移除，避免重复 resolve。此修复消除 CI 中 nanobind 实例泄漏告警，属于健壮性改进。",
+      "tags": [
+        "bugfix",
+        "runtime",
+        "compiler",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "仅影响 python/triton/runtime/_async_compile.py 内部实现（FutureKernel/AsyncCompileMode）及异步路径调用方 jit.py。AsyncCompileMode 是通用公共运行时组件，Ascend 后端复用此机制，但本变更仅更新内部协议（FutureKernel.reset 内部调用 submit(fn, compile, cleanup)），未改变对外接口，因此 Ascend 无需改动。若存在自定义继承 AsyncCompileMode 的后端，则需同步其 submit() 签名。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[RUNTIME] Clear failed async compile futures (#11552)\n\n- remove failed async compile placeholders from JIT caches\n- release completed futures and callbacks so exception tracebacks do not\nretain compiler objects\n\nget rid of the following warnings in the CI\n\n```\n nanobind: leaked 1 instances!\n  - leaked instance 0x62867d30 of type \"triton._C.libtriton.ir.context\"\n    nanobind: leaked 5 types!\n  - leaked type \"triton._C.libtriton.ir.builder\"\n  - leaked type \"MEM_SEMANTIC\"\n  - leaked type \"triton._C.libtriton.ir.type\"\n  - leaked type \"triton._C.libtriton.ir.context\"\n  - leaked type \"triton._C.libtriton.ir.value\"\n    nanobind: leaked 209 functions!\n  - leaked function \"get_insertion_point\"\n  - leaked function \"create_minimumf\"\n  - leaked function \"create_maximumf\"\n  - leaked function \"create_xor\"\n  - leaked function \"create_select\"\n  - leaked function \"create_minnumf\"\n  - leaked function \"is_integer\"\n  - leaked function \"create_fcmpUGT\"\n  - leaked function \"create_icmpEQ\"\n  - leaked function \"extend_with\"\n ```",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/runtime/jit.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "e08ec196b4abae13c40ee73fbffe9ad70db7582c",
+      "comment": "优化 Blackwell FP4 布局转换性能：当在 BlackwellMXValueLayout 与 BlackwellMX4ValueShuffledLayout 之间转换且均为 CUDA 上的 uint8 packed 存储时，直接复用 shuffled layout 的 stride-aware kernel（开启 K packing 选项）进行纯字节内存拷贝，避免先解包到 canonical 布局再 repack 的中间步骤（可节省峰值额外分配 50%）。为 forward 及 reverse 两条路径分别补充直接转换分支，并在 reverse 方向为 out 创建列主序存储以满足 kernel 要求。新增大量测试覆盖 shapes、tiles、切片、out 语义、填充保护、分配峰值，性能提升 40x 以上。",
+      "tags": [
+        "performance",
+        "nvidia-kernels",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[KERNELS] Convert between Blackwell FP4 layouts directly (#11563)\n\n## Summary\n\nConverting packed 4-bit floating-point (FP4) values between\n`BlackwellMXValueLayout` and `BlackwellMX4ValueShuffledLayout` currently\nrepacks bytes into canonical storage and then back into K-packed\nstorage. Both layouts already pack the K dimension, so this intermediate\nadds memory traffic and a weight-sized allocation without changing the\nlogical values.\n\nDispatch both directions through the shuffled layout's existing\nstride-aware conversion kernel with K packing enabled. The conversions\ncopy packed bytes directly and support caller-provided `out` buffers and\nsliced storage. The forward direction ignores source padding and zeros\nshuffled destination padding. The direct reverse path writes only\nlogical bytes; plain Blackwell padding remains unspecified, and padding\nin supplied output buffers is left untouched. Other inputs retain the\nexisting fallback.\n\n## Validation\n\nTested on NVIDIA GB300 GPUs on an aarch64 host with the installed Triton\n3.8.0 compiler and this branch's `triton_kernels` sources.\n\n```sh\nPYTHONPATH=python/triton_kernels python -m pytest -s --tb=short python/triton_kernels/tests/test_tensor.py -k blackwell_fp4_shuffle\n```\n\nRegression coverage exercises both directions with ranks 2–5, aligned\nand padded shapes, alternate tile sizes, empty tensors, sliced\ninput/output storage, CPU/meta/CUDA paths, byte equality over logical\nvalues, roundtrips, output-padding preservation, and peak allocation\nwith and without `out`.\n\nAdditional standalone checks in both directions passed for 65,537\nbatches, input and output buffers larger than 2 GiB, a different current\nCUDA device, a nondefault stream, non-byte storage fallback, and fake\nCPU tensors. For an 8 MiB output, measured peak additional allocation\nfell from 16 MiB through canonical storage to 8 MiB through direct\nconversion in both directions.\n\nSynthetic conversion benchmarks used\n`triton.testing.do_bench_cudagraph(rep=100)` on one GB300. Each baseline\nexplicitly composes the source's `unswizzle_data` and destination's\n`swizzle_data` using the same compiler and source snapshot as its\ndirect-conversion measurement. Logical output bytes matched the\nreference in every case. Improvement is canonical-path time divided by\ndirect-conversion time.\n\n### Plain → shuffled\n\n| Logical shape `[batch, K, N]` | Canonical path | Direct conversion |\nImprovement |\n| --- | ---: | ---: | ---: |\n| `[4, 64, 64]` | 0.01775 ms | 0.00132 ms | 13.4x |\n| `[8, 3072, 4096]` | 0.54885 ms | 0.01338 ms | 41.0x |\n| `[16, 3072, 4096]` | 1.12805 ms | 0.03006 ms | 37.5x |\n| `[64, 3072, 4096]` | 4.71011 ms | 0.11388 ms | 41.4x |\n| `[256, 3072, 4096]` | 18.76957 ms | 0.44985 ms | 41.7x |\n| `[2, 4096, 8192]` | 0.36042 ms | 0.00713 ms | 50.5x |\n| `[16, 4096, 8192]` | 3.10246 ms | 0.07694 ms | 40.3x |\n| `[64, 4096, 8192]` | 12.33963 ms | 0.30228 ms | 40.8x |\n| `[256, 4096, 8192]` | 49.29435 ms | 1.20041 ms | 41.1x |\n\n### Shuffled → plain\n\n| Logical shape `[batch, K, N]` | Canonical path | Direct conversion |\nImprovement |\n| --- | ---: | ---: | ---: |\n| `[4, 64, 64]` | 0.01704 ms | 0.00114 ms | 14.9x |\n| `[8, 3072, 4096]` | 0.53339 ms | 0.01195 ms | 44.6x |\n| `[16, 3072, 4096]` | 1.09479 ms | 0.03044 ms | 36.0x |\n| `[64, 3072, 4096]` | 4.56858 ms | 0.11555 ms | 39.5x |\n| `[256, 3072, 4096]` | 18.18451 ms | 0.45454 ms | 40.0x |\n| `[2, 4096, 8192]` | 0.36055 ms | 0.00710 ms | 50.8x |\n| `[16, 4096, 8192]` | 3.05142 ms | 0.07799 ms | 39.1x |\n| `[64, 4096, 8192]` | 12.13680 ms | 0.30443 ms | 39.9x |\n| `[256, 4096, 8192]` | 48.43273 ms | 1.20905 ms | 40.1x |\n\nThese measure conversion GPU time; end-to-end model startup was not\nmeasured.\n\n## Lines Changed\n\n| Type | Added | Removed | Net |\n| --- | ---: | ---: | ---: |\n| Tests | 79 | 0 | 79 |\n| Core Logic | 13 | 0 | 13 |\n| AutoGenerated | 0 | 0 | 0 |\n| Total | 92 | 0 | 92 |\n\n## Reviewers Guide\n\n-\n`python/triton_kernels/triton_kernels/tensor_details/layout_details/blackwell_value_shuffled.py`:\ndirect conversion in both directions, reusing the existing kernel and\nallocating padded column-major storage for the reverse direction.\n- `python/triton_kernels/tests/test_tensor.py`: conversion correctness,\npadding, and peak-allocation regression tests in both directions.\n- No files are primarily movements."
+    },
+    {
+      "sha": "f4b2da9547fcc6ff8b5e7003ab8ee946be766f63",
+      "comment": "回滚内联汇编副作用去重（#11511）：移除对 impure `tt.elementwise_inline_asm` 的冗余线程抑制、shared memory 传输与跨 CTA 广播逻辑，恢复具备副作用 asm 在原始每个复制线程中执行的行为。同时保留 #11540 引入的 shared broadcast helpers（用于 atomic_poll 结果）。相应地移除 Allocation/BufferRegion/Utility 中关于 inline asm 的特殊处理，ElementwiseOpToLLVM 转换简化，回归到直接生成 LLVM::InlineAsmOp。删除相关 Gluon/lit 测试。此回滚说明原优化方案在某些边界条件下正确性存疑，优先恢复保守行为。",
+      "tags": [
+        "bugfix",
+        "revert",
+        "nvidia",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BAKCEND] Revert inline assembly side-effect deduplication (#11564)\n\nReverts #11511 to restore the previous execution behavior of\nside-effecting inline assembly, including thread participation in inline\nbarriers and fences.\n\nRetains the shared broadcast helpers now used by tensor atomic_poll from\n#11540, along with its scratch allocation and tests.\n\nValidation: native build, pre-commit, and all 114 lit tests in\nConversion, Analysis, and TritonNvidiaGPU passed. GPU runtime tests were\nnot run.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "include/triton/Dialect/Triton/"
+        ],
+        "recommend_refresh": true
+      }
+    },
+    {
+      "sha": "7ff97e310935b4a79794878dbc911f9af25d38d9",
+      "comment": "BlockedEncodingAttr 转 LinearLayout 时调用 `.removeZeroBasesAlongDim(S(\"register\"))` 省略所有零值 register 基（即寄存器的广播/复制维度）。这会使得部分仅存在零寄存器基差异的 blocked layout 在转换为 linear layout 后变得等价，进而可能消除冗余 convert_layout 指令；也使 expand_dims 的 slice 操作在布局层面变为 no-op。同步更新 AMD InThreadTranspose 逻辑（零基不再纳入结果）以及若干 lit 测试中的期望 linear layout。属于底层布局表示精度调整，可能对部分 lowering 行为产生影响，风险中低。",
+      "tags": [
+        "refactor",
+        "ttgir-layout",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BC BREAKING] Remove zero register bases from blocked layouts  (#11541)\n\nDrop the zero register bases in blocked layouts when we convert them to\nlinear layouts. This makes more blocked layouts equivalent when\nconverted to linear layouts, so in principle it can eliminate some\nconvert layouts. It also makes `expand_dims` of a slice of a block\nlayout a no-op, which helps unblock #10796 without needing to add\nbroadcasting to sliced encoding."
+    },
+    {
+      "sha": "0b1ef3be704d5f8f3e994c33cf8c0bc5ab2a98f7",
+      "comment": "修复 RemoveLayoutConversions 中 LayoutPropagation 对 scf.WhileOp 的处理：原先将 while 的 yield 操作数直接映射到 while 的 results（与 For/If 一样），但 while 的 body-region 与 results 的 arity/type 可能不同（例如 body 传入参数是 before-region 的迭代变量类型）。正确行为是传播到 scf.condition 操作中的 before 参数（即下一次迭代输入）。新增两个测试覆盖 no-result while 循环（避免 crash）与 input/result 类型不同场景。",
+      "tags": [
+        "bugfix",
+        "ttgir-transforms",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Fix layout propagation for while-loop yields (#11558)\n\nPropagate `scf.while` body yields to the before-region arguments, not\nthe loop results. While inputs and results may have different arities\nand types, so treating a yield operand as a result can crash layout\nconversion removal or propagate an invalid layout."
+    },
+    {
+      "sha": "0b859826322d2e3c13b6e050b521e40a2dd86ef2",
+      "comment": "CI 基础设施变更：AMD integration-tests workflow 添加 rocm10.1.0a 镜像（gfx950）与对应 job；移除单独的 rocm7.12 proton-tests-amd job，并将 proton 测试并入主 integration-tests-amd（通过环境变量控制）。抽取 clean_rocprofiler_env 辅助函数解决 subprocess 环境继承问题。属纯 CI/测试脚本调整，不影响编译产物。",
+      "tags": [
+        "ci",
+        "amd",
+        "test",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[CI][AMD] Add rocm10.1 support for gfx950 (#11487)"
+    },
+    {
+      "sha": "e2f26d2201a2b9a09d8a7cdaee61111d5005f939",
+      "comment": "修复 HIP 链接导致 NVPTX 调度器状态丢失的问题。LLD 链接 HIP hsaco 时会调用 ResetAllOptionOccurrences 清空所有 LLVM command-line options，导致 Triton 注册过的 custom scheduler 策略被重置，后续 NVIDIA 编译便静默忽略 sched4reg 设置。修复方式：直接修改 scheduler option 的 default 值（setInitialValue），使得每次 reset 后 option 回到 triton dispatcher，而非通过 addOccurrence 设置本次运行值。新增测试确保先执行 HIP 链接不会污染后续 NVIDIA 编译设置。",
+      "tags": [
+        "bugfix",
+        "nvidia-backend",
+        "compiler",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Preserve NVPTX scheduler across HIP linking (#11547)\n\nCompiling a HIP kernel invokes LLD, which calls\n`ResetAllOptionOccurrences()` and resets `pre-RA-sched`. Triton installs\nits scheduler dispatcher only once, so subsequent NVIDIA compilations\nsilently ignore `sched4reg`, making the CI failure depend on test order.\n\nUse `setInitialValue()` to make Triton’s dispatcher the option’s\ndefault, preserving the requested scheduling policy after LLVM options\nare reset."
+    },
+    {
+      "sha": "d66e9c0980615247fa193e52eba8f265fa06f48c",
+      "comment": "将 `tt.atomic_poll` 从标量扩展为亦支持 tensor pointer / tensor expected（结果返回同 shape 的 bool tensor）。核心变化：IR 定义使用 TT_PtrLike/TT_IntLike/TT_BoolLike 并 added SameOperandsAndResultEncoding；前端 semantic 层去掉禁止 block 的校验并广播 ptr/expected；LLVM lowering 将指针展开为逐元素 polling 并用共享超时预算；`allocating shared memory` 用于复制结果的广播；GSan instrumentation 同样更新为遍历元素。interpreter 中 create_atomic_poll 支持逐元素轮询。同时补充大量语言前端与 Gluon/GSan/AMD lit 测试确保正确性。该特性可能涉及硬件 barrier/fence 的语义保证，为较复杂变更。",
+      "tags": [
+        "feature",
+        "nvidia",
+        "ttir",
+        "high-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Generalize atomic_poll to tensor pointers (#11540)\n\nAllow `atomic_poll` to accept tensor pointers and return a boolean with\nthe same shape and layout. Scalar and tensor inputs share one polling\nstate machine, including per-element timeouts, layout-based owner\nelection, and an acquire fence after successful polls. The block waits\nfor all polls to finish; timeout results are shared with replicated\nthreads and CTAs. Update the frontend, verifier, interpreter, scratch\nallocation, and GSan instrumentation accordingly.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "include/triton/Dialect/Triton/",
+          "lib/Dialect/Triton/",
+          "python/triton/language/semantic.py",
+          "python/triton/runtime/interpreter.py"
+        ],
+        "recommend_refresh": true
+      }
+    },
+    {
+      "sha": "57d94efc5318446b759101ed1a59e509bd90432b",
+      "comment": "在 CanonicalizeLLVMIR pass 增加 FoldAbsIntoReduxPattern：若 `nvvm.redux.sync` 的输入是 `llvm.fabs` 结果且 redux kind 为 FMAX/FMIN，则将该 abs 折叠进 redux op 的 abs attribute（NVVM 指令原生支持对输入取绝对值后再 reduce），并删除独立 abs 指令。因为属于对 LLVM intrinsic 层面的模式重写，只在 SM100 上生效，测试覆盖 max/min、NaN 语义及多值场景（要求保持独立 abs 指令）。属于 nvidia 后端代码质量优化。",
+      "tags": [
+        "performance",
+        "nvidia-backend",
+        "canonicalization",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Canonicalize abs + redux.{min,max} (#11537)\n\nWe can emit a single instruction for this, and it looks like neither\nLLVM nor PTX do this fusion today."
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

@@ -147,6 +147,18 @@
       "interface_changes": "该提交修复 interpreter 模式下 tl.sum 在 int32 溢出时抛 Python OverflowError 而非像编译内核那样 wrap around 的问题。修复路径：ReduceScanOpInterface.to_tensor 的标量路径，将 np.array([ret], dtype=np_dtype) 改为 np.array([ret]).astype(np_dtype)，匹配 shaped path 的 astype 窄化行为。测试放宽为整数 sum 用 assert_equal 精确比较。变更影响 python/triton/runtime/interpreter.py。",
       "change_summary": "[INTERPRETER] Fix integer overflow in tl.sum (#11531)",
       "ascend_impact": false
+    },
+    "e51f653d5f33068f059d9ebb26a17288f11a6f32": {
+      "date": "2026-09-03",
+      "affected_modules": [
+        "python/triton/runtime/jit.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/runtime/jit.py"
+      ],
+      "interface_changes": "修复异步编译资源泄漏问题。核心问题：当未来尚未解析（exception）或已解析后，Future 对象及其持有的异常 traceback 会间接引用 compiler 内部对象（如编译 module/context 等）造成泄漏。解决方法：FutureKernel 增加 `cleanup_compile` 回调，在异常时调用（清理 kernel_cache 中的占位），并在成功或失败后置空 self.future；清理汇总的 raw_futures 与 future_kernels 状态。同时在测试中验证失败 future 从 cache 中移除，避免重复 resolve。此修复消除 CI 中 nanobind 实例泄漏告警，属于健壮性改进。",
+      "change_summary": "[RUNTIME] Clear failed async compile futures (#11552)",
+      "ascend_impact": false
     }
   }
 }

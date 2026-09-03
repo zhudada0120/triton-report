@@ -1,7 +1,7 @@
 {
-  "content_hash": "24ecc4d4279dd26e",
+  "content_hash": "809771588c1e0556",
   "analysis": {
-    "interface_summary": "定义 2 个类；定义 125 个函数",
+    "interface_summary": "定义 2 个类；定义 129 个函数",
     "key_interfaces": [
       "MockThreadPool",
       "DictRemoteCacheBackend",
@@ -15,5 +15,5 @@
       "DictRemoteCacheBackend.put"
     ]
   },
-  "cached_at": "2026-08-26T13:07:11.074521+08:00"
+  "cached_at": "2026-09-04T04:13:26.731158+08:00"
 }

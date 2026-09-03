@@ -1,0 +1,18 @@
+{
+  "content_hash": "5421e692e62c00bd",
+  "analysis": {
+    "interface_summary": "定义 2 个类；定义 7 个函数",
+    "key_interfaces": [
+      "FutureKernel",
+      "AsyncCompileMode",
+      "FutureKernel.__init__",
+      "FutureKernel.result",
+      "FutureKernel.__getattr__",
+      "AsyncCompileMode.__init__",
+      "AsyncCompileMode.submit",
+      "AsyncCompileMode.__enter__",
+      "AsyncCompileMode.__exit__"
+    ]
+  },
+  "cached_at": "2026-09-04T04:13:26.732232+08:00"
+}
