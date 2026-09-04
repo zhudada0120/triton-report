@@ -1,0 +1,67 @@
+{
+  "date": "2026-09-04",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-09-05T03:58:42.441212+08:00",
+  "daily_summary": "当日变更集中在三个方向：1) AMD 后端为 RDNA4m (gfx117x) 架构补齐 buffer atomic RMW、f32 buffer atomic fadd 及 IEEE min/max 指令支持，并扩充相应 lit 测试；2) Triton kernels 库重构 Blackwell FP4 layout 元数据，将物理 strides 收敛到 layout 变换类，消除重复算法并迁移/精简测试；3) NVIDIA 后端将 PlanCTA pass 重构拆分为 AssignCTALayouts 与 OptimizeCTALocality 两个 pass，扩展 LinearLayout 工具并完善相关 lit/gtest 测试。整体上这些改动均针对特定硬件平台（AMD/NVIDIA）或纯 Python 测试/重构，未触碰 Triton 核心的后端抽象接口、TTIR/TTGIR 方言定义、编译器流水线、JIT/缓存等跨后端共享路径。",
+  "ascend_impact_summary": "当日所有 commit 均不影响 triton-ascend 项目。改动全部限定在 AMD/ NVIDIA 平台特定代码（third_party/amd、third_party/nvidia）、lit/单元测试及独立的 triton_kernels Python 包，未触及 triton-ascend 所依赖的 BaseBackend/DriverBase/GPUTarget 接口、TTIR/TTGIR 方言、compiler 流水线、Language 前端语义层等必然影响路径，也无任何可能影响 Ascend 的共享代码变更。因此三笔提交对 triton-ascend 的功能、测试均无影响，无需更新任何测试。",
+  "commits": [
+    {
+      "sha": "1298a6b13aabbda7442ca73a83442cf7db2f608d",
+      "comment": "该 commit 为 AMD 后端（gfx117x / RDNA4m）增加 buffer atomic 与 IEEE min/max 能力声明。核心改动位于 third_party/amd/lib/Dialect/TritonAMDGPU/IR/TargetFeatures.cpp：supportsBufferAtomicRMW() 将 ISAFamily::RDNA4m 纳入支持列表；supportsBufferAtomicFadd() 对 RDNA4m 仅放行 f32（不支持 f16/bf16/f64 原子加法）；supportMaximumMinimum() 将 RDNA4m 加入返回 true 的行列。这些目标特性表修改使 gfx117x 能走 buffer atomic 与 hardware min/max 路径，未支持的类型/组合仍回退到通用路径。测试文件主要是新增/调整 lit 用例以区分目标级 buffer RMW 能力、类型级 fp 原子支持、结果缓存策略（used/unused）、min/max 的 intrinsic 与软件 NaN 传播 lowering，以及 wave32/wave64 的 warp-id 降低。变更全部局限于 AMD 后端专属代码与测试，不涉及任何共享的编译器框架、方言定义或后端抽象接口。潜在风险点：若 RDNA4m 的硬件实际能力与特性表声明不符（如 f16/bf16 原子虽未声明但硬件支持，或反之），可能导致错过优化或错误使用不支持的指令，但鉴于仅为 lit 级行为声明，且保留 generic fallback，风险相对可控。",
+      "tags": [
+        "feature",
+        "performance",
+        "amd-backend",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更文件 all under third_party/amd/ 与对应 lit 测试，是 AMD 平台特定实现。triton-ascend 不使用 AMD TargetFeatures 或任何 amd 专属路径，其 lowering 链（TTIR→Linalg）完全跳过 TritonGPU/AMD backend 的特性查询逻辑。",
+        "testing": "无影响。新增/修改的 lit 测试（test/Conversion/amd/、test/TritonGPU/amd/）仅针对 AMD clang 编译目标。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Enable RDNA4m buffer atomics and IEEE min/max (#11474)\n\ngfx117x supports buffer atomic RMW operations, f32 buffer atomic\naddition, and IEEE minimum/maximum instructions, but these capabilities\nwere missing from Triton's target feature table. Consequently, supported\noperations either used generic lowering or missed target-specific\noptimizations.\n\nThis PR adds the missing gfx117x capabilities while preserving generic\nfallbacks for unsupported atomic types.\n\nIt also expands regression coverage to distinguish:\n\n- target-level buffer RMW support;\n- type-specific floating-point atomic support;\n- returned and unused atomic-result cache policies;\n- intrinsic and software NaN-propagating min/max lowering;\n- wave32 and wave64 warp-ID lowering."
+    },
+    {
+      "sha": "7bbd1ab7c7f2a1cb8d6436d0264367a23ef5ae60",
+      "comment": "该 commit 是针对独立的 triton_kernels Python 包的重构与测试整理。变更内容：1) 在 BlackwellMXValueLayoutTransformation 中添加 storage_strides property，通过既有 strided.StridedLayout(-2) 实现推导物理 strides，替代独立的 strides_major_dim_m2 函数；2) 三个分配点统一改用 layout-owned metadata，消除重复算法；3) shuffled 转换器的直接转换调用改用归一化的 major_dim=-2；4) 将两个 Blackwell 专属测试从 test_tensor.py 迁移至 test_tensor_details/test_layout_blackwell.py 并增强断言（检查输出设备、默认 plain strides 连续性与 shuffle contiguity）与空 shape 覆盖。GPU kernels、packing、padding 语义与输出分配尺寸不变。功能影响仅限于该包内部的 layout 元数据组织与测试覆盖，不触及编译器或运行时核心。潜在价值：将物理布局定义收敛到单一来源使后续维护更清晰；测试中新增的 stride/contiguity 断言能捕获仅靠数值相等无法发现的分配顺序错误。",
+      "tags": [
+        "refactor",
+        "test",
+        "kernels",
+        "blackwell",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更文件均位于 python/triton_kernels/ 独立包，属纯 Python layout 工具与相关测试重构。不涉及 triton 主仓库编译/运行时路径，更与 Ascend 后端接口无耦合。",
+        "testing": "无影响。更改仅涉及 triton_kernels 测试文件自身结构与覆盖，不牵涉 Ascend 测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[KERNELS] Consolidate Blackwell FP4 layout metadata and tests (#11576)\n\nBlackwell FP4 conversion had a separate column-major stride algorithm,\nand the shuffled-layout converter imported it to allocate plain-layout\noutput. Make physical strides part of\n`BlackwellMXValueLayoutTransformation` and derive them through the\nexisting `StridedLayout` implementation. All three allocation sites now\nuse layout-owned metadata, removing the duplicate algorithm and keeping\nthe physical layout definition in one place.\n\nThe two direct-conversion calls use `major_dim=-2`, which the shared\nconverter already normalizes. GPU kernels, packing, padding semantics,\nand output allocation sizes are unchanged. This follows [Convert between\nBlackwell FP4 layouts\ndirectly](https://github.com/triton-lang/triton/pull/11563).\n\nMove the Blackwell-specific conversion and allocation tests beside the\nexisting Blackwell tests. Keep all 96 CUDA conversion cases, including\nempty inputs and supplied output buffers, while reducing repeated\nCPU/meta fallback cases from 192 to 32. Check output device, default\nplain-layout strides, and shuffled contiguity; value equality alone\nwould miss an incorrectly ordered allocation. Extend the existing\nempty-shape roundtrip cases with plain → shuffled → plain, covering\nempty K/N and leading dimensions. Padding poisoning, output sentinels,\nand all four allocation cases remain covered.\n\n## Validation\n\nValidated baseline and branch package snapshots on the same NVIDIA GB300\nwith the installed Triton 3.8.0 compiler, PyTorch 2.11.0, and CUDA 13.0.\nThe baseline passed 837 selected cases; this branch passed 719, with no\nskips in either run. The reduction is 160 repeated fallback cases\nremoved and 42 empty-shape cases added.\n\nThe selection includes the complete Blackwell layout test module plus\ngeneric FP4 output-buffer, meta-device, and storage-shape tests. It\nexercises both conversion directions, ranks 2–5, irregular tiles, sliced\nstorage, padding, output layout, and all four direct-conversion\nallocation cases. Remote source hashes match the committed files. This\nvalidates the Python package changes against the installed compiler;\nTriton main's compiler was not rebuilt.\n\n`pre-commit run --from-ref origin/main --to-ref HEAD` passed.\n\n## Lines changed\n\n| Files | Added | Removed | Net |\n| --- | ---: | ---: | ---: |\n| Tests | +92 | -79 | +13 |\n| Non-test | +11 | -21 | -10 |\n| All | +103 | -100 | +3 |\n\n## Reviewer's guide\n\n- `python/triton_kernels/triton_kernels/tensor_details/layout_details/`:\nconsolidate plain Blackwell storage metadata through the existing\nstrided implementation and simplify direct-conversion calls.\n- `python/triton_kernels/tests/`: move the two Blackwell-specific tests\nfrom `test_tensor.py` to `test_tensor_details/test_layout_blackwell.py`,\nreduce fallback repetition, and strengthen output-layout and empty-shape\ncoverage.\n\n<!-- codex-thread: 01a064c1-5fae-7e31-9f79-2aeb8e10070d -->"
+    },
+    {
+      "sha": "64c974fda6bac26ec742e3e566e65848ba53b07f",
+      "comment": "该 commit 将 NVIDIA 后端的 PlanCTA pass 重构拆分为 AssignCTALayouts（为 tt.dot/tt.reduce 分配首选 CGA layouts）与 OptimizeCTALocality（围绕 resultless users 重写 layout conversions 以减少跨 CTA 通信流量）两个独立 pass。改动范围：1) 删除 PlanCTA.cpp 并新增 AssignCGALayouts.cpp 与 OptimizeCTALocality.cpp（新增逻辑量约占 580 行）；2) 将 canBeRemat、getRematerializableSlice、cloneWithCGALayout、isDistributedOpEncodingOperand 等 layout rematerialization 辅助函数从 RemoveLayoutConversions.cpp 移入共享 TritonGPU Utility.cpp/.h 供多处复用；3) 重构 Dialect.cpp 中 CGA encoding 分解逻辑，新增可能失败的 maybeLinearToCGAEncodingAttr 并暴露为公共接口（允许非置换/非标准输入 gracefully fail 而非 assert）；4) 在 LinearLayout 中公开 tryCreate；5) CUDA 编译流水线改为 assign-CGA-layouts → remove-layout-conversions → optimize-CTA-locality → remove-layout-conversions 四段顺序；6) 更新 Passes.td/Passes.h 的 pass 声明与 Python bindings。功能上重新设计了多 CTA 场景下的布局规划方式，新增对 slice/dot_operand 等包装 layout 的 CGA 重建支持，且对 generic linear encoding 明确标记 NYI 拒绝进入 CGA rematerialization 路径。删除的 PlanCTA.cpp 原逻辑（1022 行）中的队列驱动传播、cast 管理等复杂机制被新实现的更直接的布局分配与重写策略替代。由于改动集中于 NVIDIA 专用 pass（lib/Dialect/TritonNvidiaGPU/Transforms/）并仅重排 CUDA backend pipeline，不影响共享的 TTGIR/TTIR 语义或 AMD backend。风险在于：新 pass 在 numCTAs>1 下的 IR 改写正确性（尤其中间含多 dot/reduce/control flow 的复杂 kernel）需充分验证；此外 RemoveLayoutConversions.cpp 中通过 std::bind 将类成员函数适配为函数对象的写法可读性稍差但行为不变。lit 测试（新增 assign_cga_layouts.mlir 510 行、optimize_cta_locality.mlir 234 行）覆盖了大量 dot/reduce rematerialization 场景（exclusive load、masked load、gather、descriptor load、volatile load 拒绝、block arg/region/atomic/multi-result 拒绝、slice/transpose/expand_dims/reshape/linear encoding 等）。",
+      "tags": [
+        "refactor",
+        "feature",
+        "nvidia-backend",
+        "multi-cta",
+        "high-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更文件 all under include/triton/Dialect/TritonGPU/(Transforms/Utility.*, IR/Dialect.h/.cpp, Dialect.h)、include/triton/Dialect/TritonNvidiaGPU/、lib/Dialect/TritonNvidiaGPU/Transforms/、third_party/nvidia/ 及 test/TritonNvidiaGPU/、unittest/Dialect/TritonGPU/ 与 lib/Analysis/Utility.cpp。虽然部分工具函数（canBeRematerialized、getRematerializableSlice、cloneWithCGALayout、isDistributedOpEncodingOperand、maybeLinearToCGAEncodingAttr）被提升为共享 TTGIR Utility，但它们为 nvidia PlanCTA 拆分所服务的纯 C++ 内部实现细节，不改变任何 TTIR/TTGIR op 的外部语义。triton-ascend 不编译或运行该 NVIDIA 后端的 pass（其 lowering 从 TTIR 直接转 Linalg，不使用 TritonGPU 相关优化），也无需重新编译。",
+        "testing": "无影响。新 lit 测试与 gtest 为 C++/MLIR 级，针对 nvidia pass，且不引入任何新的 Python 可调用接口供 Ascend 使用。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TRITONGPU] Simplify the PlanCTA and rename it to AssignCTALayouts (#10325)\n\n- Replaces the old NVIDIA `PlanCTA` pass with two separate passes:\n- `AssignCTALayouts`: assigns preferred CTA layouts for `tt.dot` and\n`tt.reduce`.\n- `OptimizeCTALocality`: rewrites layout conversions around resultless\nusers to reduce cross-CTA traffic.\n\n- Updates the CUDA compilation pipeline to run:\n  - assign CTA layouts\n  - remove layout conversions\n  - optimize CTA locality\n  - remove layout conversions again\n\n- Adds Python pass bindings for:\n  - `add_assign_cta_layouts`\n  - `add_optimize_cta_locality`\n\n- Adds new lit tests:\n  - `test/TritonNvidiaGPU/assign_cta_layouts.mlir`\n  - `test/TritonNvidiaGPU/optimize_cta_locality.mlir`\n\n- Deletes the old `PlanCTA.cpp` implementation and its old lit test.\n\n- Moves layout rematerialization helper logic from\n`RemoveLayoutConversions` into shared TritonGPU utility code so other\npasses can reuse it.\n\n<git-pr-chain>\n\n#### PR chain\n1. 👉 #10325 👈 **YOU ARE HERE**\n1. #10676\n1. #10765\n1. #10769\n1. #10781\n1. #10812\n1. #10817\n\n⚠️⚠️ Please **do not click the green \"merge\" button** unless you know\nwhat you're doing. This PR is part of a chain of PRs, and clicking the\nmerge button will not merge it into `main`. ⚠️⚠️\n\n</git-pr-chain>\n\n---------\n\nCo-authored-by: lezcano <lezcano-93@hotmail.com>"
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

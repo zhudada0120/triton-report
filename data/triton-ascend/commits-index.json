@@ -1,4 +1,16 @@
 {
+  "b729436e0bacd73d513db5a17abc811b9577da37": {
+    "date": "2026-09-04",
+    "msg": "[TA](feat) Sync main from branch main-dev (#1964)"
+  },
+  "f5be4e7f82a394179f8f0952b94fff94c19b08fd": {
+    "date": "2026-09-04",
+    "msg": "[Docs](fix) Update libdevice document (#1952)"
+  },
+  "d6800a40deca946c8e4b8fbb709cb2ccbb8585cd": {
+    "date": "2026-09-04",
+    "msg": "[docs](feat) add source Build Options (#1929)"
+  },
   "984e1453756aa43cc47082ccf8c386c1ebcf791b": {
     "date": "2026-09-03",
     "msg": "[ssbuffer](fix) Add attribute for external sync ops"

@@ -1,4 +1,16 @@
 {
+  "1298a6b13aabbda7442ca73a83442cf7db2f608d": {
+    "date": "2026-09-04",
+    "msg": "[AMD] Enable RDNA4m buffer atomics and IEEE min/max (#11474)"
+  },
+  "7bbd1ab7c7f2a1cb8d6436d0264367a23ef5ae60": {
+    "date": "2026-09-04",
+    "msg": "[KERNELS] Consolidate Blackwell FP4 layout metadata and tests (#11576)"
+  },
+  "64c974fda6bac26ec742e3e566e65848ba53b07f": {
+    "date": "2026-09-04",
+    "msg": "[TRITONGPU] Simplify the PlanCTA and rename it to AssignCTALayouts (#10325)"
+  },
   "5c3efd76ab88959a37c7307824bf67fc02a94a30": {
     "date": "2026-09-03",
     "msg": "[AMD] Always readfirstlane in non-direct warp_id lowering (#11570)"

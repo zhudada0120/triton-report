@@ -1,0 +1,64 @@
+{
+  "date": "2026-09-04",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-09-05T03:58:57.979437+08:00",
+  "daily_summary": "今日提交主要聚焦于 Ascend NPU 后端的性能优化与文档完善。核心变更为 ssbuffer (双缓冲) 调度增强：默认启用 vf-operand-substitution 并调整默认缓冲计数（intra 2→3，inter 1→2），同时新增 PreCheckDisablePreload pass，通过黑名单机制在检测到特定 kernel 时自动禁用三预取特性，并相应更新了 lit 与 unittest 测试。此外，文档方面全面更新了 libdevice API 的约束与示例（明确 Ascend 架构支持矩阵），并新增了源码编译选项说明表。整体表现出对动态 CV pipeline 下缓存调度精细控制的方向，以及提升后端可维护性和用户友好性的努力。",
+  "test_impact_summary": "今日变更对测试看护有显著影响。核心的 ssbuffer 调度增强引入了新的默认行为和黑名单机制，不仅需要更新现有 lit 测试以匹配新的默认缓冲计数（如 Inter-core 从 2 降为 1 的特定场景），还要求新增测试来覆盖新 PreCheckDisablePreload pass 对黑名单 kernel 的正确回退。libdevice 文档的大幅更新虽非代码逻辑变更，但其细化到架构和编译模式的支持矩阵以及修正的示例（如 sad 中 uint32 类型），为未来的算子语义一致性测试提供了更精确的约束基准，同时需同步检视现有测试是否有与新约束冲突之处。总体而言，测试策略需紧跟调度逻辑演进，并确保文档与实现、测试用例三者间的同步与校验。",
+  "commits": [
+    {
+      "sha": "b729436e0bacd73d513db5a17abc811b9577da37",
+      "comment": "该 commit 是 ssbuffer（缓存缓冲）调度增强的合集，主要影响 Ascend 后端的 DynamicCVPipeline。核心变更包括：1) 在 910-95 架构的编译选项中，当启用动态 CV pipeline 时，默认开启 '--enable-vf-operand-substitution=True'，以优化 vector-float 操作数替换，存在潜在性能收益。2) 将 BufferCountManager 的默认 Intra-core 缓冲计数从 2 提升到 3，Inter-core 从 1 提升到 2，以提高并行度。同时放宽了缓冲计数的警告阈值，从 >=3 改为 >3，只有超过 3 才警告。3) 新增了一个 PreCheckDisablePreloadPass，它通过一个包含大量 flash attention、chunk 等特定 kernel 名称的黑名单，在检测到这些 kernel 时，通过 BufferCountManager 将 Intra/Inter-core 缓冲计数强制下调至 2 和 1，从而禁用“3-preload”特性，避免潜在的功能或性能回退。该 pass 被集成到 PreCheckAvailablePass 的流水线中，并在 Python 测试中增加了对 'scope' 关键字不再出现的断言。此变更展示了为最大化性能而做的精细调度控制，但引入了硬编码的 kernel 黑名单，维护成本较高，且默认参数调整可能对未在名单内的 kernel 带来不确定性风险，需依赖更广泛的性能回归测试。",
+      "tags": [
+        "performance",
+        "refactor",
+        "scheduler",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "默认缓冲计数的调整以及新增的基于黑名单的降级机制，都需要相应的测试来验证其行为符合预期。修改了 lit 测试以固定 Inter-core 缓冲计数为 1，验证了 scf.while 场景下的行为，但这间接表明新默认值会导致其他场景行为变化，需要对更多场景进行覆盖。Python 测试中对 'scope' 断言的反转，也说明需要确认 IR 结构的变化是全局性的还是只针对特定 kernel。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AllocMultiCache/",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/",
+          "新增针对 PreCheckDisablePreloadPass 黑名单内外 kernel 的测试用例"
+        ]
+      },
+      "message": "[TA](feat) Sync main from branch main-dev (#1964)\n\n* [ssbuffer](feat) ssbuffer scheduling enhancement (#1925)\n\n* [ssbuffer](feat) enable vf-operand-substitution by default\n\n* [ssbuffer](feat) update intra/inter buffer count\n\n* [ssbuffer](fix) Analyze the number of buffers. (#1945)\n\n* [ssbuffer](fix) Temporary fix for runtime error issue.\n\n(cherry picked from commit c9df9ab1fe7e7c114aa832dddb5800f8f7d52bc6)\n\n* [ssbuffer](fix) Temporary fix for performance issue\n\n* [ssbuffer](fix) Temporary fix for performance issue\n\n---------\n\nCo-authored-by: licf497 <1309837013@qq.com>\nCo-authored-by: Sky_miner <458482582@qq.com>\nCo-authored-by: wuzw_05 <wuzhiwei37@huawei.com>"
+    },
+    {
+      "sha": "f5be4e7f82a394179f8f0952b94fff94c19b08fd",
+      "comment": "该 commit 主要是一项大规模文档更新，涉及 3 个文件，净增 300 余行。变更核心在于：1) 修订了 `docs/zh/python-api/_ascend_constraints.py` 中关于 CANN libdevice 函数的约束定义，删除了大量针对特定函数（如 abs、add_rd 等）的旧有详细说明（如参数、返回值、编译模式），取而代之以统一的、更简洁的格式，清晰地列出了函数支持的昇腾平台（Ascend A2/A3 或 950）及编译模式（SIMD/SIMT）。2) 大量重写了 `third_party/ascend/language/cann/libdevice.py` 中函数的 docstring，使其与更新后的约束文档保持一致，明确了各函数在SIMD/SIMT模式下的支持情况。3) 修正了 `_examples/triton.language.extra.cann.libdevice.sad.py` 中关于 `sad` 函数的示例，将其第三个参数（z）的类型从 int32 更正为 uint32，以匹配函数的真实签名。此变更没有触及任何编译器或运行时逻辑，纯属文档和注释层面的清理与规范化，不影响任何代码路径。",
+      "tags": [
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "虽然变更本身是文档性的，但 `_ascend_constraints.py` 文件被定义为 API 的'约束'，并在此处进行了调整。测试或文档生成流程若依赖此文件的精确内容，可能需要进行相应更新以匹配新的描述。此外，`sad` 函数示例中的类型修正（int32 → uint32），暗示可能有针对该函数的测试（或文档生成测试）在使用了错误的类型，需要检查并同步更新，以确保端到端一致性。",
+        "suggested_test_areas": [
+          "docs/zh/python-api/_ascend_constraints.py",
+          "third_party/ascend/language/cann/libdevice.py",
+          "针对 libdevice.sad 函数的相关测试或文档生成验证脚本"
+        ]
+      },
+      "message": "[Docs](fix) Update libdevice document (#1952)"
+    },
+    {
+      "sha": "d6800a40deca946c8e4b8fbb709cb2ccbb8585cd",
+      "comment": "该 commit 为文档增强，旨在为用户提供更详尽的从源码构建 triton-ascend 的指南。主要变更为：1) 在英文和中文的安装指南文档（`docs/en/installation_guide.md` 和 `docs/zh/installation_guide.md`）中，新增了一个“源码编译参数说明表”，系统地列出了所有关键构建选项，包括 LLVM_SYSPATH、TRITON_BUILD_WITH_CLANG_LLD、TRITON_BUILD_PROTON、TRITON_BUILD_NPUIR、TRITON_WHEEL_NAME、MAX_JOBS 等环境变量，说明了其默认值、用途及适用场景。2) 在 codespell 拼写检查的白名单中添加了“manylinux”一词，以避免文档构建时的 CI 报错。这是一个纯文档性质的变更，未改动任何源码或构建逻辑，主要服务于提升项目的用户友好度和可安装性。",
+      "tags": [
+        "docs",
+        "chore",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "该变更仅涉及 Markdown 文档和 CI 的 codespell 白名单，未触及任何功能代码、测试逻辑或编译行为。现有测试已能充分覆盖代码功能，此文档更新不影响任何测试执行结果，也无需新增或修改测试用例。",
+        "suggested_test_areas": []
+      },
+      "message": "[docs](feat) add source Build Options (#1929)\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}
