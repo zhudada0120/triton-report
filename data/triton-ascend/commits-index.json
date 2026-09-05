@@ -1,4 +1,20 @@
 {
+  "132ebe0d7a7e8476260bc3717f7255e81a31b33c": {
+    "date": "2026-09-05",
+    "msg": "[ssbuffer](fix) Temporary fix for scope error (#1983)"
+  },
+  "47e291c05a9242068d10bab56359f152ce545d42": {
+    "date": "2026-09-05",
+    "msg": "[compile](fix) don't pass --hfusion-enable-multiple-consumer-fusion when unset (#1984)"
+  },
+  "8ba4ac4ce5676f7f7c25725ae5b2dddb5781f466": {
+    "date": "2026-09-05",
+    "msg": "[ssbuffer](fix) fix error of read before write (#1972)"
+  },
+  "62f9f86fd5eb0b80a7f25466eaed2b24c08163a1": {
+    "date": "2026-09-05",
+    "msg": "[ControlFlowOpt](fix) backport affine carrier recovery (#1967)"
+  },
   "b729436e0bacd73d513db5a17abc811b9577da37": {
     "date": "2026-09-04",
     "msg": "[TA](feat) Sync main from branch main-dev (#1964)"

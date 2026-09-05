@@ -1,0 +1,125 @@
+{
+  "date": "2026-09-05",
+  "repo": "triton-lang/triton-ascend",
+  "branch": "main",
+  "commits": [
+    {
+      "sha": "132ebe0d7a7e8476260bc3717f7255e81a31b33c",
+      "author": {
+        "name": "wuzw_05",
+        "email": "48195036+wzw2019@users.noreply.github.com"
+      },
+      "date": "2026-09-05T21:19:14+08:00",
+      "message": "[ssbuffer](fix) Temporary fix for scope error (#1983)\n\nCo-authored-by: wuzw_05 <wuzhiwei37@huawei.com>",
+      "parents": [
+        "47e291c05a9242068d10bab56359f152ce545d42"
+      ],
+      "stats": {
+        "total_additions": 7,
+        "total_deletions": 3,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "third_party/ascend/lib/DynamicCVPipeline/PreCheckAvailable/PreCheckDisablePreload.cpp",
+          "status": "modified",
+          "additions": 5,
+          "deletions": 1,
+          "patch": "@@ -82,7 +82,11 @@ static const llvm::SmallVector<llvm::StringRef> kBlacklistFuncNames = {\n     \"chunk_bwd_kernel_dv_local\",\n     \"chunk_fwd_kernel_h\",\n     \"_jagged_dense_flash_attention_bwd_dk_kernel\",\n-    \"_gqa_sparse_decode_kernel\"};\n+    \"_gqa_sparse_decode_kernel\",\n+    \"pcb14_tc01_while_matmul_scalar\",\n+    \"pcb14_tc02_while_matmul_scalar\",\n+    \"paged_decode_fd_reduce_kernel\",\n+    \"paged_decode_fd_kernel\"};\n \n static constexpr const char *DEBUG_TYPE = \"pre-check-disable-preload\";\n #define DBGS() (llvm::dbgs() << '[' << DEBUG_TYPE << \"] \")"
+        },
+        {
+          "filename": "third_party/ascend/unittest/DynamicCVPipeline_ut/test_pcb14_mlir_while_loop_c_broadcast_scalar.py",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 2,
+          "patch": "@@ -223,7 +223,7 @@ def test_pcb14_tc01():\n     assert mlir and len(mlir) > 0, \"MLIR code generation failed or is empty\"\n     assert \"func.func @pcb14_tc01_while_matmul_scalar(\" in mlir, \\\n         \"Kernel function definition not found in MLIR code\"\n-    assert \"scope\" not in mlir, \"MLIR code does not contain the 'scope' keyword\"\n+    assert \"scope\" in mlir, \"MLIR code does not contain the 'scope' keyword\"\n \n     # Output MLIR code to the specified path\n \n@@ -246,7 +246,7 @@ def test_pcb14_tc02():\n     assert mlir and len(mlir) > 0, \"MLIR code generation failed or is empty\"\n     assert \"func.func @pcb14_tc02_while_matmul_scalar(\" in mlir, \\\n         \"Kernel function definition not found in MLIR code\"\n-    assert \"scope\" not in mlir, \"MLIR code does not contain the 'scope' keyword\"\n+    assert \"scope\" in mlir, \"MLIR code does not contain the 'scope' keyword\"\n \n     # Output MLIR code to the specified path\n \n"
+        }
+      ]
+    },
+    {
+      "sha": "47e291c05a9242068d10bab56359f152ce545d42",
+      "author": {
+        "name": "wutianyao",
+        "email": "wutianyao1@huawei.com"
+      },
+      "date": "2026-09-05T18:17:16+08:00",
+      "message": "[compile](fix) don't pass --hfusion-enable-multiple-consumer-fusion when unset (#1984)",
+      "parents": [
+        "8ba4ac4ce5676f7f7c25725ae5b2dddb5781f466"
+      ],
+      "stats": {
+        "total_additions": 2,
+        "total_deletions": 2,
+        "files_changed": 1
+      },
+      "files": [
+        {
+          "filename": "third_party/ascend/backend/compiler.py",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 2,
+          "patch": "@@ -735,7 +735,7 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):\n             _compile_option_list += [f\"--enable-vf-merge-level={vf_merge_level}\"]\n \n         hfusion_enable_multiple_consumer_fusion = metadata[\"hfusion_enable_multiple_consumer_fusion\"]\n-        if hfusion_enable_multiple_consumer_fusion:\n+        if hfusion_enable_multiple_consumer_fusion is not None:\n             _compile_option_list += [\n                 f\"--hfusion-enable-multiple-consumer-fusion={hfusion_enable_multiple_consumer_fusion}\"\n             ]\n@@ -1084,7 +1084,7 @@ class NPUOptions:\n     enable_vf_fusion: bool = None\n     enable_dynamic_cv_pipeline: bool = None\n     enable_cube_block_merge: bool = False\n-    hfusion_enable_multiple_consumer_fusion: bool = False\n+    hfusion_enable_multiple_consumer_fusion: bool = None\n     buf_slot_num_of_veccore: int = None\n     buf_slot_num_of_crosscore: int = None\n     buf_slot_num_of_gm: int = None\n"
+        }
+      ]
+    },
+    {
+      "sha": "8ba4ac4ce5676f7f7c25725ae5b2dddb5781f466",
+      "author": {
+        "name": "Fourier",
+        "email": "52960367+245516766@users.noreply.github.com"
+      },
+      "date": "2026-09-05T15:41:10+08:00",
+      "message": "[ssbuffer](fix) fix error of read before write (#1972)",
+      "parents": [
+        "62f9f86fd5eb0b80a7f25466eaed2b24c08163a1"
+      ],
+      "stats": {
+        "total_additions": 2,
+        "total_deletions": 3,
+        "files_changed": 1
+      },
+      "files": [
+        {
+          "filename": "third_party/ascend/lib/DynamicCVPipeline/AnalyzeDataFlow/AnalyzeName.cpp",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 3,
+          "patch": "@@ -43,10 +43,9 @@ namespace {\n static constexpr llvm::StringLiteral interceptrFunc[]{\n     \"chunk_abc_bwd_kernel_dh\",      \"flash_varlen_fwd_kernel\",\n     \"chunk_gsa_bwd_k_kernel_dqkvg\", \"_jagged_flash_attention_bwd_basic_kernel\",\n-\n     \"_sparse_decode_kernel\",        \"chunk_gsa_fwd_k_kernel_intra\",\n-\n-    \"_sparse_decode_model1_kernel\", \"sparse_flash_attention_grad_kernel\"};\n+    \"_sparse_decode_model1_kernel\", \"sparse_flash_attention_grad_kernel\",\n+    \"parallel_path_fwd_kernel\"};\n \n static LogicalResult verifyFuncNames(ModuleOp module) {\n   bool intercepted = false;\n"
+        }
+      ]
+    },
+    {
+      "sha": "62f9f86fd5eb0b80a7f25466eaed2b24c08163a1",
+      "author": {
+        "name": "zhan wei",
+        "email": "493694187@qq.com"
+      },
+      "date": "2026-09-05T01:01:49+08:00",
+      "message": "[ControlFlowOpt](fix) backport affine carrier recovery (#1967)\n\n* [ControlFlowOpt](feat) support marked affine pointer carriers (#1924)\n\n(cherry picked from commit f2b7df925fbc294160202d7ba71062d4c29be9d3)\n\n* [ControlFlowOpt](fix) narrow affine carrier recovery\n\n(cherry picked from commit 83691fc21b628ca744eeb932fedc62a30c172779)\n\n* [TritonToUnstructure](style) apply clang-format\n\n(cherry picked from commit 1fcd9724fcc8e87b42f40b8fd4d1e864cb13818a)\n\n---------\n\nCo-authored-by: elstainniles <86865808+elstainniles@users.noreply.github.com>\nCo-authored-by: zhaojingkai <zhaojingkai4@huawei.com>",
+      "parents": [
+        "b729436e0bacd73d513db5a17abc811b9577da37"
+      ],
+      "stats": {
+        "total_additions": 199,
+        "total_deletions": 1,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "third_party/ascend/lib/TritonToUnstructure/OffsetAnalysis.cpp",
+          "status": "modified",
+          "additions": 147,
+          "deletions": 1,
+          "patch": "@@ -320,6 +320,102 @@ bool isPointerDescriptorBoundaryResult(LoopLikeOpInterface loopOp,\n                                          opResult.getResultNumber());\n }\n \n+// Materialize the current value of the one tiled rank-2 offset carrier used by\n+// the affected performance kernel. It starts from two complementary\n+// broadcasted axes and advances by one dense-splat displacement on each\n+// scf.for backedge. Keeping this gate deliberately structural prevents the\n+// optimization from reclassifying other complete pointer descriptors.\n+Value materializeMarkedRankTwoTiledOffsetCarrier(Value value,\n+                                                 triton::AddPtrOp addPtr,\n+                                                 RewriterBase &rewriter) {\n+  auto blockArg = dyn_cast<BlockArgument>(value);\n+  if (!blockArg || blockArg.getArgNumber() == 0)\n+    return nullptr;\n+  auto forOp = dyn_cast_or_null<scf::ForOp>(blockArg.getOwner()->getParentOp());\n+  if (!forOp || blockArg.getOwner() != forOp.getBody())\n+    return nullptr;\n+\n+  unsigned slot = blockArg.getArgNumber() - 1;\n+  auto descriptorSlots = dyn_cast_or_null<DenseI32ArrayAttr>(\n+      forOp->getAttr(controlflow::kPointerDescriptorBoundaryAttr));\n+  if (!forOp->hasAttr(controlflow::kPointerDescriptorBoundaryAttr) ||\n+      !descriptorSlots || descriptorSlots.asArrayRef().size() != 2 ||\n+      descriptorSlots.asArrayRef()[0] != 2 ||\n+      descriptorSlots.asArrayRef()[1] != 3 || forOp.getInitArgs().size() != 4 ||\n+      slot != 1 || isPointerDescriptorBoundarySlot(forOp, slot) ||\n+      slot >= forOp.getInitArgs().size() ||\n+      slot >= forOp.getYieldedValues().size())\n+    return nullptr;\n+\n+  auto carrierType = dyn_cast<RankedTensorType>(value.getType());\n+  auto elementType = carrierType\n+                         ? dyn_cast<IntegerType>(carrierType.getElementType())\n+                         : IntegerType();\n+  if (!carrierType || carrierType.getRank() != 2 ||\n+      !carrierType.hasStaticShape() || carrierType.getDimSize(0) != 32 ||\n+      carrierType.getDimSize(1) != 64 || !elementType ||\n+      elementType.getWidth() != 32 ||\n+      forOp.getInitArgs()[slot].getType() != carrierType)\n+    return nullptr;\n+\n+  auto isBroadcastedAxis = [&](Value axisValue, unsigned singletonAxis) {\n+    auto broadcast = axisValue.getDefiningOp<triton::BroadcastOp>();\n+    if (!broadcast || broadcast.getType() != carrierType)\n+      return false;\n+    auto sourceType = dyn_cast<RankedTensorType>(broadcast.getSrc().getType());\n+    if (!sourceType || sourceType.getRank() != 2 ||\n+        sourceType.getElementType() != carrierType.getElementType())\n+      return false;\n+    unsigned varyingAxis = 1 - singletonAxis;\n+    return sourceType.getDimSize(singletonAxis) == 1 &&\n+           sourceType.getDimSize(varyingAxis) ==\n+               carrierType.getDimSize(varyingAxis);\n+  };\n+\n+  auto initialAdd = forOp.getInitArgs()[slot].getDefiningOp<arith::AddIOp>();\n+  if (!initialAdd || !((isBroadcastedAxis(initialAdd.getLhs(), 1) &&\n+                        isBroadcastedAxis(initialAdd.getRhs(), 0)) ||\n+                       (isBroadcastedAxis(initialAdd.getLhs(), 0) &&\n+                        isBroadcastedAxis(initialAdd.getRhs(), 1))))\n+    return nullptr;\n+\n+  auto backedgeAdd =\n+      forOp.getYieldedValues()[slot].getDefiningOp<arith::AddIOp>();\n+  if (!backedgeAdd)\n+    return nullptr;\n+  Value step;\n+  if (backedgeAdd.getLhs() == value)\n+    step = backedgeAdd.getRhs();\n+  else if (backedgeAdd.getRhs() == value)\n+    step = backedgeAdd.getLhs();\n+  else\n+    return nullptr;\n+\n+  auto constant = step.getDefiningOp<arith::ConstantOp>();\n+  auto elements = constant ? dyn_cast<DenseElementsAttr>(constant.getValue())\n+                           : DenseElementsAttr();\n+  if (!elements || !elements.isSplat() ||\n+      !isa<IntegerType>(elements.getElementType()) ||\n+      step.getType() != carrierType)\n+    return nullptr;\n+\n+  std::optional<int64_t> lower = getConstantIntValue(forOp.getLowerBound());\n+  std::optional<int64_t> loopStep = getConstantIntValue(forOp.getStep());\n+  int64_t carrierStep = elements.getSplatValue<IntegerAttr>().getInt();\n+  if (!lower || *lower != 0 || !loopStep || *loopStep != 64 ||\n+      carrierStep != 64)\n+    return nullptr;\n+\n+  RewriterBase::InsertionGuard guard(rewriter);\n+  rewriter.setInsertionPoint(addPtr);\n+  Value typedIv = rewriter.create<arith::IndexCastOp>(\n+      addPtr.getLoc(), elementType, forOp.getInductionVar());\n+  Value splatDisplacement =\n+      rewriter.create<triton::SplatOp>(addPtr.getLoc(), carrierType, typedIv);\n+  return rewriter.create<arith::AddIOp>(addPtr.getLoc(), initialAdd.getResult(),\n+                                        splatDisplacement);\n+}\n+\n } // namespace\n \n void parse(Value operand, const Location &loc, RewriterBase &rewriter,\n@@ -658,6 +754,54 @@ void parseAddPtr(triton::AddPtrOp op, const Location &loc,\n       return;\n     }\n \n+    SmallVector<PtrOffsetInfo::AxisInfo> recoveredAxes;\n+    bool descriptorIsFullyOpaque =\n+        descriptorAxes.size() == 2 &&\n+        llvm::all_of(descriptorAxes, [](PtrOffsetInfo::AxisInfo axis) {\n+          return axis == PtrOffsetInfo::AxisInfo::unstructured;\n+        });\n+    auto baseSplat = ptr.getDefiningOp<triton::SplatOp>();\n+    bool hasScalarPointerSplatBase =\n+        baseSplat && isa<triton::PointerType>(baseSplat.getSrc().getType());\n+    Value materializedOffset;\n+    if (descriptorIsFullyOpaque && hasScalarPointerSplatBase) {\n+      materializedOffset =\n+          materializeMarkedRankTwoTiledOffsetCarrier(offsetValue, op, rewriter);\n+    }\n+    if (materializedOffset) {\n+      parse(materializedOffset, op.getLoc(), rewriter, offsetMap);\n+      auto carrierInfo = offsetMap.find(materializedOffset);\n+      if (carrierInfo != offsetMap.end() &&\n+          carrierInfo->second.getRank() == 2 &&\n+          carrierInfo->second.isStructured()) {\n+        for (PtrOffsetInfo::AxisInfo axis :\n+             carrierInfo->second.getStructured()) {\n+          if (axis == PtrOffsetInfo::AxisInfo::unstructured) {\n+            recoveredAxes.clear();\n+            break;\n+          }\n+          recoveredAxes.push_back(axis == PtrOffsetInfo::AxisInfo::scalarlike\n+                                      ? PtrOffsetInfo::AxisInfo::structured\n+                                      : axis);\n+        }\n+        if (!llvm::all_of(recoveredAxes, [](PtrOffsetInfo::AxisInfo axis) {\n+              return axis == PtrOffsetInfo::AxisInfo::structured;\n+            }))\n+          recoveredAxes.clear();\n+      }\n+    }\n+\n+    // T2L consumes the descriptor attribute rather than this analysis map.\n+    // Persist the narrowly proven result so the two stages agree; all other\n+    // complete carriers retain the original CFO classification unchanged.\n+    if (!recoveredAxes.empty()) {\n+      offsetValue = materializedOffset;\n+      op->setOperand(1, offsetValue);\n+      SmallVector<int32_t> structuredAxes(recoveredAxes.size(), 1);\n+      op->setAttr(controlflow::kPointerDescriptorStructuredAxesAttr,\n+                  rewriter.getDenseI32ArrayAttr(structuredAxes));\n+    }\n+\n     RewriterBase::InsertionGuard guard(rewriter);\n     rewriter.setInsertionPoint(op);\n     if (offsetElementType.getWidth() != 64) {\n@@ -684,7 +828,9 @@ void parseAddPtr(triton::AddPtrOp op, const Location &loc,\n     // is no proof that all lanes address the same element. Keep this state\n     // conservative and force the lane-wise memory-access path.\n     ptrOffsetInfo.setScalarLike(false);\n-    if (descriptorAxes.empty())\n+    if (!recoveredAxes.empty())\n+      ptrOffsetInfo.setStructured(recoveredAxes);\n+    else if (descriptorAxes.empty())\n       ptrOffsetInfo.setUnstructured(resultType.getRank());\n     else\n       ptrOffsetInfo.setStructured(descriptorAxes);"
+        },
+        {
+          "filename": "third_party/ascend/unittest/Conversion/General/TritonToLinalg/tensor_pointer_descriptor_loop.mlir",
+          "status": "modified",
+          "additions": 52,
+          "deletions": 0,
+          "patch": "@@ -20,6 +20,49 @@ module attributes {hacc.target = #hacc.target<\"Ascend910B2\">} {\n     tt.store %output_ptr, %value : tensor<4x!tt.ptr<f32>>\n     tt.return\n   }\n+\n+  // This is the one tiled rank-2 carrier optimized by the narrow T2U path.\n+  // The ordinary offset slot is initialized from complementary broadcasted\n+  // axes and advances by 64 alongside two CFO-owned pointer descriptors.\n+  tt.func public @marked_rank_two_tiled_offset_carrier(\n+      %input: !tt.ptr<f32>, %dense: !tt.ptr<f32>, %output: !tt.ptr<f32>,\n+      %row_stride: i32) {\n+    %c0 = arith.constant 0 : index\n+    %c64 = arith.constant 64 : index\n+    %c256 = arith.constant 256 : index\n+    %row_range = tt.make_range {end = 32 : i32, start = 0 : i32} : tensor<32xi32>\n+    %rows = tt.expand_dims %row_range {axis = 1 : i32} : tensor<32xi32> -> tensor<32x1xi32>\n+    %stride = tt.splat %row_stride : i32 -> tensor<32x1xi32>\n+    %scaled_rows = arith.muli %rows, %stride : tensor<32x1xi32>\n+    %row_offsets = tt.broadcast %scaled_rows : tensor<32x1xi32> -> tensor<32x64xi32>\n+    %column_range = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32>\n+    %columns = tt.expand_dims %column_range {axis = 0 : i32} : tensor<64xi32> -> tensor<1x64xi32>\n+    %column_offsets = tt.broadcast %columns : tensor<1x64xi32> -> tensor<32x64xi32>\n+    %initial_offsets = arith.addi %row_offsets, %column_offsets : tensor<32x64xi32>\n+    %input_base = tt.splat %input : !tt.ptr<f32> -> tensor<32x64x!tt.ptr<f32>>\n+    %dense_base = tt.splat %dense : !tt.ptr<f32> -> tensor<32x64x!tt.ptr<f32>>\n+    %output_base = tt.splat %output : !tt.ptr<f32> -> tensor<32x64x!tt.ptr<f32>>\n+    %initial_dense = tt.addptr %dense_base, %initial_offsets : tensor<32x64x!tt.ptr<f32>>, tensor<32x64xi32>\n+    %initial_output = tt.addptr %output_base, %initial_offsets : tensor<32x64x!tt.ptr<f32>>, tensor<32x64xi32>\n+    %column_advance = arith.constant dense<64> : tensor<64xi32>\n+    %offset_advance = arith.constant dense<64> : tensor<32x64xi32>\n+    %result:4 = scf.for %iv = %c0 to %c256 step %c64\n+        iter_args(%loop_columns = %column_range, %offsets = %initial_offsets,\n+                  %dense_ptrs = %initial_dense, %output_ptrs = %initial_output)\n+        -> (tensor<64xi32>, tensor<32x64xi32>, tensor<32x64x!tt.ptr<f32>>, tensor<32x64x!tt.ptr<f32>>) {\n+      %input_ptrs = tt.addptr %input_base, %offsets : tensor<32x64x!tt.ptr<f32>>, tensor<32x64xi32>\n+      %input_value = tt.load %input_ptrs : tensor<32x64x!tt.ptr<f32>>\n+      %dense_value = tt.load %dense_ptrs : tensor<32x64x!tt.ptr<f32>>\n+      %value = arith.addf %input_value, %dense_value : tensor<32x64xf32>\n+      tt.store %output_ptrs, %value : tensor<32x64x!tt.ptr<f32>>\n+      %next_columns = arith.addi %loop_columns, %column_advance : tensor<64xi32>\n+      %next_offsets = arith.addi %offsets, %offset_advance : tensor<32x64xi32>\n+      %next_dense = tt.addptr %dense_ptrs, %offset_advance : tensor<32x64x!tt.ptr<f32>>, tensor<32x64xi32>\n+      %next_output = tt.addptr %output_ptrs, %offset_advance : tensor<32x64x!tt.ptr<f32>>, tensor<32x64xi32>\n+      scf.yield %next_columns, %next_offsets, %next_dense, %next_output : tensor<64xi32>, tensor<32x64xi32>, tensor<32x64x!tt.ptr<f32>>, tensor<32x64x!tt.ptr<f32>>\n+    }\n+    tt.return\n+  }\n }\n \n // CFO-LABEL: tt.func public @tensor_pointer_descriptor_loop\n@@ -33,3 +76,12 @@ module attributes {hacc.target = #hacc.target<\"Ascend910B2\">} {\n // LINALG-SAME:  i32\n // LINALG-NOT:   tensor<4x!tt.ptr\n // LINALG-NOT:   unrealized_conversion_cast\n+\n+// CFO-LABEL: tt.func public @marked_rank_two_tiled_offset_carrier\n+// CFO:       scf.for\n+// CFO:       PointerDescriptorBoundary\n+\n+// LINALG-LABEL: func.func @marked_rank_two_tiled_offset_carrier\n+// LINALG:       scf.for\n+// LINALG-NOT:   triton_indirect_load\n+// LINALG:       return\n"
+        }
+      ]
+    }
+  ]
+}

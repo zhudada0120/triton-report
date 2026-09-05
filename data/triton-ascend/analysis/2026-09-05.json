@@ -1,0 +1,87 @@
+{
+  "date": "2026-09-05",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-09-06T03:39:10.888040+08:00",
+  "daily_summary": "当日变更聚焦于 Ascend 后端的 DynamicCV (动态编译矢量) 流水线的正确性与兼容性修复，主要涉及：1) 扩展 preload 禁用黑名单，将 pcb14 系列与 paged_decode 等 kernel 纳入禁用范围，以规避 scope 错误（临时修复）；2) 修复 AnalyzeName 中 read-before-write 的判定错误并新增 parallel_path_fwd_kernel 拦截；3) 修正 hfusion-enable-multiple-consumer-fusion 选项的空值传递逻辑，避免在未显式配置时错误传入编译选项（默认改为 None）；4) 回溯 ControlFlowOpt 的 affine carrier 恢复机制，为特定性能 kernel 新增窄化的 affine carrier 物化逻辑并附加 lit 测试。这些变更均为低风险 bugfix，主要影响编译选项传递、控制流分析优化与 preload 判定逻辑。",
+  "test_impact_summary": "当日变更主要影响 DynamicCVPipeline 的相关测试：commit 132ebe0 修正了 pcb14 测试中对 scope 关键字的断言方向（由 'not in' 改为 'in'），使测试与修复后的行为一致；commit 62f9f86 新增了针对 marked_rank_two_tiled_offset_carrier 的 lit 测试用例，验证 CFO 优化后的 PointerDescriptorBoundary 属性和 Linalg 输出中无 triton_indirect_load。其余 commit 未直接涉及测试文件但改变了特定 kernel 的编译行为（如 preload 禁用、函数拦截、编译选项传递），若现有端到端测试覆盖了受影响的 kernel 或选项组合，建议确认其运行结果是否与预期一致。",
+  "commits": [
+    {
+      "sha": "132ebe0d7a7e8476260bc3717f7255e81a31b33c",
+      "comment": "该 commit 是对 DynamicCVPipeline 中 preload 禁用机制的临时修复。变更将 pcb14_tc01/tc02、paged_decode_fd_reduce、paged_decode_fd 函数加入禁用 preload 的黑名单，以规避这些 kernel 在编译过程中出现的 scope 错误（可能为变量作用域或 MLIR scope 相关问题）。同时更新了对应的单元测试，将断言从检查 MLIR 输出中不含 'scope' 改为包含 'scope'，表明修复后这些 kernel 的 MLIR 输出中会保留 scope 标记，因此需要禁用 preload 处理。该修复为针对特定性能 kernel 的临时性规避，风险较低，但后续需关注这些 kernel 的长期解决方向。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "DynamicCVPipeline",
+        "PreCheckDisablePreload"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "修改了测试文件中 scope 关键字的断言方向，测试逻辑已随代码变更同步更新；黑名单新增函数需验证是否引入新的失败场景或需要补充更多覆盖。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/",
+          "third_party/ascend/unittest/pytest_ut/"
+        ]
+      },
+      "message": "[ssbuffer](fix) Temporary fix for scope error (#1983)\n\nCo-authored-by: wuzw_05 <wuzhiwei37@huawei.com>"
+    },
+    {
+      "sha": "47e291c05a9242068d10bab56359f152ce545d42",
+      "comment": "该 commit 修复了 hfusion-enable-multiple-consumer-fusion 编译选项的传递逻辑。原实现中 NPUOptions 该字段默认值为 False，导致即使未显式配置也会以 False 值传入编译命令（--hfusion-enable-multiple-consumer-fusion=False），可能覆盖编译器的默认行为。修复将默认值改为 None，并在拼装命令时增加 is not None 判断，仅在用户显式设置后才传递该选项。这是一个规范的选项传递模式修复（类似其它可选编译选项的处理方式如 enable-vf-merge-level），能避免默认配置下对编译器内部融合策略的误干扰。变更仅涉及编译选项传递与默认值调整，风险极低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "compiler-options",
+        "AscendBackend"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "未直接修改测试文件，但若现有测试覆盖了 hfusion 选项未设置时的编译路径，其结果可能因选项传递行为变化（不再显式传 False）而与之前不同。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/autotune_ut/",
+          "third_party/ascend/unittest/pytest_ut/"
+        ]
+      },
+      "message": "[compile](fix) don't pass --hfusion-enable-multiple-consumer-fusion when unset (#1984)"
+    },
+    {
+      "sha": "8ba4ac4ce5676f7f7c25725ae5b2dddb5781f466",
+      "comment": "该 commit 修复了 AnalyzeName.cpp 中 interceptrFunc 数组的定义与 read-before-write 错误。原数组中字符串字面量的换行格式导致两个字符串之间缺少逗号分隔（'chunk_gsa_fwd_k_kernel_intra' 与 '_sparse_decode_model1_kernel' 之间），虽然 C++ 相邻字符串字面量会自动拼接，但拼接方式并非预期（可能多出空格或缺失元素），且数组实际元素数与预期不符。修复后重新整理格式并新增 'parallel_path_fwd_kernel' 到拦截列表。该变更修正了数组定义的正确性，并将新发现的性能关键 kernel 纳入 intercept 逻辑。风险较低，但需注意格式修改可能改变数组元素的语义（虽当前内容看起来有意排列）。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "DynamicCVPipeline",
+        "AnalyzeDataFlow"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "新增的 parallel_path_fwd_kernel 拦截会影响该 kernel 的编译路径，但现有测试可能未覆盖；若存在相关端到端测试应确认结果。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/",
+          "third_party/ascend/unittest/pytest_ut/"
+        ]
+      },
+      "message": "[ssbuffer](fix) fix error of read before write (#1972)"
+    },
+    {
+      "sha": "62f9f86fd5eb0b80a7f25466eaed2b24c08163a1",
+      "comment": "该 commit 将多个上游 commit 回溯到当前分支，为 TritonToUnstructure 的 OffsetAnalysis 增加 affine carrier 恢复机制。核心新增函数 materializeMarkedRankTwoTiledOffsetCarrier 针对特定性能 kernel 的 tiled rank-2 offset carrier 实现物化：该 carrier 从两个互补的 broadcasted 轴初始化，每次 scf.for 回边按 64 步进推进。函数做了严格的模式匹配（检查 block arg 槽位、descriptor attr、类型形状 32x64、循环边界/步长等），然后基于循环归纳变量和初始值重新物化偏移。在 parseAddPtr 中增加调用：当 descriptor 完全 opaque、基址为 scalar splat 时，尝试该物化路径，若成功则将该窄化的结果改写回 AddPtr 指令并附加 kPointerDescriptorStructuredAxesAttr 属性标记结构化轴，供后续 T2L 阶段消费。变更同时新增了 lit 测试覆盖。该改动有助于提升被标记 kernel 的优化效果（避免退化为间接 load），但模式高度特化，存在一定维护风险，需确保不会误配其它 kernel 模式。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "ControlFlowOpt",
+        "TritonToUnstructure",
+        "OffsetAnalysis"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了针对 marked_rank_two_tiled_offset_carrier 的 lit 测试，验证 CFO 优化后的属性和 Linalg 输出结果。需要持续关注该测试是否覆盖了所有特化路径。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/tensor_pointer_descriptor_loop.mlir"
+        ]
+      },
+      "message": "[ControlFlowOpt](fix) backport affine carrier recovery (#1967)\n\n* [ControlFlowOpt](feat) support marked affine pointer carriers (#1924)\n\n(cherry picked from commit f2b7df925fbc294160202d7ba71062d4c29be9d3)\n\n* [ControlFlowOpt](fix) narrow affine carrier recovery\n\n(cherry picked from commit 83691fc21b628ca744eeb932fedc62a30c172779)\n\n* [TritonToUnstructure](style) apply clang-format\n\n(cherry picked from commit 1fcd9724fcc8e87b42f40b8fd4d1e864cb13818a)\n\n---------\n\nCo-authored-by: elstainniles <86865808+elstainniles@users.noreply.github.com>\nCo-authored-by: zhaojingkai <zhaojingkai4@huawei.com>"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

@@ -1,4 +1,20 @@
 {
+  "1665fa9a96713f0157e5436f247369d83d0a6632": {
+    "date": "2026-09-05",
+    "msg": "[NVIDIA] Verify TCGen5 MMA instruction constraints (#11595)"
+  },
+  "e1f944a7a17d616f30c9e8c52c0f092e64079bb3": {
+    "date": "2026-09-05",
+    "msg": "Meetup notes for Triton Community Meetup (2026-09-03) (#11593)"
+  },
+  "6e7587360478ae956f050816de99cb0361bb90db": {
+    "date": "2026-09-05",
+    "msg": "[TRITONGPU] Try reusing existing layout rematerialization before hoisting layout conversion  (#11538)"
+  },
+  "5198bceaf9939c6e1d266d0bc0dc47cface0d2c3": {
+    "date": "2026-09-05",
+    "msg": "[KERNELS] Accelerate Blackwell and Hopper layout conversions (#11565)"
+  },
   "1298a6b13aabbda7442ca73a83442cf7db2f608d": {
     "date": "2026-09-04",
     "msg": "[AMD] Enable RDNA4m buffer atomics and IEEE min/max (#11474)"
