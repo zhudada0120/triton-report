@@ -1,0 +1,66 @@
+{
+  "date": "2026-09-06",
+  "repo": "triton-lang/triton",
+  "branch": "main",
+  "commits": [
+    {
+      "sha": "20e6ba864830b88f56b907fef85cab5097cf3892",
+      "author": {
+        "name": "Kaif Kohari",
+        "email": "kaifkohari10@gmail.com"
+      },
+      "date": "2026-09-06T11:23:37+08:00",
+      "message": "[AUTOTUNER] Reject autotune name lists that are not kernel arguments (#11602)\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n\n## Silently ignored autotune key names\n\n`key`, `reset_to_zero` and `restore_value` are documented as lists of\nargument names, but a name that is not one is silently dropped.\n`Autotuner.run()` builds the tuning key as:\n\n```python\n_args = {k: v for (k, v) in all_args.items() if k in self.arg_names}\nkey = [_args[key] for key in self.keys if key in _args]\n```\n\nso a stale or misspelled entry leaves the kernel tuning once and then\nreusing that config no matter how the real argument changes. There is no\nerror and no warning; the only symptom is a kernel that quietly stopped\nre-tuning, which reads as a performance mystery rather than a bug.\n\nThis is easy to hit. `test_tmem_out_of_resource` in\n`python/test/unit/runtime/test_autotuner.py` passes `key=['N']` to a\nkernel whose arguments are `dst` and `BLOCK_SIZE`, so that test's tuning\nkey has been empty since it was written. An AST scan over `python/` and\n`third_party/` found it to be the only such usage in the repository, and\ndropping the stale name is behaviour-preserving: the key already\nresolved to the empty tuple.\n\nThis PR validates the three name lists in `__init__` and raises\n`ValueError` naming the offending entries and the valid argument names,\nmatching how the class already reports conflicting meta-parameters.\nHappy to downgrade it to a `warnings.warn` if you would rather not fail\nat decoration time.\n\n## `restore_copies` is never initialized\n\nPassing `pre_hook` together with `restore_value` replaces the default\npre_hook that populates `restore_copies`, but the default post_hook that\nreads it stays installed, because it is selected independently:\n\n```python\nif post_hook:\n    self.post_hook = post_hook\nelif len(self.restore_value) > 0:\n    def _post_hook(kwargs, exception):\n        for name, value in self.restore_copies.items():   # never set\n```\n\nAutotuning such a kernel raised `AttributeError: 'Autotuner' object has\nno attribute 'restore_copies'` instead of benchmarking. Initializing it\nin `__init__` fixes that; the default pre_hook still overwrites it when\nit runs.\n\n## Tests\n\nTwo tests added next to the existing `Autotuner`-constructed ones, both\ndevice-free:\n\n- `test_unknown_key_name_is_rejected` — parametrised over the three\narguments, asserts `ValueError`.\n- `test_restore_value_with_user_pre_hook` — asserts both configs get\nbenchmarked instead of raising `AttributeError`.\n\nBoth fail on `main` and pass with this change. `pre-commit` passes on\nthe two touched files (ruff, yapf, mypy included).",
+      "parents": [
+        "aedd1f612ad23bbb032d29b952662c4d4269184d"
+      ],
+      "stats": {
+        "total_additions": 77,
+        "total_deletions": 2,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "python/test/unit/runtime/test_autotuner.py",
+          "status": "modified",
+          "additions": 61,
+          "deletions": 1,
+          "patch": "@@ -309,6 +309,66 @@ def test_prune_configs_fractional_top_k_after_early_prune():\n     assert benchmarked == [1, 2, 3]\n \n \n+def test_unknown_key_name_is_rejected():\n+    # `key` is documented as a list of argument names. An unknown name used to be\n+    # dropped from the tuning key by run(), so the kernel tuned once and then reused\n+    # that config no matter how the real argument changed.\n+    class Kernel:\n+\n+        def __init__(self):\n+            self.fn = lambda: None\n+\n+        def run(self, **kwargs):\n+            pass\n+\n+    for param in (\"key\", \"reset_to_zero\", \"restore_value\"):\n+        with pytest.raises(ValueError, match=\"not kernel arguments\"):\n+            triton.runtime.Autotuner(\n+                Kernel(),\n+                arg_names=[\"n\"],\n+                configs=[triton.Config(kwargs={\"BLOCK_SIZE\": 32})],\n+                key=[\"N\"] if param == \"key\" else [],\n+                reset_to_zero=[\"N\"] if param == \"reset_to_zero\" else None,\n+                restore_value=[\"N\"] if param == \"restore_value\" else None,\n+            )\n+\n+\n+def test_restore_value_with_user_pre_hook():\n+    # A user-supplied pre_hook replaces the default one that populates restore_copies,\n+    # but the default post_hook that reads it stays installed, so running the autotuner\n+    # used to raise AttributeError instead of benchmarking.\n+    launched = []\n+\n+    class Kernel:\n+\n+        def __init__(self):\n+            self.fn = lambda: None\n+\n+        def run(self, **kwargs):\n+            launched.append(kwargs[\"BLOCK_SIZE\"])\n+\n+    def do_bench(kernel_call, quantiles):\n+        kernel_call()\n+        return [1.0, 1.0, 1.0]\n+\n+    tuner = triton.runtime.Autotuner(\n+        Kernel(),\n+        arg_names=[\"x\"],\n+        configs=[triton.Config(kwargs={\"BLOCK_SIZE\": 32}),\n+                 triton.Config(kwargs={\"BLOCK_SIZE\": 64})],\n+        key=[],\n+        reset_to_zero=None,\n+        restore_value=[\"x\"],\n+        pre_hook=lambda kwargs, reset_only=False: None,\n+        do_bench=do_bench,\n+    )\n+\n+    tuner.run(x=None)\n+\n+    # Both configs get benchmarked, then the winner is launched for real.\n+    assert launched[:2] == [32, 64]\n+\n+\n def test_config_ir_override_changes_disk_cache_key():\n     # Autotuner derives persisted result-cache keys from Config.__str__().\n     first = triton.Config(kwargs={\"BLOCK_SIZE\": 32}, ir_override=\"first.ttir\")\n@@ -572,7 +632,7 @@ def test_exceed_tmem(device):\n         if exception is not None:\n             exception_out_of_resource = exception\n \n-    @triton.autotune(configs=configs, key=['N'], do_bench=do_bench, pre_hook=None, post_hook=_post_hook)\n+    @triton.autotune(configs=configs, key=[], do_bench=do_bench, pre_hook=None, post_hook=_post_hook)\n     @triton.jit\n     def dot_kernel(dst, BLOCK_SIZE: tl.constexpr):\n         a = tl.full((BLOCK_SIZE, BLOCK_SIZE), 0.0, tl.float16)"
+        },
+        {
+          "filename": "python/triton/runtime/autotuner.py",
+          "status": "modified",
+          "additions": 16,
+          "deletions": 1,
+          "patch": "@@ -6,7 +6,7 @@ import inspect\n import hashlib\n import json\n from functools import cached_property\n-from typing import Dict, Tuple, List, Optional\n+from typing import Any, Dict, Tuple, List, Optional\n \n from .. import knobs\n from .jit import KernelInterface, JITFunction\n@@ -46,6 +46,21 @@ class Autotuner(KernelInterface):\n         if restore_value is not None:\n             self.restore_value = list(restore_value)\n \n+        # `key`, `reset_to_zero` and `restore_value` are all documented as lists of\n+        # argument names. A name that is not one is silently dropped from the tuning\n+        # key by `run()`, so a typo makes the kernel tune once and never re-tune.\n+        for param, names in ((\"key\", self.keys), (\"reset_to_zero\", self.reset_to_zero), (\"restore_value\",\n+                                                                                         self.restore_value)):\n+            unknown = [name for name in names if name not in self.arg_names]\n+            if unknown:\n+                raise ValueError(f\"{param} contains names that are not kernel arguments: \"\n+                                 f\"{', '.join(unknown)}. Valid argument names are: {', '.join(self.arg_names)}.\")\n+\n+        # Populated by the default pre_hook when `restore_value` is set. Initialized here\n+        # because a user-supplied pre_hook replaces that default while the default\n+        # post_hook, which reads this, stays installed.\n+        self.restore_copies: Dict[str, Any] = {}\n+\n         # Hook to reset or restore for required tensors\n         self.pre_hook = lambda kwargs, reset_only=False: 0\n         self.post_hook = lambda kwargs, exception: 0\n"
+        }
+      ]
+    },
+    {
+      "sha": "aedd1f612ad23bbb032d29b952662c4d4269184d",
+      "author": {
+        "name": "Lei Zhang",
+        "email": "antiagainst@gmail.com"
+      },
+      "date": "2026-09-06T09:55:38+08:00",
+      "message": "[Backend] Build triton-lang/llvm-project@1df311a6f7d8 (#11606)\n\nTo pick up a revert of a AMDGPU backend issue",
+      "parents": [
+        "1665fa9a96713f0157e5436f247369d83d0a6632"
+      ],
+      "stats": {
+        "total_additions": 2,
+        "total_deletions": 2,
+        "files_changed": 1
+      },
+      "files": [
+        {
+          "filename": "cmake/llvm-build-info.json",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 2,
+          "patch": "@@ -1,5 +1,5 @@\n {\n-  \"llvm_hash\": \"ce3529423abda3fc4ad0b542daa50af21e539a29\",\n-  \"repository\": \"llvm/llvm-project\",\n+  \"llvm_hash\": \"1df311a6f7d8af05d068ce835b60dfa5b199d2f8\",\n+  \"repository\": \"triton-lang/llvm-project\",\n   \"build_number\": 1\n }\n"
+        }
+      ]
+    }
+  ]
+}

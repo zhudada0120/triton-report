@@ -1,0 +1,33 @@
+{
+  "date": "2026-09-06",
+  "repo": "triton-lang/triton-ascend",
+  "branch": "main",
+  "commits": [
+    {
+      "sha": "c747daae7f67fb7acd1013bf9793505aec1dc9e2",
+      "author": {
+        "name": "wuzw_05",
+        "email": "48195036+wzw2019@users.noreply.github.com"
+      },
+      "date": "2026-09-06T19:31:17+08:00",
+      "message": "[ssbuffer](fix) improve sdpa fwd performance (#1995)\n\nCo-authored-by: wuzw_05 <wuzhiwei37@huawei.com>",
+      "parents": [
+        "132ebe0d7a7e8476260bc3717f7255e81a31b33c"
+      ],
+      "stats": {
+        "total_additions": 0,
+        "total_deletions": 1,
+        "files_changed": 1
+      },
+      "files": [
+        {
+          "filename": "third_party/ascend/lib/DynamicCVPipeline/PreCheckAvailable/PreCheckDisablePreload.cpp",
+          "status": "modified",
+          "additions": 0,
+          "deletions": 1,
+          "patch": "@@ -68,7 +68,6 @@ static const llvm::SmallVector<llvm::StringRef> kBlacklistFuncNames = {\n     \"chunk_ttt_linear_fwd_kernel_h\",\n     \"transform_q_fwd_kernel\",\n     \"_attn_fwd\",\n-    \"kernel_sdpa_fwd\",\n     \"kernel_sdpa_bwd_q\",\n     \"pcb08_tc01_kernel\",\n     \"pcb08_tc02_kernel\",\n"
+        }
+      ]
+    }
+  ]
+}

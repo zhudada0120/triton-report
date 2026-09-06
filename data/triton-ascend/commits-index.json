@@ -1,4 +1,8 @@
 {
+  "c747daae7f67fb7acd1013bf9793505aec1dc9e2": {
+    "date": "2026-09-06",
+    "msg": "[ssbuffer](fix) improve sdpa fwd performance (#1995)"
+  },
   "132ebe0d7a7e8476260bc3717f7255e81a31b33c": {
     "date": "2026-09-05",
     "msg": "[ssbuffer](fix) Temporary fix for scope error (#1983)"

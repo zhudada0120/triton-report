@@ -1,0 +1,66 @@
+{
+  "date": "2026-09-06",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-09-07T03:41:06.825179+08:00",
+  "daily_summary": "当日提交包含两项变更：一是对 autotuner 的增强，增加了对 `key`、`reset_to_zero` 和 `restore_value` 参数中无效参数名的校验，并修复了 `restore_copies` 未初始化的问题；二是更新了 LLVM 工具链的构建信息，以包含一个 AMDGPU 后端问题的回退修复。",
+  "ascend_impact_summary": "autotuner 的变更增强了参数验证，并修复了一个潜在的运行时错误，这可能会影响 Ascend 后端中继承自 Autotuner 的 AutoTilingTuner 的行为。LLVM 构建信息更新不影响 Ascend。",
+  "commits": [
+    {
+      "sha": "20e6ba864830b88f56b907fef85cab5097cf3892",
+      "comment": "该提交增强了 Autotuner 的健壮性。1) 在 __init__ 中验证 `key`、`reset_to_zero` 和 `restore_value` 参数，确保它们引用的参数名存在于内核签名中，避免了因拼写错误导致调优配置被静默忽略的问题。2) 在 __init__ 中初始化 `restore_copies` 为空字典，修复了用户提供 pre_hook 时可能引发的 AttributeError。新增的两个单元测试覆盖了这两种情况。该变更属于行为强化，正常情况下不应破坏现有代码，除非用户有意传递无效的参数名。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "low-risk",
+        "runtime",
+        "autotuner"
+      ],
+      "ascend_impact": {
+        "ascend_affected": true,
+        "functionality": "影响 `python/triton/runtime/autotuner.py`。triton-ascend 的 `AutoTilingTuner` 类继承自上游 `Autotuner`。`__init__` 中新增的参数校验逻辑（`key`/`reset_to_zero`/`restore_value` 必须为内核参数名）将同样作用于 `AutoTilingTuner`，这可能会拒绝 Ascend 后端之前被静默忽略的无效配置，导致 `ValueError`。此外，`restore_copies` 属性被初始化为空字典，修复了当与自定义 `pre_hook` 一起使用时可能出现的 `AttributeError`。",
+        "testing": "新增的测试针对上游 `Autotuner` 类。`AutoTilingTuner` 的现有测试将间接覆盖此变更，因为它们使用的参数名应该都是合法的。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AUTOTUNER] Reject autotune name lists that are not kernel arguments (#11602)\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n\n## Silently ignored autotune key names\n\n`key`, `reset_to_zero` and `restore_value` are documented as lists of\nargument names, but a name that is not one is silently dropped.\n`Autotuner.run()` builds the tuning key as:\n\n```python\n_args = {k: v for (k, v) in all_args.items() if k in self.arg_names}\nkey = [_args[key] for key in self.keys if key in _args]\n```\n\nso a stale or misspelled entry leaves the kernel tuning once and then\nreusing that config no matter how the real argument changes. There is no\nerror and no warning; the only symptom is a kernel that quietly stopped\nre-tuning, which reads as a performance mystery rather than a bug.\n\nThis is easy to hit. `test_tmem_out_of_resource` in\n`python/test/unit/runtime/test_autotuner.py` passes `key=['N']` to a\nkernel whose arguments are `dst` and `BLOCK_SIZE`, so that test's tuning\nkey has been empty since it was written. An AST scan over `python/` and\n`third_party/` found it to be the only such usage in the repository, and\ndropping the stale name is behaviour-preserving: the key already\nresolved to the empty tuple.\n\nThis PR validates the three name lists in `__init__` and raises\n`ValueError` naming the offending entries and the valid argument names,\nmatching how the class already reports conflicting meta-parameters.\nHappy to downgrade it to a `warnings.warn` if you would rather not fail\nat decoration time.\n\n## `restore_copies` is never initialized\n\nPassing `pre_hook` together with `restore_value` replaces the default\npre_hook that populates `restore_copies`, but the default post_hook that\nreads it stays installed, because it is selected independently:\n\n```python\nif post_hook:\n    self.post_hook = post_hook\nelif len(self.restore_value) > 0:\n    def _post_hook(kwargs, exception):\n        for name, value in self.restore_copies.items():   # never set\n```\n\nAutotuning such a kernel raised `AttributeError: 'Autotuner' object has\nno attribute 'restore_copies'` instead of benchmarking. Initializing it\nin `__init__` fixes that; the default pre_hook still overwrites it when\nit runs.\n\n## Tests\n\nTwo tests added next to the existing `Autotuner`-constructed ones, both\ndevice-free:\n\n- `test_unknown_key_name_is_rejected` — parametrised over the three\narguments, asserts `ValueError`.\n- `test_restore_value_with_user_pre_hook` — asserts both configs get\nbenchmarked instead of raising `AttributeError`.\n\nBoth fail on `main` and pass with this change. `pre-commit` passes on\nthe two touched files (ruff, yapf, mypy included).",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/runtime/autotuner.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": true,
+        "affected_interfaces": [
+          "python/triton/runtime/autotuner.py::Autotuner (共享基类，本次 commit 修改其 __init__)",
+          "third_party/ascend/backend/runtime/autotuner.py::AutoTilingTuner (继承 Autotuner，__init__ 经 super().__init__ 透传 key/reset_to_zero/restore_value)",
+          "python/triton/runtime/libentry.py::LibTuner (继承 triton.runtime.Autotuner，super().__init__ 同样透传三个名字列表)"
+        ],
+        "adaptation_effort": "low",
+        "adaptation_guide": "本次 commit 只对 python/triton/runtime/autotuner.py 的 Autotuner.__init__ 做了两处增量修改：(1) 在 __init__ 中新增校验循环，遍历 key/reset_to_zero/restore_value，若存在不在 self.arg_names 中的名字则 raise ValueError；(2) 初始化 self.restore_copies: Dict[str, Any] = {} 修复 pre_hook 与 restore_value 同时使用时的 AttributeError。接口签名未变（fn, arg_names, configs, key, reset_to_zero, restore_value, pre_hook, ... 顺序不变），因此 AutoTilingTuner（third_party/ascend/backend/runtime/autotuner.py:293 super().__init__）和 LibTuner（python/triton/runtime/libentry.py:84/99 super().__init__）无需改签名。适配动作：1) 将上游 autotuner.py 的新逻辑回合到 triton-ascend 的 python/triton/runtime/autotuner.py（该文件在 triton-ascend 中是共享/平台无关文件，随 cherry-pick 同步，注意与本地旧版 _post_hook/_pre_hook/prune_configs 差异合并）；2) 复核 AutoTilingTuner 与 LibTuner 的 key/reset_to_zero/restore_value 是否全部为内核参数名——现有 autotune_ut 测试（01-vector-add key=['n_elements']、03-layer-norm key=['M','N']、test_reduction_axes_parse key=['x0_numel','r1_numel']、test_ir_override key=['N']）均为合法参数名，_infer_hints_axes_from_key 亦将 key 条目视为参数名，故预期不触发新 ValueError；3) restore_copies 初始化修复对 triton-ascend 自身的 _post_hook（其使用 self.restore_copies[name]）直接受益，无需额外改动。建议新增一条 ascend 侧测试验证 key 含非参数名时在装饰期抛出 ValueError。",
+        "risk": "低。接口签名无变更，改动为纯增量校验与 bug 修复，不会破坏 AutoTilingTuner/LibTuner 的 super().__init__ 调用。主要风险是行为层面：若存在 triton-ascend 用户 kernel 在 key/reset_to_zero/restore_value 中传入轴名或非参数名（此前被静默忽略），同步后会在装饰期抛 ValueError。基于对 third_party/ascend/unittest 的扫描，现有用法均为合法参数名，风险可控；但 AutoTilingTuner 在 _init_axis_params 中会重新赋值 self.keys=list(key)（在 super().__init__ 之后执行），校验只作用于基类 __init__ 阶段的原始 key，语义一致，无副作用。"
+      }
+    },
+    {
+      "sha": "aedd1f612ad23bbb032d29b952662c4d4269184d",
+      "comment": "这是一个构建/依赖更新，将构建所用的 LLVM 版本从 `llvm/llvm-project` 的 `ce3529423abda3fc4ad0b542daa50af21e539a29` 回退更新到 `triton-lang/llvm-project` 的 `1df311a6f7d8af05d068ce835b60dfa5b199d2f8`。目的是引入（revert of）一个 AMDGPU 后端的问题修复。此变更仅影响编译时的依赖版本，不涉及任何源代码逻辑变更。",
+      "tags": [
+        "chore",
+        "ci",
+        "low-risk",
+        "build"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。此提交仅更新了 C++/LLVM 编译器的构建信息，不涉及 Triton 的 Python API、编译器接口或任何与后端相关的核心逻辑。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Backend] Build triton-lang/llvm-project@1df311a6f7d8 (#11606)\n\nTo pick up a revert of a AMDGPU backend issue"
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

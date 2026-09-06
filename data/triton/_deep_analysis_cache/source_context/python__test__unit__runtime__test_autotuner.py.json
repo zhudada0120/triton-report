@@ -1,0 +1,12 @@
+{
+  "content_hash": "ba76ba741786c3b5",
+  "analysis": {
+    "interface_summary": "定义 1 个类；定义 50 个函数",
+    "key_interfaces": [
+      "Kernel",
+      "Kernel.__init__",
+      "Kernel.run"
+    ]
+  },
+  "cached_at": "2026-09-07T03:41:07.037907+08:00"
+}

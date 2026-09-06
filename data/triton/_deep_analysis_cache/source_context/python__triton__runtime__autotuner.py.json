@@ -1,0 +1,24 @@
+{
+  "content_hash": "658aa436dced0d44",
+  "analysis": {
+    "interface_summary": "定义 3 个类；定义 23 个函数",
+    "key_interfaces": [
+      "Autotuner",
+      "Config",
+      "Heuristics",
+      "Autotuner.__init__",
+      "Autotuner.do_bench",
+      "Autotuner._bench",
+      "Autotuner.check_disk_cache",
+      "Autotuner.run",
+      "Config.__init__",
+      "Config.__setstate__",
+      "Config.all_kwargs",
+      "Config.__str__",
+      "Config.__hash__",
+      "Heuristics.__init__",
+      "Heuristics.run"
+    ]
+  },
+  "cached_at": "2026-09-07T03:41:07.041922+08:00"
+}

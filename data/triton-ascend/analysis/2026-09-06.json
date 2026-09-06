@@ -1,0 +1,31 @@
+{
+  "date": "2026-09-06",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-09-07T03:44:22.255744+08:00",
+  "daily_summary": "本次变更仅包含一个简单的性能优化调整，将用于控制动态CV Pipeline预加载禁用名单（blacklist）中的一个kernel函数名移除，使得sdpa_forward_kernel不再被列入预加载禁用名单，从而提升该kernel的执行性能。该调整属于针对特定kernel的性能优化，变更范围小且风险低。",
+  "test_impact_summary": "由于本次变更仅从预加载禁用名单中移除一个字符串条目，对编译流程的行为影响极小，需要关注的主要测试方向是确认移除后该kernel能够正常执行且性能得到提升，特别建议在动态CV Pipeline相关测试场景中增加对该kernel的覆盖验证，以确保其正确性和性能预期。现有测试框架基本无需调整，但可以适度补充专项性能或功能性验证，以巩固该优化的有效性与安全性。",
+  "commits": [
+    {
+      "sha": "c747daae7f67fb7acd1013bf9793505aec1dc9e2",
+      "comment": "此commit旨在提升sdpa_forward_kernel（即kernel_sdpa_fwd）在共享buffer（ssbuffer）优化场景下的执行性能。主要修改是将该kernel的名字从预加载禁用名单(blacklist)中移除，使得该kernel允许被使用动态CV预加载机制（即CANN编译器中的动态控制流预加载技术，通过提前加载部分linalg模块提高执行效率）。变更实现方式极为直接，仅删除一行代码，风险极低。此调整有可能带来性能提升，但同时也要关注该kernel之前被加入禁用名单的原因，若原因为稳定性问题需评估移除后的潜在风险。但由于该kernel具备典型的sdpa（flash attention decoding）特性（大规模矩阵乘和循环控制结构），一般与预加载机制兼容，综合来看变更合理。建议在后续测试与性能回归中验证此调整对sdpa_fwd kernel端到端性能的实际影响，以及注意相关芯片型号（910B/910-95/A2/A3）上的行为差异。",
+      "tags": [
+        "performance",
+        "low-risk",
+        "dynamic-cv-pipeline",
+        "preload"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "尽管此次变更只删除一行代码，但涉及编译流水线中的优化开关行为变化，应确保移除该kernel在预加载blacklist中的条目后，能对动态CV pipeline的预加载路径及最终性能表现进行验证。简单增加针对'kernel_sdpa_fwd'相关的性能回归测试或功能性验证用例，增强动态CV Pipeline在典型kernel上的行为覆盖。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/",
+          "third_party/ascend/unittest/pytest_ut/",
+          "third_party/ascend/unittest/performance_ut/"
+        ]
+      },
+      "message": "[ssbuffer](fix) improve sdpa fwd performance (#1995)\n\nCo-authored-by: wuzw_05 <wuzhiwei37@huawei.com>"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

@@ -159,6 +159,18 @@
       "interface_changes": "修复异步编译资源泄漏问题。核心问题：当未来尚未解析（exception）或已解析后，Future 对象及其持有的异常 traceback 会间接引用 compiler 内部对象（如编译 module/context 等）造成泄漏。解决方法：FutureKernel 增加 `cleanup_compile` 回调，在异常时调用（清理 kernel_cache 中的占位），并在成功或失败后置空 self.future；清理汇总的 raw_futures 与 future_kernels 状态。同时在测试中验证失败 future 从 cache 中移除，避免重复 resolve。此修复消除 CI 中 nanobind 实例泄漏告警，属于健壮性改进。",
       "change_summary": "[RUNTIME] Clear failed async compile futures (#11552)",
       "ascend_impact": false
+    },
+    "20e6ba864830b88f56b907fef85cab5097cf3892": {
+      "date": "2026-09-06",
+      "affected_modules": [
+        "python/triton/runtime/autotuner.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/runtime/autotuner.py"
+      ],
+      "interface_changes": "该提交增强了 Autotuner 的健壮性。1) 在 __init__ 中验证 `key`、`reset_to_zero` 和 `restore_value` 参数，确保它们引用的参数名存在于内核签名中，避免了因拼写错误导致调优配置被静默忽略的问题。2) 在 __init__ 中初始化 `restore_copies` 为空字典，修复了用户提供 pre_hook 时可能引发的 AttributeError。新增的两个单元测试覆盖了这两种情况。该变更属于行为强化，正常情况下不应破坏现有代码，除非用户有意传递无效的参数名。",
+      "change_summary": "[AUTOTUNER] Reject autotune name lists that are not kernel arguments (#11602)",
+      "ascend_impact": true
     }
   }
 }

@@ -1,4 +1,12 @@
 {
+  "20e6ba864830b88f56b907fef85cab5097cf3892": {
+    "date": "2026-09-06",
+    "msg": "[AUTOTUNER] Reject autotune name lists that are not kernel arguments (#11602)"
+  },
+  "aedd1f612ad23bbb032d29b952662c4d4269184d": {
+    "date": "2026-09-06",
+    "msg": "[Backend] Build triton-lang/llvm-project@1df311a6f7d8 (#11606)"
+  },
   "1665fa9a96713f0157e5436f247369d83d0a6632": {
     "date": "2026-09-05",
     "msg": "[NVIDIA] Verify TCGen5 MMA instruction constraints (#11595)"
