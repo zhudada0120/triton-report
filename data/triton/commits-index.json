@@ -1,4 +1,8 @@
 {
+  "20601f01437c2e84b1a6b845ce7219b1d66c606a": {
+    "date": "2026-09-07",
+    "msg": "[AccelerateMatmul] Forward lhs/rhs_k_pack flags when transposing a scaled dot (#11613)"
+  },
   "20e6ba864830b88f56b907fef85cab5097cf3892": {
     "date": "2026-09-06",
     "msg": "[AUTOTUNER] Reject autotune name lists that are not kernel arguments (#11602)"

@@ -1,0 +1,1381 @@
+{
+  "date": "2026-09-07",
+  "repo": "triton-lang/triton-ascend",
+  "branch": "main",
+  "commits": [
+    {
+      "sha": "b64287188046fe7bb0cfd424ee3e389f96a7affa",
+      "author": {
+        "name": "olivervnc",
+        "email": "chenwuyang1@huawei.com"
+      },
+      "date": "2026-09-07T22:26:40+08:00",
+      "message": "[ssbuffer](fix) fix vf operand substitution (#2033)\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>",
+      "parents": [
+        "6ff78229c88a04a05c9d8115e8a106afebd503fe"
+      ],
+      "stats": {
+        "total_additions": 23,
+        "total_deletions": 2,
+        "files_changed": 3
+      },
+      "files": [
+        {
+          "filename": "third_party/ascend/backend/compiler.py",
+          "status": "modified",
+          "additions": 5,
+          "deletions": 2,
+          "patch": "@@ -1,4 +1,4 @@\n-﻿# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.\n+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.\n #\n # Permission is hereby granted, free of charge, to any person obtaining a copy\n # of this software and associated documentation files (the \"Software\"), to deal\n@@ -131,6 +131,9 @@ def _export_coalesce_metadata(mod, metadata, *, require_row_contract=False):\n \n def _adjust_metadata_by_module_result(mod, metadata, opt, **kwargs):\n     rc = _get_then_remove_rc(mod, \"triton_ascend.dynamic_cv_pipeline.rc\")\n+    if rc == 4:\n+        metadata[\"disable_vf_operand_substitution\"] = True\n+        return\n     if rc != -1 and rc > 0:\n         # When the option dynamic_cv_pipeline is set to False,\n         # these options should also reverted.\n@@ -682,7 +685,7 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):\n                 [f\"--enable-vf-fusion={enable_vf_fusion}\"]\n \n         enable_dynamic_cv_pipeline = metadata[\"enable_dynamic_cv_pipeline\"]\n-        if enable_dynamic_cv_pipeline == True:\n+        if enable_dynamic_cv_pipeline == True and not metadata.get(\"disable_vf_operand_substitution\", False):\n             _compile_option_list += [f\"--enable-vf-operand-substitution=True\"]\n \n         enable_flatten = metadata[\"enable_flatten\"]"
+        },
+        {
+          "filename": "third_party/ascend/include/DynamicCVPipeline/Common/Utils.h",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 0,
+          "patch": "@@ -91,6 +91,7 @@ inline constexpr const char *ERRCODE_ATTR =\n     \"triton_ascend.dynamic_cv_pipeline.rc\";\n static constexpr const int ERRCODE_FAILED = 1;\n static constexpr const int ERRCODE_IGNORED = 2;\n+static constexpr const int ERRCODE_DISABLE_VF_SUBSTITUTION = 4;\n constexpr int64_t CACHE_TABLE_BUFFER_SIZE = 4096;\n constexpr int64_t BYTE_SIZE = 8;\n static constexpr int crossCoreProducerId = 1;"
+        },
+        {
+          "filename": "third_party/ascend/lib/DynamicCVPipeline/AddDynamicCVPipeline.cpp",
+          "status": "modified",
+          "additions": 17,
+          "deletions": 0,
+          "patch": "@@ -20,10 +20,13 @@\n  * THE SOFTWARE.\n  */\n \n+#include \"llvm/ADT/STLExtras.h\"\n #include \"llvm/Support/Debug.h\"\n \n+#include \"mlir/Dialect/Func/IR/FuncOps.h\"\n #include \"mlir/IR/BuiltinOps.h\"\n #include \"mlir/Pass/PassManager.h\"\n+#include \"mlir/Support/WalkResult.h\"\n \n #include \"ascend/include/DynamicCVPipeline/AddControlFlowCondition.h\"\n #include \"ascend/include/DynamicCVPipeline/AllocMultiCache.h\"\n@@ -55,6 +58,19 @@ AddDynamicCVPipelinePass::AddDynamicCVPipelinePass(\n     const AddDynamicCVPipelineOptions &options)\n     : AddDynamicCVPipelineBase(options) {}\n \n+static void checkAndDisableVfSub(ModuleOp module) {\n+  static constexpr llvm::StringLiteral kDisableVfSubKernels[1]{\n+      \"chunk_gated_delta_rule_fwd_kernel_h_blockdim64\"};\n+  module->walk([=](func::FuncOp funcOp) {\n+    if (llvm::is_contained(kDisableVfSubKernels, funcOp.getSymName())) {\n+      CVPipeline::setFallbackAttr(module,\n+                                  CVPipeline::ERRCODE_DISABLE_VF_SUBSTITUTION);\n+      return WalkResult::interrupt();\n+    }\n+    return WalkResult::advance();\n+  });\n+}\n+\n void AddDynamicCVPipelinePass::runOnOperation() {\n   auto moduleOp = getOperation();\n   OpBuilder builder(moduleOp.getContext());\n@@ -106,6 +122,7 @@ void AddDynamicCVPipelinePass::runOnOperation() {\n     return;\n   }\n \n+  checkAndDisableVfSub(moduleOp);\n   LDBG(\"Process successfully\");\n }\n \n"
+        }
+      ]
+    },
+    {
+      "sha": "6ff78229c88a04a05c9d8115e8a106afebd503fe",
+      "author": {
+        "name": "wuzw_05",
+        "email": "48195036+wzw2019@users.noreply.github.com"
+      },
+      "date": "2026-09-07T21:02:08+08:00",
+      "message": "[ssbuffer](fix) fix sdpa fwd performance (#2028)\n\nCo-authored-by: wuzw_05 <wuzhiwei37@huawei.com>",
+      "parents": [
+        "ade29bb49f4dd365f4b5af2938e6f52ca5f9eeba"
+      ],
+      "stats": {
+        "total_additions": 13,
+        "total_deletions": 0,
+        "files_changed": 1
+      },
+      "files": [
+        {
+          "filename": "third_party/ascend/lib/DynamicCVPipeline/PreCheckAvailable/PreCheckDisablePreload.cpp",
+          "status": "modified",
+          "additions": 13,
+          "deletions": 0,
+          "patch": "@@ -68,6 +68,7 @@ static const llvm::SmallVector<llvm::StringRef> kBlacklistFuncNames = {\n     \"chunk_ttt_linear_fwd_kernel_h\",\n     \"transform_q_fwd_kernel\",\n     \"_attn_fwd\",\n+    \"kernel_sdpa_fwd\",\n     \"kernel_sdpa_bwd_q\",\n     \"pcb08_tc01_kernel\",\n     \"pcb08_tc02_kernel\",\n@@ -119,6 +120,18 @@ void PreCheckDisablePreload::runOnOperation() {\n     return;\n   }\n \n+  // Keep the explicit 3-preload setting only for kernel_sdpa_fwd.\n+  if (foundBlacklistFunc.getSymName() == \"kernel_sdpa_fwd\") {\n+    auto intraBufferCount =\n+        module->getAttrOfType<IntegerAttr>(CVPipeline::kIntraBufCount);\n+    auto interBufferCount =\n+        module->getAttrOfType<IntegerAttr>(CVPipeline::kInterCoreBufCount);\n+    if (intraBufferCount && interBufferCount &&\n+        intraBufferCount.getInt() == 3 && interBufferCount.getInt() == 2) {\n+      return;\n+    }\n+  }\n+\n   LDBG(\"3-preload will be disabled because \"\n        << foundBlacklistFunc.getSymName()\n        << \" function was found, which is not supported by 3-preload now.\");\n"
+        }
+      ]
+    },
+    {
+      "sha": "ade29bb49f4dd365f4b5af2938e6f52ca5f9eeba",
+      "author": {
+        "name": "TecJesh",
+        "email": "qdvm5gl@163.com"
+      },
+      "date": "2026-09-07T17:06:46+08:00",
+      "message": "[Docs](fix) Unify libdevice doc example precision to 1e-4 (#2017)",
+      "parents": [
+        "f3b85a4a1caf252fb2d77c216bb57b87c875d142"
+      ],
+      "stats": {
+        "total_additions": 341,
+        "total_deletions": 271,
+        "files_changed": 167
+      },
+      "files": [
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.abs.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -42,7 +42,7 @@ def test_abs():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.acos.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ def test_acos():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.acosh.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ def test_acosh():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.add_rd.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -48,7 +48,7 @@ def test_add_rd():\n     triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.add_rn.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -48,7 +48,7 @@ def test_add_rn():\n     triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.add_ru.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -48,7 +48,7 @@ def test_add_ru():\n     triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.add_rz.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -48,7 +48,7 @@ def test_add_rz():\n     triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.asin.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ def test_asin():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.asinh.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ def test_asinh():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.atan.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ def test_atan():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.atan2.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -40,7 +40,7 @@ def test_atan2():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.atanh.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ def test_atanh():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.brev.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -46,7 +46,7 @@ def test_brev():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.byte_perm.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -59,7 +59,7 @@ def test_byte_perm():\n     triton_kernel[(1, )](x0, x1, x2, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.cbrt.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -43,7 +43,7 @@ def test_cbrt():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.ceil.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_ceil():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.clz.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -47,7 +47,7 @@ def test_clz():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.copysign.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -40,7 +40,7 @@ def test_copysign():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.cos.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_cos():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.cosh.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ def test_cosh():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.cospi.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -42,7 +42,7 @@ def test_cospi():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.cyl_bessel_i0.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ def test_cyl_bessel_i0():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.cyl_bessel_i1.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_cyl_bessel_i1():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.div_rd.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -48,7 +48,7 @@ def test_div_rd():\n     triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.div_rn.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -48,7 +48,7 @@ def test_div_rn():\n     triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.div_ru.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -48,7 +48,7 @@ def test_div_ru():\n     triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.div_rz.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -40,7 +40,7 @@ def test_div_rz():\n     expected = x0 / x1\n     out = out.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(out, expected, rtol=1e-03, atol=1e-03)\n+    torch.testing.assert_close(out, expected, rtol=1e-04, atol=1e-04)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.erf.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_erf():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.erfc.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_erfc():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.erfcinv.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_erfcinv():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.erfcx.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_erfcx():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.erfinv.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ def test_erfinv():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.exp.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_exp():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.exp10.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_exp10():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.exp2.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_exp2():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.expm1.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ def test_expm1():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.fast_cosf.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_fast_cosf():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.fast_dividef.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -40,7 +40,7 @@ def test_fast_dividef():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.fast_exp10f.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_fast_exp10f():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.fast_expf.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ def test_fast_expf():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.fast_log10f.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_fast_log10f():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.fast_log2f.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_fast_log2f():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.fast_logf.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_fast_logf():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.fast_powf.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -48,7 +48,7 @@ def test_fast_powf():\n     triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.fast_sinf.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_fast_sinf():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.fast_tanf.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_fast_tanf():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.fast_tanhf.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -42,7 +42,7 @@ def test_fast_tanhf():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.fdim.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -48,7 +48,7 @@ def test_fdim():\n     triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.ffs.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -52,7 +52,7 @@ def test_ffs():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.finitef.py",
+          "status": "modified",
+          "additions": 13,
+          "deletions": 8,
+          "patch": "@@ -32,15 +32,20 @@ def triton_kernel(input0, output, n_elements, XBLOCK: tl.constexpr, XBLOCK_SUB:\n         tl.store(output + (x0), tmp1, mask=mask)\n \n \n+@pytest.mark.skipif(not triton_enable_libdevice_simt(), reason=_SIMT_SKIP_MSG)\n+def test_finitef():\n+    x0 = (torch.rand((8, )) * 3.0 - 1.5).to(torch.float32)\n+    expected = (torch_finitef_reference(x0)).npu()\n+    x0 = x0.npu()\n+    output = torch.empty(8, dtype=torch.bool, device='npu')\n+    triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n+    output = output.cpu()\n+    expected = expected.cpu()\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n+\n+\n if __name__ == \"__main__\":\n     if not triton_enable_libdevice_simt():\n         print(_SIMT_SKIP_MSG)\n     else:\n-        x0 = (torch.rand((8, )) * 3.0 - 1.5).to(torch.float32)\n-        expected = (torch_finitef_reference(x0)).npu()\n-        x0 = x0.npu()\n-        output = torch.empty(8, dtype=torch.bool, device='npu')\n-        triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n-        output = output.cpu()\n-        expected = expected.cpu()\n-        torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+        test_finitef()"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.float2half_rn.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -42,7 +42,7 @@ def test_float2half_rn():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=0, atol=0, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.float2int_rd.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -43,7 +43,7 @@ def test_float2int_rd():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.float2int_rn.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -43,7 +43,7 @@ def test_float2int_rn():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.float2int_ru.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -43,7 +43,7 @@ def test_float2int_ru():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.float2int_rz.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -43,7 +43,7 @@ def test_float2int_rz():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.float2ll_rd.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -43,7 +43,7 @@ def test_float2ll_rd():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.float2ll_rn.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -43,7 +43,7 @@ def test_float2ll_rn():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.float2ll_ru.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -43,7 +43,7 @@ def test_float2ll_ru():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.float2ll_rz.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -43,7 +43,7 @@ def test_float2ll_rz():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.float2uint_rd.py",
+          "status": "modified",
+          "additions": 13,
+          "deletions": 8,
+          "patch": "@@ -34,15 +34,20 @@ def triton_kernel(input0, output, n_elements, XBLOCK: tl.constexpr, XBLOCK_SUB:\n         tl.store(output + (x0), tmp1, mask=mask)\n \n \n+@pytest.mark.skipif(not triton_enable_libdevice_simt(), reason=_SIMT_SKIP_MSG)\n+def test_float2uint_rd():\n+    x0 = torch.abs((torch.rand((8, )) * 3.0 - 1.5).to(torch.float32))\n+    expected = (torch_float2uint_rd_reference(x0)).npu()\n+    x0 = x0.npu()\n+    output = torch.empty(8, dtype=torch.uint32, device='npu')\n+    triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n+    output = output.cpu()\n+    expected = expected.cpu()\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n+\n+\n if __name__ == \"__main__\":\n     if not triton_enable_libdevice_simt():\n         print(_SIMT_SKIP_MSG)\n     else:\n-        x0 = torch.abs((torch.rand((8, )) * 3.0 - 1.5).to(torch.float32))\n-        expected = (torch_float2uint_rd_reference(x0)).npu()\n-        x0 = x0.npu()\n-        output = torch.empty(8, dtype=torch.uint32, device='npu')\n-        triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n-        output = output.cpu()\n-        expected = expected.cpu()\n-        torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+        test_float2uint_rd()"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.float2uint_rn.py",
+          "status": "modified",
+          "additions": 13,
+          "deletions": 8,
+          "patch": "@@ -34,15 +34,20 @@ def triton_kernel(input0, output, n_elements, XBLOCK: tl.constexpr, XBLOCK_SUB:\n         tl.store(output + (x0), tmp1, mask=mask)\n \n \n+@pytest.mark.skipif(not triton_enable_libdevice_simt(), reason=_SIMT_SKIP_MSG)\n+def test_float2uint_rn():\n+    x0 = torch.abs((torch.rand((8, )) * 3.0 - 1.5).to(torch.float32))\n+    expected = (torch_float2uint_rn_reference(x0)).npu()\n+    x0 = x0.npu()\n+    output = torch.empty(8, dtype=torch.uint32, device='npu')\n+    triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n+    output = output.cpu()\n+    expected = expected.cpu()\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n+\n+\n if __name__ == \"__main__\":\n     if not triton_enable_libdevice_simt():\n         print(_SIMT_SKIP_MSG)\n     else:\n-        x0 = torch.abs((torch.rand((8, )) * 3.0 - 1.5).to(torch.float32))\n-        expected = (torch_float2uint_rn_reference(x0)).npu()\n-        x0 = x0.npu()\n-        output = torch.empty(8, dtype=torch.uint32, device='npu')\n-        triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n-        output = output.cpu()\n-        expected = expected.cpu()\n-        torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+        test_float2uint_rn()"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.float2uint_ru.py",
+          "status": "modified",
+          "additions": 13,
+          "deletions": 8,
+          "patch": "@@ -34,15 +34,20 @@ def triton_kernel(input0, output, n_elements, XBLOCK: tl.constexpr, XBLOCK_SUB:\n         tl.store(output + (x0), tmp1, mask=mask)\n \n \n+@pytest.mark.skipif(not triton_enable_libdevice_simt(), reason=_SIMT_SKIP_MSG)\n+def test_float2uint_ru():\n+    x0 = torch.abs((torch.rand((8, )) * 3.0 - 1.5).to(torch.float32))\n+    expected = (torch_float2uint_ru_reference(x0)).npu()\n+    x0 = x0.npu()\n+    output = torch.empty(8, dtype=torch.uint32, device='npu')\n+    triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n+    output = output.cpu()\n+    expected = expected.cpu()\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n+\n+\n if __name__ == \"__main__\":\n     if not triton_enable_libdevice_simt():\n         print(_SIMT_SKIP_MSG)\n     else:\n-        x0 = torch.abs((torch.rand((8, )) * 3.0 - 1.5).to(torch.float32))\n-        expected = (torch_float2uint_ru_reference(x0)).npu()\n-        x0 = x0.npu()\n-        output = torch.empty(8, dtype=torch.uint32, device='npu')\n-        triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n-        output = output.cpu()\n-        expected = expected.cpu()\n-        torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+        test_float2uint_ru()"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.float2uint_rz.py",
+          "status": "modified",
+          "additions": 13,
+          "deletions": 8,
+          "patch": "@@ -34,15 +34,20 @@ def triton_kernel(input0, output, n_elements, XBLOCK: tl.constexpr, XBLOCK_SUB:\n         tl.store(output + (x0), tmp1, mask=mask)\n \n \n+@pytest.mark.skipif(not triton_enable_libdevice_simt(), reason=_SIMT_SKIP_MSG)\n+def test_float2uint_rz():\n+    x0 = torch.abs((torch.rand((8, )) * 3.0 - 1.5).to(torch.float32))\n+    expected = (torch_float2uint_rz_reference(x0)).npu()\n+    x0 = x0.npu()\n+    output = torch.empty(8, dtype=torch.uint32, device='npu')\n+    triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n+    output = output.cpu()\n+    expected = expected.cpu()\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n+\n+\n if __name__ == \"__main__\":\n     if not triton_enable_libdevice_simt():\n         print(_SIMT_SKIP_MSG)\n     else:\n-        x0 = torch.abs((torch.rand((8, )) * 3.0 - 1.5).to(torch.float32))\n-        expected = (torch_float2uint_rz_reference(x0)).npu()\n-        x0 = x0.npu()\n-        output = torch.empty(8, dtype=torch.uint32, device='npu')\n-        triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n-        output = output.cpu()\n-        expected = expected.cpu()\n-        torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+        test_float2uint_rz()"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.float2ull_rd.py",
+          "status": "modified",
+          "additions": 13,
+          "deletions": 8,
+          "patch": "@@ -34,15 +34,20 @@ def triton_kernel(input0, output, n_elements, XBLOCK: tl.constexpr, XBLOCK_SUB:\n         tl.store(output + (x0), tmp1, mask=mask)\n \n \n+@pytest.mark.skipif(not triton_enable_libdevice_simt(), reason=_SIMT_SKIP_MSG)\n+def test_float2ull_rd():\n+    x0 = torch.abs((torch.rand((8, )) * 3.0 - 1.5).to(torch.float32))\n+    expected = (torch_float2ull_rd_reference(x0)).npu()\n+    x0 = x0.npu()\n+    output = torch.empty(8, dtype=torch.uint64, device='npu')\n+    triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n+    output = output.cpu()\n+    expected = expected.cpu()\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n+\n+\n if __name__ == \"__main__\":\n     if not triton_enable_libdevice_simt():\n         print(_SIMT_SKIP_MSG)\n     else:\n-        x0 = torch.abs((torch.rand((8, )) * 3.0 - 1.5).to(torch.float32))\n-        expected = (torch_float2ull_rd_reference(x0)).npu()\n-        x0 = x0.npu()\n-        output = torch.empty(8, dtype=torch.uint64, device='npu')\n-        triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n-        output = output.cpu()\n-        expected = expected.cpu()\n-        torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+        test_float2ull_rd()"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.float2ull_rn.py",
+          "status": "modified",
+          "additions": 13,
+          "deletions": 8,
+          "patch": "@@ -34,15 +34,20 @@ def triton_kernel(input0, output, n_elements, XBLOCK: tl.constexpr, XBLOCK_SUB:\n         tl.store(output + (x0), tmp1, mask=mask)\n \n \n+@pytest.mark.skipif(not triton_enable_libdevice_simt(), reason=_SIMT_SKIP_MSG)\n+def test_float2ull_rn():\n+    x0 = torch.abs((torch.rand((8, )) * 3.0 - 1.5).to(torch.float32))\n+    expected = (torch_float2ull_rn_reference(x0)).npu()\n+    x0 = x0.npu()\n+    output = torch.empty(8, dtype=torch.uint64, device='npu')\n+    triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n+    output = output.cpu()\n+    expected = expected.cpu()\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n+\n+\n if __name__ == \"__main__\":\n     if not triton_enable_libdevice_simt():\n         print(_SIMT_SKIP_MSG)\n     else:\n-        x0 = torch.abs((torch.rand((8, )) * 3.0 - 1.5).to(torch.float32))\n-        expected = (torch_float2ull_rn_reference(x0)).npu()\n-        x0 = x0.npu()\n-        output = torch.empty(8, dtype=torch.uint64, device='npu')\n-        triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n-        output = output.cpu()\n-        expected = expected.cpu()\n-        torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+        test_float2ull_rn()"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.float2ull_ru.py",
+          "status": "modified",
+          "additions": 13,
+          "deletions": 8,
+          "patch": "@@ -34,15 +34,20 @@ def triton_kernel(input0, output, n_elements, XBLOCK: tl.constexpr, XBLOCK_SUB:\n         tl.store(output + (x0), tmp1, mask=mask)\n \n \n+@pytest.mark.skipif(not triton_enable_libdevice_simt(), reason=_SIMT_SKIP_MSG)\n+def test_float2ull_ru():\n+    x0 = torch.abs((torch.rand((8, )) * 3.0 - 1.5).to(torch.float32))\n+    expected = (torch_float2ull_ru_reference(x0)).npu()\n+    x0 = x0.npu()\n+    output = torch.empty(8, dtype=torch.uint64, device='npu')\n+    triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n+    output = output.cpu()\n+    expected = expected.cpu()\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n+\n+\n if __name__ == \"__main__\":\n     if not triton_enable_libdevice_simt():\n         print(_SIMT_SKIP_MSG)\n     else:\n-        x0 = torch.abs((torch.rand((8, )) * 3.0 - 1.5).to(torch.float32))\n-        expected = (torch_float2ull_ru_reference(x0)).npu()\n-        x0 = x0.npu()\n-        output = torch.empty(8, dtype=torch.uint64, device='npu')\n-        triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n-        output = output.cpu()\n-        expected = expected.cpu()\n-        torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+        test_float2ull_ru()"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.float2ull_rz.py",
+          "status": "modified",
+          "additions": 13,
+          "deletions": 8,
+          "patch": "@@ -34,15 +34,20 @@ def triton_kernel(input0, output, n_elements, XBLOCK: tl.constexpr, XBLOCK_SUB:\n         tl.store(output + (x0), tmp1, mask=mask)\n \n \n+@pytest.mark.skipif(not triton_enable_libdevice_simt(), reason=_SIMT_SKIP_MSG)\n+def test_float2ull_rz():\n+    x0 = torch.abs((torch.rand((8, )) * 3.0 - 1.5).to(torch.float32))\n+    expected = (torch_float2ull_rz_reference(x0)).npu()\n+    x0 = x0.npu()\n+    output = torch.empty(8, dtype=torch.uint64, device='npu')\n+    triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n+    output = output.cpu()\n+    expected = expected.cpu()\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n+\n+\n if __name__ == \"__main__\":\n     if not triton_enable_libdevice_simt():\n         print(_SIMT_SKIP_MSG)\n     else:\n-        x0 = torch.abs((torch.rand((8, )) * 3.0 - 1.5).to(torch.float32))\n-        expected = (torch_float2ull_rz_reference(x0)).npu()\n-        x0 = x0.npu()\n-        output = torch.empty(8, dtype=torch.uint64, device='npu')\n-        triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n-        output = output.cpu()\n-        expected = expected.cpu()\n-        torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+        test_float2ull_rz()"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.float_as_int.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_float_as_int():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.float_as_uint.py",
+          "status": "modified",
+          "additions": 13,
+          "deletions": 8,
+          "patch": "@@ -32,15 +32,20 @@ def triton_kernel(input0, output, n_elements, XBLOCK: tl.constexpr, XBLOCK_SUB:\n         tl.store(output + (x0), tmp1, mask=mask)\n \n \n+@pytest.mark.skipif(not triton_enable_libdevice_simt(), reason=_SIMT_SKIP_MSG)\n+def test_float_as_uint():\n+    x0 = (torch.rand((8, )) * 3.0 - 1.5).to(torch.float32)\n+    expected = (torch_float_as_uint_reference(x0)).npu()\n+    x0 = x0.npu()\n+    output = torch.empty(8, dtype=torch.uint32, device='npu')\n+    triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n+    output = output.cpu()\n+    expected = expected.cpu()\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n+\n+\n if __name__ == \"__main__\":\n     if not triton_enable_libdevice_simt():\n         print(_SIMT_SKIP_MSG)\n     else:\n-        x0 = (torch.rand((8, )) * 3.0 - 1.5).to(torch.float32)\n-        expected = (torch_float_as_uint_reference(x0)).npu()\n-        x0 = x0.npu()\n-        output = torch.empty(8, dtype=torch.uint32, device='npu')\n-        triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n-        output = output.cpu()\n-        expected = expected.cpu()\n-        torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+        test_float_as_uint()"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.floor.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_floor():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.fma.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -53,7 +53,7 @@ def test_fma():\n     triton_kernel[(1, )](x0, x1, x2, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.fma_rd.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -53,7 +53,7 @@ def test_fma_rd():\n     triton_kernel[(1, )](x0, x1, x2, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.fma_rn.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -53,7 +53,7 @@ def test_fma_rn():\n     triton_kernel[(1, )](x0, x1, x2, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.fma_ru.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -53,7 +53,7 @@ def test_fma_ru():\n     triton_kernel[(1, )](x0, x1, x2, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.fma_rz.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -53,7 +53,7 @@ def test_fma_rz():\n     triton_kernel[(1, )](x0, x1, x2, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.fmod.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -40,7 +40,7 @@ def test_fmod():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.gamma.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ def test_gamma():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.hadd.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -48,7 +48,7 @@ def test_hadd():\n     triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.half2float.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -42,7 +42,7 @@ def test_half2float():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=0, atol=0, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.hypot.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -40,7 +40,7 @@ def test_hypot():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.ilogb.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ def test_ilogb():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=0, atol=0, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.int2float_rd.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -42,7 +42,7 @@ def test_int2float_rd():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.int2float_rn.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -42,7 +42,7 @@ def test_int2float_rn():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.int2float_ru.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -42,7 +42,7 @@ def test_int2float_ru():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.int2float_rz.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -42,7 +42,7 @@ def test_int2float_rz():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.int_as_float.py",
+          "status": "modified",
+          "additions": 14,
+          "deletions": 9,
+          "patch": "@@ -33,16 +33,21 @@ def triton_kernel(input0, output, n_elements, XBLOCK: tl.constexpr, XBLOCK_SUB:\n         tl.store(output + (x0), tmp1, mask=mask)\n \n \n+@pytest.mark.skipif(not triton_enable_libdevice_simt(), reason=_SIMT_SKIP_MSG)\n+def test_int_as_float():\n+    x0 = (torch.randint(1, 16, (8, ))).to(torch.int32)\n+    expected = (torch_int_as_float_reference(x0)).npu()\n+    x0 = x0.npu()\n+    output = torch.empty(8, dtype=torch.float32, device='npu')\n+    triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n+    output = output.cpu()\n+    expected = expected.cpu()\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n+    assert torch.equal(output.cpu().view(torch.int32), expected.cpu().view(torch.int32))\n+\n+\n if __name__ == \"__main__\":\n     if not triton_enable_libdevice_simt():\n         print(_SIMT_SKIP_MSG)\n     else:\n-        x0 = (torch.randint(1, 16, (8, ))).to(torch.int32)\n-        expected = (torch_int_as_float_reference(x0)).npu()\n-        x0 = x0.npu()\n-        output = torch.empty(8, dtype=torch.float32, device='npu')\n-        triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n-        output = output.cpu()\n-        expected = expected.cpu()\n-        torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n-        assert torch.equal(output.cpu().view(torch.int32), expected.cpu().view(torch.int32))\n+        test_int_as_float()"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.isinf.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_isinf():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=0, atol=0)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.isnan.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_isnan():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=0, atol=0)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.j0.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -43,7 +43,7 @@ def test_j0():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.j1.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -43,7 +43,7 @@ def test_j1():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.jn.py",
+          "status": "modified",
+          "additions": 15,
+          "deletions": 10,
+          "patch": "@@ -78,17 +78,22 @@ def triton_kernel(input0, input1, output, n_elements, XBLOCK: tl.constexpr, XBLO\n         tl.store(output + (x0), tmp2, mask=mask)\n \n \n+@pytest.mark.skipif(not triton_enable_libdevice_simt(), reason=_SIMT_SKIP_MSG)\n+def test_jn():\n+    x0 = (torch.randint(1, 16, (8, ))).to(torch.int32)\n+    x1 = (torch.rand((8, )) + 0.1).to(torch.float32)\n+    expected = (torch_jn_reference(x0, x1)).npu()\n+    x0 = x0.npu()\n+    x1 = x1.npu()\n+    output = torch.empty(8, dtype=torch.float32, device='npu')\n+    triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n+    output = output.cpu()\n+    expected = expected.cpu()\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n+\n+\n if __name__ == \"__main__\":\n     if not triton_enable_libdevice_simt():\n         print(_SIMT_SKIP_MSG)\n     else:\n-        x0 = (torch.randint(1, 16, (8, ))).to(torch.int32)\n-        x1 = (torch.rand((8, )) + 0.1).to(torch.float32)\n-        expected = (torch_jn_reference(x0, x1)).npu()\n-        x0 = x0.npu()\n-        x1 = x1.npu()\n-        output = torch.empty(8, dtype=torch.float32, device='npu')\n-        triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n-        output = output.cpu()\n-        expected = expected.cpu()\n-        torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+        test_jn()"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.ldexp.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -50,7 +50,7 @@ def test_ldexp():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.lgamma.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ def test_lgamma():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.ll2float_rd.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_ll2float_rd():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.ll2float_rn.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_ll2float_rn():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.ll2float_ru.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_ll2float_ru():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.ll2float_rz.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_ll2float_rz():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.llrint.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_llrint():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.llround.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_llround():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.log.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_log():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.log10.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ def test_log10():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.log1p.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ def test_log1p():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.log2.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_log2():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.logb.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -45,7 +45,7 @@ def test_logb():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.mul24.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -50,7 +50,7 @@ def test_mul24():\n     triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.mul_rd.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -48,7 +48,7 @@ def test_mul_rd():\n     triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.mul_rn.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -48,7 +48,7 @@ def test_mul_rn():\n     triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.mul_ru.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -48,7 +48,7 @@ def test_mul_ru():\n     triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.mul_rz.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -48,7 +48,7 @@ def test_mul_rz():\n     triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.mulhi.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -49,7 +49,7 @@ def test_mulhi():\n     triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.nan.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -42,7 +42,7 @@ def test_nan():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=0, atol=0, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n     assert torch.isnan(output.cpu()).all()\n \n "
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.nearbyint.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ def test_nearbyint():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.nextafter.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -40,7 +40,7 @@ def test_nextafter():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.norm3d.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -53,7 +53,7 @@ def test_norm3d():\n     triton_kernel[(1, )](x0, x1, x2, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.norm4d.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -59,7 +59,7 @@ def test_norm4d():\n     triton_kernel[(1, )](x0, x1, x2, x3, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.normcdf.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_normcdf():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.normcdfinv.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -42,7 +42,7 @@ def test_normcdfinv():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.popc.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -46,7 +46,7 @@ def test_popc():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.pow.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -40,7 +40,7 @@ def test_pow():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.rcbrt.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -42,7 +42,7 @@ def test_rcbrt():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.rcp_rd.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_rcp_rd():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.rcp_rn.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_rcp_rn():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.rcp_ru.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_rcp_ru():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.rcp_rz.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_rcp_rz():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.reciprocal.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ def test_reciprocal():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.relu.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ def test_relu():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.remainder.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -48,7 +48,7 @@ def test_remainder():\n     triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.rhadd.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -48,7 +48,7 @@ def test_rhadd():\n     triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.rhypot.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -48,7 +48,7 @@ def test_rhypot():\n     triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.rint.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ def test_rint():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.rnorm3d.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -53,7 +53,7 @@ def test_rnorm3d():\n     triton_kernel[(1, )](x0, x1, x2, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.rnorm4d.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -59,7 +59,7 @@ def test_rnorm4d():\n     triton_kernel[(1, )](x0, x1, x2, x3, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.round.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ def test_round():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.rsqrt.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_rsqrt():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.rsqrt_rn.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_rsqrt_rn():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.sad.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -53,7 +53,7 @@ def test_sad():\n     triton_kernel[(1, )](x0, x1, x2, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=0, atol=0)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.saturatef.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -42,7 +42,7 @@ def test_saturatef():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.scalbn.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -48,7 +48,7 @@ def test_scalbn():\n     triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.signbit.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ def test_signbit():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=0, atol=0, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.sin.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_sin():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.sinh.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ def test_sinh():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.sinpi.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -42,7 +42,7 @@ def test_sinpi():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.sqrt.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_sqrt():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.sqrt_rd.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_sqrt_rd():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.sqrt_rn.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_sqrt_rn():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.sqrt_ru.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_sqrt_ru():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.sqrt_rz.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_sqrt_rz():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.sub_rd.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -48,7 +48,7 @@ def test_sub_rd():\n     triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.sub_rn.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -48,7 +48,7 @@ def test_sub_rn():\n     triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.sub_ru.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -48,7 +48,7 @@ def test_sub_ru():\n     triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.sub_rz.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -48,7 +48,7 @@ def test_sub_rz():\n     triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-02, atol=1e-02, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.tan.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ def test_tan():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.tanh.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ def test_tanh():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.tgamma.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -43,7 +43,7 @@ def test_tgamma():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.trunc.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ def test_trunc():\n \n     torch_res = torch_res.cpu()\n     triton_res = triton_res.cpu()\n-    torch.testing.assert_close(torch_res, triton_res, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(torch_res, triton_res, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.uint2float_rd.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -42,7 +42,7 @@ def test_uint2float_rd():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.uint2float_rn.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -42,7 +42,7 @@ def test_uint2float_rn():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.uint2float_ru.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -42,7 +42,7 @@ def test_uint2float_ru():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.uint2float_rz.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -42,7 +42,7 @@ def test_uint2float_rz():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.uint_as_float.py",
+          "status": "modified",
+          "additions": 14,
+          "deletions": 9,
+          "patch": "@@ -32,16 +32,21 @@ def triton_kernel(input0, output, n_elements, XBLOCK: tl.constexpr, XBLOCK_SUB:\n         tl.store(output + (x0), tmp1, mask=mask)\n \n \n+@pytest.mark.skipif(not triton_enable_libdevice_simt(), reason=_SIMT_SKIP_MSG)\n+def test_uint_as_float():\n+    x0 = (torch.randint(0, 100, (8, ))).to(torch.uint32)\n+    expected = (torch_uint_as_float_reference(x0)).npu()\n+    x0 = x0.npu()\n+    output = torch.empty(8, dtype=torch.float32, device='npu')\n+    triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n+    output = output.cpu()\n+    expected = expected.cpu()\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n+    assert torch.equal(output.cpu().view(torch.int32), expected.cpu().view(torch.int32))\n+\n+\n if __name__ == \"__main__\":\n     if not triton_enable_libdevice_simt():\n         print(_SIMT_SKIP_MSG)\n     else:\n-        x0 = (torch.randint(0, 100, (8, ))).to(torch.uint32)\n-        expected = (torch_uint_as_float_reference(x0)).npu()\n-        x0 = x0.npu()\n-        output = torch.empty(8, dtype=torch.float32, device='npu')\n-        triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n-        output = output.cpu()\n-        expected = expected.cpu()\n-        torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n-        assert torch.equal(output.cpu().view(torch.int32), expected.cpu().view(torch.int32))\n+        test_uint_as_float()"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.ull2float_rd.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_ull2float_rd():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.ull2float_rn.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_ull2float_rn():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.ull2float_ru.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_ull2float_ru():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.ull2float_rz.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,7 +41,7 @@ def test_ull2float_rz():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.y0.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -43,7 +43,7 @@ def test_y0():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.y1.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -43,7 +43,7 @@ def test_y1():\n     triton_kernel[(1, )](x0, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n     output = output.cpu()\n     expected = expected.cpu()\n-    torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n \n \n if __name__ == \"__main__\":"
+        },
+        {
+          "filename": "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.yn.py",
+          "status": "modified",
+          "additions": 15,
+          "deletions": 10,
+          "patch": "@@ -65,17 +65,22 @@ def triton_kernel(input0, input1, output, n_elements, XBLOCK: tl.constexpr, XBLO\n         tl.store(output + (x0), tmp2, mask=mask)\n \n \n+@pytest.mark.skipif(not triton_enable_libdevice_simt(), reason=_SIMT_SKIP_MSG)\n+def test_yn():\n+    x0 = (torch.randint(1, 16, (8, ))).to(torch.int32)\n+    x1 = (torch.rand((8, )) + 0.1).to(torch.float32)\n+    expected = (torch_yn_reference(x0, x1)).npu()\n+    x0 = x0.npu()\n+    x1 = x1.npu()\n+    output = torch.empty(8, dtype=torch.float32, device='npu')\n+    triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n+    output = output.cpu()\n+    expected = expected.cpu()\n+    torch.testing.assert_close(output, expected, rtol=1e-04, atol=1e-04, equal_nan=True)\n+\n+\n if __name__ == \"__main__\":\n     if not triton_enable_libdevice_simt():\n         print(_SIMT_SKIP_MSG)\n     else:\n-        x0 = (torch.randint(1, 16, (8, ))).to(torch.int32)\n-        x1 = (torch.rand((8, )) + 0.1).to(torch.float32)\n-        expected = (torch_yn_reference(x0, x1)).npu()\n-        x0 = x0.npu()\n-        x1 = x1.npu()\n-        output = torch.empty(8, dtype=torch.float32, device='npu')\n-        triton_kernel[(1, )](x0, x1, output, 8, XBLOCK=8, XBLOCK_SUB=8, compile_mode='simt_only')\n-        output = output.cpu()\n-        expected = expected.cpu()\n-        torch.testing.assert_close(output, expected, rtol=1e-03, atol=1e-03, equal_nan=True)\n+        test_yn()\n"
+        }
+      ]
+    },
+    {
+      "sha": "f3b85a4a1caf252fb2d77c216bb57b87c875d142",
+      "author": {
+        "name": "TecJesh",
+        "email": "qdvm5gl@163.com"
+      },
+      "date": "2026-09-07T17:04:25+08:00",
+      "message": "[Docs](fix) Add extension and bl doc rendering (#2021)\n\nSigned-off-by: TecJesh <qdvm5gl@163.com>",
+      "parents": [
+        "0e7697640c17d4e1db456aa589c95895556a5cba"
+      ],
+      "stats": {
+        "total_additions": 2,
+        "total_deletions": 3,
+        "files_changed": 1
+      },
+      "files": [
+        {
+          "filename": "docs/zh/index.rst",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 3,
+          "patch": "@@ -54,12 +54,11 @@ Triton Ascend\n    triton <python-api/triton>\n    triton.language <python-api/triton.language>\n    triton.testing <python-api/triton.testing>\n-   triton.language.extra.cann.libdevice <python-api/triton.language.extra.cann.libdevice>\n-\n-.. Temporarily disabled -- restore into the toctree above when needed:\n    triton.language.extra.cann.extension <python-api/triton.language.extra.cann.extension>\n+   triton.language.extra.cann.libdevice <python-api/triton.language.extra.cann.libdevice>\n    triton.extension.buffer.language <python-api/triton.extension.buffer.language>\n \n+\n .. toctree::\n    :maxdepth: 1\n    :titlesonly:\n"
+        }
+      ]
+    },
+    {
+      "sha": "0e7697640c17d4e1db456aa589c95895556a5cba",
+      "author": {
+        "name": "zhangwjing",
+        "email": "zhangwenjing55@h-partners.com"
+      },
+      "date": "2026-09-07T16:59:36+08:00",
+      "message": "[Docs](fix) resolve skill scan issues (#1910)",
+      "parents": [
+        "439192303c90ff69d5c20b68da2af7621201b890"
+      ],
+      "stats": {
+        "total_additions": 180,
+        "total_deletions": 181,
+        "files_changed": 6
+      },
+      "files": [
+        {
+          "filename": "README_zh.md",
+          "status": "modified",
+          "additions": 10,
+          "deletions": 10,
+          "patch": "@@ -36,7 +36,7 @@ Triton-Ascend\n <summary>更多最新消息</summary>\n \n - [2025.11.14]Triton-Ascend3.2.0rc4预发布版本上线：<br>- [扩展tt.fp_to_fp接口，新增对FP8的类型转换支持](https://gitcode.com/Ascend/triton-ascend/pull/891) <br>- [新增scatter_ub_to_out接口，支持从UB到GM的高效数据分散操作](https://gitcode.com/Ascend/triton-ascend/pull/864)\n-- [2025.09.30]完善Scan/Sort类Triton Python API，支持非连续访存，完成vLLM、sglang开源仓中重点Triton算子适配\n+- [2025.09.30]完善Scan/Sort类Triton Python API，支持非连续访存，完成vLLM、SGLang开源仓中重点Triton算子适配\n - [2025.09.19]支持Triton-Ascend [nightly包](https://test.pypi.org/project/triton-ascend/#history)提取\n - [2025.08.15]完善Atomic类Triton Python API支持，完成Flaggems开源仓重点Triton算子适配，提供Matmul等简单算子高性能实现参考用例\n - [2025.06.30]支持85% Triton Python API，支持连续访存，覆盖基本使用场景需求\n@@ -53,11 +53,11 @@ Triton-Ascend\n \n #### 硬件要求\n \n-支持的操作系统: linux(arch64/x86_64)\n+支持的操作系统：Linux(aarch64/x86_64)\n \n-支持的Ascend产品:Atlas A2/A3/950系列\n+支持的Ascend产品：Atlas A2/A3/950系列\n \n-最小硬件配置: 单卡32GB显存（推荐）\n+最小硬件配置：单卡32GB显存（推荐）\n \n #### 软件依赖\n \n@@ -71,7 +71,7 @@ Triton-Ascend\n \n ### 访问昇腾NPU\n \n-如果您需要访问昇腾NPU算力资源进行开发或测试，请进入HiDevLab平台的 [HiDevLab-在线开发](https://hidevlab.huawei.com/online-develop-intro) 页面申请并使用算力。\n+若需要访问昇腾NPU算力资源进行开发或测试，请进入HiDevLab平台的[HiDevLab-在线开发](https://hidevlab.huawei.com/online-develop-intro)页面申请并使用算力。\n \n ### 快速安装\n \n@@ -156,11 +156,11 @@ python3 setup_ascend.py install\n <details>\n <summary>更多镜像使用</summary>\n \n-- 我们提供了Dockerfile帮助您安装Docker环境镜像。构建过程使用`quay.io/ascend/cann`预构建镜像作为基础镜像，跳过CANN安装步骤，显著加快构建速度。\n+- Triton-Ascend提供了Dockerfile帮助开发者安装Docker环境镜像。构建过程使用`quay.io/ascend/cann`预构建镜像作为基础镜像，跳过CANN安装步骤，显著加快构建速度。\n \n-- 您需要通过`--build-arg`指定`CANN_BASE_IMAGE`参数来选择适合您机器的CANN基础镜像。可用的CANN基础镜像标签可在[quay.io/ascend/cann](https://quay.io/repository/ascend/cann?tab=tags)查看。\n+- 通过`--build-arg`指定`CANN_BASE_IMAGE`参数来选择适配的CANN基础镜像。适配的CANN基础镜像标签可在[quay.io/ascend/cann](https://quay.io/repository/ascend/cann?tab=tags)查看。\n \n-- 您可以通过npu-smi命令查看系统上的NPU型号。\n+- 可通过npu-smi命令查看系统上的NPU型号。\n \n ```bash\n git clone https://github.com/triton-lang/triton-ascend.git && cd triton-ascend\n@@ -201,7 +201,7 @@ docker exec -u root -it triton-ascend_container /bin/bash\n </details>\n </div>\n \n-## ✏️文档入口\n+## ✏️ 文档入口\n \n - [快速开始](./docs/zh/quick_start.md)\n \n@@ -231,4 +231,4 @@ docker exec -u root -it triton-ascend_container /bin/bash\n \n - 欢迎参与Triton-Ascend的开发及代码贡献，详情请参阅 [贡献指南](./docs/zh/community/CONTRIBUTING_zh.md)\n \n-- 请通过[Issue](https://github.com/triton-lang/triton-ascend/issues)来告知我们您遇到的任何Bug。\n+- 请通过[Issue](https://github.com/triton-lang/triton-ascend/issues)来反馈遇到的任何Bug。"
+        },
+        {
+          "filename": "docs/zh/architecture_design_and_core_features.md",
+          "status": "modified",
+          "additions": 7,
+          "deletions": 7,
+          "patch": "@@ -19,14 +19,14 @@\n - **`compiler`**\n   接收来自上层 Triton compiler 生成的中间表示文件 `TTIR`（Triton IR），执行一系列适配昇腾硬件的转换。\n \n-  ```python\n+  ```text\n   Triton IR → Linalg IR → AscendNPU IR → triton_xxx_kernel.o\n   ```\n \n-  Triton IR 转换为 Linalg IR，再经 BiSheng Compiler 生成面向 Ascend NPU 的可执行二进制文件  `triton_xxx_kernel.o`。\n+  Triton IR 转换为 Linalg IR，再经 BiSheng Compiler 生成面向 Ascend NPU 的可执行二进制文件 `triton_xxx_kernel.o`。\n \n - **`driver`**\n-  提供 Triton 运行时与 Ascend 软件栈（CANN）之间的对接能力， 加载由 BiSheng Compiler 生成的设备侧可执行内核 `triton_xxx_kernel.o` 。\n+  提供 Triton 运行时与 Ascend 软件栈（CANN）之间的对接能力，加载由 BiSheng Compiler 生成的设备侧可执行内核 `triton_xxx_kernel.o`。\n \n ## 2.代码结构\n \n@@ -117,7 +117,7 @@\n | CreateLoad               | 使用由 `CreateAddPtr` 生成的新指针表达式和由 `BuildMask` 生成的新掩码表达式，重新创建（替换）原始的 `tl.load` 操作，完成指令重写。                                                                                                                                                               | 依赖于 `RewriteAddPtrOp`, `CreateAddPtr`, `RewriteLoadOp`, `BuildMask` 等前置步骤均成功执行。                                                                |\n | RewriteStoreOp           | 分析 `tl.store` 操作中的掩码 (`mask`) 表达式。其功能与 `RewriteLoadOp` 类似，将包含整除/取余的复杂掩码条件分解并建模为 `MaskState` 对象。                                                                                                                                                       | 与 `RewriteLoadOp` 相同。                                                                                                                                    |\n | CreateStore              | 使用由 `CreateAddPtr` 生成的新指针表达式和由 `BuildMask` 生成的新掩码表达式，重新创建（替换）原始的 `tl.store` 操作，完成指令重写。                                                                                                                                                              | 依赖于 `RewriteAddPtrOp`, `CreateAddPtr`, `RewriteStoreOp`, `BuildMask` 等前置步骤均成功执行。                                                               |\n-| RewriteAtomicRWMOp       | 处理原子读写修改操作（如 `atomic.add`, `atomic.max` 等）中的指针问题。                                                                                                                | 通常继承与 `RewriteAddPtrOp` 相同的局限性。对于某些特殊的、非连续或条件性的原子操作模式可能不支持。                                                           |\n+| RewriteAtomicRWMOp       | 处理原子读写修改操作（如 `atomic.add`, `atomic.max` 等）中的指针问题。                                                                                                                | 通常继承自 `RewriteAddPtrOp` 相同的局限性。对于某些特殊的、非连续或条件性的原子操作模式可能不支持。                                                           |\n | RewriteAtomicCASOp       | 处理原子比较并交换操作 (`atomic.cas`) 中的指针线性化问题。分析其指针表达式，通过升维方法消除整除和取余操作，以匹配硬件原子指令的寻址要求。                                                                                                                                                      |                         |\n | RewriteWhile             | 处理 `while` 循环体内的指针叠加操作。                                                          | 不支持循环体内包含条件分支 (`if`) 的复杂指针路径变换。                                         |\n | RewriteFor               | 处理 `for` 循环体内的指针叠加操作。                        |                                              |\n@@ -208,9 +208,9 @@ TritonToLinalg converts ttir to linalg ir.\n | Pass名称 | 功能描述 | 核心转换器 | 转换器描述 |\n |---|---|---|---|\n | triton-to-annotation | 处理Ascend NPU特有的编译提示指令 (`tl.compile_hint`)，将其转换为后端的Annotation方言，用于指导后续的硬件特定优化或资源配置。 | TritonAnnotationConversion | 将 `triton::AnnotationOp` 转换为 `annotation::MarkOp`，实现高级编译提示信息向底层注释标记的传递。 |\n-| triton-to-hfusion | 将Triton中的`TTIR`转换为Ascend NPU硬件加速器`HFusion`方言中的对应操作 | TritonHistogramToHFusionConversion | 将 `triton::HistogramOp` 转换为 `hfusion::HistogramOp`，使能在NPU的专用硬件上高效执行。 |\n+| triton-to-hfusion | 将Triton中的`TTIR`转换为Ascend NPU硬件加速器`HFusion`方言中的对应操作。 | TritonHistogramToHFusionConversion | 将 `triton::HistogramOp` 转换为 `hfusion::HistogramOp`，使其能在NPU的专用硬件上高效执行。 |\n | triton-to-hivm | 处理Triton的块同步操作 (`tl.sync_block_all`, `tl.sync_block_set`, `tl.sync_block_wait`)，将其转换为Ascend NPU的`HIVM`方言中的跨核心同步指令。这些指令用于管理多核流水线中的同步与数据依赖，是流水优化的关键。 | TritonCustomOpToHIVMSyncOpConversion | 实现Triton同步指令到HIVM同步指令的转换：<br>• `sync_block_all`：全局块同步<br>• `sync_block_set`：设置同步点<br>• `sync_block_wait`：等待同步点 |\n-| triton-to-llvm | 将Triton中的内联汇编操作 (`tl.inline_assembly`) 转换为LLVM方言的内联汇编，并最终映射为Ascend NPU的CCE硬件固有函数（Intrinsics） | ElementwiseInlineAsmOpConversion | 将 `triton::ElementwiseInlineAsmOp` 转换为 `LLVM::InlineAsmOp` |\n+| triton-to-llvm | 将Triton中的内联汇编操作 (`tl.inline_assembly`) 转换为LLVM方言的内联汇编，并最终映射为Ascend NPU的CCE硬件固有函数（Intrinsics） | ElementwiseInlineAsmOpConversion | 将 `triton::ElementwiseInlineAsmOp` 转换为 `LLVM::InlineAsmOp` 。|\n \n #### 3.2.3 SIMT Compiler（Ascend 950）\n \n@@ -310,7 +310,7 @@ flowchart TD\n \n | 序号 | Operator | 功能描述 |\n |---|---|---|\n-| 1 | tl.custom_op | Ascend NPU扩展的自定义算子集，用于支持硬件特定的内存访问与数据搬运模式，例如：<br>• `index_select`: 基于索引选择数据<br>• `index_put`: 基于索引放置数据<br>• `gather_out_to_ub`: 将外部数据收集到Unified Buffer (UB)<br>• `scatter_ub_to_out`: 将UB中的数据分散输出<br>• `indirect_load`: 间接地址加载<br>• `indirect_store`: 间接地址存储 |\n+| 1 | tl.custom_op | Ascend NPU扩展的自定义算子集，用于支持硬件特定的内存访问与数据搬运模式，例如：<br>• `index_select`：基于索引选择数据<br>• `index_put`：基于索引放置数据<br>• `gather_out_to_ub`：将外部数据收集到Unified Buffer (UB)<br>• `scatter_ub_to_out`：将UB中的数据分散输出<br>• `indirect_load`：间接地址加载<br>• `indirect_store`：间接地址存储 |\n | 2 | tl.compile_hint | 向编译器传递硬件特定的编译提示信息，用于指导后端优化策略、资源分配或内核配置。 |\n | 3 | tl.sync_block_wait(`sender, receiver, event_id`) | 块同步等待操作。指定接收核 (`receiver`) 等待由发送核 (`sender`) 发出的事件信号 (`event_id`)，用于管理跨核流水线中的数据依赖与执行顺序。 |\n | 4 | tl.sync_block_set(`sender, receiver, event_id`) | 块同步设置操作。指定发送核 (`sender`) 向接收核 (`receiver`) 发出一个事件信号 (`event_id`)，表明某个执行阶段或数据已准备就绪。 |"
+        },
+        {
+          "filename": "docs/zh/programming_guide/index.md",
+          "status": "modified",
+          "additions": 142,
+          "deletions": 142,
+          "patch": "@@ -17,14 +17,14 @@\n \n ### 设置最大硬件核数\n \n-在一个Triton算子中，通常使用grid进行分核操作。对于GPU而言，其计算核心SM通常是几十到几百量级。但是对于昇腾 NPU 平台而言，其计算核心AI Core的数量在几十个的量级。\\\n+在一个Triton算子中，通常使用grid进行分核操作。对于GPU而言，其计算核心SM通常是几十到几百量级。但是对于昇腾NPU平台而言，其计算核心AI Core的数量在几十个的量级。\\\n 虽然运行时接口允许下发并发任务数最大为65535，但超过物理核数的部分是通过新一轮的下发来完成的。如果直接将GPU上的Triton算子拿到昇腾平台上运行，这些大量的任务会引入可观的核启动和核初始化时的额外开销，影响到算子性能表现。\\\n 因此，需要针对昇腾平台特性修改分核逻辑。最推荐的做法是**将分核的数量直接固定为硬件的物理核数**，在核内做更为细致的数据分块：\n \n-* 对于纯Vector算子，分核数等于**Vector核数量**\n-* 对于CV融合算子，分核数等于**Cube核数量**（通常为Vector核数量的一半），算子执行时会按1：2的比例调用Vector核\n+* 对于纯Vector算子，分核数等于**Vector核数量**。\n+* 对于CV融合算子，分核数等于**Cube核数量**（通常为Vector核数量的一半），算子执行时会按1：2的比例调用Vector核。\n \n-一般而言，在NPU卡上，一个计算核心AI Core含有一个cube核，每个cube核配有两个vector核，因此可以通过以下接口获取**Vector核数(vectorcore_num)**与**Cube核数量(aicore_num)**：\n+一般而言，在NPU卡上，一个计算核心AI Core含有一个Cube核，每个Cube核配有两个Vector核，因此可以通过以下接口获取**Vector核数(vectorcore_num)**与**Cube核数量(aicore_num)**：\n \n ```python\n import torch\n@@ -88,7 +88,7 @@ def _attn_fwd(Q, K, V, M, Out, acc, scale,\n \n ### 设置合适的循环内数据分块大小（BLOCK SIZE）\n \n-以add_kernel为例，变量和操作共同决定了片上内存空间的占用大小，通过修改BLOCK_SIZE大小可以调整循环内数据分块和计算中间结果占用的大小。如果超过上限则算子编译时会提示预期占用大小并报错。要达到最大计算访存比，BLOCK_SIZE需要在不超出片上空间时尽可能大，这可以通过Triton-Ascend的[Autotune](../examples/06_autotune_example.md)预先设置不同的BLOCK_SIZE，运行时会自动选取最优设置。\n+以add_kernel为例，变量和操作共同决定了片上内存的空间占用大小，通过修改BLOCK_SIZE大小可以调整循环内数据分块和计算中间结果占用的大小。如果超过上限则算子编译时会提示预期占用大小并报错。要达到最大计算访存比，BLOCK_SIZE需要在不超出片上内存的空间时尽可能大，这可以通过Triton-Ascend的[Autotune](../examples/06_autotune_example.md)预先设置不同的BLOCK_SIZE，运行时会自动选取最优设置。\n \n ```python\n import triton.language as tl\n@@ -119,7 +119,7 @@ def add_kernel(x_ptr,\n \n ### 尽量保证Tensor的尾轴（最后一个维度）大小数据对齐\n \n-【描述】对于VV类算子需要调用Vector核计算时，昇腾硬件的UB要求Tensor的尾轴（最后一个维度）大小能被32Byte整除，而对于CV类算子需要调用vector核和Cube核计算时，要求Tensor的尾轴大小能被512Byte整除，若尾轴长度不足则会自动补齐。在此前提下，对模型中shape为(2048,3)和(2048,1)Tensor的种种操作，都会因为自动补齐导致性能明显恶化，此时可考虑通过转置操作将对齐轴转到低维，直到store时再转置为原始状态，从而规避自动补齐，优化计算速度。同时由于转置操作本身也受自动补齐规则的影响，因此同样需要特殊技巧来规避补齐。这里列出一个\"借轴转置\"的tip，适用于**tensor.numel() % 256Byte == 0**的场景，具体操作如下：\n+【描述】对于VV类算子需要调用Vector核计算时，昇腾硬件的UB要求Tensor的尾轴（最后一个维度）大小能被32Byte整除，而对于CV类算子需要调用vector核和Cube核计算时，要求Tensor的尾轴大小能被512Byte整除，若尾轴长度不足则会自动补齐。在此前提下，对模型中shape为(2048,3)和(2048,1)Tensor的种种操作，都会因为自动补齐导致性能明显恶化，此时可考虑通过转置操作将对齐轴转到低维，直到store时再转置为原始状态，从而规避自动补齐，优化计算速度。同时由于转置操作本身也受自动补齐规则的影响，因此同样需要特殊技巧来规避补齐。这里列出一个“借轴转置”的tip，适用于**tensor.numel() % 256Byte == 0**的场景，具体操作如下：\n \n - 注：VV类算子表示该类算子在运算过程中只使用了Vector Core；CV类算子表示该类算子运算过程中既使用了AI Core又使用了Vector Core。\n - 示例\n@@ -168,7 +168,7 @@ def pick_kernel(\n \n 通过msprof工具执行用例可得到PROF_*文件夹，里面包含了op_summary_\\*.csv文件，该文件可以帮助分析流水情况。注：“\\*”表示时间戳，[性能数据采集参考方法](../debug_guide/profiling.md)。\n \n-||Op Name|aiv_mte2_time(us)|aiv_mte2_ratio|\n+||Op Name|aiv_mte2_time(μs)|aiv_mte2_ratio|\n |:---- |:--------|:--------|:--------|\n |未优化|pick_kernel|0.686|0.008|\n |优化|pick_kernel|1.041|0.066|\n@@ -183,8 +183,7 @@ Triton-Ascend支持两种数据处理模式：存算串行和存算并行。\n \n 存算并行：在搬运第一批数据至片上内存的同时，已开始对其执行计算；随后继续搬运第二批数据，形成“搬运+计算”重叠的流水线式操作，显著提升整体吞吐率。\n \n-实现存算并行的关键在于合理设计数据切分（Tiling）策略，使得在当前批次数据计算过程中，能够提前准备下一阶段所需的数据，从而实现数据搬运与计算过程的并\n-行化。目前，编译器默认配置multiBuffer=True，默认支持存算并行。\n+实现存算并行的关键在于合理设计数据切分（Tiling）策略，使得在当前批次数据计算过程中，能够提前准备下一阶段所需的数据，从而实现数据搬运与计算过程的并行化。目前，编译器默认配置multiBuffer=True，默认支持存算并行。\n \n ### Tiling优化\n \n@@ -317,7 +316,7 @@ E loc(\"/tmp/tmpsb6qkdih/kernel.ttadapter.mlir\":3:3): error: ub overflow, require\n large or block number is more than what user expect due to multi-buffer feature is enabled and some ops need extra local buffer. )\n ```\n \n-【注意】A2系列产品UB大小为192KB(1572864 bits)。\n+【注意】A2系列产品UB大小为192KB(1572864bit)。\n \n ## 通用单核数据运算\n \n@@ -327,167 +326,168 @@ large or block number is more than what user expect due to multi-buffer feature\n \n ### 开发步骤\n \n-1.确定算子功能\n--明确输入/输出张量的形状、数据类型（float16/float32/int32 等）。\n--确认是否需要广播、边界处理。\n+1. 确定算子功能\n+    -明确输入/输出张量的形状、数据类型（float16/float32/int32等）。\n+    -确认是否需要广播、边界处理。\n \n-2.编写核函数（kernel）\n-单核运算通常对应块级的数据处理。\n-单核数据运算示例：向量加法\n+2. 编写核函数（kernel）\n+    单核运算通常对应块级的数据处理。\n+    单核数据运算示例：向量加法\n \n-```diff\n-\n-@triton.jit\n-def add_kernel(x_ptr, # Pointer to first input vector.\n-    y_ptr, # Pointer to second input vector.\n-    output_ptr, # output 向量的指针.\n-    n_elements, # 向量的大小.\n-    BLOCK_SIZE: tl.constexpr, # 每个进程需要处理的元素个数.\n-    # 注意：constexpr属性表示它可以被用作shape值.\n-):\n-    pid = tl.program_id(axis=0) # We use a 1D launch grid so axis is 0.\n-    block_start = pid * BLOCK_SIZE\n-    offsets = block_start + tl.arange(0, BLOCK_SIZE)\n-    mask = offsets < n_elements\n-    x = tl.load(x_ptr + offsets, mask=mask)\n-    y = tl.load(y_ptr + offsets, mask=mask)\n-    output = x + y\n-    tl.store(output_ptr + offsets, output, mask=mask)\n-```\n+    ```diff\n \n-调用：\n+    @triton.jit\n+    def add_kernel(x_ptr, # Pointer to first input vector.\n+        y_ptr, # Pointer to second input vector.\n+        output_ptr, # output 向量的指针.\n+        n_elements, # 向量的大小.\n+        BLOCK_SIZE: tl.constexpr, # 每个进程需要处理的元素个数.\n+        # 注意：constexpr属性表示它可以被用作shape值.\n+    ):\n+        pid = tl.program_id(axis=0) # We use a 1D launch grid so axis is 0.\n+        block_start = pid * BLOCK_SIZE\n+        offsets = block_start + tl.arange(0, BLOCK_SIZE)\n+        mask = offsets < n_elements\n+        x = tl.load(x_ptr + offsets, mask=mask)\n+        y = tl.load(y_ptr + offsets, mask=mask)\n+        output = x + y\n+        tl.store(output_ptr + offsets, output, mask=mask)\n+    ```\n \n- ```diff\n-def add(x: torch.Tensor, y: torch.Tensor):\n-    output = torch.empty_like(x)\n-    n_elements = output.numel()\n-    grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']), )\n-    add_kernel[grid](x, y, output, n_elements, BLOCK_SIZE=1024)\n-    return output\n-```\n+    调用：\n \n-使用上述函数计算两个 torch.tensor 对象的 element-wise sum，并测试其正确性\n-\n- ```diff\n-torch.manual_seed(0)\n-size = 98432\n-x = torch.rand(size, device='npu')\n-y = torch.rand(size, device='npu')\n-output_torch = x + y\n-output_triton = add(x, y)\n-print(output_torch)\n-print(output_triton)\n-print(f'The maximum difference between torch and triton is '\n-f'{torch.max(torch.abs(output_torch - output_triton))}')\n-# Out:\n-# tensor([1.3713, 1.3076, 0.4940, ..., 0.6724, 1.2141, 0.9733], device='npu')\n-# tensor([1.3713, 1.3076, 0.4940, ..., 0.6724, 1.2141, 0.9733], device='npu')\n-# The maximum difference between torch and triton is 0.0\n-```\n+    ```diff\n+    def add(x: torch.Tensor, y: torch.Tensor):\n+        output = torch.empty_like(x)\n+        n_elements = output.numel()\n+        grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']), )\n+        add_kernel[grid](x, y, output, n_elements, BLOCK_SIZE=1024)\n+        return output\n+    ```\n \n-3.单核运算的关键点\n+    使用上述函数计算两个 torch.tensor 对象的 element-wise sum，并测试其正确性\n \n--块级数据处理：每个计算块负责一小段数据，保证并行性。\n+    ```diff\n+    torch.manual_seed(0)\n+    size = 98432\n+    x = torch.rand(size, device='npu')\n+    y = torch.rand(size, device='npu')\n+    output_torch = x + y\n+    output_triton = add(x, y)\n+    print(output_torch)\n+    print(output_triton)\n+    print(f'The maximum difference between torch and triton is '\n+    f'{torch.max(torch.abs(output_torch - output_triton))}')\n+    # Out:\n+    # tensor([1.3713, 1.3076, 0.4940, ..., 0.6724, 1.2141, 0.9733], device='npu')\n+    # tensor([1.3713, 1.3076, 0.4940, ..., 0.6724, 1.2141, 0.9733], device='npu')\n+    # The maximum difference between torch and triton is 0.0\n+    ```\n \n--边界检查：使用 mask 或 if (tid < N) 避免越界。\n+3. 单核运算的关键点\n \n--块大小选择：合理设置 block 和 grid\n+    -块级数据处理：每个计算块负责一小段数据，保证并行性。\n \n-4.性能要点：\n-(1)访存优化\n--保证连续访问。\n--使用对齐的 stride，避免跨行/跨列跳跃式访问。\n--尽量让数据块大小对齐到 32 字节边界。\n-输入输出 buffer 在分配时保证对齐，避免访存性能下降。\n-例:\n+    -边界检查：使用 mask 或 if (tid < N) 避免越界。\n \n- ```diff\n-BLOCK_SIZE = 256  # 256 * 4 Byte = 1024 Byte，对齐良好\n+    -块大小选择：合理设置 block 和 grid\n \n-@triton.jit\n-def vec_add_kernel(X, Y, Z, N,\n-                   BLOCK_SIZE: tl.constexpr):\n-    pid = tl.program_id(axis=0)\n+4. 性能要点：\n \n-    # 计算当前 block 负责的 index 范围\n-    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)\n+    (1)访存优化\n+    -保证连续访问。\n+    -使用对齐的 stride，避免跨行/跨列跳跃式访问。\n+    -尽量让数据块大小对齐到 32 字节边界。\n+    输入输出 buffer 在分配时保证对齐，避免访存性能下降。\n+    例：\n \n-    # mask 防止越界\n-    mask = offsets < N\n+    ```diff\n+    BLOCK_SIZE = 256  # 256 * 4 Byte = 1024 Byte，对齐良好\n \n-    # 连续访存：offsets 是连续的\n-    x = tl.load(X + offsets, mask=mask)\n-    y = tl.load(Y + offsets, mask=mask)\n+    @triton.jit\n+    def vec_add_kernel(X, Y, Z, N,\n+                    BLOCK_SIZE: tl.constexpr):\n+        pid = tl.program_id(axis=0)\n \n-    z = x + y\n+        # 计算当前 block 负责的 index 范围\n+        offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)\n \n-    # 连续写回\n-    tl.store(Z + offsets, z, mask=mask)\n+        # mask 防止越界\n+        mask = offsets < N\n \n+        # 连续访存：offsets 是连续的\n+        x = tl.load(X + offsets, mask=mask)\n+        y = tl.load(Y + offsets, mask=mask)\n \n-def vec_add(x, y):\n-    assert x.numel() == y.numel()\n-    N = x.numel()\n+        z = x + y\n \n-    # 分配对齐内存（PyTorch 默认已经对齐到 64 字节）\n-    z = torch.empty_like(x)\n+        # 连续写回\n+        tl.store(Z + offsets, z, mask=mask)\n \n-    # grid：每个 block 处理 BLOCK_SIZE 个元素\n-    grid = lambda meta: (triton.cdiv(N, meta['BLOCK_SIZE']),)\n \n-    vec_add_kernel[grid](x, y, z, N, BLOCK_SIZE=BLOCK_SIZE)\n+    def vec_add(x, y):\n+        assert x.numel() == y.numel()\n+        N = x.numel()\n \n-    return z\n-```\n+        # 分配对齐内存（PyTorch 默认已经对齐到 64 字节）\n+        z = torch.empty_like(x)\n \n-(2)子块划分\n--将大矩阵分解为小block，每个block在 UB 内完成计算。\n--子块划分要兼顾访存连续性和计算单元利用率。\n-例：\n+        # grid：每个 block 处理 BLOCK_SIZE 个元素\n+        grid = lambda meta: (triton.cdiv(N, meta['BLOCK_SIZE']),)\n \n- ```diff\n-BLOCK_M = 64   # 每个 block 处理 64 行\n-BLOCK_N = 64   # 每个 block 处理 64 列\n-BLOCK_K = 32   # 内部累加维度\n+        vec_add_kernel[grid](x, y, z, N, BLOCK_SIZE=BLOCK_SIZE)\n \n-@triton.jit\n-def matmul_kernel(\n-    A, B, C,\n-    M, N, K,\n-    stride_am, stride_ak,\n-    stride_bk, stride_bn,\n-    stride_cm, stride_cn,\n-    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr\n-):\n-    pid_m = tl.program_id(0)  # block 在 M 方向的 id\n-    pid_n = tl.program_id(1)  # block 在 N 方向的 id\n+        return z\n+    ```\n \n-    # 当前 block 对应的起始坐标\n-    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)\n-    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)\n-    offs_k = tl.arange(0, BLOCK_K)\n+    (2)子块划分\n+    -将大矩阵分解为小block，每个block在 UB 内完成计算。\n+    -子块划分要兼顾访存连续性和计算单元利用率。\n+    例：\n \n-    # 初始化累加器\n-    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)\n+    ```diff\n+    BLOCK_M = 64   # 每个 block 处理 64 行\n+    BLOCK_N = 64   # 每个 block 处理 64 列\n+    BLOCK_K = 32   # 内部累加维度\n \n-    # 循环分块计算\n-    for k in range(0, K, BLOCK_K):\n-        a = tl.load(\n-            A + (offs_m[:, None] * stride_am + (offs_k[None, :] + k) * stride_ak),\n-            mask=(offs_m[:, None] < M) & (offs_k[None, :] + k < K),\n-            other=0.0\n-        )\n-        b = tl.load(\n-            B + ((offs_k[:, None] + k) * stride_bk + offs_n[None, :] * stride_bn),\n-            mask=(offs_k[:, None] + k < K) & (offs_n[None, :] < N),\n-            other=0.0\n-        )\n-        acc += tl.dot(a, b)\n-\n-    # 写回结果\n-    c = C + (offs_m[:, None] * stride_cm + offs_n[None, :] * stride_cn)\n-    tl.store(c, acc, mask=(offs_m[:, None] < M) & (offs_n[None, :] < N))\n-```\n+    @triton.jit\n+    def matmul_kernel(\n+        A, B, C,\n+        M, N, K,\n+        stride_am, stride_ak,\n+        stride_bk, stride_bn,\n+        stride_cm, stride_cn,\n+        BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr\n+    ):\n+        pid_m = tl.program_id(0)  # block 在 M 方向的 id\n+        pid_n = tl.program_id(1)  # block 在 N 方向的 id\n+\n+        # 当前 block 对应的起始坐标\n+        offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)\n+        offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)\n+        offs_k = tl.arange(0, BLOCK_K)\n+\n+        # 初始化累加器\n+        acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)\n+\n+        # 循环分块计算\n+        for k in range(0, K, BLOCK_K):\n+            a = tl.load(\n+                A + (offs_m[:, None] * stride_am + (offs_k[None, :] + k) * stride_ak),\n+                mask=(offs_m[:, None] < M) & (offs_k[None, :] + k < K),\n+                other=0.0\n+            )\n+            b = tl.load(\n+                B + ((offs_k[:, None] + k) * stride_bk + offs_n[None, :] * stride_bn),\n+                mask=(offs_k[:, None] + k < K) & (offs_n[None, :] < N),\n+                other=0.0\n+            )\n+            acc += tl.dot(a, b)\n+\n+        # 写回结果\n+        c = C + (offs_m[:, None] * stride_cm + offs_n[None, :] * stride_cn)\n+        tl.store(c, acc, mask=(offs_m[:, None] < M) & (offs_n[None, :] < N))\n+    ```\n \n ## 通用多维张量切分\n "
+        },
+        {
+          "filename": "docs/zh/quick_start.md",
+          "status": "modified",
+          "additions": 4,
+          "deletions": 5,
+          "patch": "@@ -10,7 +10,7 @@\n \n **硬件要求**\n \n-支持的操作系统：linux（aarch64/x86_64）\n+支持的操作系统：Linux（aarch64/x86_64）\n \n 支持的Ascend产品：Atlas A2/A3/950系列\n \n@@ -18,8 +18,7 @@\n \n **软件依赖**\n \n-确定CANN、Python和TorchNPU软件版本并安装。其中，可以参考昇腾社区官网《[CANN快速安装](https://www.hiascend.com/cann/download)》\n-完成驱动与固件安装。\n+确定CANN、Python和TorchNPU软件版本并安装。其中，可以参考昇腾社区官网《[CANN快速安装](https://www.hiascend.com/cann/download)》完成驱动与固件安装。\n \n - CANN版本：9.1.0\n - Python版本：python3.11\n@@ -35,11 +34,11 @@ pip install triton-ascend --extra-index-url=https://mirrors.huaweicloud.com/asce\n \n ## 快速开始\n \n-**运行tutorials中向量加法示例验证结果**\n+**运行tutorials中的向量加法示例验证结果**\n \n 向量加法示例：[01-vector-add.py](../../third_party/ascend/tutorials/01-vector-add.py)\n 通过对比Triton算子与PyTorch原生计算的输出结果，证明昇腾NPU设备可正确调用Triton算子并保证计算精度。\n-> ⚠️ 下述命令需在 bash 环境下执行。若使用 POSIX sh，请将 `source` 替换为 `.`。\n+> ⚠️ 下述命令需在bash环境下执行。若使用POSIX sh，请将 `source` 替换为 `.`。\n \n ```bash\n # 设置CANN环境变量（以root用户默认安装路径`/usr/local/Ascend`为例）"
+        },
+        {
+          "filename": "docs/zh/triton_api/Elementwise_Ops/map_elementwise.md",
+          "status": "modified",
+          "additions": 6,
+          "deletions": 6,
+          "patch": "@@ -15,10 +15,10 @@ triton.language.map_elementwise(scalar_fn, *args, pack=1, _semantic=None, _gener\n | 参数名 | 类型 | 说明 |\n |--------|------|------|\n | `scalar_fn` | `Callable` | 必须使用 `@triton.jit` 标记的标量函数，接收标量参数，返回一个或多个标量结果。当 `pack > 1` 时，每个参数接收 `pack` 个连续元素（交织排列）。 |\n-| `*args` | `tensor` | 输入张量，会被隐式广播到相同形状 |\n+| `*args` | `tensor` | 输入张量，会被隐式广播到相同形状。 |\n | `pack` | `int` | 每次函数调用处理的元素组大小，必须是 2 的幂，默认为 1。在 NPU 后端上，最终实现会转为向量化运算，因此 `pack` 参数在 NPU 上不产生实际语义差异。 |\n-| `_semantic` | - | 框架内部参数，不支持外部传参 |\n-| `_generator` | - | 框架内部参数，不支持外部传参 |\n+| `_semantic` | - | 框架内部参数，不支持外部传参。 |\n+| `_generator` | - | 框架内部参数，不支持外部传参。 |\n \n **返回值：**\n \n@@ -28,17 +28,17 @@ triton.language.map_elementwise(scalar_fn, *args, pack=1, _semantic=None, _gener\n \n ### 2.2 Shape 支持\n \n-`map_elementwise` 要求输入为 RankedTensorType（秩 ≥ 1），所有输入张量会被隐式广播为相同形状。在 Shape 方面，GPU 与 Ascend 平台无差异。\n+`map_elementwise` 要求输入为RankedTensorType（秩 ≥ 1），所有输入张量会被隐式广播为相同形状。在Shape方面，GPU与Ascend平台无差异。\n \n ### 2.3 特殊限制说明\n \n > 相对社区能力缺失且无法实现\n \n-`while` 循环不支持：在 Ascend 平台上，标量函数内部不能使用 `while` 循环。\n+`while` 循环不支持：在Ascend平台上，标量函数内部不能使用 `while` 循环。\n \n ### 2.4 使用方法\n \n-以下示例将三路比较标量函数映射到两个张量的每个元素上：`x < y` 时返回 `-1`、`x == y` 时返回 `0`、`x > y` 时返回 `1`：\n+以下示例将三路比较标量函数映射到两个张量的每个元素上，`x < y` 时返回 `-1`、`x == y` 时返回 `0`、`x > y` 时返回 `1`：\n \n ```python\n import torch"
+        },
+        {
+          "filename": "docs/zh/triton_api/triton/autotune.md",
+          "status": "modified",
+          "additions": 11,
+          "deletions": 11,
+          "patch": "@@ -4,7 +4,7 @@\n triton.autotune(configs, key, prune_configs_by=None, reset_to_zero=None, restore_value=None, pre_hook=None, post_hook=None, warmup=25, rep=100, use_cuda_graph=False)\n ```\n \n-用于自动调优 triton.jit 函数的装饰器。\n+用于自动调优triton.jit函数的装饰器。\n \n ```python\n @triton.autotune(configs=[\n@@ -19,24 +19,24 @@ def kernel(x_ptr, x_size, **META):\n ```\n \n - 注：当所有配置都被解析时，内核将运行多次。也就是说内核更新的任何值都会进行多次更新。为了避免这种不希望出现的行为，可以使用 `reset_to_zero` 参数，该参数会在运行任何配置之前将提供的张量值重置为零。\n-- 注：如果环境变量 `TRITON_PRINT_AUTOTUNING` 设置为 `\"1\"`，Triton 会在每次自动调优内核后向标准输出 (stdout) 打印一条消息，包括自动调优所花费的时间和最佳配置。\n+- 注：如果环境变量 `TRITON_PRINT_AUTOTUNING` 设置为 `\"1\"`，Triton会在每次自动调优内核后向标准输出(stdout)打印一条消息，包括自动调优所花费的时间和最佳配置。\n \n **参数：**\n \n - `configs (list[triton.Config])` - `triton.Config` 对象列表。\n - `key (list[str])` - 参数名列表，当值发生改变时将触发对所有配置的解析。\n - `prune_configs_by (dict)` - 修剪配置的函数字典。包含以下字段：\n-  - `'perf_model'`: 性能模型，用于预测不同配置的运行时间，返回运行时间\n-  - `'top_k'`: 要进行基准测试的配置数量\n-  - `'early_config_prune'`（可选）: 用于提前修剪配置的函数（例如，`num_stages`）。它接收 `configs: List[Config]` 作为输入，并返回修剪后的配置\n+  - `'perf_model'`：性能模型，用于预测不同配置的运行时间，返回运行时间。\n+  - `'top_k'`：要进行基准测试的配置数量。\n+  - `'early_config_prune'`（可选）：用于提前修剪配置的函数（例如，`num_stages`）。它接收 `configs: List[Config]` 作为输入，并返回修剪后的配置。\n - `reset_to_zero (list[str])` - 参数名称列表，将在任何配置解析之前被重置为零。\n - `restore_value (list[str])` - 参数名称列表，这些参数的值将在解析任何配置之后恢复。\n - `pre_hook (lambda args, reset_only)` - 一个将在调用内核之前被调用的函数。该参数会覆盖 `reset_to_zero` 和 `restore_value` 的默认 `pre_hook`。\n-  - `args`：传递给内核的参数列表\n-  - `reset_only`：一个布尔值，表示 `pre_hook` 是否仅用于重置值，而没有对应的 `post_hook`\n+  - `args`：传递给内核的参数列表。\n+  - `reset_only`：一个布尔值，表示 `pre_hook` 是否仅用于重置值，而没有对应的 `post_hook`。\n - `post_hook (lambda args, exception)` - 一个将在调用内核之后被调用的函数。该参数会覆盖 `restore_value` 的默认 `post_hook`。\n-  - `args`：传递给内核的参数列表\n-  - `exception`：在出现编译或运行时错误情况下，由内核引发的异常\n-- `warmup (int)` - 传递给基准测试的预热时间（以毫秒为单位），默认值为 25。\n-- `rep (int)` - 传递给基准测试的重复时间（以毫秒为单位），默认值为 100。\n+  - `args`：传递给内核的参数列表。\n+  - `exception`：在出现编译或运行时错误情况下，由内核引发的异常。\n+- `warmup (int)` - 传递给基准测试的预热时间（以毫秒为单位），默认值为25。\n+- `rep (int)` - 传递给基准测试的重复时间（以毫秒为单位），默认值为100。\n - `use_cuda_graph (bool)` - 是否使用 CUDA Graph 进行性能测量（默认为 `False`）。\n"
+        }
+      ]
+    },
+    {
+      "sha": "439192303c90ff69d5c20b68da2af7621201b890",
+      "author": {
+        "name": "hongziqi",
+        "email": "1102229410@qq.com"
+      },
+      "date": "2026-09-07T16:07:19+08:00",
+      "message": "[Docs](fix) update community_technical_meeting icalendar (#1948)",
+      "parents": [
+        "c747daae7f67fb7acd1013bf9793505aec1dc9e2"
+      ],
+      "stats": {
+        "total_additions": 4,
+        "total_deletions": 4,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "docs/en/community/community_technical_meeting.md",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 2,
+          "patch": "@@ -14,12 +14,12 @@ Triton-Ascend holds regular community technical meetings as the core decision-ma\n \n - **Meeting Frequency**: Bi-weekly\n - **Meeting Time**: Thursday 14:15(UTC+8)\n-- **Meeting Start Date**: 4 June, 2026\n+- **Meeting Start Date**: 2026-09-03\n - **Meeting Link**: [Link](https://us06web.zoom.us/j/86540192059?pwd=X2N3pl5bnZH5CgiuX1zjyZoELItmjP.1)\n - **Meeting Room Number**: 865 4019 2059\n - **Meeting Room Password**: 123456\n - **Meeting Agenda and Minutes**: [Agenda&Minutes](https://docs.google.com/document/d/1qfat2wZtO2nfZb5FC2dWAcR6sTqgTNSvvh7MzTDoI4s/edit?pli=1&tab=t.0)\n-- **Meeting iCalendar**: [iCalendar-ics](https://us06web.zoom.us/meeting/tZIoc-mppzkqH92hP7TBYHppsqZUxg9F8VPf/ics?icsToken=DObLUj7lyTNwJj6XJgAALAAAAOvNV2DJnuObI9tqQGt1c3aeqVgCdzMYHV0m_J0KHIX0i4QUrtvsJwMu_EMF5VKyBKdX4rPWh_raTxvF4jAwMDAwMQ&meetingMasterEventId=1PZVSVC8S8WIBZJ1e4wuZQ)\n+- **Meeting iCalendar**: [iCalendar-ics](https://us06web.zoom.us/meeting/tZIoc-mppzkqH92hP7TBYHppsqZUxg9F8VPf/ics?icsToken=DBlmQBo-ZbCIRz2GWwAALAAAAH1WzqoLLdQ-3b1rNf3AN6DLmYOhAUMS4b1zaoD-mgyykQQcSeS7S4Sf27U3_r_pLLEVTWFd8P_zVnm1zzAwMDAwMg)\n \n ## Voting Rules\n "
+        },
+        {
+          "filename": "docs/zh/community/community_technical_meeting.md",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 2,
+          "patch": "@@ -14,12 +14,12 @@ Triton-Ascend 定期召开社区技术会议，作为项目治理的核心决策\n \n - **会议频率**：每两周一次\n - **会议时间**：周四 14:15（UTC+8）\n-- **会议起始日期**：2026 年 6 月 4 日\n+- **会议起始日期**：2026 年 9 月 3 日\n - **会议链接**：[链接](https://us06web.zoom.us/j/86540192059?pwd=X2N3pl5bnZH5CgiuX1zjyZoELItmjP.1)\n - **会议室号**：865 4019 2059\n - **会议室密码**：123456\n - **会议议程与纪要**：[议程&纪要](https://docs.google.com/document/d/1qfat2wZtO2nfZb5FC2dWAcR6sTqgTNSvvh7MzTDoI4s/edit?pli=1&tab=t.0)\n-- **会议 iCalendar**：[iCalendar-ics](https://us06web.zoom.us/meeting/tZIoc-mppzkqH92hP7TBYHppsqZUxg9F8VPf/ics?icsToken=DObLUj7lyTNwJj6XJgAALAAAAOvNV2DJnuObI9tqQGt1c3aeqVgCdzMYHV0m_J0KHIX0i4QUrtvsJwMu_EMF5VKyBKdX4rPWh_raTxvF4jAwMDAwMQ&meetingMasterEventId=1PZVSVC8S8WIBZJ1e4wuZQ)\n+- **会议 iCalendar**：[iCalendar-ics](https://us06web.zoom.us/meeting/tZIoc-mppzkqH92hP7TBYHppsqZUxg9F8VPf/ics?icsToken=DBlmQBo-ZbCIRz2GWwAALAAAAH1WzqoLLdQ-3b1rNf3AN6DLmYOhAUMS4b1zaoD-mgyykQQcSeS7S4Sf27U3_r_pLLEVTWFd8P_zVnm1zzAwMDAwMg)\n \n ## 投票规则\n \n"
+        }
+      ]
+    }
+  ]
+}

@@ -1,4 +1,28 @@
 {
+  "b64287188046fe7bb0cfd424ee3e389f96a7affa": {
+    "date": "2026-09-07",
+    "msg": "[ssbuffer](fix) fix vf operand substitution (#2033)"
+  },
+  "6ff78229c88a04a05c9d8115e8a106afebd503fe": {
+    "date": "2026-09-07",
+    "msg": "[ssbuffer](fix) fix sdpa fwd performance (#2028)"
+  },
+  "ade29bb49f4dd365f4b5af2938e6f52ca5f9eeba": {
+    "date": "2026-09-07",
+    "msg": "[Docs](fix) Unify libdevice doc example precision to 1e-4 (#2017)"
+  },
+  "f3b85a4a1caf252fb2d77c216bb57b87c875d142": {
+    "date": "2026-09-07",
+    "msg": "[Docs](fix) Add extension and bl doc rendering (#2021)"
+  },
+  "0e7697640c17d4e1db456aa589c95895556a5cba": {
+    "date": "2026-09-07",
+    "msg": "[Docs](fix) resolve skill scan issues (#1910)"
+  },
+  "439192303c90ff69d5c20b68da2af7621201b890": {
+    "date": "2026-09-07",
+    "msg": "[Docs](fix) update community_technical_meeting icalendar (#1948)"
+  },
   "c747daae7f67fb7acd1013bf9793505aec1dc9e2": {
     "date": "2026-09-06",
     "msg": "[ssbuffer](fix) improve sdpa fwd performance (#1995)"

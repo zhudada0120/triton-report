@@ -1,0 +1,47 @@
+{
+  "date": "2026-09-07",
+  "repo": "triton-lang/triton",
+  "branch": "main",
+  "commits": [
+    {
+      "sha": "20601f01437c2e84b1a6b845ce7219b1d66c606a",
+      "author": {
+        "name": "Weiwen He",
+        "email": "60433849+he-weiwen@users.noreply.github.com"
+      },
+      "date": "2026-09-07T05:27:49+08:00",
+      "message": "[AccelerateMatmul] Forward lhs/rhs_k_pack flags when transposing a scaled dot (#11613)\n\nThese flags are currently missing and default to true. When a user\nsupplied flag is false, it can lead to a crash.\n\nReproducer:\n\n```python\n@triton.jit\ndef fp4_matmul(A, B, BS, C):\n    a  = tl.load(A  + tl.arange(0, 128)[:, None] * 32 + tl.arange(0, 32)[None, :])\n    b  = tl.load(B  + tl.arange(0, 32)[:, None]  * 64 + tl.arange(0, 64)[None, :])\n    bs = tl.load(BS + tl.arange(0, 128)[:, None])\n    # a dot with (lhs unscaled, rhs scaled) is transposed to (lhs scaled, rhs unscaled)\n    # in AccelerateMatmul \n    c = tl.dot_scaled(a, None, \"bf16\", b, bs, \"e2m1\", rhs_k_pack=False)\n    tl.store(C + tl.arange(0, 128)[:, None] * 128 + tl.arange(0, 128)[None, :], c)\n\n# LLVM ERROR: scale factor must be 16 or 32. Got 64\n# error: Failures have been detected while processing an MLIR pass pipeline\n# note: Pipeline failed while executing [`TritonGPUAccelerateMatmul` on 'builtin.module' operation]: reproducer generated at `std::errs, please share the reproducer above with Triton project.`\n# RuntimeError: PassManager::run failed\n```",
+      "parents": [
+        "20e6ba864830b88f56b907fef85cab5097cf3892"
+      ],
+      "stats": {
+        "total_additions": 52,
+        "total_deletions": 1,
+        "files_changed": 3
+      },
+      "files": [
+        {
+          "filename": "lib/Dialect/TritonGPU/Transforms/AccelerateMatmul.cpp",
+          "status": "modified",
+          "additions": 3,
+          "deletions": 1,
+          "patch": "@@ -1054,7 +1054,9 @@ static void transposeDotOp(DotScaledOp dotOp) {\n   Value result = DotScaledOp::create(\n       builder, dotOp.getLoc(), cTransposed.getType(), rhsTransposed,\n       lhsTransposed, cTransposed, dotOp.getBScale(), dotOp.getAScale(),\n-      dotOp.getBElemType(), dotOp.getAElemType(), dotOp.getFastMath());\n+      dotOp.getBElemType(), dotOp.getAElemType(), dotOp.getFastMath(),\n+      /*lhs_k_pack=*/dotOp.getRhsKPack(),\n+      /*rhs_k_pack=*/dotOp.getLhsKPack());\n   Operation *transposedResult =\n       TransOp::create(builder, result.getLoc(), result, transOrder);\n   dotOp.replaceAllUsesWith(transposedResult);"
+        },
+        {
+          "filename": "python/test/unit/language/test_matmul.py",
+          "status": "modified",
+          "additions": 30,
+          "deletions": 0,
+          "patch": "@@ -1136,6 +1136,36 @@ def test_block_scale_fp4(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, VEC_SIZE, with_a_sc\n             assert \"kind::mxf8f6f4\" in ptx\n \n \n+@triton.jit\n+def rhs_scaled_n_packed_fp4_matmul(A, B, BS, C):\n+    a = tl.load(A + tl.arange(0, 128)[:, None] * 32 + tl.arange(0, 32)[None, :])\n+    b = tl.load(B + tl.arange(0, 32)[:, None] * 64 + tl.arange(0, 64)[None, :])\n+    bs = tl.load(BS + tl.arange(0, 128)[:, None])\n+    c = tl.dot_scaled(a, None, \"bf16\", b, bs, \"e2m1\", rhs_k_pack=False)\n+    tl.store(C + tl.arange(0, 128)[:, None] * 128 + tl.arange(0, 128)[None, :], c)\n+\n+\n+def test_dot_scaled_unscaled_lhs_fp4_rhs(device):\n+    if not is_cuda() or torch.cuda.get_device_capability()[0] < 8:\n+        pytest.skip(\"Requires NVIDIA compute capability >= 8\")\n+\n+    M, N, K = 128, 128, 32\n+    torch.manual_seed(42)\n+    a = torch.randn((M, K), dtype=torch.bfloat16, device=device)\n+    b_mxfp4 = MXFP4Tensor(size=(K, N), device=device).random()\n+    b = b_mxfp4.to_packed_tensor(dim=1)\n+    b_scale = MXScaleTensor(size=(N, K // 32), device=device).random(low=0.5, high=2.0)\n+    output = torch.empty((M, N), dtype=torch.float32, device=device)\n+\n+    rhs_scaled_n_packed_fp4_matmul[(1, )](a, b, b_scale.data, output)\n+    if is_compile_warmup():\n+        return\n+\n+    scale_ref = b_scale.to(torch.float32).T\n+    ref_out = torch.matmul(a.float(), b_mxfp4.to(torch.float32) * scale_ref)\n+    torch.testing.assert_close(output, ref_out, atol=1e-3, rtol=1e-3)\n+\n+\n @triton.jit\n def mxfp8_mxfp4_matmul(  #\n         a_ptr, b_ptr, output_ptr,  #"
+        },
+        {
+          "filename": "test/TritonGPU/accelerate-matmul.mlir",
+          "status": "modified",
+          "additions": 19,
+          "deletions": 0,
+          "patch": "@@ -275,6 +275,25 @@ module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32, ttg.targ\n \n // -----\n \n+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [1, 4], order = [1, 0]}>\n+#blocked_k = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [0, 1]}>\n+module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32, ttg.target = \"cuda:100\", \"ttg.threads-per-warp\" = 32 : i32} {\n+  // CHECK-LABEL: unscaled_lhs_keeps_mn_packed_rhs\n+  tt.func public @unscaled_lhs_keeps_mn_packed_rhs(\n+      %a: tensor<128x64xbf16, #blocked_k>,\n+      %b: tensor<64x64xi8, #blocked>,\n+      %scale_b: tensor<128x2xi8, #blocked>) -> tensor<128x128xf32, #blocked> {\n+    // CHECK-NOT: tt.dot_scaled\n+    // CHECK: ttg.fp4_to_fp %{{.*}} {axis = 0 : i32} : tensor<64x64xi8, {{.*}}> -> tensor<128x64xbf16, {{.*}}>\n+    // CHECK: ttng.tc_gen5_mma\n+    %cst = arith.constant dense<0.000000e+00> : tensor<128x128xf32, #blocked>\n+    %d = tt.dot_scaled %a, %b scale %scale_b, %cst lhs = bf16 rhs = e2m1 {fastMath = false, rhs_k_pack = false} : tensor<128x64xbf16, #blocked_k> * tensor<64x64xi8, #blocked>, tensor<128x2xi8, #blocked> -> tensor<128x128xf32, #blocked>\n+    tt.return %d : tensor<128x128xf32, #blocked>\n+  }\n+}\n+\n+// -----\n+\n #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [1, 4], order = [1, 0]}>\n #blocked1 = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [1, 4], order = [1, 0]}>\n #blocked2 = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [1, 4], order = [1, 0]}>\n"
+        }
+      ]
+    }
+  ]
+}

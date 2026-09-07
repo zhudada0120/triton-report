@@ -1,0 +1,110 @@
+{
+  "date": "2026-09-07",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-09-08T04:52:16.489310+08:00",
+  "daily_summary": "今日的提交主要集中在 Ascend 后端的性能优化与问题修复，以及文档的全面修订。核心变更包括通过新增特殊错误码和黑名单机制来优化 Dynamic CV Pipeline 的 VF 操作数替换和 3-preload 预取策略，以解决特定 flash-attention 类算子的性能问题。其余提交均为文档改进，包括统一 libdevice 示例测试精度、调整文档渲染、修复文档中的格式和措辞问题，以及更新社区技术会议的相关信息。",
+  "test_impact_summary": "今日提交中，两个涉及 Dynamic CV Pipeline 的 bugfix 引入了针对特定 kernel（如 chunk_gated_delta_rule_fwd_kernel_h_blockdim64 和 kernel_sdpa_fwd）的行为分支，目前的测试框架（DynamicCVPipeline_ut）是否覆盖了这些特定 kernel 的回归场景尚不明确，存在测试缺口风险。此外，大量 libdevice 文档示例的测试精度被收紧（如从 1e-3 调整到 1e-4），这要求相应的 CI 或本地运行环境能处理更严格的精度要求，可能需要重新校准基准或在非确定性计算场景下评估其稳定性。其余文档类改动不涉及核心逻辑，因此对现有测试看护基本无影响。",
+  "commits": [
+    {
+      "sha": "b64287188046fe7bb0cfd424ee3e389f96a7affa",
+      "comment": "这是一个针对 Dynamic CV Pipeline 的定向 bugfix。核心思路是引入新的错误码 ERRCODE_DISABLE_VF_SUBSTITUTION (4)，并在 AddDynamicCVPipelinePass 中发现指定的 kernel（如 chunk_gated_delta_rule_fwd_kernel_h_blockdim64）时，通过 walk 设置该错误码，从而在后续编译阶段（compiler.py 的 linalg_to_bin_enable_npu_compile_910_95）跳过添加 `--enable-vf-operand-substitution=True` 编译选项。这种通过 Hardcode kernel 名做黑名单的方式能快速解决问题，但维护成本高、缺乏通用性，后续若相关算子逻辑更新可能导致此修复失效或误伤。此外，错误码 3 未使用，其语义空间需保持清晰。合理，不影响上层接口和公共API，但需关注此硬编码列表的长期维护。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "low-risk",
+        "dynamic-cv-pipeline",
+        "vf-operand-substitution"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "引入了针对特定 kernel 的 VF 替换禁用逻辑，需要测试用例来验证该逻辑在目标场景下生效且不影响其他场景。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/",
+          "针对 chunk_gated_delta_rule_fwd_kernel_h_blockdim64 的编译与执行回归测试"
+        ]
+      },
+      "message": "[ssbuffer](fix) fix vf operand substitution (#2033)\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>"
+    },
+    {
+      "sha": "6ff78229c88a04a05c9d8115e8a106afebd503fe",
+      "comment": "这是一个针对 Dynamic CV Pipeline 中 3-preload 预取策略的性能优化。将 kernel_sdpa_fwd 加入禁用 3-preload 的黑名单，但又做了一个例外处理：如果显式设置了 intraBufferCount=3 且 interCoreBufCount=2，则保留 3-preload 设置。这为特定 flash-attention 前向 kernel 提供了更精细的控制，是一个典型的性能调优手段。但这种针对具体 kernel 名的硬编码策略在代码库中会逐渐累积，增加维护成本，且配置组合的合理性依赖人工经验。",
+      "tags": [
+        "performance",
+        "bugfix",
+        "low-risk",
+        "dynamic-cv-pipeline",
+        "preload",
+        "attention"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "该改动是运行时的行为分支，不影响编译过程。虽涉及特定 kernel 的性能调优，但现有测试框架主要验证功能正确性而非性能，因此对测试影响不大。",
+        "suggested_test_areas": []
+      },
+      "message": "[ssbuffer](fix) fix sdpa fwd performance (#2028)\n\nCo-authored-by: wuzw_05 <wuzhiwei37@huawei.com>"
+    },
+    {
+      "sha": "ade29bb49f4dd365f4b5af2938e6f52ca5f9eeba",
+      "comment": "这是一次大规模的文档改动，统一了 docs/zh/python-api/_examples/ 下大量 CANN libdevice 示例测试的精度。将断言容差从 1e-3/1e-2 收紧到 1e-4，并修正了部分示例（如 finitef、float_as_uint 等）的测试结构，使其能通过 pytest 正确收集和跳过。此举可提升文档示例的准确性，但也意味着这些示例对计算误差更敏感。虽然 1e-4 对于 float32 通常足够，但在 fast math 或不同编译优化下可能偏严格，需关注未来在不同环境下（如模拟器 vs 真机）的稳定性。",
+      "tags": [
+        "docs",
+        "test",
+        "low-risk",
+        "libdevice",
+        "documentation-examples"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "改动本身针对的是文档中的示例代码，这些示例通常不纳入核心CI。更新后的断言更为严格，但已通过测试结构调整确保在无设备环境下可跳过，因此对CI测试影响不大。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](fix) Unify libdevice doc example precision to 1e-4 (#2017)"
+    },
+    {
+      "sha": "f3b85a4a1caf252fb2d77c216bb57b87c875d142",
+      "comment": "修复了文档的渲染问题，将此前被注释掉的 libdevice 文档模块重新加入到 Sphinx 目录树（toctree）中，并调整了模块的顺序。此变更仅影响文档站点的导航和结构，不涉及任何代码逻辑。",
+      "tags": [
+        "docs",
+        "chore",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅修改了 Sphinx 文档配置文件，不涉及任何代码逻辑，对测试无影响。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](fix) Add extension and bl doc rendering (#2021)\n\nSigned-off-by: TecJesh <qdvm5gl@163.com>"
+    },
+    {
+      "sha": "0e7697640c17d4e1db456aa589c95895556a5cba",
+      "comment": "这是一次针对中文文档的大规模修订，以解决代码扫描问题。主要改动包括：统一中英文标点符号、修正错别字（如 '继承与' → '继承自'）、调整“的/地”用法、美化 Markdown 列表格式、修正行内代码块标记（如将 Python 代码块改为 text），以及对部分难懂句子进行改写使其更清晰。没有涉及任何代码逻辑，但提升了文档的可读性、专业性和准确性。",
+      "tags": [
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯文档修订，不影响任何代码逻辑或测试。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](fix) resolve skill scan issues (#1910)"
+    },
+    {
+      "sha": "439192303c90ff69d5c20b68da2af7621201b890",
+      "comment": "更新了社区技术会议文档（中英文版本），将会议起始日期更新为 2026-09-03，并替换了 Zoom 会议 iCalendar 的订阅链接。此改动仅为信息更新，不涉及任何技术实现。",
+      "tags": [
+        "docs",
+        "chore",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅为文档信息更新，无代码改动，对测试无影响。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](fix) update community_technical_meeting icalendar (#1948)"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

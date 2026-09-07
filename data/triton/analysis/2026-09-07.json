@@ -1,0 +1,30 @@
+{
+  "date": "2026-09-07",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-09-08T04:52:00.942214+08:00",
+  "daily_summary": "今日提交包含一个针对 TritonGPU AccelerateMatmul 优化的 bugfix。该修复在点积转置时正确传递 lhs_k_pack/rhs_k_pack 标志，解决了因标志默认值导致在特定 fp4 矩阵乘法场景下出现的 LLVM 崩溃问题，并添加了回归测试。",
+  "ascend_impact_summary": "本次变更为 NVIDIA 专属的 TritonGPU 优化 pass（AccelerateMatmul.cpp）内部的 dot_scaled 转置处理，属于 ttg 方言层对 fp4 点积的特定优化。Ascend 后端走 TTIR→Linalg 转换链，既无启用此 pass 的流水线，也不依赖受影响的相关标志和 op 语义，故不影响 triton-ascend。",
+  "commits": [
+    {
+      "sha": "20601f01437c2e84b1a6b845ce7219b1d66c606a",
+      "comment": "该 commit 修复了 AccelerateMatmul pass 中一个标志转发遗漏导致的崩溃。当 dot 的输入格式需要转置时，原代码未将其 k_pack 标志同步转置，而是使用了默认值 true。这种标志与数据格式的不一致会污染后续的 mxfp 转换和降级阶段，在特定场景（rhs_k_pack=False 且 lhs 未被缩放）下触发 'scale factor must be 16 or 32' 的 MLIR 崩溃。修复即在转置时交换并显式传递标志，同时补充了 Python 回归测试及对应的 .mlir 测试用例。风险低，属于具体场景下的 bug 修复。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "TritonGPU",
+        "AccelerateMatmul",
+        "dot_scaled"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AccelerateMatmul] Forward lhs/rhs_k_pack flags when transposing a scaled dot (#11613)\n\nThese flags are currently missing and default to true. When a user\nsupplied flag is false, it can lead to a crash.\n\nReproducer:\n\n```python\n@triton.jit\ndef fp4_matmul(A, B, BS, C):\n    a  = tl.load(A  + tl.arange(0, 128)[:, None] * 32 + tl.arange(0, 32)[None, :])\n    b  = tl.load(B  + tl.arange(0, 32)[:, None]  * 64 + tl.arange(0, 64)[None, :])\n    bs = tl.load(BS + tl.arange(0, 128)[:, None])\n    # a dot with (lhs unscaled, rhs scaled) is transposed to (lhs scaled, rhs unscaled)\n    # in AccelerateMatmul \n    c = tl.dot_scaled(a, None, \"bf16\", b, bs, \"e2m1\", rhs_k_pack=False)\n    tl.store(C + tl.arange(0, 128)[:, None] * 128 + tl.arange(0, 128)[None, :], c)\n\n# LLVM ERROR: scale factor must be 16 or 32. Got 64\n# error: Failures have been detected while processing an MLIR pass pipeline\n# note: Pipeline failed while executing [`TritonGPUAccelerateMatmul` on 'builtin.module' operation]: reproducer generated at `std::errs, please share the reproducer above with Triton project.`\n# RuntimeError: PassManager::run failed\n```"
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}
