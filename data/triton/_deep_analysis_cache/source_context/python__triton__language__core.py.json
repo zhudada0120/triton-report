@@ -1,5 +1,5 @@
 {
-  "content_hash": "378b2061162c3232",
+  "content_hash": "88e044989dc7b244",
   "analysis": {
     "interface_summary": "定义 24 个类；定义 394 个函数",
     "key_interfaces": [
@@ -110,5 +110,5 @@
       "aggregate_value._flatten_ir"
     ]
   },
-  "cached_at": "2026-08-26T13:07:11.180860+08:00"
+  "cached_at": "2026-09-09T04:26:05.641776+08:00"
 }

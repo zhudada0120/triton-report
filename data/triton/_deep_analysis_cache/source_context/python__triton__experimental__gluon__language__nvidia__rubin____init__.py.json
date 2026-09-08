@@ -1,0 +1,14 @@
+{
+  "content_hash": "bff0dd1d6ea82cd6",
+  "analysis": {
+    "interface_summary": "定义 1 个类；定义 8 个函数",
+    "key_interfaces": [
+      "TensorMemoryScalesLayout",
+      "TensorMemoryScalesLayout.__post_init__",
+      "TensorMemoryScalesLayout._to_ir",
+      "TensorMemoryScalesLayout.mangle",
+      "TensorMemoryScalesLayout.__hash__"
+    ]
+  },
+  "cached_at": "2026-09-09T04:26:05.603759+08:00"
+}

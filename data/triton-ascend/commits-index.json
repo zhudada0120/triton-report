@@ -1,4 +1,32 @@
 {
+  "fe60c1e368ded114b9bf69e2d2f68f9cfb65128e": {
+    "date": "2026-09-08",
+    "msg": "[ssbuffer](chore) refactored ExpSubfPatternPass and PlanCubeBlockPass (#1915)"
+  },
+  "62e5a69cb1fca445693a74cafd2cd896824c36ae": {
+    "date": "2026-09-08",
+    "msg": "[libdevice](fix) Remove duplicated deprecated func and update libdevice binary file (#1889)"
+  },
+  "9930d0e593fc91fd3c5632322013ffa0bebf02b6": {
+    "date": "2026-09-08",
+    "msg": "[compiler](fix) Fix a warning from AddDynamicCVPipeline (#1881)"
+  },
+  "ad451df38d9724072bfc766c2ccef0a1eb809ba2": {
+    "date": "2026-09-08",
+    "msg": "[sync_block](fix) enable unordered syncblock lock on a5 (#1914)"
+  },
+  "3fc91e9a186bc0c5f7014cb914382deb3b5ed4e1": {
+    "date": "2026-09-08",
+    "msg": "[ssbuffer](fix) skip reorder after disable mergeComputeBlock (#1943)"
+  },
+  "9f9527d0e2e189c6a5966c24ff248973043ce3b4": {
+    "date": "2026-09-08",
+    "msg": "[ssbuffer](feat) enable mergeComputeBlock for kernel_da_bwd_kv_ul (#1900)"
+  },
+  "dc9941075f7ef71b454d4472202619000f26c966": {
+    "date": "2026-09-08",
+    "msg": "[ssbuffer](fix) merge compute blocks in computeBlockOptPass (#1775)"
+  },
   "b64287188046fe7bb0cfd424ee3e389f96a7affa": {
     "date": "2026-09-07",
     "msg": "[ssbuffer](fix) fix vf operand substitution (#2033)"

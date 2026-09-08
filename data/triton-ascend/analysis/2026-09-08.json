@@ -1,0 +1,145 @@
+{
+  "date": "2026-09-08",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-09-09T04:28:53.116069+08:00",
+  "daily_summary": "今日的提交主要围绕 Ascend 后端的 DynamicCVPipeline 和 CANN 库的优化与修复展开。ssbuffer 相关改动包含对卷积块合并、块规划与重排序策略的精细化调整，主要是新增了 kernel 白名单、优化了合并标记逻辑，并重构了 ExpSubfPatternPass 和 PlanCubeBlockPass，以提升特定模型下的性能。同时修复了 AddDynamicCVPipeline 在回退时的告警信息，避免了在预期失败场景下输出令人困惑的 IR。在 libdevice 方面，清理了重复的废弃函数并更新了预编译的位码文件，同时将废弃警告装饰器统一移动到公共工具模块。此外，还解禁了 A5 架构上的 unordered syncblock lock 功能。",
+  "test_impact_summary": "今日的变更引入了数个需要测试看护的新逻辑分支与功能特性。其中，MergeComputeBlockPass 新增并优化了合并路径，需要新增对应的 MLIR 测试文件（如 merge_compute_block.mlir）来验证合并逻辑是否生效。此外，Refactor 与修复操作需回归现有测试，以确保正确性。特别是，单测中的 fallback_no_matmul.mlir 测试新覆盖了ERRCODE_IGNORED场景，这类预期性回退不应产生整个模块的IR dump，需加强对这些新增文件的看护，确保覆盖率达到预期。整体来看，测试更新的重点是围绕新增的pass与修复场景，补充并更新单元测试。",
+  "commits": [
+    {
+      "sha": "fe60c1e368ded114b9bf69e2d2f68f9cfb65128e",
+      "comment": "此提交对 DynamicCVPipeline 中的 ExpSubfPatternPass 和 PlanCubeBlockPass 进行了重构。主要变更包括：1) 将原用于 subf-exp 模式匹配的辅助函数 matchExpFromSubf 和 matchExtfFromSubf 重写为返回可空/可空可选类型的更清晰函数，移除部分引用参数。2) 将 isCubeSimpleOpOrCf 从公共头文件 (Utils.h) 移动到 PlanCubeBlock.cpp 源文件中，并增加了终结符检查，防止将 block terminator 误判为可规划的算子。该重构提高了代码可读性和可维护性，并将函数作用域限制在局部。风险较低，主要涉及编译期优化逻辑的调整，需回归测试以确保 pattern 匹配准确性。",
+      "tags": [
+        "refactor",
+        "low-risk",
+        "DynamicCVPipeline",
+        "ssbuffer"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "重构了 Pass 内部函数与相关的 pattern 匹配逻辑，虽然核心算法未变，但函数签名和判断逻辑有所调整，需确保现有的 lit 测试仍能覆盖更新后的匹配路径和边界场景（如 terminator 排除情况）。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ExpSubfPattern/",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/PlanComputeBlock/"
+        ]
+      },
+      "message": "[ssbuffer](chore) refactored ExpSubfPatternPass and PlanCubeBlockPass (#1915)"
+    },
+    {
+      "sha": "62e5a69cb1fca445693a74cafd2cd896824c36ae",
+      "comment": "此提交对 Ascend 后端的 libdevice 库进行整理。主要包含两个核心改动：1) 在 language/cann/utils.py 中新增 _deprecated 装饰器，并统一从该模块导出来源；相比之前，该装饰器现在支持自定义函数名和替代品提示，并用于标记废弃函数。2) 更新了 libdevice.10.bc 位码文件，将其中的 uint32 相关函数符号（如 __hmf_uhadd_u32_u32 改为 __hmf_uhadd_u32）进行更新，并移除重复的废弃函数。整体上是维护性变更，目的是统一代码风格和清理过期定义。风险较低，但更新位码文件后需保证相关函数调用能正确绑定，特别是涉及 uint32 算术操作的函数。",
+      "tags": [
+        "chore",
+        "bugfix",
+        "low-risk",
+        "libdevice",
+        "language/cann"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "清理和重命名了 deprecated 函数并更新了 bc 文件，需确认没有测试用例仍依赖旧的函数名称或行为。特别需检查用例中是否触发了旧的警告信息，以及针对 uint32 操作的测试能否正确调用新的符号。",
+        "suggested_test_areas": [
+          "python/test/unit/language/",
+          "third_party/ascend/unittest/libdevice/"
+        ]
+      },
+      "message": "[libdevice](fix) Remove duplicated deprecated func and update libdevice binary file (#1889)"
+    },
+    {
+      "sha": "9930d0e593fc91fd3c5632322013ffa0bebf02b6",
+      "comment": "此提交修复了 AddDynamicCVPipeline 中的一个告警问题。此前无论动态CV管线是否适配 kernel，系统都会输出 'Pass failed ...' 的告警并打印模块IR，这既可能误导开发者又可能产生大量噪音。现在引入 ERRCODE_IGNORED 分支，当 pipeline 决定不适用当前 kernel 时（如无 matmul、已优化或 pattern 不支持的情况），会输出更清晰的 'Kernel not applicable' 消息而非打印IR。而其他真正的失败（如 UB overflow、flag预算耗尽等）仍会输出详细的失败原因与IR。此改动优化了用户体验，使日志信息更具可解释性，同时新增了对应的lit测试以确保正确行为。风险较低，只影响日志输出路径，不涉及实际编译逻辑。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "DynamicCVPipeline",
+        "test"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了针对 fallback_no_matmul 场景的 lit 测试文件，验证不再无意义地打印 IR，并明确了告警逻辑的覆盖范围。现有测试也需要回归，以确保没有预期外的其它 fallback 分支被遗漏。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AddDynamicCVPipeline/fallback_no_matmul.mlir"
+        ]
+      },
+      "message": "[compiler](fix) Fix a warning from AddDynamicCVPipeline (#1881)\n\n* [compiler](fix) Fix a warning from AddDynamicCVPipeline\n\nFixes a warning printed by AddDynamicCVPipeline; now it doesn't print a\nconfusing message and dumps module IR.\n\nFixes #1878\n\n* style: format AddDynamicCVPipeline files\n\n* style: fix end of file in fallback_no_matmul.mlir"
+    },
+    {
+      "sha": "ad451df38d9724072bfc766c2ccef0a1eb809ba2",
+      "comment": "此提交移除了 DiscreteMaskAccessConversionPass 中 checkAllProgramIdNonOverlap 函数里对 910-95 (A5) 架构的早期返回逻辑。原先在这个架构下，函数会直接返回 true，跳过程序ID重叠的检查，从而可能存在错误分析的风险。现在这层防护被移除，表明 A5 设备上已能安全启用该检查。这是针对架构适配的 bugfix，通过使能统一的检查逻辑、增强代码一致性来确保在更多NPU型号上行为正确，但需要验证在新架构上该检查不会引入额外的编译失败或误报。风险中低，涉及编译优化逻辑的架构调整。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "DiscreteMaskAccessConversion",
+        "A5"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "编译期分析逻辑的架构条件被移除后，原来被禁用的检查（checkAllProgramIdNonOverlap）现在会在A5上触发。需要回归相关 lit 测试，并考虑补充针对A5架构、包含多个program_id的用例，以确保新逻辑不会破坏A5上的正确性。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DiscreteMaskAccessConversion/"
+        ]
+      },
+      "message": "[sync_block](fix) enable unordered syncblock lock on a5 (#1914)"
+    },
+    {
+      "sha": "3fc91e9a186bc0c5f7014cb914382deb3b5ed4e1",
+      "comment": "此提交为 ssbuffer 的 MergeComputeBlock 与 ReorderOpsByBlockId pass 引入了协作机制。MergeComputeBlockPass 会记录实际是否发生了块合并，并在经过 ReorderOpsByBlockId 时根据该标记决定是否执行重排。之前，无论是否合并成功，ReorderOps 始终会运行，这可能导致无谓的重排操作，或与后续pass产生冲突。现在则通过合并标记以避免不必要的重排，其目的聚焦于修正逻辑错误，提升性能。风险中等，引入了 pass 间状态共享，需要保证标记在所有路径上都能正确设置/消费，防止状态泄漏或错误跳过的潜在问题。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "DynamicCVPipeline",
+        "ssbuffer",
+        "MergeComputeBlockPass",
+        "ReorderOpsByBlockId"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 pass 协同逻辑，必须在 lit 测试中覆盖 ‘MergeComputeBlock 执行但无合并’ 的场景，确保后续 ReorderOps 被正确跳过，同时验证 ‘有合并’ 时 ReorderOps 仍能正确执行，并检查新添加的 marker attribute 不会泄漏到最终输出 IR 中。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/merge_compute_block.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/reorder_ops_by_block_id.mlir"
+        ]
+      },
+      "message": "[ssbuffer](fix) skip reorder after disable mergeComputeBlock (#1943)"
+    },
+    {
+      "sha": "9f9527d0e2e189c6a5966c24ff248973043ce3b4",
+      "comment": "此提交在 MergeComputeBlockPass 的 kernel 白名单中新增了 'kernel_da_bwd_kv_ul'。该pass用于将相邻的向量计算块合并，是性能优化的手段。将更多kernel纳入优化范围，预计可提升该特定（可能是解码架构注意力反向实现）kernel 的性能。风险低，直接包含在配置列表后不会引入指令上的副作用，但需通过性能测试验证实际收益，并确保该 kernel 的原有语义（如跨核心同步）未被破坏。",
+      "tags": [
+        "feature",
+        "performance",
+        "low-risk",
+        "DynamicCVPipeline",
+        "ssbuffer"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅将新 kernel 名称添加到已维护的静态列表中，不引入新的代码路径，不改变现有行为，因此不需要新增测试。",
+        "suggested_test_areas": []
+      },
+      "message": "[ssbuffer](feat) enable mergeComputeBlock for kernel_da_bwd_kv_ul (#1900)"
+    },
+    {
+      "sha": "dc9941075f7ef71b454d4472202619000f26c966",
+      "comment": "此提交引入了 MergeComputeBlockPass，这是个重要的性能优化功能，需要在特定kernel内部合并计算块。合并逻辑通过分析块间的依赖关系（含SSA与内存依赖），将临近的VECTOR块合并到一个CUBE块中，以更好地利用硬件资源。此外，该pass引入表示子块的属性，用于指导后续的跨核心同步和传输优化，同时也实现了在交叉Cube克隆场景下的处理。主循环主体通过实现5步算法：分组与依赖建立、候选区块收集、相邻VECTOR对识别、直接合并尝试和交叉Cube克隆合并尝试。此修改风险较高，新增pass会对 IR 进行结构性修改，逻辑复杂，容易被边界情况 (涉及特殊循环结构、terminator、复杂嵌套区域) 击穿。此外，通过引入子块标记，后续的 InterCoreTransferAndSync 将受到影响，需要对整体流程进行端到端的严格测试。",
+      "tags": [
+        "feature",
+        "performance",
+        "high-risk",
+        "DynamicCVPipeline",
+        "ssbuffer",
+        "MergeComputeBlockPass"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "这是一项功能性变更，引入新优化 pass，需要全面的测试覆盖。如，应检测合并后的 block_id 统一性，验证跨Cube克隆逻辑的正确性，及传递子块标记是否在后续同步和传输操作中得到正确保留。新增的 merge_compute_block.mlir 需进一步补全以覆盖更多异常路径，并确保与其它 pass 配合时不出错。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/merge_compute_block.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/ComputeBlockOptPass.mlir"
+        ]
+      },
+      "message": "[ssbuffer](fix) merge compute blocks in computeBlockOptPass (#1775)"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

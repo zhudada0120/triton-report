@@ -1,0 +1,35 @@
+{
+  "content_hash": "ea369c7bc09c1862",
+  "analysis": {
+    "interface_summary": "定义 5 个类；定义 52 个函数",
+    "key_interfaces": [
+      "TensorMemoryLayout",
+      "TensorMemoryScalesLayout",
+      "_TensorMemoryLinearLayout",
+      "tensor_memory_descriptor_type",
+      "tensor_memory_descriptor",
+      "TensorMemoryLayout.__post_init__",
+      "TensorMemoryLayout._to_ir",
+      "TensorMemoryLayout.mangle",
+      "TensorMemoryLayout.__hash__",
+      "TensorMemoryScalesLayout.__post_init__",
+      "TensorMemoryScalesLayout._to_ir",
+      "TensorMemoryScalesLayout.mangle",
+      "TensorMemoryScalesLayout.__hash__",
+      "_TensorMemoryLinearLayout._to_ir",
+      "_TensorMemoryLinearLayout.mangle",
+      "_TensorMemoryLinearLayout.__hash__",
+      "tensor_memory_descriptor_type.__init__",
+      "tensor_memory_descriptor_type.to_ir",
+      "tensor_memory_descriptor_type._unflatten_ir",
+      "tensor_memory_descriptor_type._flatten_ir_types",
+      "tensor_memory_descriptor_type.__str__",
+      "tensor_memory_descriptor.__init__",
+      "tensor_memory_descriptor._set_name",
+      "tensor_memory_descriptor._flatten_ir",
+      "tensor_memory_descriptor.dtype",
+      "tensor_memory_descriptor.shape"
+    ]
+  },
+  "cached_at": "2026-09-09T04:26:05.600518+08:00"
+}

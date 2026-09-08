@@ -171,6 +171,50 @@
       "interface_changes": "该提交增强了 Autotuner 的健壮性。1) 在 __init__ 中验证 `key`、`reset_to_zero` 和 `restore_value` 参数，确保它们引用的参数名存在于内核签名中，避免了因拼写错误导致调优配置被静默忽略的问题。2) 在 __init__ 中初始化 `restore_copies` 为空字典，修复了用户提供 pre_hook 时可能引发的 AttributeError。新增的两个单元测试覆盖了这两种情况。该变更属于行为强化，正常情况下不应破坏现有代码，除非用户有意传递无效的参数名。",
       "change_summary": "[AUTOTUNER] Reject autotune name lists that are not kernel arguments (#11602)",
       "ascend_impact": true
+    },
+    "86a4c4c37d2321907ab6070216c897991be8dc27": {
+      "date": "2026-09-08",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "这是一个对 TritonGPU IR 中 `DotOperandEncodingAttr`（点操作数编码属性）lowering 的**重构**。其核心目的是消除 `DotOperandEncodingAttr::toLinearLayout` 中对具体 MMA 编码类型（如 `AMDMfmaEncodingAttr`, `AMDWmmaEncodingAttr`, `NvidiaMmaEncodingAttr`）的硬编码 switch或 if-else 分支，改为通过已有的 `MmaEncodingTrait` 接口进行动态分发。这增强了布局系统的可扩展性，使得未来新增的、不在核心库中的 MMA 布局（例如第三方后端的布局）可以通过实现 `MmaEncodingTrait` 接口而无需修改核心代码即可获得点操作数 lowering 支持。此次重构仅涉及声明和实现位置的调整，不改变现有 NVIDIA/AMD 布局的行为，属于低风险的架构优化。",
+      "change_summary": "[LAYOUTS] Dispatch dot-operand lowering through `MmaEncodingTrait` (#11025)",
+      "ascend_impact": false
+    },
+    "f9f66876174b589677497cf3123f953ca0b45e7e": {
+      "date": "2026-09-08",
+      "affected_modules": [
+        "include/triton/Dialect/Triton/",
+        "lib/Dialect/Triton/",
+        "python/src/ir.cc",
+        "python/triton/language/semantic.py",
+        "python/triton/runtime/interpreter.py"
+      ],
+      "affected_interfaces": [
+        "include/triton/Dialect/Triton/",
+        "lib/Dialect/Triton/",
+        "python/src/ir.cc",
+        "python/triton/language/semantic.py",
+        "python/triton/runtime/interpreter.py"
+      ],
+      "interface_changes": "这是一个大型**功能**变更，旨在为内存操作提供更丰富、更精确的缓存策略。它在 IR 层引入了一个新的属性 `TT_CachePolicyAttr` 来统一替代原先独立的 `cache_modifier` 和 `eviction_policy` 字段。同时，还引入了 NVIDIA 专有的 `TTNG_CachePolicyAttr`，支持 L1、L2 分离策略和更细粒度的控制（如 L1 eviction priority, L2 prefetch size）。该改动覆盖了 Triton 和 Gluon 的前端、Python builder 接口以及多个 C++ lowering 路径，重构规模较大，共涉及 67 个文件。尽管新增了兼容层（`buildCachePolicy`），但是对 IR 的破坏性变更和广泛的影响，属于**高风险**变更。",
+      "change_summary": "[Gluon] Expose rich cache policies (#11482)",
+      "ascend_impact": true
+    },
+    "3a07c157b18cf9672babe9a7e682ea992ebce038": {
+      "date": "2026-09-08",
+      "affected_modules": [
+        "python/triton/compiler/code_generator.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/compiler/code_generator.py"
+      ],
+      "interface_changes": "这是一个针对代码生成器（`CodeGenerator`）的 **bugfix**。它修复了列表推导式中使用带元组的迭代目标（如 `[a + b for a, b in ((1, 2), (3, 4))]`）时的编译错误。原实现仅处理单一变量名的推导式（`comp.target.id`），遇到元组目标会崩溃。修复方式是将赋值目标校验逻辑抽取为共享方法 `_sanitize_target_value`，并递归地用于处理元组目标，同时保留了 constexpr 叶子节点，避免在静态断言中出错。对于标量迭代项、数量不匹配或带星号的目标，现在会产生更明确的编译错误消息。这是一个纯前端语言特性的修复，提升了语言对 Python 语法的支持度。",
+      "change_summary": "[FRONTEND] Support tuple targets in list comprehensions (#11076)",
+      "ascend_impact": false
     }
   }
 }

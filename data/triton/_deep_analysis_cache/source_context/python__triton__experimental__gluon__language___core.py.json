@@ -1,0 +1,27 @@
+{
+  "content_hash": "3bfc0ae3de091a01",
+  "analysis": {
+    "interface_summary": "定义 3 个类；定义 60 个函数",
+    "key_interfaces": [
+      "distributed_type",
+      "shared_memory_descriptor_type",
+      "shared_memory_descriptor",
+      "distributed_type.__init__",
+      "distributed_type.to_ir",
+      "distributed_type.mangle",
+      "distributed_type.with_element_ty",
+      "distributed_type.__eq__",
+      "shared_memory_descriptor_type.__init__",
+      "shared_memory_descriptor_type.to_ir",
+      "shared_memory_descriptor_type._unflatten_ir",
+      "shared_memory_descriptor_type._flatten_ir_types",
+      "shared_memory_descriptor_type.__str__",
+      "shared_memory_descriptor.__init__",
+      "shared_memory_descriptor._set_name",
+      "shared_memory_descriptor._flatten_ir",
+      "shared_memory_descriptor.dtype",
+      "shared_memory_descriptor.shape"
+    ]
+  },
+  "cached_at": "2026-09-09T04:26:05.587944+08:00"
+}

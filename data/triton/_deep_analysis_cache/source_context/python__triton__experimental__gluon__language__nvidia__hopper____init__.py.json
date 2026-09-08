@@ -1,0 +1,19 @@
+{
+  "content_hash": "5c65825bb8e87773",
+  "analysis": {
+    "interface_summary": "定义 2 个类；定义 15 个函数",
+    "key_interfaces": [
+      "warpgroup_mma_accumulator_type",
+      "warpgroup_mma_accumulator",
+      "warpgroup_mma_accumulator_type.__init__",
+      "warpgroup_mma_accumulator_type.__str__",
+      "warpgroup_mma_accumulator_type._unflatten_ir",
+      "warpgroup_mma_accumulator_type._flatten_ir_types",
+      "warpgroup_mma_accumulator_type.__eq__",
+      "warpgroup_mma_accumulator.__init__",
+      "warpgroup_mma_accumulator._set_name",
+      "warpgroup_mma_accumulator._flatten_ir"
+    ]
+  },
+  "cached_at": "2026-09-09T04:26:05.602658+08:00"
+}

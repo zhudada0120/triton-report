@@ -1,0 +1,15 @@
+{
+  "content_hash": "f7996bcc6250a657",
+  "analysis": {
+    "interface_summary": "定义 1 个类；定义 22 个函数",
+    "key_interfaces": [
+      "Translator",
+      "Translator.__post_init__",
+      "Translator.visit_Attribute",
+      "Translator.canonicalize_call",
+      "Translator.uncanonicalize_call",
+      "Translator.visit_Call"
+    ]
+  },
+  "cached_at": "2026-09-09T04:26:05.705847+08:00"
+}

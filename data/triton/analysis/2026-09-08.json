@@ -1,0 +1,177 @@
+{
+  "date": "2026-09-08",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-09-09T04:24:34.065181+08:00",
+  "daily_summary": "当日变更围绕代码质量、功能增强和硬件适配展开。具体包括：修复 FPSan（浮点Sanitizer）在多 CTA（协作线程数组）场景下 TMEM 模拟的同步问题；重构 `DotOperandEncodingAttr` 的 LinearLayout 转换逻辑，使其通过 `MmaEncodingTrait` 接口分发而非硬编码类型，增强了扩展性；为 Gluon 和 Triton 前端引入更丰富的缓存策略（`CachePolicy`），支持更细粒度的 L1/L2 缓存控制；修复列表推导中元组目标（如 `[a + b for a, b in ...]`）的代码生成问题；为 AMD 的 Gluon 后端注册缺失的 `gluon-infer-coalesced-encodings` pass；以及让 AMD 的 RDNA 架构使用其专属的 `DecomposeAMDScaledBlocked` 路径来处理 scaled dot，以获得更好的性能和正确性。",
+  "ascend_impact_summary": "当日多数变更聚焦于 NVIDIA/AMD 特定代码或通用优化，对 asc-nd 后端的影响主要为中低风险。其中，`f9f668` 对 `tt.load/store` 等内存操作 IR 属性（`cache`/`evict` → `cachePolicy`）的破坏性重构，会直接影响 Ascend 后端对上游 TTIR 的解析；`86a4c4` 和 `3a07c1` 的改动则需要 Ascend 进行适配性检查，确保其自有的 lowering 逻辑或代码生成器能兼容。其余有关 NVIDIA FPSan、AMD 后端以及列表推导的修复，对 Ascend 无直接影响。",
+  "commits": [
+    {
+      "sha": "c1ee5d751cea1017fcbaa4d8ab2752068d480933",
+      "comment": "这是一个针对 FPSan（浮点Sanitizer）在 Blackwell 架构（TCGen5 MMA）下多 CTA 协作时产生错误结果的 bugfix。核心问题是 FPSan 在模拟 TMEM（Tensor Memory） MMA 操作时，会将累加器元素分配到不同的 CTA，但原有的代码仅针对 `hasTwoCTAMma`（两 CTA MMA）场景进行同步，对于独立的单 CTA MMA 或者更多 CTA 的场景考虑不足。修复将判断条件从 `hasTwoCTAMma` 改为更通用的 `ttg::lookupNumCTAs(module) > 1`，即只要存在多个 CTA，就使用共享的 scratch memory 并进行 cluster barrier 同步，确保 TMEM 模拟时数据在所有 CTA 间可见。同时，将相关的变量名从 `twoCTAs` 改为语义更清晰的 `sharedClusterState`。该修复正确识别了问题根源，并进行了相应重构和回归测试。风险较低，主要涉及 NVIDIA 专属的 FPSan 功能。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "fpsan",
+        "nvidia",
+        "tmem"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[FPSan] Share emulation scratch across all CTAs (#11627)\n\nFPSan MMA emulation can assign accumulator elements to different CTAs\nthan TMEM loads. Share scratch and synchronize across all CTAs in\nmulti-CTA kernels, including independent single-CTA MMAs.\n\nAdds a regression for 1, 2, and 4 CTAs. Verified the multi-CTA failures\non main and passing results with the fix on GB200; the FPSan suite and\ncompiler tests also pass."
+    },
+    {
+      "sha": "86a4c4c37d2321907ab6070216c897991be8dc27",
+      "comment": "这是一个对 TritonGPU IR 中 `DotOperandEncodingAttr`（点操作数编码属性）lowering 的**重构**。其核心目的是消除 `DotOperandEncodingAttr::toLinearLayout` 中对具体 MMA 编码类型（如 `AMDMfmaEncodingAttr`, `AMDWmmaEncodingAttr`, `NvidiaMmaEncodingAttr`）的硬编码 switch或 if-else 分支，改为通过已有的 `MmaEncodingTrait` 接口进行动态分发。这增强了布局系统的可扩展性，使得未来新增的、不在核心库中的 MMA 布局（例如第三方后端的布局）可以通过实现 `MmaEncodingTrait` 接口而无需修改核心代码即可获得点操作数 lowering 支持。此次重构仅涉及声明和实现位置的调整，不改变现有 NVIDIA/AMD 布局的行为，属于低风险的架构优化。",
+      "tags": [
+        "refactor",
+        "low-risk",
+        "ttgir",
+        "layout",
+        "linear-layout",
+        "extension-point"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "`DotOperandEncodingAttr::toLinearLayout` 的lowering逻辑从硬编码类型判断改为通过 `MmaEncodingTrait` 接口分发。虽然 triton-ascend 不走 TTGIR 的 LinearLayout 转换，但此改动扩展了 `MmaEncodingTrait` 接口（新增 `dotOperandToLinearLayout`），并调整了 `DotOperandEncodingAttr::verify` 和 `DotOperandEncodingAttr::toLinearLayout` 的实现。如果 Ascend 后端在自有 lowerning 中构建或处理 `DotOperandEncodingAttr`（例如用于自定义 的MMA-like操作），可能需要确保其 parent layout 实现 `MmaEncodingTrait` 或适配新的验证/转换逻辑。",
+        "testing": "上游新增了 `unittest/Dialect/TritonGPU/LinearLayoutConversionsTest.cpp` 来测试通过接口分发到外部 layout 的场景。Ascend 需要检查其代码是否有类似场景需要增加相应测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[LAYOUTS] Dispatch dot-operand lowering through `MmaEncodingTrait` (#11025)\n\n### Problem\n\n`DotOperandEncodingAttr::toLinearLayout` lowers a dot operand by\nenumerating the concrete parent encodings it knows about:\n`dyn_cast<Blocked/MFMA/WMMA>`, otherwise assume NVIDIA.\n\nA parent on neither list breaks: the lowering reaches\n`cast<NvidiaMmaEncodingAttr>`.\nYet every MMA parent already implements `MmaEncodingTrait`.\nThis switch re-encodes information the layouts already carry, and adding\na layout means editing a switch instead of implementing an interface.\n\n### Change\n\nDispatch through that existing abstraction:\n\n- dot-operand lowering asks the parent through `MmaEncodingTrait`\n\nThis is the path the in-tree MMA backends already take - it just stops\nthe call site from naming concrete types.\nA layout core doesn't enumerate (a future in-tree encoding, or an\nout-of-tree one) then lowers without touching the switch.\n\n### Compatibility & tests\n\nNo behavior change for existing layouts: the NVIDIA/AMD paths run the\nsame code as before. A unit test drives the seam with a stand-in layout:\nthe dot-operand test runs end-to-end through the interface dispatch.\n\n# New contributor declaration\n\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how)\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "f9f66876174b589677497cf3123f953ca0b45e7e",
+      "comment": "这是一个大型**功能**变更，旨在为内存操作提供更丰富、更精确的缓存策略。它在 IR 层引入了一个新的属性 `TT_CachePolicyAttr` 来统一替代原先独立的 `cache_modifier` 和 `eviction_policy` 字段。同时，还引入了 NVIDIA 专有的 `TTNG_CachePolicyAttr`，支持 L1、L2 分离策略和更细粒度的控制（如 L1 eviction priority, L2 prefetch size）。该改动覆盖了 Triton 和 Gluon 的前端、Python builder 接口以及多个 C++ lowering 路径，重构规模较大，共涉及 67 个文件。尽管新增了兼容层（`buildCachePolicy`），但是对 IR 的破坏性变更和广泛的影响，属于**高风险**变更。",
+      "tags": [
+        "feature",
+        "high-risk",
+        "refactor",
+        "cache-policy",
+        "ir",
+        "gluon",
+        "nvidia"
+      ],
+      "ascend_impact": {
+        "ascend_affected": true,
+        "functionality": "核心 IR 的 `tt.load`, `tt.store`, `tt.descriptor_load` 等操作的属性被破坏性重构，原先的 `cache` 和 `evict` 字段被替换为可选的 `cachePolicy` 属性，其类型为新的 `AnyAttr`。这直接改变了 Ascend 后端编译流程中 `python/triton/compiler/compiler.py` 和 `python/src/ir.cc` 的接口。Ascend 的后端代码，特别是 `third_party/ascend/backend/__init__.py` 中对 `compiler.parse` 的 monkey-patch，以及任何在 C++/Python 层直接解析或生成该 IR 属性的代码（如 `TritonOpBuilder::create_load`），都需要相应更新以处理新的 `cachePolicy` 属性，否则可能导致解析失败或编译错误。",
+        "testing": "需要更新 Ascend 后端的相关单元测试和集成测试，以适配编译生成的 TTIR 中缓存属性格式的变化。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/",
+          "third_party/ascend/python/test/"
+        ]
+      },
+      "message": "[Gluon] Expose rich cache policies (#11482)\n\nThis makes a few changes:\n- In the backed, I refactor the `cache_modifier, eviction_policy` pair\ninto a `TT_CachePolicyAttr` and plumb it throughout the code base\n- I also add a `TTNG_CachePolicyAttr` which has additional fields\nincluding separate L1 and L2 policies, support for fractional policies,\nand configurable L2 prefetch size.\n- In gluon I expose a `cache_policy` argument to load and store, and\nallow the user to construct either generic or nvidia-specific cache\npolicies.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "include/triton/Dialect/Triton/",
+          "lib/Dialect/Triton/",
+          "python/src/ir.cc",
+          "python/triton/language/semantic.py",
+          "python/triton/runtime/interpreter.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": true,
+        "affected_interfaces": [
+          "TritonOpBuilder (python/src/ir.h, python/src/ir.cc) — create_load/create_store/create_masked_load/create_masked_store/create_descriptor_load signature change (cache/evict -> cachePolicy Attribute) + new get_cache_policy; inherited by AscendNPUIROpBuilder",
+          "InterpreterBuilder (python/triton/runtime/interpreter.py) — create_load/create_store/create_masked_load/create_masked_store/create_descriptor_load signature change + new get_cache_policy; inherited by AscendInterpreterBuilder",
+          "TritonSemantic (python/triton/language/semantic.py) — load/store/descriptor_load signature change (cache_modifier/eviction_policy strings -> _CachePolicy object)",
+          "TTIR LoadOp/StoreOp/DescriptorLoadOp (include/triton/Dialect/Triton/IR/TritonOps.td, lib/Dialect/Triton/IR/Ops.cpp) — getCache()/getEvict() removed, replaced by getCachePolicyAttr(); builders changed",
+          "TT_CacheModifierAttr / TT_CachePolicyAttr (include/triton/Dialect/Triton/IR/TritonAttrDefs.td, TritonAttrEnums.td) — attribute registration moved"
+        ],
+        "adaptation_effort": "medium",
+        "adaptation_guide": "The commit removes the `cacheModifier`/`evictionPolicy` pair from tt.load/tt.store/tt.descriptor_load and replaces it with a single `cachePolicy` attribute (TT_CachePolicyAttr). triton-ascend consumes TTIR directly via its TritonToLinalg lowering and reuses the Triton frontend/builder, so it must adapt:\n1. C++ passes under third_party/ascend/lib/ (Conversion/TritonToLinalg and any Ascend transforms): replace every `LoadOp::getCache()`/`getEvict()` and `StoreOp::getCache()`/`getEvict()` (and DescriptorLoadOp equivalents) with `getCachePolicyAttr()`, and reinterpret via `mlir::triton::CachePolicyAttr` (`getCacheModifier()`/`getEvictionPolicy()`) when the policy values are actually needed. Update all `LoadOp::build`/`StoreOp::build`/`DescriptorLoadOp::build` call sites to the new builder signatures (no cache/evict args; optional cachePolicy attr). Note the new op verifiers reject cache modifiers invalid for load vs store (LoadOp: NONE/CA/CG/CS/CV; StoreOp: NONE/WB/CG/CS/WT), so any Ascend code that synthesizes non-default cache modifiers must ensure the chosen modifier passes verification.\n2. third_party/ascend/ascend_ir.cc (AscendNPUIROpBuilder : TritonOpBuilder): if it overrides or calls create_load/create_store/create_masked_load/create_masked_store/create_descriptor_load, update to the new single-`cachePolicy` (Attribute) signature; add/adopt the new `get_cache_policy(cache_modifier, eviction_policy)` builder helper for constructing cache policies.\n3. third_party/ascend/backend/ascend_interpreter.py (AscendInterpreterBuilder : InterpreterBuilder): update any overrides/calls of create_load/create_store/create_masked_load/create_masked_store/create_descriptor_load to the new signatures (cache_policy positional arg, dropping separate cache_modifier/eviction_policy), and add a get_cache_policy stub if needed.\n4. Rebase the Ascend patch (third_party/ascend/patch/triton-ascend-*.patch) which modifies python/triton/language/semantic.py and python/triton/runtime/interpreter.py — these files are changed by this commit, so the patch hunks will conflict and must be regenerated. If Ascend monkey-patches TritonSemantic.load/store/descriptor_load (it only patches dot today, but the patch file touches semantic.py), sync the new `cache_policy`-object signatures.\n5. Update any Ascend lit tests (third_party/ascend/unittest/**/Conversion and *.mlir) that print/parse `cacheModifier = ... evictionPolicy = ...` on tt.load/tt.store/tt.descriptor_load — the assembly format now emits `cachePolicy` in the attr-dict or omits it entirely.",
+        "risk": "medium — This is a core TTIR dialect ABI break (attribute removal + builder/getter signature changes) in the platform-independent layer that Ascend's TritonToLinalg lowering directly consumes. Omitted getter/builder updates will surface as C++ compile/link errors (easy to locate but blocking), and stale semantic/interpreter signatures will surface as Python TypeError at runtime. The main subtle risk is behavioral: the new load/store verifiers reject cache modifiers that were previously accepted as performance hints, so Ascend kernels/passes emitting non-default modifiers could start failing verification. Ascend does not implement TargetInfoBase or consume the NVIDIA/AMD-specific TritonGPU->LLVM lowering (the bulk of the diff), so the blast radius is limited to the shared frontend/builder/interpreter/TTIR seams."
+      }
+    },
+    {
+      "sha": "3a07c157b18cf9672babe9a7e682ea992ebce038",
+      "comment": "这是一个针对代码生成器（`CodeGenerator`）的 **bugfix**。它修复了列表推导式中使用带元组的迭代目标（如 `[a + b for a, b in ((1, 2), (3, 4))]`）时的编译错误。原实现仅处理单一变量名的推导式（`comp.target.id`），遇到元组目标会崩溃。修复方式是将赋值目标校验逻辑抽取为共享方法 `_sanitize_target_value`，并递归地用于处理元组目标，同时保留了 constexpr 叶子节点，避免在静态断言中出错。对于标量迭代项、数量不匹配或带星号的目标，现在会产生更明确的编译错误消息。这是一个纯前端语言特性的修复，提升了语言对 Python 语法的支持度。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "frontend",
+        "code-generator",
+        "python"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "`python/triton/compiler/code_generator.py` 是 Ascend 后端复用的核心文件，此次修改重构了 `visit_Assign` 和新增了 `_sanitize_target_value` 辅助方法。此改动改变了赋值目标校验的逻辑，使得在列表推导式中可以使用元组解包。由于 Ascend 复用此代码生成器，其 kernel 的编译行为会随之改变，但这是对Python语法支持的改进，应该不会造成功能退化，但需确保新逻辑不影响 Ascend 中已支持的赋值和推导式用法。",
+        "testing": "上游新增了针对列表推导式元组目标的测试。Ascend 可考虑在 `third_party/ascend/python/test/` 中增加对元组推导式在 `npu` 目标下的端到端或编译测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[FRONTEND] Support tuple targets in list comprehensions (#11076)\n\nFixes #11073.\n\n`CodeGenerator.visit_ListComp` bound each iteration value by reading\n`comp.target.id`, which only works for a single-name target. A\ncomprehension\nsuch as:\n\n```python\n[a + b for a, b in ((1, 2), (3, 4))]\n```\n\ntherefore failed during AST lowering instead of unpacking each tuple.\n\nThis moves assignment-target validation into a shared `CodeGenerator`\nmethod\nand routes tuple comprehension targets through the existing recursive\n`assignTarget` path. The two callers share structure validation but\nretain\ntheir required leaf behavior:\n\n```text\nordinary assignment ─┐\n                     ├─ validate tuple shape/arity/starred targets ─┬─ sanitize assignment leaves\ntuple comprehension ─┘                                             └─ preserve constexpr leaves\n                                                                       │\n                                                                       └─ recursively bind names\n```\n\nPreserving comprehension leaves matters because converting them to\ntensors\nwould make a constexpr comprehension fail later `tl.static_assert`\nchecks.\nScalar iteration items now produce a controlled `cannot unpack`\ndiagnostic\ninstead of an internal `.values` attribute error.\n\nParser-only regression tests cover simple and nested tuple targets,\narity\nmismatch, scalar items, starred targets, and the existing ordinary tuple\nassignment diagnostics.\n\nThis change is behaviorally distinct from #11023, which addresses\ncomprehension scope restoration, but it touches the same lowering and\nshould\nbe rebased or coordinated with that PR.\n\n## Regression proof\n\nThe pre-fix visitor reads `comp.target.id`; that path is unchanged at\nthis\nbranch's base `56f47b51df09`. A tuple target therefore fails before\nbinding\neither name:\n\n```text\nAttributeError: 'Tuple' object has no attribute 'id'\n```\n\nA scalar iteration item also falls through to an internal `.values`\nattribute\nerror rather than an unpacking diagnostic. With this change, simple and\nnested\ntuple targets retain constexpr leaves and evaluate to the asserted\nvalues;\narity, scalar-item, and starred-target cases reach controlled\ncompilation\ndiagnostics.\n\n## Test plan\n\n```text\npython3 -m pytest -s --tb=short \\\n  python/test/unit/language/test_frontend.py \\\n  -k 'list_comprehension_tuple_target or tuple_assignment'\n\n11 passed, 63 deselected\n```\n\n# New contributor declaration\n\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/compiler/code_generator.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "08486e7575e3c965f5ab888e69e983fc1ed869e7",
+      "comment": "这是一个针对 AMD 后端的 **bugfix**。它修复了 AMD 平台上使用 Gluon 的 `CoalescedLayout()` 时编译器崩溃的问题。根本原因是 `gluon-infer-coalesced-encodings` 这个pass 被注册在了 NVIDIA 后端的 pipeline 中，而 AMD 后端的 pipeline 缺少这个 pass，导致 `#gluon.coalesced_encoding` 无法被解析和消除，最终进入不处理该编码的 TritonGPU 代码并触发断言。修复方式是在 AMD 后端的 Gluon pipeline（`add_gluon_to_ttgir`）中加入了这个缺失的 pass。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "amd",
+        "gluon",
+        "pipeline"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][Gluon] Register gluon-infer-coalesced-encodings in pipeline (#11599)\n\n`ttgl.CoalescedLayout()` crashes the compiler on the AMD backend:\n\n```\npython: lib/Dialect/TritonGPU/IR/LinearLayoutConversions.cpp:\n  TritonGPUDialect::toLinearLayout(...): Assertion `0 && \"unknown layout\"' failed.\n```\n\n#8604 added the layout along with `gluon-infer-coalesced-encodings`, the\npass that resolves `#gluon.coalesced_encoding`, but registered it only\nin the NVIDIA `gluon_to_ttgir`. On AMD the encoding survives into\n`gluon-resolve-auto-encodings` and reaches TritonGPU code that can't\nhandle it."
+    },
+    {
+      "sha": "07f19f148e065e527d72160c7782bade58f9fc82",
+      "comment": "这是一个 AMD 后端的 **性能优化** 和 **行为改进**。它将 RDNA 架构（RDNA3, RDNA4等）上对 scaled dot（`tt.dot_scaled`）的处理路径从通用的 `DecomposeScaledBlocked` 切换至更高效的 `DecomposeAMDScaledBlocked`。新路径的优势在于使用 round-to-zero 而非 round-to-nearest-even 进行 f32->bf16 下转换，这对于某些算子的软件模拟能显著提升性能。此改动主要影响 AMDGPU 后端，对 ARM等其他后端无影响。",
+      "tags": [
+        "performance",
+        "low-risk",
+        "amd",
+        "rdna",
+        "matmul",
+        "scaled-dot"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Use AMD dot_scaled decomposition path for RDNA (#11629)\n\nRDNA architectures are currently still using the generic\nttg::DecomposeScaledBlocked path. By using the DecomposeAMDScaledBlocked\npath instead, we mostly follow the software implementation for targets\nlike CDNA3 with the exception of the optimized upcast8xMxfp4_SW\nimplementation.\nThe main benefit of this is that we use round-to-zero in the f32 -> bf16\ndowncast instead of the round-to-nearest-even of the arith.mulf in the\ngeneric path which is significantly more expensive.\n\nCo-authored-by: Paul Trojahn <paul.trojahn@amd.com>"
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

@@ -1,0 +1,12 @@
+{
+  "content_hash": "94cc4d32ca8676d1",
+  "analysis": {
+    "interface_summary": "定义 1 个类；定义 7 个函数",
+    "key_interfaces": [
+      "MatchError",
+      "MatchError.__init__",
+      "MatchError.__str__"
+    ]
+  },
+  "cached_at": "2026-09-09T04:26:05.579877+08:00"
+}

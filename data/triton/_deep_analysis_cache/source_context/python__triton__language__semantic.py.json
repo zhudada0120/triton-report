@@ -1,0 +1,17 @@
+{
+  "content_hash": "217110bd89e335bc",
+  "analysis": {
+    "interface_summary": "定义 2 个类；定义 118 个函数",
+    "key_interfaces": [
+      "IncompatibleTypeErrorImpl",
+      "TritonSemantic",
+      "IncompatibleTypeErrorImpl.__init__",
+      "TritonSemantic.__init__",
+      "TritonSemantic.program_id",
+      "TritonSemantic.num_programs",
+      "TritonSemantic.integer_promote_impl",
+      "TritonSemantic.computation_type_impl"
+    ]
+  },
+  "cached_at": "2026-09-09T04:26:05.674583+08:00"
+}

@@ -1,0 +1,15 @@
+{
+  "content_hash": "3b0365fa18e36e83",
+  "analysis": {
+    "interface_summary": "定义 2 个类；定义 12 个函数",
+    "key_interfaces": [
+      "LinearLayout",
+      "BlockedLayout",
+      "LinearLayout.__init__",
+      "LinearLayout.__str__",
+      "BlockedLayout.__init__",
+      "BlockedLayout.__str__"
+    ]
+  },
+  "cached_at": "2026-09-09T04:26:05.723232+08:00"
+}

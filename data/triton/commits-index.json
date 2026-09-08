@@ -1,4 +1,28 @@
 {
+  "c1ee5d751cea1017fcbaa4d8ab2752068d480933": {
+    "date": "2026-09-08",
+    "msg": "[FPSan] Share emulation scratch across all CTAs (#11627)"
+  },
+  "86a4c4c37d2321907ab6070216c897991be8dc27": {
+    "date": "2026-09-08",
+    "msg": "[LAYOUTS] Dispatch dot-operand lowering through `MmaEncodingTrait` (#11025)"
+  },
+  "f9f66876174b589677497cf3123f953ca0b45e7e": {
+    "date": "2026-09-08",
+    "msg": "[Gluon] Expose rich cache policies (#11482)"
+  },
+  "3a07c157b18cf9672babe9a7e682ea992ebce038": {
+    "date": "2026-09-08",
+    "msg": "[FRONTEND] Support tuple targets in list comprehensions (#11076)"
+  },
+  "08486e7575e3c965f5ab888e69e983fc1ed869e7": {
+    "date": "2026-09-08",
+    "msg": "[AMD][Gluon] Register gluon-infer-coalesced-encodings in pipeline (#11599)"
+  },
+  "07f19f148e065e527d72160c7782bade58f9fc82": {
+    "date": "2026-09-08",
+    "msg": "[AMD] Use AMD dot_scaled decomposition path for RDNA (#11629)"
+  },
   "20601f01437c2e84b1a6b845ce7219b1d66c606a": {
     "date": "2026-09-07",
     "msg": "[AccelerateMatmul] Forward lhs/rhs_k_pack flags when transposing a scaled dot (#11613)"
