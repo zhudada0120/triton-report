@@ -1,0 +1,514 @@
+{
+  "date": "2026-09-09",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-09-10T04:08:49.579906+08:00",
+  "daily_summary": "当日变更主要聚焦于 NVIDIA/AMD 后端的代码生成正确性与性能优化，以及 Gluon 前端与内核库（triton_kernels）的增强。具体包括：修复 cp.async 因 ptxas bug 导致的错误缓存策略生成（#11660）、修复 AMD 共享内存地址生成中的寄存器基重叠问题（#11566）、回退两个导致 Gluon/编译器崩溃的布局转换优化（#11658, #11659）、扩展 warp shuffle 以支持广播拷贝（#11646）、调整原子操作的内存屏障插入位置（#11650, #11591，为新增的 atomic_load/store 操作做准备）、新增原生 FP4 到 BF16/FP16 的转换指令（#11647）、修正 Blackwell FP4 归约的共享内存预算（#11648），以及为 triton_kernels 的 MX 缩放布局增加符号维度和广播指针支持（#11618, #11619）。此外还包括构建路径更新和 ConSan 对拷贝完成跟踪的增强。",
+  "ascend_impact_summary": "当日多个 commit 对 triton-ascend 有功能性影响。最关键的是 cbd1e7（新增 atomic_load/store ops），它在语言前端（TritonSemantic）、IR（TT_AtomicLoadOp/AtomicStoreOp）、builder 绑定（python/src/ir.cc）以及解释器（interpreter.py）层面均有变更，且被 Ascend 的 monkey-patch 和 TritonToLinalg 转换所依赖。af85fc（atomic_load fence 修复）修改了通用 codegen 接口 insertAtomicOrderingBarriers 和 finalizeAtomicResults，虽然此路径被 Ascend 跳过，但有间接影响。此外，多个 commit 修改了 LinearLayout 的核心工具函数（invertAndComposeBlockLocal 重命名为 invertAndComposeLocal，接口语义变化），这些函数被所有后端共享，但 Ascend 是否会因此受影响取决于其内部对相关 Layout 分析 API 的复用程度。其余大多数 commit 为平台特定（NVIDIA/AMD）或纯内核库变更，不影响 Ascend 后端。",
+  "commits": [
+    {
+      "sha": "9c17b7a4e7b75a07e8906d2ddbb0758119fee3aa",
+      "comment": "该提交针对 NVIDIA 的 cp.async PTX 指令生成，禁用了由于 ptxas bug 而可能导致错误编译的小数 L2 缓存策略（fractional cache policy）。它修改了代码生成逻辑，忽略详细的 L2 缓存策略而仅使用预取大小，并调整了测试用例以反映新的、更保守的行为。这是一个 NVIDIA 专属的代码生成修复，旨在提高特定硬件上的稳定性。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "nvidia-backend",
+        "codegen"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Backend] Ignore fractional cache policy for cp.async + respect cache modifier (#11660)\n\nptxas has some bugs triggered by fractional cache policies for cp.async.\nFor now lets just ignore them."
+    },
+    {
+      "sha": "88a4999482d5e195c830d953501b00b3b3c64fba",
+      "comment": "修复 AMD 后端在生成共享内存地址时关于加法偏移（additive strides）的逻辑错误。当寄存器基址与外部 XOR 偏移中的寄存器基址重叠时，错误的优化可能导致不正确的地址计算。修复方案是计算所有非加法寄存器基址的传递闭包，确保重叠的基址不会被错误地转为加法偏移。该修复位于核心的 LayoutUtils.cpp 工具中，并补充了 C++ 单元测试。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "amd-backend",
+        "shared-memory",
+        "layout"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Fix additive strides for overlapping register bases (#11566)\n\n<!---\nThe core Triton is a small number of people, and we receive many PRs\n(thank\nyou!).  To help us review your code more quickly, **if you are a new\ncontributor (less than 3 PRs merged) we ask that you complete the\nfollowing\ntasks and include the filled-out checklist in your PR description.**\n\nComplete the following tasks before sending your PR, and replace `[ ]`\nwith\n`[x]` to indicate you have done them.\n-->\n\nFix shared-memory address generation when a register basis classified as\nadditive overlaps another register basis retained in the outer XOR\noffset.\n\nThis issue was exposed by the following RDNA3 and RDNA3.5 Gluon\nfailures:\n\n\ntest_lowerings.py::test_convert_warp_local_layouts[dst_layout11-src_layout4-float16-32-32]\n\ntest_lowerings.py::test_convert_warp_local_layouts[dst_layout11-src_layout4-float16-64-64]\n\ntest_lowerings.py::test_convert_warp_local_layouts[dst_layout12-src_layout7-float16-32-32]\n\ntest_lowerings.py::test_convert_warp_local_layouts[dst_layout11-src_layout7-float16-64-64]\n\ntest_lowerings.py::test_convert_warp_local_layouts[dst_layout12-src_layout7-float16-64-64]\n\nactionAdditiveStrides previously checked register bases only against\naddress bits contributed by lanes, warps, blocks, and affine offsets.\n\nA register basis could initially appear safe for addition but overlap\nanother basis subsequently classified as part of the outer XOR offset.\nFor the failing RDNA3 layout, the relevant register bases were 0x510 and\n0x100:\n\n  0x510 & 0x100 = 0x100\n\n  The old classification could therefore transform:\n\n  (base XOR 0x510) XOR 0x100\n\n  into:\n\n  (base XOR 0x510) + 0x100\n\n  These expressions are not equivalent because the operands overlap:\n  \n  0x510 XOR 0x100 = 0x410\n  0x510 +   0x100 = 0x610\n\n  This produced incorrect LDS addresses.\n\nIn this fix I compute the transitive closure of non-additive register\nbases before partitioning them, starting with bits contributed by lanes,\nwarps, blocks, and affine offsets and mark any overlapping register\nbasis as non-additive then add all bits from that basis to the\nouter-address masks and repeat until no additional bases become\nnon-additive.\n\nThis keeps overlapping register contributions in the outer XOR\ncalculation while preserving the additive optimization for disjoint\nbases.\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)"
+    },
+    {
+      "sha": "661a3467163312f7f52d295b53caa9458b657e0d",
+      "comment": "此提交回退了 PR #10796（'Infer slice encodings for reshapes'），原因是该变更对 Gluon 代码存在破坏性（bc-breaking）。回退修改了 TritonGPU 方言中 reshape 操作的编码推断逻辑，将其恢复为旧行为，并相应更新了多个 lit 测试和 Gluon 前端测试。",
+      "tags": [
+        "refactor",
+        "bugfix",
+        "high-risk",
+        "gluon",
+        "layout-inference",
+        "revert"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Revert \"Infer slice encodings for reshapes\" (#11658)\n\nReverts triton-lang/triton#10796 as it is bc-breaking for gluon code\n\nConsider this minimal reproducer:\n```python\n@gluon.jit\ndef repro():\n    layout: gl.constexpr = gl.DistributedLinearLayout(\n        reg_bases=[[0, 1], [0, 2], [0, 4], [0, 8], [0, 16], [0, 32]],\n        lane_bases=[[1, 0], [2, 0], [4, 0], [8, 0], [16, 0]],\n        warp_bases=[[32, 0], [64, 0]],\n        block_bases=[],\n        shape=[128, 64],\n    )\n    x = gl.full([128, 64], 1, gl.float32, layout)\n    before = gl.max(x, 1)\n    after = gl.max(x.reshape([128, 1, 64]).reshape([128, 64]), 1)\n    gl.maximum(before, after)  # ValueError: Layout mismatch in broadcast.\n```\n\nBefore the change, both paths infer the same linear layout but after the\nreshape doesn't round-trip and gives a sliced layout."
+    },
+    {
+      "sha": "27548a698478ce0c7b219ca30a41fa147a5fc144",
+      "comment": "此提交回退了 PR #11538（'Try reusing existing layout rematerialization before hoisting layout conversion'），因为该变更在内部工作负载中导致编译器崩溃。回退修改了 RemoveLayoutConversions 转换中的一个条件判断，并删除了相关的测试用例。这是对一个不稳定优化尝试的快速回退，以确保编译器稳定性。",
+      "tags": [
+        "bugfix",
+        "high-risk",
+        "compiler-pass",
+        "layout-conversion",
+        "revert"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Revert \"[TRITONGPU] Try reusing existing layout rematerialization before hoisting layout conversion \" (#11659)\n\nReverts triton-lang/triton#11538 which causes a compiler crash in\ninternal workloads.\n\n<details>\n<summary>\nMinified reproducer\n\n</summary>\n\n```mlir\n// Run: triton-opt reduced.mlir --tritongpu-remove-layout-conversions -o /dev/null\n#blocked = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>\n#blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [4, 8], warpsPerCTA = [1, 4], order = [0, 1]}>\n#blocked2 = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [16, 2], warpsPerCTA = [4, 1], order = [1, 0]}>\n#blocked3 = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>\n#blocked4 = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [32, 1], warpsPerCTA = [4, 1], order = [1, 0]}>\n#blocked5 = #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [8, 4], warpsPerCTA = [4, 1], order = [1, 0]}>\n#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [4, 1], instrShape = [16, 8]}>\nmodule attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32, ttg.target = \"cuda:80\", \"ttg.threads-per-warp\" = 32 : i32, \"ttng.two-ctas\" = false} {\n  tt.func public @repro(%arg0: i32, %arg1: !tt.ptr<i64>, %arg2: !tt.ptr<i64> {tt.divisibility = 16 : i32}, %arg3: !tt.ptr<f16> {tt.divisibility = 16 : i32}, %arg4: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %arg5: i32 {tt.divisibility = 16 : i32}, %arg6: i32 {tt.divisibility = 16 : i32}) attributes {noinline = false} {\n    %cst = arith.constant dense<1.000000e+30> : tensor<32xf32, #ttg.slice<{dim = 0, parent = #blocked}>>\n    %cst_0 = arith.constant dense<-1.000000e+30> : tensor<32xf32, #ttg.slice<{dim = 0, parent = #blocked1}>>\n    %cst_1 = arith.constant dense<-5.000000e-01> : tensor<32xf32, #ttg.slice<{dim = 0, parent = #blocked1}>>\n    %cst_2 = arith.constant dense<-32> : tensor<128x32xi32, #blocked>\n    %cst_3 = arith.constant dense<16> : tensor<128x32xi32, #blocked>\n    %cst_4 = arith.constant dense<31> : tensor<128xi32, #ttg.slice<{dim = 1, parent = #blocked}>>\n    %cst_5 = arith.constant dense<1.000000e+30> : tensor<128x32xf32, #blocked>\n    %cst_6 = arith.constant dense<5.000000e-01> : tensor<128x1xf32, #blocked2>\n    %cst_7 = arith.constant dense<32> : tensor<128xi32, #ttg.slice<{dim = 1, parent = #blocked}>>\n    %cst_8 = arith.constant dense<4294967295> : tensor<128xi64, #blocked3>\n    %cst_9 = arith.constant dense<16> : tensor<128x1xi64, #blocked4>\n    %cst_10 = arith.constant dense<0> : tensor<128xi64, #blocked3>\n    %c1023_i32 = arith.constant 1023 : i32\n    %c127_i32 = arith.constant 127 : i32\n    %c8_i32 = arith.constant 8 : i32\n    %cst_11 = arith.constant dense<0.000000e+00> : tensor<128x16xf16, #blocked2>\n    %c512_i64 = arith.constant 512 : i64\n    %c4_i64 = arith.constant 4 : i64\n    %c1_i32 = arith.constant 1 : i32\n    %c1024_i32 = arith.constant 1024 : i32\n    %c128_i32 = arith.constant 128 : i32\n    %cst_12 = arith.constant dense<16> : tensor<32x1xi32, #blocked5>\n    %0 = tt.get_program_id y : i32\n    %1 = arith.extsi %0 : i32 to i64\n    %2 = tt.get_program_id x : i32\n    %3 = tt.get_num_programs x : i32\n    %4 = arith.muli %1, %c512_i64 : i64\n    %5 = tt.addptr %arg4, %4 : !tt.ptr<f32>, i64\n    %6 = arith.muli %1, %c4_i64 : i64\n    %7 = tt.addptr %arg1, %6 : !tt.ptr<i64>, i64\n    %8 = tt.load %7 : !tt.ptr<i64>\n    %9 = arith.trunci %8 : i64 to i32\n    %10 = tt.addptr %7, %c1_i32 : !tt.ptr<i64>, i32\n    %11 = tt.load %10 : !tt.ptr<i64>\n    %12 = arith.trunci %11 : i64 to i32\n    %13 = tt.addptr %arg2, %9 : !tt.ptr<i64>, i32\n    %14 = arith.addi %12, %c127_i32 : i32\n    %15 = arith.divsi %14, %c128_i32 : i32\n    %16 = arith.minsi %3, %15 : i32\n    %17 = arith.cmpi slt, %12, %arg5 : i32\n    cf.cond_br %17, ^bb1, ^bb2\n  ^bb1:  // pred: ^bb0\n    tt.return\n  ^bb2:  // pred: ^bb0\n    %18 = arith.cmpi sge, %2, %16 : i32\n    cf.cond_br %18, ^bb3, ^bb4\n  ^bb3:  // pred: ^bb2\n    tt.return\n  ^bb4:  // pred: ^bb2\n    %19 = tt.make_range {end = 32 : i32, start = 0 : i32} : tensor<32xi32, #ttg.slice<{dim = 0, parent = #blocked1}>>\n    %20 = tt.make_range {end = 32 : i32, start = 0 : i32} : tensor<32xi32, #ttg.slice<{dim = 1, parent = #blocked5}>>\n    %21 = tt.expand_dims %20 {axis = 1 : i32} : tensor<32xi32, #ttg.slice<{dim = 1, parent = #blocked5}>> -> tensor<32x1xi32, #blocked5>\n    %22 = arith.muli %21, %cst_12 : tensor<32x1xi32, #blocked5>\n    %23 = tt.splat %5 : !tt.ptr<f32> -> tensor<32x1x!tt.ptr<f32>, #blocked5>\n    %24 = tt.addptr %23, %22 : tensor<32x1x!tt.ptr<f32>, #blocked5>, tensor<32x1xi32, #blocked5>\n    %25 = tt.make_range {end = 16 : i32, start = 0 : i32} : tensor<16xi32, #ttg.slice<{dim = 0, parent = #blocked5}>>\n    %26 = tt.make_range {end = 16 : i32, start = 0 : i32} : tensor<16xi32, #ttg.slice<{dim = 0, parent = #blocked2}>>\n    %27 = tt.expand_dims %25 {axis = 0 : i32} : tensor<16xi32, #ttg.slice<{dim = 0, parent = #blocked5}>> -> tensor<1x16xi32, #blocked5>\n    %28 = tt.expand_dims %26 {axis = 0 : i32} : tensor<16xi32, #ttg.slice<{dim = 0, parent = #blocked2}>> -> tensor<1x16xi32, #blocked2>\n    %29 = tt.broadcast %24 : tensor<32x1x!tt.ptr<f32>, #blocked5> -> tensor<32x16x!tt.ptr<f32>, #blocked5>\n    %30 = tt.broadcast %27 : tensor<1x16xi32, #blocked5> -> tensor<32x16xi32, #blocked5>\n    %31 = tt.addptr %29, %30 : tensor<32x16x!tt.ptr<f32>, #blocked5>, tensor<32x16xi32, #blocked5>\n    %32 = tt.load %31 : tensor<32x16x!tt.ptr<f32>, #blocked5>\n    %33 = arith.addi %12, %c1023_i32 : i32\n    %34 = arith.divsi %33, %c1024_i32 : i32\n    %35 = arith.truncf %32 : tensor<32x16xf32, #blocked5> to tensor<32x16xf16, #blocked5>\n    %36 = tt.trans %35 {order = array<i32: 1, 0>} : tensor<32x16xf16, #blocked5> -> tensor<16x32xf16, #blocked1>\n    %37 = arith.extf %36 : tensor<16x32xf16, #blocked1> to tensor<16x32xf32, #blocked1>\n    %38 = arith.mulf %37, %37 : tensor<16x32xf32, #blocked1>\n    %39 = \"tt.reduce\"(%38) <{axis = 0 : i32}> ({\n    ^bb0(%arg7: f32, %arg8: f32):\n      %45 = arith.addf %arg7, %arg8 : f32\n      tt.reduce.return %45 : f32\n    }) : (tensor<16x32xf32, #blocked1>) -> tensor<32xf32, #ttg.slice<{dim = 0, parent = #blocked1}>>\n    %40 = arith.mulf %39, %cst_1 : tensor<32xf32, #ttg.slice<{dim = 0, parent = #blocked1}>>\n    %41 = tt.splat %arg6 : i32 -> tensor<32xi32, #ttg.slice<{dim = 0, parent = #blocked1}>>\n    %42 = arith.cmpi slt, %19, %41 : tensor<32xi32, #ttg.slice<{dim = 0, parent = #blocked1}>>\n    %43 = arith.select %42, %40, %cst_0 : tensor<32xi1, #ttg.slice<{dim = 0, parent = #blocked1}>>, tensor<32xf32, #ttg.slice<{dim = 0, parent = #blocked1}>>\n    %44 = scf.for %arg7 = %2 to %34 step %16 iter_args(%arg8 = %cst) -> (tensor<32xf32, #ttg.slice<{dim = 0, parent = #blocked}>>)  : i32 {\n      %45 = arith.muli %arg7, %c8_i32 : i32\n      %46 = arith.addi %arg7, %c1_i32 : i32\n      %47 = arith.muli %46, %c8_i32 : i32\n      %48 = arith.minsi %15, %47 : i32\n      %49 = scf.for %arg9 = %45 to %48 step %c1_i32 iter_args(%arg10 = %arg8) -> (tensor<32xf32, #ttg.slice<{dim = 0, parent = #blocked}>>)  : i32 {\n        %50 = arith.muli %arg9, %c128_i32 : i32\n        %51 = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32, #ttg.slice<{dim = 1, parent = #blocked}>>\n        %52 = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32, #ttg.slice<{dim = 1, parent = #blocked2}>>\n        %53 = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32, #blocked3>\n        %54 = tt.splat %50 : i32 -> tensor<128xi32, #ttg.slice<{dim = 1, parent = #blocked}>>\n        %55 = tt.splat %50 : i32 -> tensor<128xi32, #ttg.slice<{dim = 1, parent = #blocked2}>>\n        %56 = tt.splat %50 : i32 -> tensor<128xi32, #blocked3>\n        %57 = arith.addi %54, %51 : tensor<128xi32, #ttg.slice<{dim = 1, parent = #blocked}>>\n        %58 = arith.addi %55, %52 : tensor<128xi32, #ttg.slice<{dim = 1, parent = #blocked2}>>\n        %59 = arith.addi %56, %53 : tensor<128xi32, #blocked3>\n        %60 = tt.splat %12 : i32 -> tensor<128xi32, #ttg.slice<{dim = 1, parent = #blocked}>>\n        %61 = tt.splat %12 : i32 -> tensor<128xi32, #ttg.slice<{dim = 1, parent = #blocked2}>>\n        %62 = tt.splat %12 : i32 -> tensor<128xi32, #blocked3>\n        %63 = arith.cmpi slt, %57, %60 : tensor<128xi32, #ttg.slice<{dim = 1, parent = #blocked}>>\n        %64 = arith.cmpi slt, %58, %61 : tensor<128xi32, #ttg.slice<{dim = 1, parent = #blocked2}>>\n        %65 = arith.cmpi slt, %59, %62 : tensor<128xi32, #blocked3>\n        %66 = tt.splat %13 : !tt.ptr<i64> -> tensor<128x!tt.ptr<i64>, #blocked3>\n        %67 = tt.addptr %66, %59 : tensor<128x!tt.ptr<i64>, #blocked3>, tensor<128xi32, #blocked3>\n        %68 = tt.load %67, %65, %cst_10 : tensor<128x!tt.ptr<i64>, #blocked3>\n        %69 = arith.andi %68, %cst_8 : tensor<128xi64, #blocked3>\n        %70 = tt.expand_dims %64 {axis = 1 : i32} : tensor<128xi1, #ttg.slice<{dim = 1, parent = #blocked2}>> -> tensor<128x1xi1, #blocked2>\n        %71 = ttg.convert_layout %69 : tensor<128xi64, #blocked3> -> tensor<128xi64, #ttg.slice<{dim = 1, parent = #blocked4}>>\n        %72 = tt.expand_dims %71 {axis = 1 : i32} : tensor<128xi64, #ttg.slice<{dim = 1, parent = #blocked4}>> -> tensor<128x1xi64, #blocked4>\n        %73 = arith.muli %72, %cst_9 : tensor<128x1xi64, #blocked4>\n        %74 = tt.splat %arg3 : !tt.ptr<f16> -> tensor<128x1x!tt.ptr<f16>, #blocked4>\n        %75 = tt.addptr %74, %73 : tensor<128x1x!tt.ptr<f16>, #blocked4>, tensor<128x1xi64, #blocked4>\n        %76 = ttg.convert_layout %75 : tensor<128x1x!tt.ptr<f16>, #blocked4> -> tensor<128x1x!tt.ptr<f16>, #blocked2>\n        %77 = tt.broadcast %76 : tensor<128x1x!tt.ptr<f16>, #blocked2> -> tensor<128x16x!tt.ptr<f16>, #blocked2>\n        %78 = tt.broadcast %28 : tensor<1x16xi32, #blocked2> -> tensor<128x16xi32, #blocked2>\n        %79 = tt.addptr %77, %78 : tensor<128x16x!tt.ptr<f16>, #blocked2>, tensor<128x16xi32, #blocked2>\n        %80 = tt.broadcast %70 : tensor<128x1xi1, #blocked2> -> tensor<128x16xi1, #blocked2>\n        %81 = tt.load %79, %80, %cst_11 : tensor<128x16x!tt.ptr<f16>, #blocked2>\n        %82 = tt.expand_dims %43 {axis = 0 : i32} : tensor<32xf32, #ttg.slice<{dim = 0, parent = #blocked1}>> -> tensor<1x32xf32, #blocked1>\n        %83 = ttg.convert_layout %82 : tensor<1x32xf32, #blocked1> -> tensor<1x32xf32, #blocked>\n        %84 = tt.broadcast %83 : tensor<1x32xf32, #blocked> -> tensor<128x32xf32, #blocked>\n        %85 = ttg.convert_layout %84 : tensor<128x32xf32, #blocked> -> tensor<128x32xf32, #mma>\n        %86 = ttg.convert_layout %81 : tensor<128x16xf16, #blocked2> -> tensor<128x16xf16, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>>\n        %87 = ttg.convert_layout %36 : tensor<16x32xf16, #blocked1> -> tensor<16x32xf16, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>>\n        %88 = tt.dot %86, %87, %85, inputPrecision = tf32x3 : tensor<128x16xf16, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>> * tensor<16x32xf16, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>> -> tensor<128x32xf32, #mma>\n        %89 = ttg.convert_layout %88 : tensor<128x32xf32, #mma> -> tensor<128x32xf32, #blocked>\n        %90 = tt.make_range {end = 32 : i32, start = 0 : i32} : tensor<32xi32, #ttg.slice<{dim = 0, parent = #blocked}>>\n        %91 = tt.expand_dims %90 {axis = 0 : i32} : tensor<32xi32, #ttg.slice<{dim = 0, parent = #blocked}>> -> tensor<1x32xi32, #blocked>\n        %92 = tt.bitcast %89 : tensor<128x32xf32, #blocked> -> tensor<128x32xi32, #blocked>\n        %93 = arith.addi %92, %cst_3 : tensor<128x32xi32, #blocked>\n        %94 = arith.andi %93, %cst_2 : tensor<128x32xi32, #blocked>\n        %95 = tt.broadcast %91 : tensor<1x32xi32, #blocked> -> tensor<128x32xi32, #blocked>\n        %96 = arith.ori %94, %95 : tensor<128x32xi32, #blocked>\n        %97 = tt.bitcast %96 : tensor<128x32xi32, #blocked> -> tensor<128x32xf32, #blocked>\n        %98 = \"tt.reduce\"(%97) <{axis = 1 : i32}> ({\n        ^bb0(%arg11: f32, %arg12: f32):\n          %122 = arith.maxnumf %arg11, %arg12 : f32\n          tt.reduce.return %122 : f32\n        }) : (tensor<128x32xf32, #blocked>) -> tensor<128xf32, #ttg.slice<{dim = 1, parent = #blocked}>>\n        %99 = tt.bitcast %98 : tensor<128xf32, #ttg.slice<{dim = 1, parent = #blocked}>> -> tensor<128xi32, #ttg.slice<{dim = 1, parent = #blocked}>>\n        %100 = arith.andi %99, %cst_4 : tensor<128xi32, #ttg.slice<{dim = 1, parent = #blocked}>>\n        %101 = arith.select %63, %100, %cst_7 : tensor<128xi1, #ttg.slice<{dim = 1, parent = #blocked}>>, tensor<128xi32, #ttg.slice<{dim = 1, parent = #blocked}>>\n        %102 = ttg.convert_layout %101 : tensor<128xi32, #ttg.slice<{dim = 1, parent = #blocked}>> -> tensor<128xi32, #blocked3>\n        %103 = arith.extsi %102 : tensor<128xi32, #blocked3> to tensor<128xi64, #blocked3>\n        %104 = arith.extsi %arg0 : i32 to i64\n        %105 = tt.splat %104 : i64 -> tensor<128xi64, #blocked3>\n        %106 = arith.shli %103, %105 : tensor<128xi64, #blocked3>\n        %107 = arith.ori %68, %106 : tensor<128xi64, #blocked3>\n        tt.store %67, %107, %65 : tensor<128x!tt.ptr<i64>, #blocked3>\n        %108 = arith.extf %81 : tensor<128x16xf16, #blocked2> to tensor<128x16xf32, #blocked2>\n        %109 = arith.mulf %108, %108 : tensor<128x16xf32, #blocked2>\n        %110 = \"tt.reduce\"(%109) <{axis = 1 : i32}> ({\n        ^bb0(%arg11: f32, %arg12: f32):\n          %122 = arith.addf %arg11, %arg12 : f32\n          tt.reduce.return %122 : f32\n        }) : (tensor<128x16xf32, #blocked2>) -> tensor<128xf32, #ttg.slice<{dim = 1, parent = #blocked2}>>\n        %111 = tt.expand_dims %110 {axis = 1 : i32} : tensor<128xf32, #ttg.slice<{dim = 1, parent = #blocked2}>> -> tensor<128x1xf32, #blocked2>\n        %112 = arith.mulf %111, %cst_6 : tensor<128x1xf32, #blocked2>\n        %113 = ttg.convert_layout %112 : tensor<128x1xf32, #blocked2> -> tensor<128x1xf32, #blocked>\n        %114 = tt.broadcast %113 : tensor<128x1xf32, #blocked> -> tensor<128x32xf32, #blocked>\n        %115 = arith.subf %89, %114 : tensor<128x32xf32, #blocked>\n        %116 = tt.expand_dims %101 {axis = 1 : i32} : tensor<128xi32, #ttg.slice<{dim = 1, parent = #blocked}>> -> tensor<128x1xi32, #blocked>\n        %117 = tt.broadcast %116 : tensor<128x1xi32, #blocked> -> tensor<128x32xi32, #blocked>\n        %118 = arith.cmpi eq, %117, %95 : tensor<128x32xi32, #blocked>\n        %119 = arith.select %118, %115, %cst_5 : tensor<128x32xi1, #blocked>, tensor<128x32xf32, #blocked>\n        %120 = \"tt.reduce\"(%119) <{axis = 0 : i32}> ({\n        ^bb0(%arg11: f32, %arg12: f32):\n          %122 = arith.minnumf %arg11, %arg12 : f32\n          tt.reduce.return %122 : f32\n        }) : (tensor<128x32xf32, #blocked>) -> tensor<32xf32, #ttg.slice<{dim = 0, parent = #blocked}>>\n        %121 = arith.minnumf %120, %arg10 : tensor<32xf32, #ttg.slice<{dim = 0, parent = #blocked}>>\n        scf.yield %121 : tensor<32xf32, #ttg.slice<{dim = 0, parent = #blocked}>>\n      }\n      scf.yield %49 : tensor<32xf32, #ttg.slice<{dim = 0, parent = #blocked}>>\n    }\n    tt.return\n  }\n}\n\n```\n</details>"
+    },
+    {
+      "sha": "2074a1b8a5cd283ce584f8ebca825c4f0b215fc1",
+      "comment": "此提交将 PR #10647 中提出的支持广播拷贝的 warp shuffle 推广到更一般的场景，允许在源布局（warp 或 block 维度）存在广播时使用 warp shuffle 进行布局转换。实现上重构了 DecomposedWarpConversion 结构，用更通用的 shuffleMap 替代了原先的 pLane，以理清 shuffle 阶段的数据来源，并扩展了算法以处理广播维度。同时在 NVIDIA 和 AMD 的 ConvertLayoutOpToLLVM 中应用了此优化。",
+      "tags": [
+        "performance",
+        "feature",
+        "high-risk",
+        "layout-conversion",
+        "warp-shuffle",
+        "nvidia-backend",
+        "amd-backend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Allow warpshuffles when warp and block can read off broadcasted copies (#11646)\n\nThis is the warp shuffle generalisation of\nhttps://github.com/triton-lang/triton/pull/10647\n\nThe idea here is to not consider the warp / block bases during the\ntransposition algorithm and then patch-up the result during the\nlowering, same as in #10647"
+    },
+    {
+      "sha": "af85fc304db54b8dd0d96e9889fa1ed9dd47f4e7",
+      "comment": "该提交是 #11591 的后续修复，重新调整了 atomic_load 操作中内存屏障（fence）与线程屏障（barrier）的插入顺序。修复的重点是确保在 acquire fence（语义为获取）之后、加载结果被线程广播/同步之前，有正确的同步屏障。这保证了 acquire 操作的顺序语义。相关代码位于通用的 TritonGPUToLLVM 工具函数中。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "atomic-ops",
+        "memory-ordering",
+        "codegen"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "此提交修改了位于 include/triton/Conversion/TritonGPUToLLVM/Utility.h 和 lib/Conversion/TritonGPUToLLVM/Utility.cpp 中的通用接口：insertAtomicOrderingBarriers 的返回类型从 Operation* 改为 void，并新增了 emitPredicated 辅助函数。同时，finalizeTensorAtomicResults 被重命名并泛化为 finalizeAtomicResults，其参数列表也有所调整（移除了 RankedTensorType）。虽然 triton-ascend 的核心 lowering 不经过 TritonGPUToLLVM，但这些函数在解释器（InterpreterBuilder）中有对应实现，且此类接口变更可能会被上游同步到其他需要实现原子操作语义的后端或工具中。因此，尽管当前 Ascend 路径可能不直接调用，该变更仍需被跟踪，以防未来代码复用或补丁冲突。",
+        "testing": "上游对 test/Conversion/atomic_ldst.mlir 等测试文件进行了大量修改，以匹配新的屏障位置。triton-ascend 虽然没有与之对应的 GPU-to-LLVM 测试，但可能需要检查其内部的解释器测试或任何可能引用这些重命名/签名修改的函数。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Backend] Fix atomic_load fence placement (#11650)\n\nFollow up to\nhttps://github.com/triton-lang/triton/pull/11591#discussion_r3963370683",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "2480bf9257649c29af6369bf881599858a6b2626",
+      "comment": "更新内部 CUDA 工具的下载缓存路径。此变更为构建系统调整，从三方的 oaiartifacts 路径切换到 nvidia-cuda-redist 路径，以跟随 NVIDIA 官方的发布结构。",
+      "tags": [
+        "chore",
+        "ci",
+        "build-system"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Build] Update internal cuda download path (#11649)"
+    },
+    {
+      "sha": "2e42978004ccbd70d4cdf57699ed9ec813c65e69",
+      "comment": "修正了持久化 Blackwell FP4 矩阵乘法在融合归约阶段对共享内存需求的估算。新逻辑考虑了 warp 数、累积器转换暂存、缓冲区复用以及同步/对齐开销，算法上通过更新 compute_num_stages 函数的预算计算来实现。此修复解决了因低估共享内存导致启动失败，或因高估而降低流水线阶段数的问题。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "low-risk",
+        "triton-kernels",
+        "shared-memory"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[KERNELS] Correct shared-memory budgeting for FP4 reduction epilogues (#11648)\n\n## Summary\n\nPersistent Blackwell FP4 matmul can underestimate the shared memory\nneeded to split FP32 accumulators during fused reductions, selecting too\nmany pipeline stages and causing launch failures. It can also\ndouble-count reused scratch buffers and select too few stages.\n\nThis change makes stage selection account for the selected warp count,\naccumulator-conversion scratch, buffer reuse, and\nsynchronization/alignment overhead. It applies to FP4 input/output\nepilogues with a pairwise reduction and an eight-byte effective item\nsize. Other epilogue configurations retain their existing heuristic.\n\nThe epilogue size hint is documented as bytes per reduced output\nelement, and the NVFP4 reduction test setup supplies the corresponding\nFP32 footprint.\n\nMeasured on NVIDIA GB300 with Triton 3.8.0. All counts are bytes.\n“Real” is compiler-reported allocation; “Before” and “After” are budget\nestimates.\nTile dimensions, stage count, and the eight-byte epilogue hint are held\nfixed.\n\nShared-memory limit: **232,448 bytes per block**.\n\n| Tile M×N×K | Warps / subtiles / stages | Real | Before | After |\nBefore → After decision |\n|---|---|---:|---:|---:|---|\n| 32×256×256 | 4 / 1 / 5 | 239,760 | 248,360 | 240,504 | Reject → Reject\n|\n| 128×256×256 | 8 / 2 / 2 | 241,724 | 194,576 | 241,968 | Accept →\nReject |\n| 128×256×256 | 4 / 1 / 3 | 231,516 | 317,464 | 231,752 | Reject →\nAccept |\n| 128×256×256 | 4 / 4 / 3 | 231,516 | 216,088 | 231,752 | Accept →\nAccept |\n\nThe first row uses unswizzled activation scales; the remaining rows use\nswizzled scales.\nThe corrected estimates exceed actual allocation by 236–744 bytes.\n\n## Lines Changed\n\n| Type | Added | Removed | Net |\n| --- | ---: | ---: | ---: |\n| Tests | 153 | 5 | +148 |\n| Core Logic | 23 | 1 | +22 |\n| AutoGenerated | 0 | 0 | 0 |\n| Total | 176 | 6 | +170 |\n\n## Reviewers Guide\n\nWithin `python/triton_kernels/`:\n\n- `triton_kernels/matmul_details/opt_flags_details/opt_flags_nvidia.py`:\nshared-memory budget correction.\n- `triton_kernels/matmul_details/opt_flags.py`: propagation of the\nselected warp count.\n- `triton_kernels/matmul.py`: documentation of the epilogue size hint.\n- `tests/test_matmul_details/test_opt_flags_nvidia.py` and\n`tests/test_matmul.py`: regression coverage and corrected reduction size\nhints.\n\nNo file movements or generated files."
+    },
+    {
+      "sha": "d79fe6d666ff174a4a182ec157f7d760416b1977",
+      "comment": "为 NVIDIA Blackwell+ 硬件（compute capability 100+）新增原生 FP4 到 BF16/FP16 的内联汇编转换路径。此新路径利用 PTX 指令 cvt.rn.bf16x2.e2m1x2 和 cvt.rn.f16x2.e2m1x2，替代了之前的基于字节排列（prmt）的模拟实现。为使用该新指令，代码生成器增加了对 PTX 版本的检查。这是一个性能优化，旨在利用新硬件的指令集特性。",
+      "tags": [
+        "performance",
+        "feature",
+        "low-risk",
+        "nvidia-backend",
+        "fp4"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Add native upcast fp4 to bf16/f16 (#11647)\n\nAs per title"
+    },
+    {
+      "sha": "cbd1e7df8a58d3ddab53f84da23040b05a46cb7b",
+      "comment": "此提交在 Triton IR 中引入了两个新的原子操作：tt.atomic_load 和 tt.atomic_store。核心变更包括：1) 在 Triton IR 方言中定义 TT_AtomicLoadOp 和 TT_AtomicStoreOp 及相应的 verifier。2) 在语言前端（python/triton/language/`）提供`tl.atomic_load`和`tl.atomic_store`的 DSL 接口，并在语义层实现了相应的处理逻辑。3) 通过 GenericOpPattern 和 GenericOpPattern 添加了从 Triton 到 TritonGPU 的转换。4) 在 NVIDIA/AMD 的 TritonGPUToLLVM 转换中实现这两种操作的 lowering。5) 新增 GSan 插桩支持。6) 更新解释器以支持这些操作。7) 重构了原子类型的检查逻辑，使 load/store 与 read-modify-write 操作共享公共路径。",
+      "tags": [
+        "feature",
+        "high-risk",
+        "language-frontend",
+        "ir-definition",
+        "atomic-ops"
+      ],
+      "ascend_impact": {
+        "ascend_affected": true,
+        "functionality": "此提交在多个关键层面直接影响了必受影响路径：1) python/triton/language/semantic.py：TritonSemantic 接口新增了 atomic_load 和 atomic_store 方法，并重构了原子操作的类型检查为 _atomic_typechecking_impl 等。这会影响 triton-ascend 使用的 Triton 语言前端，Ascend 的 monkey-patch（_patched_dot 等）虽不直接涉及此处，但对语义层方法的任何调用路径变化都必须跟踪。2) include/triton/Dialect/Triton/ 和 lib/Dialect/Triton/：新增 TT_AtomicLoadOp 和 TT_AtomicStoreOp 操作和类型，这些是 Triton IR 的一部分。作为 TTIR 的消费者，triton-ascend 的 TritonToLinalg 转换必须支持这些新操作，否则在遇到包含 atomic_load/store 的 kernel 时会失败。3) python/src/ir.cc：TritonOpBuilder 新增了 create_atomic_load 和 create_atomic_store 方法。由于 AscendNPUIROpBuilder 继承自 TritonOpBuilder，该变更可能影响其构造，但新增加的方法本身不会破坏继承关系。4) python/triton/runtime/interpreter.py：InterpreterBuilder 新增了 create_atomic_load 和 create_atomic_store 方法，而 Ascend 的 AscendInterpreterBuilder 继承自 InterpreterBuilder，需要提供匹配的实现或确保其基础功能足够。",
+        "testing": "上游为 tl.atomic_load/store 在多个层面（包括 Python 前端测试 test_frontend.py 和 test_core.py、以及与 GSan 相关的测试）新增了大量测试。triton-ascend 需要在其测试套件中添加针对 tl.atomic_load/store 的端到端测试，以验证其 TritonToLinalg 转换和 NPU 代码生成能否正确处理这些新操作。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "pytest_ut/",
+          "test/Conversion/"
+        ]
+      },
+      "message": "[Language] Add dedicated atomic_{load,store} ops (#11591)",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "include/triton/Dialect/Triton/",
+          "lib/Dialect/Triton/",
+          "python/src/ir.cc",
+          "python/triton/language/semantic.py",
+          "python/triton/runtime/interpreter.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": true,
+        "affected_interfaces": [
+          "python/triton/language/semantic.py::TritonSemantic (atomic_load/atomic_store + _atomic_typechecking_impl refactor)",
+          "python/triton/language/core.py + python/triton/language/__init__.py (new tl.atomic_load/tl.atomic_store builtins)",
+          "python/src/ir.cc::TritonOpBuilder (create_atomic_load/create_atomic_store, cas/rmw refactor to triton::getPointeeType)",
+          "include/triton/Dialect/Triton/IR/TritonOps.td + lib/Dialect/Triton/IR/Ops.cpp (tt.atomic_load/tt.atomic_store ops + verifiers; AtomicOpInterface.getPtr)",
+          "python/triton/runtime/interpreter.py::InterpreterBuilder (create_atomic_load/create_atomic_store)",
+          "third_party/ascend/lib/TritonToLinalg/LoadStoreConverter.cpp + TritonToLinalgPass.cpp (new AtomicLoad/AtomicStore lowering patterns)"
+        ],
+        "adaptation_effort": "medium",
+        "adaptation_guide": "Port the frontend and add NPU lowering for the two new atomic ops. (1) python/triton/language/core.py: add atomic_load/atomic_store @builtin functions and the tensor.atomic_load/tensor.atomic_store stubs; export them in python/triton/language/__init__.py __all__. (2) python/triton/language/semantic.py (ascend keeps a heavily patched copy - note the div/mod fp16 promotion divergence): merge the refactor of atom_red_typechecking_impl into _atomic_typechecking_impl/_validate_atomic_rmw_element_type and add the atomic_load/atomic_store methods calling builder.create_atomic_load/create_atomic_store with acquire/release (default) semantics. (3) python/src/ir.cc (ascend uses pybind11, not nanobind): add create_atomic_load/create_atomic_store binding methods mirroring the existing create_atomic_cas/create_atomic_rmw; optionally adopt the getPointeeType refactor (triton::getPointeeType already exists in include/triton/Dialect/Triton/IR/Types.h). (4) python/triton/runtime/interpreter.py: add create_atomic_load/create_atomic_store delegating to create_masked_load/create_masked_store; verify AscendInterpreterBuilder (third_party/ascend/backend/ascend_interpreter.py) inherits them correctly (it only overrides create_atomic_rmw). (5) Include the new tt.atomic_load/tt.atomic_store ops in TritonOps.td (with AtomicOpInterface.getPtr) and their verifiers in lib/Dialect/Triton/IR/Ops.cpp. (6) The main work: add AtomicLoadConverter/AtomicStoreConverter in third_party/ascend/lib/TritonToLinalg/LoadStoreConverter.cpp and register them in TritonToLinalgPass.cpp alongside the existing AtomicRMWConverter/AtomicCASConverter, lowering to the hivm/hfusion atomic load/store primitives (atomic load = acquire load, atomic store = release store); also handle the indirect/unstructured path in third_party/ascend/lib/TritonToUnstructure/IndirectAtomicUtils if scalar/indirect atomics must be supported.",
+        "risk": "Additive commit; existing kernels (atomic_add/cas/rmw, load/store) are unaffected, so no regression in current behavior. Main risk: a user calling tl.atomic_load/tl.atomic_store will fail compilation in TritonToLinalg (unhandled tt.atomic_load/tt.atomic_store) until converters are added. The AtomicOpInterface.getPtr addition and ir.cc getPointeeType refactor are behavior-preserving, but the semantic.py _atomic_typechecking_impl refactor must be merged carefully against ascend's patched copy (div/mod promotion and dot monkey-patch) to avoid changing existing atomic type-checking semantics."
+      }
+    },
+    {
+      "sha": "ecb10d124702d609bccb46add8b8e229a0a18f2b",
+      "comment": "修复了 LinearLayout::invertAndCompose 方法中关于维度独立性的判断逻辑。原先的实现过于激进，未考虑其他输入维度的输出位，可能导致对非独立维度的错误处理。修复后，仅当维度在所有输出维度上不与其它输入维度重叠时才被判定为独立，并进行身份映射优化。这对于处理共享内存布局中的 block 维度和 GeneralLinearLayout 中的 register 维度尤为重要，因为它们可能与其他维度发生重叠。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "layout",
+        "linear-algebra"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Fix invertAndCompose for GeneralLinearLayout (#11645)\n\nBefore, we were being too aggressive when checking which dims were the\nsame. Now we handle correctly dims with swizzling as we could have in\n`block` in SHMEM layouts and `register` in `GeneralLinearLayout`s"
+    },
+    {
+      "sha": "e150f0d23cb5107441f7e3b69ead76b2bfaaf623",
+      "message": "[AMD][Gluon] Refresh language API docs (#11638)",
+      "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 triton-ascend。",
+      "tags": [
+        "chore"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "fa7819e8d7e75e5a4646f9e1e3c9eabcff020a4e",
+      "comment": "增强了并发消毒器（ConSan）对异步拷贝 (cp.async) 完成跟踪的能力。之前，当 cp.async 操作通过 mbarrier（如 cp.async.mbarrier.arrive）完成时，ConSan 会错误报告待处理访问。此提交通过：1) 记录与每个 barrier 阶段关联的拷贝操作；2) 将完成拷贝的发布者（copy issuer）保留至 barrier 到达；3) 在 barrier 完成时正确转移这些拷贝的可见性。修复后，ConSan 能区分已完成的拷贝和未完成的拷贝。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "high-risk",
+        "concurrency-sanitizer",
+        "async-copy",
+        "gsan"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ConSan] Track async-copy completion through mbarriers (#11626)\n\nConSan leaves `cp.async` writes pending when they complete through\n`cp.async.mbarrier.arrive` and `mbarrier.wait`. Valid kernels then fail\nwith `Pending access type: async_copy_global_to_shared`.\n\nTrack the copies associated with each barrier phase using the existing\nwrite-tracking state. Preserve the copy issuer when mixing `wait_group`\nwith barrier completion, transfer visibility only to the acquiring\nthread/CTA, and protect the barrier while its asynchronous completion is\noutstanding. New writes clear stale copy and barrier associations.\nExisting wait-group-only kernels keep their current bookkeeping.\n\nThe regressions cover valid waits, missing or wrong waits, copies issued\nafter arrival, buffer reuse, cross-CTA visibility, barrier invalidation,\nmixed TMA/copy completion, and mixed wait-group/barrier synchronization.\nThe shared helper cache distinguishes mask layouts without introducing\nshared-memory conversions after allocation.\n\nValidation at `2c01e5879ae65d1d00e99a0aafa26162b1726caf`, based on\nupstream `20e6ba864830b88f56b907fef85cab5097cf3892`:\n\n- Fresh AArch64 GCC 13.3 build with assertions and the pinned LLVM\n`b010a18d2b648cab83c83967ff26b8fde11acdc6` passed.\n- Both existing NVIDIA and AMD ConSan lit regression files passed.\n- On NVIDIA GB300 with a `ptxas` 13.3.69 override: 55 GPU cases passed,\n6 skipped, and 492 deselected in 60.74 seconds. The negative cases still\nreject invalid synchronization.\n\nGPU regression command:\n\n```sh\nTRITON_PTXAS_BLACKWELL_PATH=/path/to/ptxas-13.3.69 python -m pytest \\\n  python/test/gluon/test_consan.py -s -q --tb=short \\\n  -k 'async_copy or barrier_invalidate_requires_completion_wait or tma_multicast'\n```\n\nCo-authored-by: Chenkai Mao <288211239+chenkaim@users.noreply.github.com>"
+    },
+    {
+      "sha": "0a816c197098580eca68b408296c380bca18ea6e",
+      "comment": "将 AMD 后端 C++ 绑定（triton_amd.cc）中的 Python C API 调用从 PyUnicode_AsUTF8 改为 PyUnicode_AsUTF8AndSize，后者是一个更稳定且被推荐的 API。此变更属于代码现代化并增强了对 Python 内部变化的鲁棒性。",
+      "tags": [
+        "refactor",
+        "chore",
+        "low-risk",
+        "amd-backend",
+        "python-binding"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Use stable python API in `triton_amd.cc` (#11640)"
+    },
+    {
+      "sha": "27964b60119c9d3f1c3aa5ba8fc49173f04cabed",
+      "comment": "调整了 triton_kernels 库中 MX 缩放布局存储形状的查询逻辑，使其能支持符号化的整数维度（例如来自 SymPy 的表达式）。修改了 Blackwell、Hopper 和 CDNA4 的布局实现，将 `(x + align - 1)` 更改为 `x + (align - 1)`，并对于 CDNA4 使用整数 round-up 替代 `math.ceil`。这使得在运行时或逻辑尺寸已知之前就能安全地查询布局属性。",
+      "tags": [
+        "refactor",
+        "feature",
+        "low-risk",
+        "triton-kernels",
+        "symbolic-dimensions"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[KERNELS] Keep scale layout shape calculations in integer arithmetic (#11618)\n\nSupport symbolic integer dimensions when querying MX scale storage\nshapes on Blackwell, Hopper, and CDNA4.\n\n- Blackwell weight and activation layouts, and Hopper layouts, evaluate\n`alignment - 1` before adding it to a dimension. Symbolic callers\ntherefore need no subtraction operation.\n- CDNA4 uses integer round-up instead of floating-point `math.ceil`,\nallowing unresolved symbolic dimensions and preserving integer\nprecision.\n\nFor example, query the packed shapes before the logical dimensions are\nknown:\n\n```python\nfrom sympy import symbols\nfrom triton_kernels.tensor_details.layout import (\n    BlackwellActMXScaleLayout, BlackwellMXScaleLayout,\n    CDNA4MXScaleLayout, HopperMXScaleLayout,\n)\n\nm, n = symbols(\"m n\", integer=True, nonnegative=True)\nfor layout in (\n    BlackwellMXScaleLayout(), BlackwellActMXScaleLayout(None),\n    HopperMXScaleLayout(-1, 4), CDNA4MXScaleLayout(),\n):\n    print(layout.storage_shape([m, n], False))\n```\n\nOn `main`, the CDNA4 query raises `TypeError: Cannot convert expression\nto float`; here all queries return symbolic shapes. SymPy already\nsupports subtraction, so the Blackwell/Hopper change specifically\nbenefits symbolic integer types that lack it: `(m + 128) - 1` becomes `m\n+ 127`.\n\n| Files | Added | Removed | Net |\n| --- | ---: | ---: | ---: |\n| Tests | +14 | -0 | +14 |\n| Non-tests | +8 | -8 | +0 |\n| All | +22 | -8 | +14 |\n\n## Reviewer's guide\n\n- `python/triton_kernels/triton_kernels/tensor_details/layout_details`:\nkeep CDNA4 padding exact and fold constant padding offsets in Blackwell\nand Hopper.\n- `python/triton_kernels/tests`: query and resolve a small symbolic\nstorage shape for every affected layout through the public API.\n\n<!-- codex-thread: 01a0780a-af95-7c80-90ad-5ad47b8d9bb1 -->"
+    },
+    {
+      "sha": "1fc17492f4d0d57f542e579169add77887748bcc",
+      "comment": "为 triton_kernels 库新增了 MX scale 的指针辅助函数，允许 @triton.jit kernel 直接通过坐标（scalar, paired, broadcast）在压缩的 Blackwell 和 Hopper 存储中加载/存储指定 scale。实现了 swizzle_mx_scale_bw_ptr 和 swizzle_mx_scale_hopper_ptr 函数，并重构了现有 tile helper 以复用地址计算核心。返回的指针使用 64 位整数计算，以避免大偏移量时 int32 溢出。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "triton-kernels",
+        "layout"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[KERNELS] Add broadcastable MX scale pointer helpers (#11619)\n\nLet Triton kernels load or store selected MX scales directly in packed\nBlackwell and Hopper storage. The new pointer helpers accept scalar,\npaired, or broadcast coordinates, so callers can express operations like\n`scales[rows, cols]` without duplicating the packing arithmetic.\nExisting Blackwell tile helpers reuse the same address calculation.\n\nReturning pointers preserves 64-bit accumulation when individual index\nterms fit in `int32` but their sum does not.\n\nImport the layout helpers, then use them inside a `@triton.jit` kernel\nto read a column from Blackwell scales or paired coordinates from Hopper\nscales:\n\n```python\nimport triton.language as tl\nfrom triton_kernels.tensor_details.layout_details import blackwell_scale, hopper_scale\n\n# Inside the kernel:\n# Blackwell: logical scales[rows, 0].\nptrs = blackwell_scale.swizzle_mx_scale_bw_ptr(BWScales, 0, rows, 0, *bw_strides)\ncolumn = tl.load(ptrs)\n\n# Hopper: logical scales[rows, cols], with the four-warp scale layout.\nptrs = hopper_scale.swizzle_mx_scale_hopper_ptr(HopperScales, rows, cols, *hopper_strides, 4)\nselected = tl.load(ptrs)\n```\n\nThe inputs are already packed with `convert_layout`. For\n`BlackwellMXScaleLayout`, `bw_strides` is `packed.stride()[1:]`; for\n`HopperMXScaleLayout(-1, 4)`, `hopper_strides` is `packed.stride()`.\nEach result has the broadcast shape of its coordinates. These helper\nnames are absent on `main`. Literal coordinates also work in the\ninterpreter.\n\n| Files | Added | Removed | Net |\n| --- | ---: | ---: | ---: |\n| Tests | +58 | -0 | +58 |\n| Non-tests | +47 | -26 | +21 |\n| All | +105 | -26 | +79 |\n\n## Reviewer's guide\n\n- `python/triton_kernels/triton_kernels/tensor_details/layout_details`:\nadd the coordinate-based pointer primitives and share Blackwell address\ncalculation with the existing tile helpers.\n- `python/triton_kernels/tests/test_tensor_details`: demonstrate paired\nand literal-coordinate gathers, and preserve large pointer offsets with\n32-bit index terms.\n\n<!-- codex-thread: 01a0780a-af95-7c80-90ad-5ad47b8d9bb1 -->"
+    },
+    {
+      "sha": "8f80860f1974ffb388031bb29dd60641c910b133",
+      "comment": "这是一个bugfix，修复了FuseNestedLoops pass中的一个严重问题。该pass在证明内层循环的迭代次数为正时，错误地信任了函数中任意位置的llvm.assume，而忽略了支配关系。这可能导致在合法调用下生成错误的代码（例如m=4, n=0时循环体执行了不应执行的次数，并产生内存破坏）。修复方案是引入DominanceInfo检查，只信任支配循环的assume。这个修复是保守且正确的，符合LLVM自身的支配性假设检查逻辑。变更文件仅涉及lib/Dialect/TritonGPU/Transforms/FuseNestedLoops.cpp和测试文件，风险较低。",
+      "tags": [
+        "bugfix",
+        "correctness",
+        "TritonGPU",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。此提交修改的是TritonGPU方言中的FuseNestedLoops pass，该pass属于TritonGPU优化流程，而Ascend后端不使用TritonGPU，走的是TTIR到Linalg的转换路径。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TRITONGPU] FuseNestedLoops: only trust llvm.assume that dominates the loop (#11521)\n\n# [TRITONGPU] FuseNestedLoops: only trust `llvm.assume` that dominates\nthe loop\n\nFixes #11519.\n\n## Problem\n\n`tritongpu-fuse-nested-loops` proves an inner loop's trip count positive\nby\nmatching an `llvm.assume(ub > lb)` **anywhere in the function** — no\ndominance\nor reachability query. When the assume sits on a branch the loop nest is\nnot\nreachable from (e.g. a shape-specialization branch that asserts\nsomething\nabout another parameter), the pass marks the inner loop as must-execute\nand\ndrops the zero-trip version split it would otherwise emit.\n\nOn a fully legal call (`m=4, n=0` in the reproducer) the fused loop then\nruns\n`max(n, 1) * m` times: the kernel returns a value the source program\ncannot\nproduce, and stores into a buffer the source program never writes\n(silent\nmemory corruption, no diagnostic).\n\nThe assumption is not being weighed and found probable: it is being read\nfrom\na program point the code under transformation cannot reach, which no\nassumption-consuming analysis in LLVM or MLIR would consider valid\n(`llvm::isValidAssumeForContext` is dominance-gated).\n\n## Fix\n\nThread `DominanceInfo` (already held by the pass and used two functions\nabove\nin the same file) into `matchPositiveTripCount` and require the matched\n`llvm.assume` to **properly dominate the loop**. Otherwise fall through\nto the\nexisting version-split path, which is what every kernel without an\nin-scope\nassume gets today. The in-tree `_p_matmul` idiom (`tl.assume(loop_bound\n> 0)`\nimmediately before the loop) keeps the fast path — nothing is lost\nthere.\n\n## Verification\n\n- Reproduced on NVIDIA H200 (sm_90) with the reproducer from #11519:\nbefore\nthe fix `out[:4] = [4.0, 8.0, 12.0, 16.0]` and 256 spurious `sink`\nwrites;\nafter the fix `out` stays `[0.0, 0.0, 0.0, 0.0]` and `sink` is\nuntouched.\n- The structural half (no GPU): before the fix the emitted LLVM IR for\nthe\nassume kernel contains no zero-trip test (`icmp eq i32 %4, 0` absent);\nafter\n  the fix it is present, matching the assume-free control kernel.\n- Lit test `test/TritonGPU/fuse-nested-loops.mlir`: new\n`@assume_not_dominating_loop`\ncase asserts the zero-trip guard (`scf.if (ub == 0)`) is still emitted\nand no\n  `arith.constant true` must-execute guard appears.\n\n## Tests\n\n- [x] `/test` for `lit` tests\n- [ ] `/python/test` for end-to-end tests\n\n## New contributor declaration\n\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`\n  (the `expand-yaml-anchors` hook was skipped: it only applies to\n`.github/workflows/integration-tests.yml` and needs a network fetch of\n`yq`).\n\n---------\n\nCo-authored-by: LiRunGuo <runguo.ai@gmail.com>"
+    },
+    {
+      "sha": "e3ae1c42f7c42581c7e499083e70069149971954",
+      "comment": "这是一个重要的并发安全修复。LLVM的全局命令行选项（cl::opt）在多线程编译时被无保护地读写，AMD的LLD链接也可能重置选项注册表。该提交引入了ScopedLLVMOptions和ExclusiveLLVMOptionAccess两个RAII类，集中管理LLVM选项的作用域和互斥访问。同时将AMD的expert scheduling模式从全局选项迁移到每个函数的LLVM属性上，以减少对全局选项的依赖。这个改动影响所有使用LLVM后端的Triton编译路径，确保并发编译的隔离性。需要注意的一点是新增了llvm.attach_datalayout的flags参数，调用方需要同步更新。",
+      "tags": [
+        "concurrency",
+        "refactor",
+        "safety",
+        "high-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无直接影响。此提交主要修改LLVM代码生成路径，属于NVIDIA和AMD后端的范围。虽然python/src/llvm.cc中的附加数据布局签名从`attach_datalayout(mod, triple, proc, features)`变为`attach_datalayout(mod, triple, proc, features, flags)`，但它不会破坏Ascend，因为triton-ascend通过自己的TTIR到Linalg路径编译，不使用LLVM后端。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Make LLVM command-line option usage thread-safe (#11567)\n\nLLVM command-line options are process-global and were mutated without\nsynchronization during concurrent codegen. LLD could also reset the\nregistry while another compilation was using it.\n\nMove AMD expert scheduling to a per-function attribute.\n\nGuard what remains with a registry lock (ScopedLLVMOptions and\nExclusiveLLVMOptionAccess in TritonTools). The registry holds one\noverride set at a time: pipeline runs requesting identical sets share\nit and run in parallel, a run requesting a different set (including th\ndefaults) waits for the previous users, and LLD takes exclusive access\nso it can no longer reset options during a compilation. Every LLVM\npipeline run now happensn inside a scope, overrides are restored\nexactly when the last user leaves, and a forked child starts from a\nclean registry.\n\nUse consistent option sets across optimization and codegen, handle\nforked children, and add concurrent AMD and NVIDIA tests."
+    },
+    {
+      "sha": "e587c2f650fe2c1346f6f56432d3ffb3793dcb27",
+      "comment": "这是一个解释器的增强。为float32和float64类型实现了真正的融合乘加(FMA)指令，避免了在Python中模拟FMA的复杂性和边界情况。C++层新增fma_fp32和fma_fp64函数，利用std::fma实现精确的一次舍入。Python解释器的create_fma逻辑被简化，float32不再通过float64中间类型进行二次舍入，而是直接使用fma_fp32。测试覆盖了更多边界情况，包括舍入模式、溢出和中点。此变更直接增强了python/triton/runtime/interpreter.py和python/src/interpreter.cc。",
+      "tags": [
+        "feature",
+        "interpreter",
+        "correctness",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "虽然此提交本身不修改任何Triton核心接口，但python/triton/runtime/interpreter.py中的InterpreterBuilder.create_fma方法被直接修改。triton-ascend项目包含AscendInterpreterBuilder，它继承自InterpreterBuilder，而AscendReduceOps/AscendScanOps等配套组件依赖解释器对数学函数（如fma）的模拟实现。此变更影响了create_fma在Python解释器中的行为，任何依赖旧版Python模拟实现的代码（如triton-ascend中的自定义算子）都需要确保与新的C++实现兼容。",
+        "testing": "triton-ascend测试套件可能包含针对Python解释器的测试用例，这些用例在运行Ascend kernel时验证数学函数的正确性。需确保新的C++ FMA实现能通过triton-ascend现有的解释器测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[INTERPRETER] Implement fused multiply-add (FMA) for float32 and float64 types (#11641)\n\nAvoid complex numpy workarounds with a lot of edge cases. Closes\nhttps://github.com/triton-lang/triton/pull/11611",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/runtime/interpreter.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "cf1cb9448b101337abdac0084ba2fa440d3d3385",
+      "comment": "这是一个功能增强，改进了reshape操作的slice编码推断。当reshape增加或移除一个单位维度（size 1）时，如果源或目标是一个slice，现在可以直接使用slice的父布局或创建新的slice布局，而不是通过通用的reshape推断路径，前提是这种推断能保持寄存器广播和每个线程的元素数量不变。本提交通过推断保留slice编码，有助于避免不必要的convert_layout操作和优化代码生成。然而，这种优化可能会产生与旧路径不同的布局，因此更新了多个测试中的预期结果。涉及的测试文件包括test/TritonGPU/amd/下的文件、combine.mlir、fpsan.mlir和DialectTest.cpp。",
+      "tags": [
+        "feature",
+        "optimization",
+        "TritonGPU",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "此提交修改了include/triton/Dialect/TritonGPU/和lib/Dialect/TritonGPU/中的IR定义与布局推断逻辑（inferReshapeOpEncodingImpl）。虽然Ascend后端不使用TritonGPU、不走TritonGPU布局，但此变更可能影响共享的TTIR到Linalg转换。如果Ascend的TritonToLinalg转换中处理了tt.reshape操作，那么布局推断行为的变化会改变生成的IR，需要评估。",
+        "testing": "有测试影响。此提交修改了test/TritonGPU/amd/下的lit测试文件，这些测试预期了特定的布局推断结果。triton-ascend可能需要检查其测试中是否有依赖旧的reshape布局推断行为的用例。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/",
+          "third_party/ascend/unittest/pytest_ut/"
+        ]
+      },
+      "message": "Infer slice encodings for reshapes (#10796)\n\nPreserve slice encodings when a reshape adds or removes a unit\ndimension.\nKeep an equivalent destination encoding hint when one is supplied.\n\nOnly use the slice or its parent when it preserves register broadcasting\nand the number of elements per thread. Otherwise, use the existing\nreshape inference path.",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "af5988717c8e185dae5e11c6e36794064ad2d3db",
+      "comment": "这是一个为Gluon IR启用编译功能的feature提交，解决了issue #11543。Gluon内核的ASTSource现在使用.glir扩展名（原来是ttgir），以便在编译流水线中区分Gluon IR阶段。修改了python/triton/compiler/compiler.py中的IRSource类，使其能识别.glir文件并将其解析为GLUON语言，同时更新了parse_options和parse函数。此外，编译流水线阶段也增加了对'glir'阶段的支持，NVIDIA和AMD后端现在都包括一个将GLIR直接传递到下游的glir阶段。此变更显著改变了编译流程，引入了新的IR阶段，涉及多个核心模块。",
+      "tags": [
+        "feature",
+        "compiler",
+        "gluon",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "此提交改变了python/triton/compiler/compiler.py的核心契约。其中，IRSource的解析现在根据文件扩展名决定语言类型，并新增了'glir'扩展名。编译器中的parse函数也扩展了'glir'支持，以解析Gluon IR。triton-ascend代码库中的monkey-patch _patched_parse（在third_party/ascend/backend/__init__.py中）扩展了parse以支持多个扩展名，包括ttir、ttgir、npubin和mlirbc。此提交改变了解析分支的逻辑，若上游的解析逻辑更新，Ascend的patch可能失效，需要同步更新。",
+        "testing": "此提交为gluon IR源文件添加了测试。triton-ascend如果支持Gluon，需要为新的.glir文件添加或更新测试。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/",
+          "third_party/ascend/unittest/Conversion/"
+        ]
+      },
+      "message": "[Frontend] Enable triton.compile for gluon IR (#11628)\n\nFixes #11543",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/compiler/compiler.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "27d35bfaf2f1431c172629488cf84bd6c1cb139a",
+      "comment": "这是一个AMD Gluon后端特有的feature提交，旨在简化scaled_upcast_fp4操作的使用。新增了一个公开的辅助函数get_scaled_upcast_fp4_scale_layout，该函数根据输入张量的布局和scale factor推断scale张量所需的布局。此提交还重构了验证和推断逻辑，通过新增的inferScaledUpcastFp4ScaleLayout函数来统一FP4 scale布局推断逻辑，避免代码重复。对cdna3和cdna4的scaled_upcast实现进行了清理，移除了旧的E8M0到BF16的转换辅助函数。",
+      "tags": [
+        "feature",
+        "refactor",
+        "AMD",
+        "Gluon",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。此提交针对的是AMD Gluon后端的特有功能，仅涉及AMD后端文件和Gluon的相关module。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][GLUON] Add helper for scaled_upcast fp4 layout (#11470)\n\nTo simplify the usage of scaled_upcast_fp4 this PR exposes a function\nwhich computes the layout based on the SCALE_K size and the value\ntensor.\nIt also unifies the verifier and the infer function to deduplicate the\nlogic"
+    },
+    {
+      "sha": "9c18963c3e3117df98c1da8bf7c9b486a927ad9a",
+      "comment": "这是一个CI/测试增强，添加了一个Blackwell-only的ConSan性能回归测试。该测试针对现有的two-CTA FP16 Gluon attention kernel，通过开源社区的CI工作流自动运行。测试会衡量冷编译时间和稳态运行时间，并与硬件测量的基线进行比较，如果超过容差则失败。同时添加了SM100和SM103的硬件基线数据。此变更属于测试和CI基础设施的改进，不影响运行时行为。",
+      "tags": [
+        "test",
+        "performance",
+        "ci",
+        "ConSan",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。此提交是添加了针对NVIDIA GPU的测试文件和CI配置，属于NVIDIA特定功能，对triton-ascend项目没有直接影响。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ConSan] Guard Blackwell attention compile and runtime (#11372)\n\nAdd a Blackwell-only ConSan performance regression test for the existing\ntwo-CTA FP16 Gluon attention kernel.\n\n- Fail when cold compilation exceeds 1.5× or steady-state runtime\nexceeds 1.25× the architecture-specific baseline.\n- Invoke the benchmark explicitly before the GB200 compile-cache warmup,\nkeeping it outside general pytest discovery while allowing later tests\nto reuse its compiled artifact.\n- Provide hardware-measured SM100 and SM103 timing baselines."
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

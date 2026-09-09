@@ -1,0 +1,15 @@
+{
+  "content_hash": "b4a5500af32c84ab",
+  "analysis": {
+    "interface_summary": "定义 2 个类；定义 8 个函数",
+    "key_interfaces": [
+      "GluonASTSource",
+      "GluonJITFunction",
+      "GluonASTSource.__init__",
+      "GluonASTSource.make_ir",
+      "GluonJITFunction.create_binder",
+      "GluonJITFunction.is_gluon"
+    ]
+  },
+  "cached_at": "2026-09-10T04:14:38.371651+08:00"
+}

@@ -1,0 +1,36 @@
+{
+  "content_hash": "ef3c135a17a3a883",
+  "analysis": {
+    "interface_summary": "定义 6 个类；定义 32 个函数",
+    "key_interfaces": [
+      "ASTSource",
+      "IRSource",
+      "CompileTimer",
+      "LazyDict",
+      "AsmDict",
+      "CompiledKernel",
+      "ASTSource.__init__",
+      "ASTSource.hash",
+      "ASTSource.make_ir",
+      "ASTSource.parse_options",
+      "IRSource.__init__",
+      "IRSource.hash",
+      "IRSource.make_ir",
+      "IRSource.parse_options",
+      "CompileTimer.__init__",
+      "CompileTimer.finished_ir_initialization",
+      "CompileTimer.stage_finished",
+      "CompileTimer.end",
+      "LazyDict.__init__",
+      "LazyDict.get",
+      "LazyDict.add",
+      "AsmDict.__missing__",
+      "CompiledKernel.__init__",
+      "CompiledKernel.__del__",
+      "CompiledKernel._init_handles",
+      "CompiledKernel.run",
+      "CompiledKernel.launch_metadata"
+    ]
+  },
+  "cached_at": "2026-09-10T04:14:38.370182+08:00"
+}

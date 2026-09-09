@@ -1,0 +1,162 @@
+{
+  "date": "2026-09-09",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-09-10T04:15:58.381056+08:00",
+  "daily_summary": "当日变更主要聚焦于 Ascend 后端的动态 CV pipeline（ssbuffer）稳定性修复、测试基准工具 do_bench_npu 的功能增强、以及构建与文档的完善。具体包括：为受运行时错误影响的算子扩展 preload 禁用名单；通过声明依赖方言和抑制诊断信息来增强 ssbuffer 流水线的健壮性；大幅改进 do_bench_npu 使其支持快速 mspti 路径和详细的 profiler 路径，并新增文档；重新引入 npuir 构建脚本并更新子模块；为 autotune 增加基于 JIT 编译标识的失败缓存以加速重复调优；为动态 CV pipeline 增加基于 tensor 依赖分析的自动回退机制并清理过时的黑名单；修正文档中的 LLVM 版本和补丁链接。整体上，变更以 bug 修复和工程化改进为主，旨在提高编译的稳定性和开发体验，同时优化了性能评估和构建流程。",
+  "test_impact_summary": "当日变更对测试看护有显著影响。首先，为 autotune 的编译失败缓存新增了针对性的单元测试，并修改了动态 CV pipeline 的 lit 测试以适配新的诊断抑制和错误处理逻辑，这些测试点需要持续运行以确保新机制的稳定性。第二，do_bench_npu 的功能扩展需要新的测试用例来覆盖 mspti 和 profiler 两条路径、目标 kernel 过滤及结果不匹配等场景。第三，对 ssbuffer 黑名单的调整和基于依赖分析的自动回退逻辑属于对先前 workaround 的替换，需要依赖更广泛的算子端到端测试来验证其有效性，以防新逻辑引入回归。最后，构建脚本的变动需要 CI 流程进行验证，确保不影响现有构建的稳定性。",
+  "commits": [
+    {
+      "sha": "b868de03124e388774e7c532d24a4265c29d3d69",
+      "comment": "该 commit 为 ssbuffer 功能添加了一个名为 \"flash_fwd_kernel\" 的算子到禁用 preload 的黑名单中。这表明该算子在实际运行中会触发运行时错误，禁用 preload 作为一个快速的规避措施，以避免进入动态 CV pipeline 的优化路径。此变更风险极低，仅影响名单中的算子，但需要注意，这是一种持续累积的规避策略，对于未来新出现的算子错误，可能还需要依赖更通用的自动回退机制，而非单纯扩大黑名单。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "ssbuffer",
+        "workaround"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "变更仅为黑名单添加一个条目，不需要新增或修改测试逻辑。现有针对受黑名单影响算子的端到端测试应能覆盖此修复的回归。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/"
+        ]
+      },
+      "message": "[ssbuffer](fix) fix bug of runtime error"
+    },
+    {
+      "sha": "17dbec21851b642ed4199c3d0087d43d4d9839b7",
+      "comment": "该 commit 旨在抑制 ssbuffer 流水线的诊断输出并修复了其 reproducer 的生成问题。主要改动包括为 AddDynamicCVPipelinePass 和 SplitDataflowPass 声明其依赖的方言（hivm, scope, annotation, bufferization），避免在动态装载时出错。同时将 pass 的执行方式从 `runPipeline` 改为独立的 `PassManager`，并重命名 DEBUG_TYPE，以便在出现错误时抑制 MLIR 的 reproducer 生成，使警告信息更干净。此外，也调整了 lit 测试以匹配新的行为。该改进降低了编译失败时的噪音，但需要注意，禁用 reproducer 可能会给后续的 bug 调试带来困难。",
+      "tags": [
+        "refactor",
+        "bugfix",
+        "low-risk",
+        "ssbuffer",
+        "diagnostics"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "修改了 lit 测试中用于匹配警告信息的 pass 名称，并启用了 '--debug-only' 来观察特定输出，因此需要同步更新相关测试文件来反映新的诊断输出格式。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AddDynamicCVPipeline/fallback_no_matmul.mlir"
+        ]
+      },
+      "message": "[ssbuffer](fix) suppress ssbuffer diagnostic and reproducer (#1950)\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>"
+    },
+    {
+      "sha": "5dbde012f3af886bcc84ed4ce4158a943dd1b74d",
+      "comment": "此 commit 对 Ascend 后端的 `do_bench_npu` 工具进行了重大增强，并引入了中英文文档。核心改动是在原有基于 `torch_npu.profiler` 的路径之上，新增了一个基于更轻量级 `mspti` 库的快速路径，以实现接近社区版 `do_bench` 的运行时开销。此外，通过解析 `task_time*.csv` 文件并增加对多任务拆分的处理，提高了计时准确性。新增的参数（如 `target_kernel_name`, `prof_dir`, `keep_res`）使用户能够更精细地控制基准测试过程。该功能对性能评估至关重要，需重点关注两条计时路径在不同 CANN 版本和硬件上的准确性，尤其是对多 kernel 函数或单 kernel 被拆分为多任务的场景。",
+      "tags": [
+        "feature",
+        "performance",
+        "medium-risk",
+        "testing",
+        "benchmark"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "这是一个新的、功能复杂的工具函数，其两条执行路径（mspti 和 profiler）、多种参数组合及边界条件（如函数列表、目标 kernel 指定）均应有对应的单元测试或集成测试来保证正确性。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/",
+          "python/test/",
+          "docs/en/do_bench_npu_guide.md",
+          "docs/zh/do_bench_npu_guide.md"
+        ]
+      },
+      "message": "[testing](feat) Improve do_bench_npu and add documentation (#1955)\n\n* [testing](feat) update do_bench_npu\n\n* [testing](feat) Improve do_bench_npu and add documentation\n\nSigned-off-by: gymgit1 <guoyiming17@huawei.com>\n\n---------\n\nSigned-off-by: gymgit1 <guoyiming17@huawei.com>"
+    },
+    {
+      "sha": "c8c67fa7a999d4e9745f8800325f113b6b50eeb0",
+      "comment": "该 commit 重新引入了之前被回滚的 npuir 构建功能。它新增了一个 `build_npuir.py` 脚本，用于自动化 AscendNPU-IR 子模块及其嵌套子模块（LLVM, Torch-MLIR）的初始化、编译和产物拷贝流程。`setup_ascend.py` 中新增了根据环境变量 `TRITON_BUILD_NPUIR` 来调用该脚本的逻辑。同时，AscendNPU-IR 子模块的 commit 从 `aea934a...` 更新到 `bb13ef6...`。此变更旨在为高级用户提供一个更可控的、自行构建整套 bisheng 工具链的路径，但此构建过程需要大量的磁盘空间和网络资源，失败风险较高，应视为一个高级或调试选项，而非默认流程。",
+      "tags": [
+        "chore",
+        "high-risk",
+        "build-system",
+        "npuir"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "此变更主要影响构建系统流程，不直接修改运行时逻辑。新增的构建路径（`TRITON_BUILD_NPUIR=ON`）需要在 CI 或手动环境下验证其可行性，但这属于构建验证而非单元测试更新。",
+        "suggested_test_areas": [
+          "构建流程验证 (CI)",
+          "build_npuir.py"
+        ]
+      },
+      "message": "Revert \"Revert \"[build](feat) add npuir build (#1928)\"\" (#2006)\n\nThis reverts commit a7955aacbe992f0f5746f84f5fc18315124d8202."
+    },
+    {
+      "sha": "eb8a5c9f3d61a8381a36a94a67b20006a100b000",
+      "comment": "该 commit 为 Ascend 的 AutoTilingTuner 新增了编译失败缓存机制。此功能旨在解决在自动调优过程中，当某些配置因确定性编译错误（如编译断言失败或 UB 溢出）而失败时，后续调优会话会重复编译并再次失败的问题。实现上，它通过尝试复制 JIT 编译的关键参数（如 constexpr 值、backend 选项、特殊化结果）来计算一个标识编译身份的 key，并将失败的 Config 缓存起来。在后续的调优中，如果配置生成相同的 key，则会直接跳过编译并复用失败结果。此缓存还考虑了多线程安全和用户 hook 的兼容性，并扩展了缓存失败的类型。该设计能显著提升自动调优在遇到不可行配置时的效率。",
+      "tags": [
+        "feature",
+        "performance",
+        "medium-risk",
+        "autotune",
+        "cache"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了一个包含多个单元测试的测试文件，用于覆盖缓存键的计算逻辑、heuristic 处理、异常场景（如未知 wrapper）以及缓存命中/未命中的行为。这些测试是保证新功能正确性的关键。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/autotune_ut/test_compile_failure_cache.py"
+        ]
+      },
+      "message": "[Autotune](feat) Add JIT-scoped cache for autotune compile failures (#2005)"
+    },
+    {
+      "sha": "8a02190e9922cef2a5db1689c8da6411083a8bcc",
+      "comment": "该 commit 为 ssbuffer 的动态 CV pipeline 引入了更智能的回退机制。核心是新增了一个 `AnalyzeArgsPass`，该 pass 会分析 `scf.for`/`scf.while` 循环中作为迭代参数的张量，并检查它们是否在同一个 `main_loop` 中被不同的 `block_id` 使用。如果存在这种跨 block 的依赖（这可能与 tuple 预加载机制冲突），pass 会设置一个特殊的错误码 `ERRCODE_TUPLE_PRELOAD_FAILED`，触发外层 pipeline 进行一次重试，并在重试中尝试使用更保守的缓冲区配置。同时，此 commit 也清理了大量已不需要的黑名单函数，说明新的自动检测机制能够覆盖这些用例。此改动增强了 pipeline 的鲁棒性，从依赖人工维护黑名单转向了更通用的静态分析。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "high-risk",
+        "ssbuffer",
+        "automatic-fallback"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 AnalyzeArgsPass，需要为其添加针对不同循环依赖场景的 lit 测试。同时，由于移除了大量黑名单，需要依赖广泛的算子端到端测试来确保新的分析逻辑能正确识别问题，并避免因旧有的 workaround 被移除而引入回归。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/"
+        ]
+      },
+      "message": "[ssbuffer](fix) fallback when existing iter_args dependency (#2003)\n\n* [ssbuffer](fix) set fallback when existing iter_args dependency in MainLoop\n\nSigned-off-by: m-everglow <2276518549@qq.com>\n\n* [ssbuffer](feat) Retrying with tuple buffer failed.\n\n* [ssbuffer](fix) remove blacklist funcs\n\nSigned-off-by: m-everglow <2276518549@qq.com>\n\n---------\n\nSigned-off-by: m-everglow <2276518549@qq.com>\nCo-authored-by: Sky_miner <458482582@qq.com>"
+    },
+    {
+      "sha": "6e15848cf6217505720b9e4e925301a8b470b079",
+      "summary": "",
+      "comment": "该 commit 是文档结构和内容的优化。移除了 README 中错误的 vllm-ascend 项目的 logo，修正了标题字号。修订了安装指南，优化了文字表达、格式和链接，并调整了 troubleshooting 部分的建议，使其更简洁并指向正确的解决方案。",
+      "tags": [
+        "docs",
+        "low-risk",
+        "readme",
+        "installation-guide"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯文档变更，不涉及任何代码逻辑，因此无需测试更新。",
+        "suggested_test_areas": []
+      },
+      "message": "[docs](fix) optimize the document structure issue (#2043)\n\n* update README\n\n* update installation\n\n* update Doc\n\n---------\n\nCo-authored-by: liujiaxin02 <liujiaxin108@h-partners.com>"
+    },
+    {
+      "sha": "b3836b123fa508011008fd732880c6705a113c88",
+      "comment": "此 commit 修正了文档中 LLVM 源码的具体 commit 和补丁下载链接。变更点包括将 LLVM 版本从 `fad3272...` 更新到 `f6ded0b...`，并将补丁文件从 gitcode 平台的某个 blob 链接改为了 GitHub 上仓库内更直接的 `llvm_patch_f6ded0b.patch` 路径。这确保了用户遵循文档操作时能够获取到正确且可用的 LLVM 版本和补丁，准确地复现构建流程。",
+      "tags": [
+        "docs",
+        "bugfix",
+        "low-risk",
+        "llvm",
+        "build-instructions"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯文档修正，不涉及代码变更。只需确保文档步骤正确无误即可，但无需自动化测试验证。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](fix) correct LLVM commit and patch in README"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

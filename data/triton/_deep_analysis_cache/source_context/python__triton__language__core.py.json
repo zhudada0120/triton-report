@@ -1,7 +1,7 @@
 {
-  "content_hash": "88e044989dc7b244",
+  "content_hash": "47ff9d65d402dcbd",
   "analysis": {
-    "interface_summary": "定义 24 个类；定义 394 个函数",
+    "interface_summary": "定义 25 个类；定义 399 个函数",
     "key_interfaces": [
       "const",
       "base_value",
@@ -21,6 +21,7 @@
       "tensor_descriptor_type",
       "tensor_descriptor",
       "_aggregate_type",
+      "_CachePolicy",
       "static_range",
       "range",
       "condition",
@@ -96,6 +97,10 @@
       "_aggregate_type._unflatten_ir",
       "_aggregate_type._flatten_ir_types",
       "_aggregate_type.mangle",
+      "_CachePolicy.__post_init__",
+      "_CachePolicy.type",
+      "_CachePolicy.mangle",
+      "_CachePolicy._to_ir",
       "static_range.__init__",
       "static_range.__iter__",
       "static_range.__next__",
@@ -110,5 +115,5 @@
       "aggregate_value._flatten_ir"
     ]
   },
-  "cached_at": "2026-09-09T04:26:05.641776+08:00"
+  "cached_at": "2026-09-10T04:09:23.176100+08:00"
 }

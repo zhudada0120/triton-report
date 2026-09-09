@@ -215,6 +215,74 @@
       "interface_changes": "这是一个针对代码生成器（`CodeGenerator`）的 **bugfix**。它修复了列表推导式中使用带元组的迭代目标（如 `[a + b for a, b in ((1, 2), (3, 4))]`）时的编译错误。原实现仅处理单一变量名的推导式（`comp.target.id`），遇到元组目标会崩溃。修复方式是将赋值目标校验逻辑抽取为共享方法 `_sanitize_target_value`，并递归地用于处理元组目标，同时保留了 constexpr 叶子节点，避免在静态断言中出错。对于标量迭代项、数量不匹配或带星号的目标，现在会产生更明确的编译错误消息。这是一个纯前端语言特性的修复，提升了语言对 Python 语法的支持度。",
       "change_summary": "[FRONTEND] Support tuple targets in list comprehensions (#11076)",
       "ascend_impact": false
+    },
+    "af85fc304db54b8dd0d96e9889fa1ed9dd47f4e7": {
+      "date": "2026-09-09",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "该提交是 #11591 的后续修复，重新调整了 atomic_load 操作中内存屏障（fence）与线程屏障（barrier）的插入顺序。修复的重点是确保在 acquire fence（语义为获取）之后、加载结果被线程广播/同步之前，有正确的同步屏障。这保证了 acquire 操作的顺序语义。相关代码位于通用的 TritonGPUToLLVM 工具函数中。",
+      "change_summary": "[Backend] Fix atomic_load fence placement (#11650)",
+      "ascend_impact": false
+    },
+    "cbd1e7df8a58d3ddab53f84da23040b05a46cb7b": {
+      "date": "2026-09-09",
+      "affected_modules": [
+        "include/triton/Dialect/Triton/",
+        "lib/Dialect/Triton/",
+        "python/src/ir.cc",
+        "python/triton/language/semantic.py",
+        "python/triton/runtime/interpreter.py"
+      ],
+      "affected_interfaces": [
+        "include/triton/Dialect/Triton/",
+        "lib/Dialect/Triton/",
+        "python/src/ir.cc",
+        "python/triton/language/semantic.py",
+        "python/triton/runtime/interpreter.py"
+      ],
+      "interface_changes": "此提交在 Triton IR 中引入了两个新的原子操作：tt.atomic_load 和 tt.atomic_store。核心变更包括：1) 在 Triton IR 方言中定义 TT_AtomicLoadOp 和 TT_AtomicStoreOp 及相应的 verifier。2) 在语言前端（python/triton/language/`）提供`tl.atomic_load`和`tl.atomic_store`的 DSL 接口，并在语义层实现了相应的处理逻辑。3) 通过 GenericOpPattern 和 GenericOpPattern 添加了从 Triton 到 TritonGPU 的转换。4) 在 NVIDIA/AMD 的 TritonGPUToLLVM 转换中实现这两种操作的 lowering。5) 新增 GSan 插桩支持。6) 更新解释器以支持这些操作。7) 重构了原子类型的检查逻辑，使 load/store 与 read-modify-write 操作共享公共路径。",
+      "change_summary": "[Language] Add dedicated atomic_{load,store} ops (#11591)",
+      "ascend_impact": true
+    },
+    "e587c2f650fe2c1346f6f56432d3ffb3793dcb27": {
+      "date": "2026-09-09",
+      "affected_modules": [
+        "python/triton/runtime/interpreter.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/runtime/interpreter.py"
+      ],
+      "interface_changes": "这是一个解释器的增强。为float32和float64类型实现了真正的融合乘加(FMA)指令，避免了在Python中模拟FMA的复杂性和边界情况。C++层新增fma_fp32和fma_fp64函数，利用std::fma实现精确的一次舍入。Python解释器的create_fma逻辑被简化，float32不再通过float64中间类型进行二次舍入，而是直接使用fma_fp32。测试覆盖了更多边界情况，包括舍入模式、溢出和中点。此变更直接增强了python/triton/runtime/interpreter.py和python/src/interpreter.cc。",
+      "change_summary": "[INTERPRETER] Implement fused multiply-add (FMA) for float32 and float64 types (#11641)",
+      "ascend_impact": false
+    },
+    "cf1cb9448b101337abdac0084ba2fa440d3d3385": {
+      "date": "2026-09-09",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "这是一个功能增强，改进了reshape操作的slice编码推断。当reshape增加或移除一个单位维度（size 1）时，如果源或目标是一个slice，现在可以直接使用slice的父布局或创建新的slice布局，而不是通过通用的reshape推断路径，前提是这种推断能保持寄存器广播和每个线程的元素数量不变。本提交通过推断保留slice编码，有助于避免不必要的convert_layout操作和优化代码生成。然而，这种优化可能会产生与旧路径不同的布局，因此更新了多个测试中的预期结果。涉及的测试文件包括test/TritonGPU/amd/下的文件、combine.mlir、fpsan.mlir和DialectTest.cpp。",
+      "change_summary": "Infer slice encodings for reshapes (#10796)",
+      "ascend_impact": false
+    },
+    "af5988717c8e185dae5e11c6e36794064ad2d3db": {
+      "date": "2026-09-09",
+      "affected_modules": [
+        "python/triton/compiler/compiler.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/compiler/compiler.py"
+      ],
+      "interface_changes": "这是一个为Gluon IR启用编译功能的feature提交，解决了issue #11543。Gluon内核的ASTSource现在使用.glir扩展名（原来是ttgir），以便在编译流水线中区分Gluon IR阶段。修改了python/triton/compiler/compiler.py中的IRSource类，使其能识别.glir文件并将其解析为GLUON语言，同时更新了parse_options和parse函数。此外，编译流水线阶段也增加了对'glir'阶段的支持，NVIDIA和AMD后端现在都包括一个将GLIR直接传递到下游的glir阶段。此变更显著改变了编译流程，引入了新的IR阶段，涉及多个核心模块。",
+      "change_summary": "[Frontend] Enable triton.compile for gluon IR (#11628)",
+      "ascend_impact": false
     }
   }
 }

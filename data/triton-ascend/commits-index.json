@@ -1,4 +1,36 @@
 {
+  "b868de03124e388774e7c532d24a4265c29d3d69": {
+    "date": "2026-09-09",
+    "msg": "[ssbuffer](fix) fix bug of runtime error"
+  },
+  "17dbec21851b642ed4199c3d0087d43d4d9839b7": {
+    "date": "2026-09-09",
+    "msg": "[ssbuffer](fix) suppress ssbuffer diagnostic and reproducer (#1950)"
+  },
+  "5dbde012f3af886bcc84ed4ce4158a943dd1b74d": {
+    "date": "2026-09-09",
+    "msg": "[testing](feat) Improve do_bench_npu and add documentation (#1955)"
+  },
+  "c8c67fa7a999d4e9745f8800325f113b6b50eeb0": {
+    "date": "2026-09-09",
+    "msg": "Revert \"Revert \"[build](feat) add npuir build (#1928)\"\" (#2006)"
+  },
+  "eb8a5c9f3d61a8381a36a94a67b20006a100b000": {
+    "date": "2026-09-09",
+    "msg": "[Autotune](feat) Add JIT-scoped cache for autotune compile failures (#2005)"
+  },
+  "8a02190e9922cef2a5db1689c8da6411083a8bcc": {
+    "date": "2026-09-09",
+    "msg": "[ssbuffer](fix) fallback when existing iter_args dependency (#2003)"
+  },
+  "6e15848cf6217505720b9e4e925301a8b470b079": {
+    "date": "2026-09-09",
+    "msg": "[docs](fix) optimize the document structure issue (#2043)"
+  },
+  "b3836b123fa508011008fd732880c6705a113c88": {
+    "date": "2026-09-09",
+    "msg": "[Docs](fix) correct LLVM commit and patch in README"
+  },
   "fe60c1e368ded114b9bf69e2d2f68f9cfb65128e": {
     "date": "2026-09-08",
     "msg": "[ssbuffer](chore) refactored ExpSubfPatternPass and PlanCubeBlockPass (#1915)"
