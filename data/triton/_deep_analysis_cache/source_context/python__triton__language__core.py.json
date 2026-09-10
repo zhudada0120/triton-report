@@ -1,7 +1,7 @@
 {
-  "content_hash": "47ff9d65d402dcbd",
+  "content_hash": "2c0f56b4d85a7eb7",
   "analysis": {
-    "interface_summary": "定义 25 个类；定义 399 个函数",
+    "interface_summary": "定义 25 个类；定义 403 个函数",
     "key_interfaces": [
       "const",
       "base_value",
@@ -115,5 +115,5 @@
       "aggregate_value._flatten_ir"
     ]
   },
-  "cached_at": "2026-09-10T04:09:23.176100+08:00"
+  "cached_at": "2026-09-11T04:15:00.344517+08:00"
 }

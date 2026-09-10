@@ -1,4 +1,104 @@
 {
+  "59c11c8d8d732cbdbf7c5f4159340e546a77278b": {
+    "date": "2026-09-10",
+    "msg": "[TRITONGPU] Reland empty inner loop flattening fix (#11688)"
+  },
+  "2a179bcd004031d1f29146af460289ca09a3b152": {
+    "date": "2026-09-10",
+    "msg": "[BC-Breaking][Frontend] Fix min/max type promotion (#11472)"
+  },
+  "c19c127f054b4d0bdbbae2a62fb7c2a3d8d899ab": {
+    "date": "2026-09-10",
+    "msg": "[Triton] Don't fold a multi-result reduce in CombineBroadcastMulReducePattern (#11683)"
+  },
+  "5cb4ad8e55d522fd3339a10df1cb28bab176fb15": {
+    "date": "2026-09-10",
+    "msg": "[Gluon] Improve auto layout propagation (#11685)"
+  },
+  "a0af442df17c8acff35b7488deae704277da46d2": {
+    "date": "2026-09-10",
+    "msg": "[BACKEND] Use LL to simplify MMAv2 operand mapping and support FP64 large K (#11664)"
+  },
+  "8a51a348f1a863c5b0d6a9f06c77902a0bba1705": {
+    "date": "2026-09-10",
+    "msg": "[interpreter] fix argument count mismatch in create_atomic_load/create_atomic_store (#11676)"
+  },
+  "14bfd64e26e5de23deecd4d6ffc9b67224ad8b60": {
+    "date": "2026-09-10",
+    "msg": "Revert \"[TRITONGPU] Preserve empty inner loops during flattening\" (#11686)"
+  },
+  "4a57ffb21d95088147ba5b1c899d8aad64dc4b64": {
+    "date": "2026-09-10",
+    "msg": "[TRITONGPU] Preserve empty inner loops during flattening (#11607)"
+  },
+  "4a15f415d8ac4f830ce788c6fca3a5b3b29908e7": {
+    "date": "2026-09-10",
+    "msg": "[triton_kernels] Avoid Torch imports in numerics and target_info (#11670)"
+  },
+  "e6d36921152b4b18bcfa7bd44c4a1a748450a4f0": {
+    "date": "2026-09-10",
+    "msg": "[Analysis] Preserve shared-memory aliases through calls (#11671)"
+  },
+  "18d56608884789b9ba83e63600ee0ecac92b65c6": {
+    "date": "2026-09-10",
+    "msg": "[NFC] Remove dead synchronization-analysis paths (#11672)"
+  },
+  "4e33d6ddd0d5b497f630fce0335613a630735575": {
+    "date": "2026-09-10",
+    "msg": "[Gluon] Add per-thread inline assembly with descriptor operands (#11623)"
+  },
+  "a9dfd47b6519be55a3168d384ad1cf927e3010dc": {
+    "date": "2026-09-10",
+    "msg": "[ConSan] Slice proxy and barrier bookkeeping by proven indices (#11642)"
+  },
+  "6d661f751ac201a78366f4d474850834d2c82481": {
+    "date": "2026-09-10",
+    "msg": "[triton_kernels] Add explicit nearest-even NVFP4 scale rounding (#11668)"
+  },
+  "77502c3419dc7ce35fd253d0e242f12ad8947998": {
+    "date": "2026-09-10",
+    "msg": "Update Blackwell ptxas to 13.4.59 (#11669)"
+  },
+  "691a6deec4ee15960408f957a973e11528294017": {
+    "date": "2026-09-10",
+    "msg": "[CONSAN] Make consan and membar passes independent (#11597)"
+  },
+  "1175cb427f5ec41873f99162c5842ed8d1314a4a": {
+    "date": "2026-09-10",
+    "msg": "[ConSan] Stream tracking clears after barrier phase completion (#11452)"
+  },
+  "174a7baa5600f86da583f8890f1a2ad7a228e6c4": {
+    "date": "2026-09-10",
+    "msg": "[ConSan] Stream large visibility and tracking clears (#11451)"
+  },
+  "fee3fe608ab32f0277ea6159af8ababfaa01443c": {
+    "date": "2026-09-10",
+    "msg": "[ConSan] Slice tracking updates for unique barrier slots (#11450)"
+  },
+  "80ba810c79b74f37329ae3ebc8f8be6b428e3e23": {
+    "date": "2026-09-10",
+    "msg": "[ConSan] Load read visibility for the issuing observer (#11449)"
+  },
+  "fd48965cc60c98b8b0ce27512771296622defc0a": {
+    "date": "2026-09-10",
+    "msg": "[ConSan] Slice proven single-buffer read visibility updates (#11448)"
+  },
+  "646165259c343edcc64fed77384df5434d84dfcc": {
+    "date": "2026-09-10",
+    "msg": "[ConSan] Use narrow masks for small logical thread sets (#11447)"
+  },
+  "8a5c7ee136408e766f7f20e5366e2c5d7a5c4ec8": {
+    "date": "2026-09-10",
+    "msg": "[ConSan] Use masked stores for scratch overwrites (#11446)"
+  },
+  "4e15616d25f3d8818a5bec92c5620cec16d72bcc": {
+    "date": "2026-09-10",
+    "msg": "[PROTON] Move Proton lowering before warp specialization (#11523)"
+  },
+  "7aea09ba4ca3cc49f88664d0013de62362e2dbdf": {
+    "date": "2026-09-10",
+    "msg": "[AMD] Fence LDS around wave synchronization (#11651)"
+  },
   "9c17b7a4e7b75a07e8906d2ddbb0758119fee3aa": {
     "date": "2026-09-09",
     "msg": "[Backend] Ignore fractional cache policy for cp.async + respect cache modifier (#11660)"

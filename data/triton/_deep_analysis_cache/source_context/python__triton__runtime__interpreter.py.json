@@ -1,7 +1,7 @@
 {
-  "content_hash": "89c26bf0ff5c7c43",
+  "content_hash": "f62223e45ba17207",
   "analysis": {
-    "interface_summary": "定义 13 个类；定义 165 个函数",
+    "interface_summary": "定义 13 个类；定义 166 个函数",
     "key_interfaces": [
       "TensorHandle",
       "TensorDescHandle",
@@ -65,5 +65,5 @@
       "InterpretedFunction.__name__"
     ]
   },
-  "cached_at": "2026-09-10T04:11:31.195866+08:00"
+  "cached_at": "2026-09-11T04:14:02.132347+08:00"
 }

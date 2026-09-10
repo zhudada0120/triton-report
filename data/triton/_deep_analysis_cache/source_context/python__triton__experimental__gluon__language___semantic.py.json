@@ -1,0 +1,19 @@
+{
+  "content_hash": "8fcd4546cdc164b1",
+  "analysis": {
+    "interface_summary": "定义 2 个类；定义 50 个函数",
+    "key_interfaces": [
+      "GluonCallerContext",
+      "GluonSemantic",
+      "GluonCallerContext.__init__",
+      "GluonCallerContext.mangle",
+      "GluonCallerContext.initialize_callee",
+      "GluonSemantic.__init__",
+      "GluonSemantic._wrap_handle_infer_layout",
+      "GluonSemantic._wrap_tensor_infer_layout",
+      "GluonSemantic._broadcast_shapes",
+      "GluonSemantic.expand_dims"
+    ]
+  },
+  "cached_at": "2026-09-11T04:15:00.318524+08:00"
+}

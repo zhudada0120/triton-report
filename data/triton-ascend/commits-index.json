@@ -1,4 +1,44 @@
 {
+  "32620c2297fabd00b38e7880aa405c6056ffb2ef": {
+    "date": "2026-09-10",
+    "msg": "[ssbuffer](fix) [ssbuffer](fix) modify ssbuffer enabled scenarios"
+  },
+  "2e31dfda2199d2e2278c78c6fa5ff6fc4655855b": {
+    "date": "2026-09-10",
+    "msg": "[TritonToLinalg](fix) keep masked scalar loads scalar"
+  },
+  "98046e139b73d4180c1f921e69c8ecd5a2d9ef83": {
+    "date": "2026-09-10",
+    "msg": "[ssbuffer](fix) add unable kernel for mergecube (#2086)"
+  },
+  "df5b9bfa9606300765cea1cda0e18ab7b3bcd91f": {
+    "date": "2026-09-10",
+    "msg": "Replace the runner cluster (#1951)"
+  },
+  "a6c6a598ede17d4edf8b21c55191b49c9748ecdd": {
+    "date": "2026-09-10",
+    "msg": "[ssbuffer](fix) Reorder consider multi-region (#2042)"
+  },
+  "3d8001329988ca0e2533ad52982bcf275d7dd8eb": {
+    "date": "2026-09-10",
+    "msg": "[ssbuffer](feat) fit the change of crossCoreDeps (#2049)"
+  },
+  "7eed63e0fa05364903f23260cb2a57b4ab85da34": {
+    "date": "2026-09-10",
+    "msg": "[ssbuffer](fix) Support more scenarios (#2073)"
+  },
+  "e637838439fb5ab5f542b00d7f6776b59584324e": {
+    "date": "2026-09-10",
+    "msg": "[Utils](fix) handle permuted strides in boundary sizes (#2057)"
+  },
+  "33df0c1504ca558d65125cc31d9264a6ecffa208": {
+    "date": "2026-09-10",
+    "msg": "[ssbuffer](feat) add merge-cube-block pass (#2035)"
+  },
+  "95eb8c1a6e8735cf58170525ad0fccf02e618d74": {
+    "date": "2026-09-10",
+    "msg": "[doc](fix) remove example in scope.py (#2039)"
+  },
   "b868de03124e388774e7c532d24a4265c29d3d69": {
     "date": "2026-09-09",
     "msg": "[ssbuffer](fix) fix bug of runtime error"

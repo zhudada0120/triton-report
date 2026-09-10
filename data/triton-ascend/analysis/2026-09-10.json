@@ -1,0 +1,198 @@
+{
+  "date": "2026-09-10",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-09-11T04:17:59.440290+08:00",
+  "daily_summary": "当日变更集中在 triton-ascend 的 DynamicCVPipeline（动态 Cube/Vector 流水线）子系统与 TritonToLinalg 转换链：一是围绕 MergeCubeBlock（cube 块合并）新增 pass 及其内核白/黑名单、失败回退与 mergedAny 检测；二是将 crossCoreDeps 依赖属性从单组二元对升级为可多组、可双角色的展平对列表（ConsumerProducerMap），并在 BufferCount/Reorder/AddControlFlowCondition 等环节适配；三是修复 LoadStoreConverter 中标量 mask load 的对齐语义（改为 scf.if 保护访问）；四是修复 getBoundarySizes 对 permuted strides 的分解顺序；五是 ssbuffer 内核拦截/禁用名单调整、scope.py 文档修正与 CI runner 集群迁移。整体方向是提升动态 CV 流水线在更多真实算子（attention 变体）上的适用性与正确性，并加固边界场景（标量 mask load、非连续 stride block pointer）的正确性。",
+  "test_impact_summary": "本次变更明显引入了需要看护的新测试点：LoadStoreConverter 标量 mask load 语义与 permuted strides 边界分解两处修复均随代码提交新增了 lit MLIR 用例与 pytest 端到端用例（scalar_masked_load.mlir/.py、test_make_block_ptr_boundary_size 扩展），这些是最需要持续看护的行为契约；新增的 MergeCubeBlock pass 带有专属 lit 用例 merge_cube_block.mlir，但 MergeCubeBlock 与 crossCoreDeps 的交互（多 region 的 updateBlockIdWithInner、多组生产者映射、BufferCountManager 取值）目前主要靠 lit 覆盖，缺少端到端 pytest 与失败回退路径（kDisableMergeCubeKernel、hasFallbackAttr、mergedAny=false）的负向测试。ssbuffer 内核名单调整与 CI runner 变更属于配置面，不引入新测试点，但名单类常量应通过既有 DynamicCVPipeline_ut 覆盖回归。总体看，当日测试策略以“随修复补 lit+pytest”为主，跨 commit 的组合场景（多 region + 多组 crossCoreDeps + merge cube）尚缺整体回归用例。",
+  "commits": [
+    {
+      "sha": "32620c2297fabd00b38e7880aa405c6056ffb2ef",
+      "comment": "调整 ssbuffer(DynamicCVPipeline) 的内核拦截/禁用名单：AnalyzeName.cpp 的 interceptrFunc 新增 kernel_sdpa_bwd_kv、kernel_da_bwd_kv_ul，移除 _swa_bwd_dkdv_kernel；MergeCubeBlock.cpp 的 kDisableMergeCubeKernel 新增 kernel_sdpa_bwd_q、移除 kernel_da_bwd_kv_ul。意图是让新进入拦截名单的 SDPA/da bwd 变体走 DynamicCVPipeline 拦截（进而可能启用 ssbuffer），同时保持 cube block 合并不在这些内核上启用。属纯名单常量调整，无逻辑变更，风险低；影响面限于 DynamicCVPipeline 在特定内核上的启用/禁用行为。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅为 SSBuffer 拦截/合并内核名单的增删，属配置常量，无接口或语义变化；现有 DynamicCVPipeline_ut 中针对相应算子的用例会覆盖名单命中路径，无需新增测试。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut"
+        ]
+      },
+      "message": "[ssbuffer](fix) [ssbuffer](fix) modify ssbuffer enabled scenarios\n\nSigned-off-by: fishofnanqi <1074959344@qq.com>"
+    },
+    {
+      "sha": "2e31dfda2199d2e2278c78c6fa5ff6fc4655855b",
+      "comment": "LoadStoreConverter 修复标量 mask load 语义：原先无论 mask 真假都先执行 memref.load 再 select，会导致对 masked-off 的非法地址发起真实内存读取；现改为用 scf.if 按 mask 保护访问，then 分支执行 load，else 分支返回 other（缺省时用零常量），并保持结果类型为标量而非张量。这修正了一个潜在的正确性/越界读取问题，同时去掉 tensor<1x...> 临时与 splat/extract 往返，降低 IR 复杂度。改动位于 TritonToLinalg 转换链的核心 LoadConverter，影响所有标量 masked load 的 lowering，属中高影响面的语义修复。新增 scalar_masked_load.mlir 的 lit 用例覆盖 masked_i32/f32、无 other、未 mask、mask=true/false 等分支及 910-95 目标，另加 pytest 端到端用例验证 int8/int32/f32/bool × active_count 的组合。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "TritonToLinalg"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "变更修改了标量 masked load 的 lowering 输出形态（不再产生 tensor<1x..> 与 arith.select，改为 scf.if），所有依赖旧 IR 形态的检查需随之更新；本 commit 已自带 lit 与 pytest 用例，但需确认其它既有测试中隐式依赖旧形态的 CHECK 是否仍成立。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/scalar_masked_load.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_scalar_masked_load.py",
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/"
+        ]
+      },
+      "message": "[TritonToLinalg](fix) keep masked scalar loads scalar"
+    },
+    {
+      "sha": "98046e139b73d4180c1f921e69c8ecd5a2d9ef83",
+      "message": "[ssbuffer](fix) add unable kernel for mergecube (#2086)",
+      "comment": "为 MergeCubeBlock 增加不可合并内核名单与回退语义：kDisableMergeCubeKernel 加入 _attn_bwd、_sdpa_infer_kernel、kernel_da_bwd_kv_ul、pcb06_tc02_c2v2v2c_chain；命中时显式设置 CVPipeline::kMergeComputeBlockApplied=false 再返回，避免下游误以为已应用合并。同时 processBlock/performMerging 新增 bool& mergedAny 出参，若整轮未发生任何合并则把 kMergeComputeBlockApplied 置 false（配合后续 commit 的 'skip reorder after disable mergeCubeBlock'）。该标记作为后续 ReorderOpsByBlockId 等步骤的开关输入，改动接口签名（processBlock/performMerging）为内部 API，风险中等，主要风险是标志位语义不一致导致 reorder 被错误跳过或错误执行。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 kMergeComputeBlockApplied=false 的显式回退路径和 mergedAny 判定，属新行为分支，需验证命中禁用名单与零合并两种场景下属性被正确设置、且下游 reorder 行为符合预期；现有 merge_cube_block.mlir 未覆盖这两类回退路径。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/merge_cube_block.mlir",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut"
+        ]
+      }
+    },
+    {
+      "sha": "df5b9bfa9606300765cea1cda0e18ab7b3bcd91f",
+      "comment": "CI 基础设施迁移：integration-tests-ascend.yml 的 job name 从矩阵 config.name 改为 config.runs_on[0] 以避免 name 字段与多标签 runner 不一致；runner-preparation.yml 中 a3 条目由单标签 linux-aarch64-a3-4 改为多标签 [linux-aarch64-a3-800i-4, cn12-001]（自托管多标签为 AND 语义，用于将 a3 作业钉到 cn12-001 机器），并移除已不再使用的 name/runner_type 字段；sync-upstream.yml 同步切换到新标签。属 CI/运维配置变更，不影响编译或运行时代码，但对构建流水线的可用性有直接影响。",
+      "tags": [
+        "ci",
+        "low-risk",
+        "infra"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅修改 GitHub Actions 工作流的 runner 标签与矩阵字段，不改变任何测试内容或被测代码；后续 CI 能否成功即为其验证方式。",
+        "suggested_test_areas": [
+          ".github/workflows/integration-tests-ascend.yml",
+          ".github/workflows/runner-preparation.yml",
+          ".github/workflows/sync-upstream.yml"
+        ]
+      },
+      "message": "Replace the runner cluster (#1951)"
+    },
+    {
+      "sha": "a6c6a598ede17d4edf8b21c55191b49c9748ecdd",
+      "comment": "ReorderOpsByBlockId 增加对“带 region 的 store 类 op”的识别：新增 isStoreLikeWithRegion，除直接匹配 hivm::StoreOp / bufferization::MaterializeInDestinationOp 外，还用 walk 递归检测其内部子 op 是否为 store 类，从而把 scf.if 等包着 store 的 op 也归入 storeOps 分组进行稳定排序。修复了多 region 场景下 store 未被归组导致的排序不正确问题。改动局限在 reorder 的排序判定，风险较低，但 walk 会遍历整棵子树，对大型 region 有额外开销，理论上存在误判（region 内嵌套 store 但语义上属于不同 block）的可能。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "改动影响 reorder 的分组结果，而 reorder 输出的 op 顺序通常由 lit FileCheck 断言；带 region 的 store op 场景此前无覆盖，建议补充多 region store 的排序用例以防回归。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/PlanComputeBlock",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut"
+        ]
+      },
+      "message": "[ssbuffer](fix) Reorder consider multi-region (#2042)\n\nCo-authored-by: shaoyiyang <shaoyiyang1@huawei.com>"
+    },
+    {
+      "sha": "3d8001329988ca0e2533ad52982bcf275d7dd8eb",
+      "comment": "适配 crossCoreDeps 属性的格式变化：从单个 [group, role] 升级为展平的 [group, role, group, role, ...] 列表，允许同一 op 同时具备 producer/consumer 双角色或属于多个 group。为此引入 ConsumerProducerMap 类型（consumer -> 每个 group 一份 producer 列表）与 countProducerGroups 辅助函数；collectDepsByGroup 改为按对解析并校验偶数长度；buildProducerConsumerMapping 拆分为 buildCrossCoreProducerConsumerMapping（跨核，按组分别建映射）与 buildIntraCoreProducerConsumerMapping（核内，保持原 DenseMap 语义）；filterMemCrossCoreDepsByMainLoop 改为按内层 producer 列表逐组过滤，允许消费多组的 consumer 保留部分组；UpdateConditionInfo 将 consumerToGroup 改为 consumerToGroups，allocSSBuffer 的 numBuffers 改为按组计数；UpdateLoopIterTimes 的 calculateCrossDepsFactor 改为对每个组分别计算 requiredBuffers 并取最大值。这是本次系列中影响面最大、最核心的重构，涉及 DynamicCVPipeline 的依赖图初始化、buffer 分配、循环次数计算三处联动，接口签名（crossCoreDependentMap、calculateCrossDepsFactor）发生变化。主要风险是跨核/核内映射语义差异被误用（跨核按组、核内仍扁平）、组的 producer 列表为空或组间 main_loop 不一致时的错误处理路径变化（原为 return -1，现部分改为 continue），需重点关注。",
+      "tags": [
+        "feature",
+        "refactor",
+        "high-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "crossCoreDeps 属性格式与语义发生不兼容变更，依赖图、buffer 数量与循环迭代次数的计算路径全部改写，现有针对单组 [group, role] 的用例无法覆盖多组/双角色场景，需要新增多组映射、跨 main_loop 过滤、buffer 计数与 factor 计算的测试；同时既有 lit 用例中依赖旧属性格式的输入也需更新。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AddControlFlowCondition",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline"
+        ]
+      },
+      "message": "[ssbuffer](feat) fit the change of crossCoreDeps (#2049)\n\nCo-authored-by: sxm <sunxianmiao@h-partners.com>"
+    },
+    {
+      "sha": "7eed63e0fa05364903f23260cb2a57b4ab85da34",
+      "comment": "变更意图：修正 Ascend DynamicCVPipeline（DCP）中两份硬编码的内核名清单以支持更多场景。实现方式上，AnalyzeName.cpp 的 interceptrFunc 数组删除了 'chunk_abc_bwd_kernel_dh'、'chunk_gsa_bwd_k_kernel_dqkvg'、'chunk_gsa_fwd_k_kernel_intra' 三项，使这些内核不再被 DCP 的 name 分析归类为需要 interception 的 kernel；Utils.cpp::getCoreTypeOfSimpleOpOrCf 的 regionalDisabledOps 显式声明为长度 4（constexpr llvm::StringLiteral regionalDisabledOps[4]），并移除了列表中的 'backward_dkdv'，使该函数返回 CoreType::UNDETERMINED 的内核集合相应缩小。两处改动合计仅 +2/-5 行，属纯清单维护。潜在风险：一是清单硬编码在内核名的稳定性上很脆弱，若上游/业务侧内核重命名，DCP 会静默地不再拦截或误分类，且不会有编译或运行期报错；二是显式指定数组长度 [4] 与初始化项数量绑定，后续若新增/删除项而忘记同步长度会造成编译期报错（虽然能尽早暴露问题，但需维护者留意）；三是删除拦截/禁用项会改变 DCP 对相关内核的流水线策略（可能影响动态 CV pipeline 的调度与性能），需确认这些内核在新的场景下确实不再需要该处理。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "low-risk",
+        "ascend",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "改动仅调整 DCP 分析阶段硬编码的内核名清单（interceptrFunc 与 regionalDisabledOps），不涉及接口、数据结构、pass 注册或编译流水线阶段变化，也未新增可独立断言的逻辑分支；被增删的内核名均为具体业务 kernel 名，无法由通用单测直接构造覆盖。现有 third_party/ascend/unittest/DynamicCVPipeline_ut/ 下的测试可作为整体回归看护，验证 DCP 对内核分类与流水线生成的基本行为未受影响。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/"
+        ]
+      },
+      "message": "[ssbuffer](fix) Support more scenarios (#2073)\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>"
+    },
+    {
+      "sha": "e637838439fb5ab5f542b00d7f6776b59584324e",
+      "comment": "修复 getBoundarySizes 对 permuted strides 的分解顺序：原先按逻辑轴序 [0..rank) 遍历，当 strides 非 major-to-minor（如 [1, 800, 20]）时会把整个线性 offset 误算到 axis 0 导致边界尺寸被错误裁剪。现改为：先检测所有 stride 是否为常量，若为常量则按 |stride| 降序稳定排序得到 axisOrder（major-to-minor 物理序），再按该顺序分解 offset，从而正确还原各逻辑轴的块内偏移与边界尺寸。改动位于 Utils.cpp 的边界尺寸计算，影响所有使用 block pointer + boundary_check 的 permuted/非连续 stride 场景，属中高影响面的正确性修复。配套更新 test_make_block_ptr_boundary_size.mlir（新增 boundary_size_permuted_strides 用例，strides [1,800,20]、flat offset 15047 反解 [18,32,7]、边界 [1,12,8]）与 pytest 用例（非连续 permuted tensor 端到端）。潜在风险：仅当所有 stride 均为常量时才重排，动态 stride 场景保持旧序，可能出现常量/动态混合时行为不一致。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "TritonToLinalg"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "边界尺寸计算结果直接体现在 memref.subview 的尺寸上，属强断言点；本 commit 已新增 lit 与 pytest 用例覆盖 permuted strides，但动态 stride 与常量/动态混合场景未覆盖，建议补充以固化“仅常量时重排”的既定行为。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/test_make_block_ptr_boundary_size.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_make_block_ptr_boundary_size.py"
+        ]
+      },
+      "message": "[Utils](fix) handle permuted strides in boundary sizes (#2057)"
+    },
+    {
+      "sha": "33df0c1504ca558d65125cc31d9264a6ecffa208",
+      "comment": "新增 MergeCubeBlock pass（cube 块合并）及配套基础设施：新增 BlockDependencyGraph（以 BlockNode 为单位构图，节点内保存 pred/succ 邻接集，BFS 拓扑计算 depth，仅 cube↔vector 类型切换时 depth+1，并提供 rebuildAfterMerge 局部重算深度）；新增 MergeCubeBlockPass，在 main_loop block 上找同 depth、有共同异类型前驱/后继、且合并后不成环的 cube 块对进行迭代合并；ComputeBlockIdManager 新增 updateBlockIdWithInner（把原先散落在 UBUsageOptPass::processOpsInblock 的“父 op 与内部 op 同 block 时整体改 id、跳过 sync op、linalg 只改父”逻辑收敛为公共 API）；MoveLoadIntoUserPass/UBUsageOptPass 改用该新 API；MergeComputeBlockPass 改用 BufferCountManager 读取 intra/inter buffer 数量（不再直接读 kIntraBufCount/kInterCoreBufCount 属性）；ComputeBlockOptPass 流水线在 merge-compute-block + reorder 之后追加 merge-cube-block + 再次 reorder，并注册新 pass；InterCoreTransferAndSync 新增 getFixpipePointAfterProducer 以在 producer 为非 scf 控制流 op 时把 prodEnd 收紧到 fixpipe 点。整体是规模较大的新特性（约 1200 行），涉及 pass 注册顺序、blockId 管理与依赖图三处，风险高：pass 顺序变化会改变整体 IR 形态；rebuildAfterMerge 在 mergeBlocks 已改写 blockIdManager 之后失败会留下不一致状态（代码注释已承认非事务性）；depth 的“同类型不增”规则依赖 getCoreTypeOfSimpleOpOrCf 的判定准确性。新增 merge_cube_block.mlir lit 用例覆盖可合并与不可合并（不同前驱、单层 for 非最内层）三类场景。",
+      "tags": [
+        "feature",
+        "high-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增独立 pass 与公共 API（updateBlockIdWithInner、BufferCountManager 取值路径、createMergeCubeBlockPass 注册），流水线顺序被改变，既有 DynamicCVPipeline 的 lit 输出可能随之变化；新用例仅覆盖合并成功/失败的部分场景，未覆盖与 crossCoreDeps 多组映射的交互、pass 回退后 reorder 的行为、以及 InterCoreTransferAndSync 中 fixpipe 点调整的端到端效果。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/merge_cube_block.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow"
+        ]
+      },
+      "message": "[ssbuffer](feat) add merge-cube-block pass (#2035)\n\n* [ssbuffer](fix) updateBlockId consider multi-region\n\n* [ssbuffer](feat) add merge-cube-block pass\n\nSigned-off-by: fishofnanqi <1074959344@qq.com>\n\n* [ssbuffer](fix) get bufferCount through BufferCountManager\n\n---------\n\nSigned-off-by: fishofnanqi <1074959344@qq.com>\nCo-authored-by: shaoyiyang <shaoyiyang1@huawei.com>\nCo-authored-by: lichengfeng497 <1309837013@qq.com>"
+    },
+    {
+      "sha": "95eb8c1a6e8735cf58170525ad0fccf02e618d74",
+      "comment": "文档修正：third_party/ascend/language/cann/extension/scope.py 的 docstring 原用 Markdown 围栏代码块（Sphinx 按 RST 渲染会显示为字面文本），且示例使用了不存在的 feature_a 参数；现移除示例代码，改为 :param core_mode: 的 RST 字段说明，明确取值仅 'cube'/'vector'；同步把 docs/zh/python-api/_ascend_constraints.py 中 scope 约束由 “must be 'vector', 'cube', 'SIMT', or 'SIMD'” 修正为 “must be 'vector', 'cube'”。属纯文档变更，与 scope.py 实际签名（__init__(self, core_mode: str, ...)）保持一致，风险低。",
+      "tags": [
+        "docs",
+        "low-risk",
+        "language-cann-extension"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅修改 docstring 与文档约束文本，不改变任何运行时行为或接口签名；若仓库有文档构建校验则由 docs 构建覆盖，无需新增测试用例。",
+        "suggested_test_areas": [
+          "docs/zh/python-api/_ascend_constraints.py",
+          "third_party/ascend/language/cann/extension/scope.py"
+        ]
+      },
+      "message": "[doc](fix) remove example in scope.py (#2039)\n\nSphinx renders docstrings as RST, so the Markdown fenced code block\nshowed up as literal text on Read the Docs. Convert it to a\n``code-block`` directive and fix the example: pass the required\n``core_mode`` argument instead of the unsupported ``feature_a`` and\nadd the missing ``triton.language`` import."
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

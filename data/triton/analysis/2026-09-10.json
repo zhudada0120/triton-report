@@ -1,0 +1,567 @@
+{
+  "date": "2026-09-10",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-09-11T04:10:55.864070+08:00",
+  "daily_summary": "当日变更围绕 TritonGPU 内核优化正确性、Gluon 前端的 inline asm 能力扩展和布局推断修复、以及 Triton 前端类型提升规则的 BC-breaking 修复展开。其中 FuseNestedLoops 的空内层循环保护经历了一次 revert/reland 反复（#11607 被 revert 后以 #11688 reland，将空循环判定从 `ub == 0` 改为 `ub <= 0` 并支持无符号比较）；CombineBroadcastMulReducePattern 修复多结果 reduce 折叠崩溃；MMAv2 FP64 large-K 支持通过 LinearLayout 排列重写操作数映射；Gluon 新增 per-thread `inline_asm`（含 shared/TMEM descriptor 操作数与显式结果布局），并为 auto layout 推断引入 distance 机制与 SameResultsType trait；ConSan 按已证明索引切片 proxy/barrier 记账表；interpreter 修复 atomic_load/atomic_store 参数个数不匹配；另有 triton_kernels 去除 torch 导入依赖、NVFP4 nearest-even scale 舍入、ptxas 版本更新等外围改动。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 的影响集中在少数几个核心共享路径：Gluon 的 `SameResultsType` trait 与 `verifySameResultsType` 新增在 include/triton/Dialect/Triton/IR（TTIR 方言定义，属 Ascend 复用路径），会改变 split/join 的 verifier 行为；`SameResultsType` 对应的 TritonOps.td 中 `tt.split` 增加 trait，可能影响 TTIR→TritonToLinalg 转换链的输入合法性判定；`TritonSemantic.minimum/maximum` 签名改为接受 `numbers.Number` 且 core.py 的 `_promote_bfloat16_to_float32` 语义变化，属于前端语义层（Ascend 复用的平台无关接口），可能影响 Ascend 前端生成 IR 的 dtype 与数值行为；interpreter.py 的 `create_atomic_load/store` 参数修正位于 Ascend 继承的 `InterpreterBuilder`（AscendInterpreterBuilder 直接继承），Ascend 侧 CPU 解释执行需同步验证。其余变更（MMAv2 FP64、FuseNestedLoops、ConSan、triton_kernels、ptxas、NVFP4、TritonGPU inline asm 的 NV 特定 lowering）均位于 NVIDIA 专属或 Ascend 不使用的路径（TritonGPU→LLVM、third_party/nvidia、lib/Dialect/TritonInstrument 与 Gluon nvidia 后端），对 triton-ascend 无影响。Gluon inline_asm 的 Python 前端（python/triton/language/core.py 的 inline_asm_elementwise 重构）虽在共享文件中，但 Ascend 不使用 Gluon 路径。",
+  "commits": [
+    {
+      "sha": "59c11c8d8d732cbdbf7c5f4159340e546a77278b",
+      "comment": "reland #11607 的空内层循环扁平化修复。原实现在 `FuseNestedLoops.cpp::speculateInnerLoopLength` 中通过 `computeNumIters` 计算内层循环迭代次数并与 0 比较判空，问题是 SCF for 循环的 step 为正时下界大于上界也是空循环，`ub == 0` 判定不完整（且对无符号比较语义不准）。新实现直接用内层循环自身的 `getUnsignedCmp()` 选择 `uge`/`sge` 谓词，比较 lowerBound 与 upperBound 得出 `innerLoopEmpty`，并新增 `@speculate_unsigned_inner_bounds` lit 用例和 6 组边界参数 + flatten 的 pytest 回归用例。改动仅影响 TritonGPU 的 flatten pass（NVIDIA/AMD TTGIR 路径），不涉及 Ascend 使用的 TTIR/TritonToLinalg 链路。风险较低，但该 commit 在被 revert 前的版本曾导致测试失败，说明该 pass 的边界语义对下游有连带，需注意 lit CHECK 行的精确性。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "compiler-passes"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Dialect/TritonGPU/Transforms/FuseNestedLoops.cpp，属于 TritonGPU（TTGIR）优化 pass，Ascend 走 TritonToLinalg 路径，不使用 TTGIR flatten pass。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TRITONGPU] Reland empty inner loop flattening fix (#11688)\n\nReland #11607 and update the MLIR empty-loop guard check from `ub == 0`\nto `ub <= 0`.\n\nCo-authored-by: Mingfei Guo <52491257+guoriyue@users.noreply.github.com>"
+    },
+    {
+      "sha": "2a179bcd004031d1f29146af460289ca09a3b152",
+      "comment": "修复 min/max 类型提升规则（BC-breaking）。原先 `tl.minimum/maximum` 在进入 `binary_op_type_checking_impl` 之前调用 `_semantic.to_tensor(x)`，把 constexpr 标量立即物化为 float32，破坏了『tensor dtype 优先于 constexpr 类型』的提升规则。现改为 `_unwrap_if_constexpr` 保留标量的 Python 原生类型，让类型提升逻辑自行决定结果 dtype；同时 `_promote_bfloat16_to_float32` 从依赖 `t.type.scalar` 改为 `isinstance(t, tensor) and t.dtype is bfloat16`（否则标量路径会 AttributeError），`semantic.minimum/maximum` 签名放宽为 `TensorTy | numbers.Number`。这是明确标注的 BC-breaking 行为变更，会影响所有后端的前端类型推导结果（如 `tl.maximum(tl.float16_tensor, 0.0)` 从 float32 变为 float16）。对 triton-ascend 而言，python/triton/language/semantic.py 与 core.py 都是共享前端，虽然 Ascend 的 `_patched_dot` 只覆写 dot，但 minimum/maximum 的签名与实现变化会改变 Ascend 前端生成的 TTIR dtype，需要跟随验证数值语义。",
+      "tags": [
+        "bugfix",
+        "high-risk",
+        "frontend",
+        "language"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "影响 TritonSemantic.minimum/maximum 的签名（参数类型从 TensorTy 放宽为 TensorTy | numbers.Number）与行为，以及 core.py 的 _promote_bfloat16_to_float32 实现。Ascend 复用 python/triton/language 前端（通过 CodeGenerator 生成 TTIR 后进入 TritonToLinalg），min/max 的结果 dtype 变化会直接改变 Ascend lowering 链的输入 IR。测试基准 `test_minimum_maximum_scalar_promotion` 中的 case（如 `tl.float16` + `0` 保持 float16、`tl.bfloat16` 提升到 float32）需要 Ascend 侧确认一致。",
+        "testing": "Ascend 侧现有的算子端到端测试（third_party/ascend/unittest/pytest_ut/）中涉及 minimum/maximum 的用例需重新跑通过，特别验证 bfloat16 与 constexpr 标量混合时的数值与 dtype 行为。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/",
+          "python/triton/language/semantic.py",
+          "python/triton/language/core.py"
+        ]
+      },
+      "message": "[BC-Breaking][Frontend] Fix min/max type promotion (#11472)\n\nOur type promotion rules state that tensor dtypes take precedence over\nconstexpr types, but the `to_tensor` here materialized a `float32` value\nbefore we got to the type promotion logic.\n\nThis is a BC-breaking change, but also a bug fix. Lets hold of on\nmerging for now until I can update the internal pin.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/language/semantic.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "c19c127f054b4d0bdbbae2a62fb7c2a3d8d899ab",
+      "comment": "修复 `CombineBroadcastMulReducePattern` 在处理多结果 `tl.reduce` 时的崩溃。原实现手工检查 reduce 的 combine region 结构（`hasOneBlock()` 且 op 数量为 2 且首个 op 是 `isAddF32`），但未校验 reduce 结果数，导致多结果 reduce 进入 `replaceOpWithNewOp<DotOp>` 时触发 `op->getNumResults() == newOp->getNumResults()` 断言失败。修复方式为改用新增的 `ReduceOp::getSingleCombiner()`（返回单 combiner 或 null），使多结果 reduce 直接 `return failure()` 跳过该 pattern。这是 TTIR 层（lib/Dialect/Triton/Transforms/Combine.cpp）的通用 canonicalization，属于 Ascend 复用的 lib/Dialect/Triton 路径，但 Ascend 的 TritonToLinalg 转换依赖该 pass 的输出，多结果 reduce 现在不再被错误折叠成 dot，因此 IR 形态可能变化（保持 tt.reduce）。风险低，属于正确性修复。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "compiler-passes"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "影响 lib/Dialect/Triton/Transforms/Combine.cpp 中 CombineBroadcastMulReducePattern 的匹配条件，引入 ReduceOp::getSingleCombiner()。TTIR 是 Ascend 复用前端并进入 TritonToLinalg 的输入源，多结果 reduce 不再被错误折叠成 tt.dot，改变了 Ascend lowering 链看到的 IR 形态，需要确认 TritonToLinalg 对 tt.reduce 多结果的支持。",
+        "testing": "Ascend 侧如有多结果 reduce（如同时返回 sum/count）的算子测试需确认可正常 lower 到 linalg 且结果正确。",
+        "needs_test_update": false,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/",
+          "lib/Dialect/Triton/Transforms/Combine.cpp"
+        ]
+      },
+      "message": "[Triton] Don't fold a multi-result reduce in CombineBroadcastMulReducePattern (#11683)\n\nFixes #11662.\n\n`tl.reduce` with more than one result crashes in `TritonCombineOps`.\n\n`CombineBroadcastMulReducePattern` folds `sum(x[:, :, None] * y[None, :,\n:], 1)` into `dot(x, y)`. It never checks how many results the reduce\nhas, so a multi-result reduce reached `replaceOpWithNewOp<DotOp>`:\n\n```\nPatternMatch.cpp:144: RewriterBase::replaceOp:\nAssertion `op->getNumResults() == newOp->getNumResults()' failed.\n```\n\nTo check the reduce, added `ReduceOp::getSingleCombiner()`.\n\n### Tests\n\n`test_combine_broadcast_mul_reduce_multiple_results` in\n`test/Triton/combine.mlir`, which hits the assert without this change.\nFull `lit` suite: 299 passed, 2 unsupported, 0 failed.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [ ] I have not added any `lit` tests.\n- [x] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "lib/Dialect/Triton/"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "5cb4ad8e55d522fd3339a10df1cb28bab176fb15",
+      "comment": "改进 Gluon 的自动布局传播（auto layout propagation）。核心改动：将 LayoutInfo 中的 `bool mayVary` 替换为 `unsigned distance`（记录到 seed 的模糊推断次数），在冲突解析时优先选择 distance 更小的编码，从而消除 `preserve_join_layout` 场景下正向/反向推断歧义；同时新增 `SameResultsType` trait（include/triton/Dialect/Triton/IR/Traits.h + TritonInterfaces.td + TritonOps.td 的 `tt.split`）与其 verifier `verifySameResultsType`，并在 InferLayoutUtils.cpp 中新增 `hasSameOperandsAndResultEncoding`/`hasSameOperandsEncoding`/`hasSameResultsEncoding` 辅助函数以严格传播同编码约束（解决 `equivalent_join_operands` 与 `split_result_reconciliation` 的随机性）。`SameResultsType` trait 与 `verifySameResultsType` 位于 TTIR 方言定义（Ascend 复用路径），会改变 `tt.split` 的合法性校验；`TritonOps.td` 中 `tt.split` 的 trait 列表变化也会被 Ascend 的 TritonToLinalg 转换链感知。Gluon 本身的 `InferLayoutUtils.cpp` 属于实验性 Gluon 前端，Ascend 不使用。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "medium-risk",
+        "compiler-passes",
+        "frontend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "影响 include/triton/Dialect/Triton/IR/Traits.h（新增 SameResultsType trait 与 verifySameResultsType 声明）、TritonInterfaces.td（SameResultsType NativeOpTrait 注册）、TritonOps.td（TT_SplitOp 增加 SameResultsType trait）、lib/Dialect/Triton/IR/Traits.cpp（新增 verifySameResultsType 实现）。这些是 TTIR 方言的唯一来源，Ascend 从 TTIR 开始 TritonToLinalg 转换，split 的 verifier 与 trait 变化会影响 Ascend 接受的 IR 合法性。Gluon 的 InferLayoutUtils.cpp 变更对 Ascend 无影响（Ascend 不使用 Gluon）。",
+        "testing": "Ascend 侧需检查是否使用 tt.split 以及 TritonToLinalg 对 split 结果类型一致性的假设；test/Triton/invalid.mlir 中新增的 split_result_type_mismatch 用例语义需与 Ascend 侧 verifier 行为一致。",
+        "needs_test_update": false,
+        "suggested_test_areas": [
+          "include/triton/Dialect/Triton/IR/Traits.h",
+          "lib/Dialect/Triton/IR/Traits.cpp",
+          "third_party/ascend/unittest/"
+        ]
+      },
+      "message": "[Gluon] Improve auto layout propagation (#11685)\n\nCloses #11674\n\nThis identifies and fixes all the root causes of the issues in\n@lezcano's PR, but with a slightly different approach.\n\n\n## `preserve_join_layout`\n```mlir\n#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [4, 1, 1], instrShape = [1, 16, 8]}>\n#dot = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>\n#auto = #gluon.auto_encoding\nmodule attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32, ttg.target = \"cuda:103\", \"ttg.threads-per-warp\" = 32 : i32} {\n  tt.func public @preserve_join_layout(%arg: bf16) -> tensor<4x128x16xbf16, #dot> {\n    %input = tt.splat %arg : bf16 -> tensor<4x8x128xbf16, #auto>\n    %padding = arith.constant dense<0.0> : tensor<4x8x128xbf16, #auto>\n    %joined = tt.join %input, %padding : tensor<4x8x128xbf16, #auto> -> tensor<4x8x128x2xbf16, #auto>\n    %transposed = tt.trans %joined {order = array<i32: 0, 3, 1, 2>} : tensor<4x8x128x2xbf16, #auto> -> tensor<4x2x8x128xbf16, #auto>\n    %reshaped = tt.reshape %transposed : tensor<4x2x8x128xbf16, #auto> -> tensor<4x16x128xbf16, #auto>\n    %lhs = tt.trans %reshaped {order = array<i32: 0, 2, 1>} : tensor<4x16x128xbf16, #auto> -> tensor<4x128x16xbf16, #auto>\n    %result = gluon.set_auto_layout %lhs : tensor<4x128x16xbf16, #auto> -> tensor<4x128x16xbf16, #dot>\n    tt.return %result : tensor<4x128x16xbf16, #dot>\n  }\n}\n```\n\nIn this example we first propagate the layouts backward with `mayVary =\ntrue`, and then once we get to the splat it tries to propagate forwards\nthrough the join and gives an incompatible layout. The above PR\nunconditionally picks the result layout, which works here but would be\nwrong if we were doing forward inference from the seed.\n\nI fix this case by changing `bool mayVary` to `int distance`, which\ntells us the number of variable inferences between the current layout\nand a seed. By always preferring the lower distance layout, we remove\nthe ambiguity and pick the correct layout.\n\n# `equivalent_join_operands`\n\n```mlir\n#q = #ttg.blocked<{sizePerThread = [1, 1, 1, 1], threadsPerWarp = [1, 1, 1, 32], warpsPerCTA = [1, 1, 1, 4], order = [0, 1, 2, 3]}>\n#j = #ttg.blocked<{sizePerThread = [1, 1, 1, 1, 2], threadsPerWarp = [1, 1, 1, 32, 1], warpsPerCTA = [1, 1, 1, 4, 1], order = [4, 0, 2, 1, 3]}>\n#auto = #gluon.auto_encoding\nmodule attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32, ttg.target = \"cuda:103\", \"ttg.threads-per-warp\" = 32 : i32} {\n  tt.func public @equivalent_join_operands(%ptr: !tt.ptr<f32>) -> (tensor<1x1x1x128xf32, #q>, tensor<1x1x1x128x2xf32, #j>) {\n    %p = tt.splat %ptr : !tt.ptr<f32> -> tensor<1x1x1x128x!tt.ptr<f32>, #auto>\n    %x = tt.load %p : tensor<1x1x1x128x!tt.ptr<f32>, #auto>\n    %a = tt.trans %x {order = array<i32: 1, 0, 2, 3>} : tensor<1x1x1x128xf32, #auto> -> tensor<1x1x1x128xf32, #auto>\n    %b = tt.trans %x {order = array<i32: 0, 2, 1, 3>} : tensor<1x1x1x128xf32, #auto> -> tensor<1x1x1x128xf32, #auto>\n    %joined = tt.join %a, %b : tensor<1x1x1x128xf32, #auto> -> tensor<1x1x1x128x2xf32, #auto>\n    %anchor = gluon.set_auto_layout %x : tensor<1x1x1x128xf32, #auto> -> tensor<1x1x1x128xf32, #q>\n    %out = ttg.convert_layout %joined : tensor<1x1x1x128x2xf32, #auto> -> tensor<1x1x1x128x2xf32, #j>\n    tt.return %anchor, %out : tensor<1x1x1x128xf32, #q>, tensor<1x1x1x128x2xf32, #j>\n  }\n}\n```\n\nIn this example, the layout of `%x` is fixed but the two transposes `%a`\nand `%b` will infer different layouts, both with `distance=1`. Backward\npropagation through the join will return the same layout for both, but\nthere is no rule that would make that preferred over the original\nlayouts so the choice is made at random. This can lead to invalid join\ncalls where the input layouts are different.\n\nI fix this by explicitly updating based on `SameOperandTypes`, and\nsimilarly for split we add the `SameResultTypes` trait. This strictly\nenforces the validity of the IR and provides a same-distance propagation\npath through mayVary ops.\n\n---------\n\nCo-authored-by: lezcano <lezcano-93@hotmail.com>",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "include/triton/Dialect/Triton/",
+          "lib/Dialect/Triton/"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "a0af442df17c8acff35b7488deae704277da46d2",
+      "comment": "MMAv2 操作数映射改用 LinearLayout 重写，支持 FP64 large-K。原 MMAv2.cpp 中大型 K（`bitwidth * kWidth > 32`）的手写 register 排列逻辑对 FP64 有 `bitwidth != 64 || largeK == false` 的断言，FP64 窄输入（kWidth=2/4）会命中不支持路径。新实现用 `LinearLayout::identity1D(size, reg, reg).reshapeIns(...).transposeIns(...)` 构造一个静态排列（element/k/outer/kTiles/tile 五维），并按 `removeBroadcast` + `broadcastAs` 恢复重复槽位，彻底移除手工 `si` 索引逻辑（删 172 行）。同时在 `TritonGPUInferLayoutInterface` 中新增 MMAv2 K 维度校验 `K >= 4 * kWidth`（`isAmpere() && getShapePerCTA(aType).back() < 4 * aEncoding.getKWidth()` 报错）。改动集中在 third_party/nvidia（NVIDIA 专属 lowering）与 TritonGPU 方言的 infer layout（Ampere MMA 校验）。新增的 `K >= 4 * kWidth` 约束会拒绝某些以前能编译（但结果错误）的布局，属于严格化。对 Ascend 无影响。",
+      "tags": [
+        "feature",
+        "bugfix",
+        "medium-risk",
+        "nvidia",
+        "codegen"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。核心变更在 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/DotOpToLLVM/MMAv2.cpp（NVIDIA 专属 MMA 操作数打包）与 lib/Dialect/TritonGPU/IR/Dialect.cpp 中的 Ampere MMA 校验（`K >= 4 * kWidth`），均为 NVIDIA TTGIR→LLVM 路径。Ascend 走 TritonToLinalg 替代 TritonGPU→LLVM，不涉及。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Use LL to simplify MMAv2 operand mapping and support FP64 large K (#11664)\n\nFP64 dots with narrow inputs can select `kWidth > 1` and hit the\nunsupported large-K assertion. Use static linear-layout permutations for\nMMAv2 operand packing to support these layouts.\n\nCovers the FP64 upcast regression from\n[#11632](https://github.com/triton-lang/triton/pull/11632) through the\nshared parameter grid in `python/test/regression/test_cast_matmul.py`.\nThe dtype lists include FP64 inputs and outputs, covering `float16` and\n`int8` upcasts to FP64 in both operand orders across the tested block\nsizes, including `(BLOCK_M, BLOCK_N, BLOCK_K) = (32, 32, 32)`. These\nexercise `kWidth=2,4`. Unsupported FP8-to-FP64 conversions are skipped."
+    },
+    {
+      "sha": "8a51a348f1a863c5b0d6a9f06c77902a0bba1705",
+      "comment": "修复 interpreter 模式下 `create_atomic_load`/`create_atomic_store` 向 `create_masked_load`/`create_masked_store` 传递多余位置参数导致每次调用 `tl.atomic_load`/`tl.atomic_store` 抛出 TypeError 的问题（Issue #11675）。改动是把多传的 `None` 参数删掉（5 参数 → 4 参数 / 4 参数 → 3 参数），并给 `test_atomic_load_store` 补上 `@pytest.mark.interpreter` 标记使 `make test-interpret` 覆盖到该路径。`python/triton/runtime/interpreter.py` 是 Ascend 通过 `AscendInterpreterBuilder`/`AscendReduceOps`/`AscendScanOps` 继承扩展的路径（triton-ascend 的 CPU 解释执行依赖 InterpreterBuilder 的 op 注册协议），该修复直接影响 Ascend 侧解释执行 atomic_load/atomic_store 的能力。风险低，纯 bugfix。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "runtime",
+        "interpreter"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "影响 python/triton/runtime/interpreter.py 中 InterpreterBuilder.create_atomic_load/create_atomic_store 的调用签名，与 create_masked_load(ptr, mask, other, cache_modifier, ...)/create_masked_store(ptr, val, mask, cache_modifier) 对齐。Ascend 的 AscendInterpreterBuilder 继承 InterpreterBuilder 并复用其 masked load/store 与 atomic 路径，修复后 Ascend 侧 CPU 解释执行 atomic 操作不再抛 TypeError。",
+        "testing": "Ascend 侧如使用 TRITON_INTERPRET=1 做 Ascend kernel 的 CPU 验证，建议确认 atomic_load/atomic_store 在解释执行下正常工作。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/backend/ascend_interpreter.py",
+          "python/triton/runtime/interpreter.py"
+        ]
+      },
+      "message": "[interpreter] fix argument count mismatch in create_atomic_load/create_atomic_store (#11676)\n\n## Summary\n\n`create_atomic_load` and `create_atomic_store` each pass one extra\npositional argument to `create_masked_load`/`create_masked_store`,\nso every interpreter-mode call to `tl.atomic_load`/`tl.atomic_store`\nraises a `TypeError` before running. Likely a leftover from a prior\nsignature change (e.g. a `cache_policy` consolidation) where these two\ncall sites weren't updated to match.\n\nFixes #11675.\n\n## Fix\n\nDrop the extra `None` from each call so the argument count matches the\ncurrent 5-parameter `create_masked_load` and 4-parameter\n`create_masked_store` signatures.\n\nAlso add `@pytest.mark.interpreter` to the existing\n`test_atomic_load_store`, which already covers this exact path but was\nnever selected by `make test-interpret` (`pytest -m interpreter`) —\nexplaining why this argument-count bug survived undetected. The test's\nonly compiled-only assertions are already gated behind `is_cuda()`, so\nno further changes are needed for it to pass under\n`TRITON_INTERPRET=1`.\n\n## Testing\n\n- Repro kernel (`tl.atomic_load` + `tl.atomic_store`, int32) under\n  `TRITON_INTERPRET=1`: `TypeError` before the fix, correct output\n  (`[0..N-1]`) after.\n- Same kernel in compiled (non-interpreter) mode: unaffected before\n  and after — confirms this bug and fix are interpreter-only, and the\n  fix introduces no regression on the compiled path.\n- `test_atomic_load_store` (36 parametrizations, newly marked\n  `@pytest.mark.interpreter`): unfixed → all 36 fail with the\n  `TypeError`; fixed → all 36 pass under `TRITON_INTERPRET=1\n  --device=cpu`; compiled mode (default GPU device) → all 36 pass\n  before and after, confirming no regression.\n- Verified on upstream/main build (A100, commit `4a15f415d8`).\n- Local formatting checks against the pinned versions in\n  `.pre-commit-config.yaml` (`yapf==0.43.0`, `ruff==0.9.1`): clean.\n\n## Note\n\nCompiled mode never hits this code — it goes through the nanobind C++\nextension directly. Only `TRITON_INTERPRET=1` execution is affected.\n\n## New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run the pinned formatters (`yapf==0.43.0`, `ruff==0.9.1`)\n  against the changed files (pre-commit itself was not installed\n  locally, so I ran the pinned tool versions directly in a scratch\n  venv; both reported clean).\n- [x] I have added tests.\n  - `/python/test` for end-to-end tests\n- [x] I have not added any `lit` tests.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/runtime/interpreter.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "14bfd64e26e5de23deecd4d6ffc9b67224ad8b60",
+      "comment": "Revert #11607（Preserve empty inner loops during flattening），理由是存在 merge conflict 且测试失败。将 `speculateInnerLoopLength` 回退为 `computeNumIters` + `ub == 0` 的判定，并回退对应的 pytest 与 lit 用例。该 revert 与同日的 #11688（59c11c8d8d）是同一系列，后者以 `ub <= 0`（sge/uge）重新引入修复。改动仅限 TritonGPU flatten pass（NVIDIA/AMD TTGIR 路径），对 Ascend 无影响。",
+      "tags": [
+        "revert",
+        "low-risk",
+        "compiler-passes"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。回退位于 lib/Dialect/TritonGPU/Transforms/FuseNestedLoops.cpp，TritonGPU 专属优化 pass，Ascend 不使用 TTGIR flatten。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Revert \"[TRITONGPU] Preserve empty inner loops during flattening\" (#11686)\n\nReverts triton-lang/triton#11607\n\nLooks like there was a merge conflict and tests are failing."
+    },
+    {
+      "sha": "4a57ffb21d95088147ba5b1c899d8aad64dc4b64",
+      "comment": "#11607 原始提交（后被 revert 再 reland）。修复扁平化把 lower > upper 的空内层循环当作非空、导致 body 每个外层迭代执行一次的问题。改动是 `speculateInnerLoopLength` 用 lowerBound/upperBound 直接比较（sge/uge 依据 `getUnsignedCmp()`）替代 `computeNumIters` 的 `ub == 0` 判定，并新增 `@speculate_unsigned_inner_bounds` lit 用例与 6 组边界参数的 pytest 用例。位于 TritonGPU flatten pass，Ascend 不使用。注意该改动引入的 `sge` 判定在后续 reland 中被修正为 `ub <= 0`。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "compiler-passes"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。位于 lib/Dialect/TritonGPU/Transforms/FuseNestedLoops.cpp，TritonGPU 专属。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TRITONGPU] Preserve empty inner loops during flattening (#11607)\n\nAn inner range with lower > upper is empty, but flattening treated it as\nnonempty and ran its body once per outer iteration."
+    },
+    {
+      "sha": "4a15f415d8ac4f830ce788c6fca3a5b3b29908e7",
+      "comment": "让 `triton_kernels.numerics` 与 `triton_kernels.target_info` 在导入时不加载 PyTorch。numerics.py 改用 `from __future__ import annotations` + `TYPE_CHECKING` 下的 torch 导入（延迟类型注解）；target_info.py 的 `num_sms()` 从 `torch.cuda.get_device_properties(0).multi_processor_count` 改为 `triton.runtime.driver.active.utils.get_device_properties(0)[\"multiprocessor_count\"]`，使用 Triton 原生 device-property 查询。导入耗时从 708/944ms 降到 7/272ms。值得注意的是 `driver.active.utils` 是各后端（含 Ascend 的 `npu_utils`）必须提供的 Utils 单例，`get_device_properties` 返回的 key 命名按后端约定，若 Ascend 的 Utils 不返回 `multiprocessor_count` 键，`triton_kernels.target_info.num_sms()` 在 NPU 上会 KeyError。不过 triton_kernels 本身是 NVIDIA 导向的目录，Ascend 一般不使用。",
+      "tags": [
+        "performance",
+        "refactor",
+        "low-risk",
+        "triton-kernels"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 python/triton_kernels（NVIDIA 导向的辅助库），Ascend 不使用 triton_kernels.target_info.num_sms。若未来 Ascend 复用该函数，需保证其 npu_utils 的 get_device_properties 返回 `multiprocessor_count` 键。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[triton_kernels] Avoid Torch imports in numerics and target_info (#11670)\n\n## Summary\n\nImport `triton_kernels.numerics` and `triton_kernels.target_info`\nwithout loading PyTorch. Defer numerics type annotations and use\nTriton's native device-property query in `num_sms()`, preserving its\ndevice-0 behavior.\n\nFresh-process import medians versus main (`691a6deec4`):\n\n| Module | Before | After |\n| --- | ---: | ---: |\n| `numerics` | 708 ms | 7 ms |\n| `target_info` | 944 ms | 272 ms |\n\nMeasured on macOS arm64 with Python 3.12.9 and PyTorch 2.11.0: five\nalternating samples per version after warmup. Each import starts with\nTorch unloaded; savings are not additive.\n\n## Validation\n\nOn four NVIDIA GB300 GPUs, the native query returned **152\nmultiprocessors** per GPU, matching PyTorch. It passed with Torch\nimports blocked and `TRITON_DEFAULT_BACKEND=nvidia`. Automatic discovery\nalso passed with #11666 applied; backend discovery on unmodified main\nstill imports Torch independently of this helper. No AMD GPU was tested.\n\nPassed on CPU (macOS arm64). This checks both module imports and default\nnumerics metadata while rejecting every Torch import attempt:\n\n```bash\nPYTHONPATH=python/triton_kernels python - <<'PY'\nimport builtins\nimport sys\n\noriginal_import = builtins.__import__\n\ndef forbid_torch(name, *args, **kwargs):\n    assert name != \"torch\" and not name.startswith(\"torch.\"), name\n    return original_import(name, *args, **kwargs)\n\nbuiltins.__import__ = forbid_torch\n\nfrom triton_kernels import numerics, target_info\n\nvalue = object()\nassert numerics.InFlexData().view(value) is value\nassert not numerics.InFlexData().is_per_batch\nassert tuple(numerics.OutFlexData()) == (None, None, None)\nassert not numerics.OutFlexData().is_per_batch\nassert \"torch\" not in sys.modules\nprint(\"Torch-free imports and metadata checks passed\")\nPY\n```\n\n## Lines Changed\n\n| Type | Added | Removed | Net |\n| --- | ---: | ---: | ---: |\n| Tests | 0 | 0 | 0 |\n| Core Logic | 7 | 3 | +4 |\n| AutoGenerated | 0 | 0 | 0 |\n| Total | 7 | 3 | +4 |\n\n## Reviewers Guide\n\n- `numerics.py`: type-checking-only Torch import and deferred\nannotations.\n- `target_info.py`: replace the Torch query with the existing native\n`get_device_properties(0)` helper.\n\n---------\n\nCo-authored-by: Joey Yu <234057141+lyu-oai@users.noreply.github.com>"
+    },
+    {
+      "sha": "e6d36921152b4b18bcfa7bd44c4a1a748450a4f0",
+      "comment": "修复别名分析在函数调用之间丢失 shared-memory 别名的问题，以保留 cluster barrier 正确插入。`AliasInfo::allocs` 现同时保留 shared-memory 函数实参（不仅是 incoming allocation），`SharedMemoryAliasAnalysis` 新增 `visitCallableOperation` 覆写把 shared memory block argument 自身也加入 lattice；`Allocation` 新增 `argumentAliases` 映射与 `getAliasedArgumentIndices`；`MembarAnalysis::getAllocationSlices` 改用该接口，并删除因找不到 argumentIndex 就丢弃 slice 的保守回退。测试新增 `@cluster_call_indexed_argument_reuses_scratch` / `@cluster_callee_indexed_argument_reuses_scratch` 用例，`test-alias.mlir` 增加 `%arg_view -> %arg0` 断言。改动位于 lib/Analysis（共享分析基础设施）与 test/TritonNvidiaGPU/membar-cluster.mlir（NV cluster barrier）。对 Ascend：lib/Analysis 属『可能影响』路径（若 Ascend pass 复用 Alias/Membar 分析则传导），但本次改动主要面向 NVIDIA cluster barrier 场景；Ascend 不走 cluster/TTGIR barrier 插入路径。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "analysis"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（低相关性）。lib/Analysis/Alias.cpp 与 Allocation.cpp 的变更主要服务于 NVIDIA cluster barrier 插入中 shared memory 函数参数别名传播，Ascend 的 TritonToLinalg 路径不涉及 cluster barrier 与 membar-cluster 分析。若 Ascend 有 pass 复用 SharedMemoryAliasAnalysis，则 visitCallableOperation 新增行为会影响其结果，但当前 triton-ascend 未使用。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Analysis] Preserve shared-memory aliases through calls (#11671)\n\nKeep shared-memory function arguments alongside incoming allocations in\n`AliasInfo`, and use their aliases to bind callee effects to caller\nbuffers. This preserves the cluster barriers required before shared\nscratch is reused when calls use indexed descriptor views."
+    },
+    {
+      "sha": "18d56608884789b9ba83e63600ee0ecac92b65c6",
+      "comment": "NFC 清理：移除 buffer-region 分析中不可达的 `WarpSpecializeOp` transfer 分支（warp-specialized region 已在初始化时标记 live），以及 ClusterBarrierInsertion.cpp 中未使用的 `hasUnresolvedCrossClusterDependency` 辅助函数。纯死代码删除，涉及 lib/Analysis/BufferRegion.cpp 与 lib/Dialect/TritonNvidiaGPU/Transforms/ClusterBarrierInsertion.cpp（NVIDIA 专属）。对 Ascend 无影响。",
+      "tags": [
+        "refactor",
+        "low-risk",
+        "analysis",
+        "nvidia"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。删除的是 WarpSpecializeOp 相关死代码路径与 NVIDIA 集群依赖辅助函数，Ascend 不使用 TTGIR warp specialization 与 ClusterBarrierInsertion。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NFC] Remove dead synchronization-analysis paths (#11672)\n\nRemove the unreachable `WarpSpecializeOp` transfer arm from\nbuffer-region analysis and the unused cluster-dependency helper.\nWarp-specialized regions are already marked live during initialization."
+    },
+    {
+      "sha": "4e33d6ddd0d5b497f630fce0335613a630735575",
+      "comment": "Gluon 新增 per-thread `inline_asm` 并允许 `inline_asm_elementwise` 接受 shared/TMEM descriptor 操作数。核心设计是引入 `DialectInlineAsmInterface`（TTIR Dialect.h），让方言在不暴露类型给 Triton dialect 的前提下声明其类型作为 inline asm 操作数的效果与校验；TritonGPU 方言实现 `TritonGPUInlineAsmInterface`（shared descriptor 声明 Read/Write Generic 效果，TMEM descriptor 声明 TensorMemory 效果，并校验纯函数与 partition 数）。新增 `ttg.inline_asm` op（TritonGPUOps.td）带 `DeclareOpInterfaceMethods<MemoryEffectsOpInterface>` 与 `ConditionallySpeculatable`，`TT_ElementwiseInlineAsmOp` 的 args 从 `TT_Type` 放宽为 `AnyType`。C++ 侧新增 `getMemDescAddress`（Utility.h/.cpp）统一 descriptor 地址换算，并从 InstrumentationToLLVM 抽走旧的 `createMemDescToI32`。Python 侧 `gluon.inline_asm`（_core.py/_semantic.py）支持 constexpr 函数生成 asm、grouped operand references、显式结果布局与 `get_total_elems_per_thread`。该变更虽触及 python/triton/language/core.py（inline_asm_elementwise 重构为调用 `_semantic.to_inline_asm_operand` 与 `_semantic.broadcast_tensors`，并新增 `TritonSemantic.to_inline_asm_operand`），属共享前端，但 Ascend 不使用 Gluon inline asm，且新接口是向后兼容的扩展（默认 `to_inline_asm_operand` 等于 `to_tensor`）。风险主要在 NVIDIA descriptor 语义与同步手工化。",
+      "tags": [
+        "feature",
+        "high-risk",
+        "frontend",
+        "gluon",
+        "nvidia",
+        "codegen"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "影响 python/triton/language/semantic.py 新增 TritonSemantic.to_inline_asm_operand（默认实现为 to_tensor）以及 python/triton/language/core.py 中 inline_asm_elementwise 的重构（改用 _semantic.to_inline_asm_operand / _semantic.broadcast_tensors 并新增 broadcast_tensors 调用）。这些是 Ascend 复用的平台无关前端路径；Ascend 若继承 TritonSemantic 覆写 to_inline_asm_operand（当前 triton-ascend 未覆写）会受影响，且若 Ascend 的 semantic 未提供 broadcast_tensors 会因 inline_asm_elementwise 调用而报错。Gluon 的 inline_asm 与 ttg.inline_asm/descriptor 操作数对 Ascend 无影响。",
+        "testing": "Ascend 侧需确认其 TritonSemantic 子类/覆写（含 _patched_dot 机制）与新增 to_inline_asm_operand、broadcast_tensors 调用兼容；如 Ascend 有使用 tl.inline_asm_elementwise 的算子测试需回归。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "python/triton/language/semantic.py",
+          "python/triton/language/core.py",
+          "third_party/ascend/unittest/pytest_ut/"
+        ]
+      },
+      "message": "[Gluon] Add per-thread inline assembly with descriptor operands (#11623)\n\nPR description written by Codex\n\nProduction changes add direct shared/TMEM descriptor operands to Gluon\n`inline_asm_elementwise` and introduce `inline_asm` for one invocation\nper thread with explicit result layouts. Both operations require impure\nassembly when given descriptors. Elementwise asm declares descriptor\nread/write effects; `inline_asm` leaves descriptor accesses opaque and\nrequires the caller to provide their synchronization. A dialect\ninterface keeps TTIR independent of TTGIR.\n\nThe operations have separate lowerings and share descriptor-address\nconversion. Elementwise asm retains its existing packing and chunking.\n`inline_asm` accepts a string or a constexpr string generator with\ngrouped operand references and constraints. Tests and documentation\ncover descriptor views, purity verification, synchronization, 128\nelements per thread, replicated registers, empty outputs, and warp\nspecialization.\n\nRebuilt with `make`. Passed 25 focused pytest cases covering both asm\nAPIs and gfx942 compilation, plus seven TTIR, lowering, verifier,\nbarrier, and proxy-fence lit files. Sanitizer support is outside this\nchange.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "include/triton/Dialect/Triton/",
+          "lib/Dialect/Triton/",
+          "python/triton/language/semantic.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "a9dfd47b6519be55a3168d384ad1cf927e3010dc",
+      "comment": "ConSan（并发 sanitizer）按已证明索引切片 proxy 与 barrier 记账表。此前 ConSan 即使 descriptor 分析已证明只选中单行/单 K，仍展开完整 proxy buffer 与 barrier 表，导致生成代码庞大、编译慢（如 attention backward dQ 从 330s 降到 119s）。改动在 FunctionBuilder 中新增 `hasUniqueBarrierDescriptors`（判断 barrier descriptor 是否唯一，从而启用切片）、扩展 `createLoadTrackingPhase`/`createSetProxyAccessCall`/`createTrackProxyAccessesCallImpl`/`createCompleteBarrierWaitCall`/`createTransferVisibleAccessesCall` 支持 `barrierIndex`/`bufferIndex`/`strides` 参数，按 `singleBuffer`/`sliceBarrierTracking` 切换全表与紧凑视图路径，并保留 origin/CTA/thread mask、phase bank、no-match 与 waiting-bit clear mask。改动位于 lib/Dialect/TritonInstrument（ConSan 方言）与 test/TritonGPU/consan.mlir，属 NVIDIA sanitizer 路径。对 Ascend 无影响（Ascend 不使用 TritonInstrument / ConSan）。",
+      "tags": [
+        "performance",
+        "feature",
+        "medium-risk",
+        "instrumentation",
+        "nvidia"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Dialect/TritonInstrument/IR/FunctionBuilder.cpp 与 ConcurrencySanitizer.cpp，是 NVIDIA ConSan sanitizer 的专用记账逻辑，Ascend 不实现也不调用 ConSan。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ConSan] Slice proxy and barrier bookkeeping by proven indices (#11642)\n\nConSan expands full proxy buffer and barrier tables even when existing\ndescriptor analysis proves a single selected row. Use those proofs to\nnarrow proxy updates and completed-phase loads, retaining full-table\nfallback when the proof is unavailable. Preserve all physical strides,\norigin/CTA/thread masks, both phase banks, no-match behavior, and the\nfull waiting-bit clear mask.\n\nInclude the two adaptations needed to combine the upstream changes:\nconvert completed-copy observer masks to the compact visibility integer\ntype, and clear rank-three copy-commit tables along their issuer axis.\n\nThis patch depends on\n[#11446](https://github.com/triton-lang/triton/pull/11446)–[#11452](https://github.com/triton-lang/triton/pull/11452)\nand [#11626](https://github.com/triton-lang/triton/pull/11626). Its\nexact prepared base is local integration commit\n`e118eeea489cb581d90bec5b8bfe1fc1783cc637`: stack head\n`cb75befccddbb77d7237853d11c6b2140297fc90` plus the current mbarrier\nchange set at `7efc58faf2c1813c3da3588ba57ed1bedcb28413`. Both\nintegration adaptations are included in this patch. Rebase and\nrevalidate if the dependencies change before landing.\n\nValidation:\n\n- Normal native build and `make`; three focused lit files passed.\nExisting GPU regressions: 127 passed, seven expected skips.\n- A saved attention-backward dQ specialization compiled in **119.78s**,\nversus **330.11s** with the prior integrated stack before row\noptimizations. Input, compiler options, PTXAS binary/flags, CPU\nallocation and memory limit match.\n- One complete bitwise-mode native attention grade passed in **430.13s\nof GPU-lock hold time**, under the unchanged **590s** work cap. All four\nwitnesses and functional, FPSan, ConSan, GSan and performance phases\npassed. This application result also uses the separate conservative GSan\ninitializer-memory bound; the candidate cache was cold, while normal\nshared native cubins remained available.\n- The actual optimized FPSan candidate also passed its complete grade in\n**424.78s of GPU-lock hold time**, with the full recorded tolerance\nbudget and all four witnesses. This used the same initializer-memory\nbound and fresh candidate cache. The same candidate previously took\n1,080.05s with the earlier integrated compiler; the two application runs\nused different GB300 devices of the same worker.\n\nThe patch contains generic compiler code and regression tests only.\nCaptured application IR and runtime artifacts are not included."
+    },
+    {
+      "sha": "6d661f751ac201a78366f4d474850834d2c82481",
+      "comment": "为 NVFP4（E4M3 block scale + FP4 值）转换新增 `DequantScaleRoundingMode.ROUND_NEAREST = 2`，使用 `max(abs(x))/6` 计算 scale 并对阶舍入（ties to even），scale 溢出饱和到 448。改动在 numerics_details/mxfp.py（枚举、API 校验、Torch 参考实现，clamp 后再 cast 避免 overflow NaN）、_downcast_to_mxfp.py（GPU 侧静态断言接受 mode 0 或 2）、tests/test_mxfp.py（新增 nearest-even、饱和、空输入、E8M0 拒绝等用例）。明确拒绝 ROUND_NEAREST 配合 E8M0 scale（包括空输入），保留既有枚举与默认行为。属 triton_kernels 的 NVIDIA Blackwell mxfp 工具链，对 Ascend 无影响。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "triton-kernels",
+        "nvidia",
+        "numerics"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 python/triton_kernels/numerics_details，属 triton_kernels 的 NVFP4 量化工具，Ascend 不使用。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[triton_kernels] Add explicit nearest-even NVFP4 scale rounding (#11668)\n\n## Summary\nAdd `DequantScaleRoundingMode.ROUND_NEAREST = 2` for NVFP4 (NVIDIA 4-bit\nfloating-point) conversion with E4M3 block scales. Both conversion APIs\nuse `max(abs(x)) / 6`, round scales to nearest with ties to even, and\nsaturate scale overflow to 448. The Torch reference clamps before\ncasting to avoid producing NaN on overflow.\n\nReject this mode for E8M0 scales, including empty inputs. Existing enum\nvalues, defaults, and `ROUND_UP`/`ROUND_DOWN` behavior are preserved.\n\n## Validation\nTested on NVIDIA GB300 with the Triton 3.8.0 compiler and library\nsources based on upstream `691a6deec4`.\n\n- `python -m pytest -s --tb=short --rootdir=. --confcutdir=.\npython/triton_kernels/tests/test_mxfp.py`: **92 passed**, including both\nconversion APIs, both axes, BF16/FP32 inputs, exact rounding boundaries,\nsubnormals, zero/empty inputs, overflow saturation, and E8M0 rejection.\n- Matched base-versus-change comparison: **224 legacy conversion cases\nmatched byte-for-byte**, covering both APIs, both existing modes where\nsupported, both axes, BF16/FP32, FP4/FP8 values, and random, zero,\nlarge, and empty inputs.\n\nOther GPU architectures were not tested.\n\n## Lines Changed\n| Type | Added | Removed | Net |\n| --- | ---: | ---: | ---: |\n| Tests | 78 | 0 | +78 |\n| Core Logic | 16 | 7 | +9 |\n| AutoGenerated | 0 | 0 | 0 |\n| Total | 94 | 7 | +87 |\n\n## Reviewers Guide\n- `numerics_details/mxfp.py`: enum, API validation, and Torch scale\ncalculation.\n- `numerics_details/mxfp_details/_downcast_to_mxfp.py`: GPU acceptance\nof the new mode, using the existing nearest-even FP8 conversion.\n- `tests/test_mxfp.py`: independent expected scales and packed values,\nsaturation and empty-input regressions, and conversion parity.\n\n---------\n\nCo-authored-by: Joey Yu <234057141+lyu-oai@users.noreply.github.com>"
+    },
+    {
+      "sha": "77502c3419dc7ce35fd253d0e242f12ad8947998",
+      "comment": "将 Blackwell 的 ptxas 从 13.3.33 升级到 13.4.59（CUDA 13.4.1 release）。仅修改 cmake/nvidia-toolchain-version.json 一行，属于 NVIDIA 工具链版本更新。对 Ascend 无影响（Ascend 使用毕昇/CANN 工具链）。可能影响 NVIDIA 后端的 PTX 汇编行为与生成的 cubin，是 NV 后端的常规维护。",
+      "tags": [
+        "chore",
+        "low-risk",
+        "nvidia",
+        "build"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。仅更新 NVIDIA ptxas 工具链版本，与 Ascend 的 CANN/毕昇编译链无关。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Update Blackwell ptxas to 13.4.59 (#11669)\n\nUpdate `ptxas-blackwell` from 13.3.33 to 13.4.59, shipped in the [CUDA\n13.4.1 release dated September 9,\n2026](https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.4.1.json)."
+    },
+    {
+      "sha": "691a6deec4ee15960408f957a973e11528294017",
+      "comment": "将 membar 分析与 ConSan 从 ConvertTritonGPUToLLVM 中拆出为独立 pass，使二者可被后端编译器显式编排。具体做法：新增 TritonNvidiaGPUMembar（带 compute-capability/ptx-version 选项）和 TritonAMDGPUMembar（带 gfx-arch 选项）两个 ModuleOp pass，把原先内嵌在 ConvertTritonGPUToLLVM::prepareModule 里的 runClusterBarrierInsertion、runCrossCTAMBarrierInitSyncInsertion、ModuleMembarAnalysis 以及 canSkipBarSync 挪到 NVIDIA Membar.cpp；AMD 侧把 annotateLocalLoadsSyncedViaAsyncWait 与 ModuleMembarAnalysis 挪到 AMD Membar.cpp。ConvertTritonGPUToLLVM 不再带 enableConcurrencySanitizer 选项，其 prepareModule 被整体删除；tmem-wait-insertion 与 cluster-barrier-mbar-allocator 也提升为独立 pybind 绑定。后端 compiler.py 从单次 add_to_llvmir(pm, capability, ptx_version, consan) 改为按序调用 add_membar/add_tmem_wait_insertion/add_concurrency_sanitizer/add_cluster_barrier_mbar_allocator/add_allocate_global_scratch_memory/add_to_llvmir。同时把 ConcurrencySanitizerPass 中的 assert（ttg.target 缺失/不支持、hooks 未注册）改为 emitError + signalPassFailure，并新增 missing-target / unsupported-target 的 lit 测试。风险点：pass 顺序对生成 IR 的正确性有强约束（例如 tmem-wait 必须在 membar 之后、全局 scratch 分配必须在 ConSan 之后），任何后端未来调整顺序都需要保证这一不变量；AMD 侧重复的 add_allocate_global_scratch_memory 调用被去重，需确认原先是冗余而非必要。",
+      "tags": [
+        "refactor",
+        "performance",
+        "high-risk",
+        "compiler",
+        "tritongpu",
+        "triton-instrument",
+        "nvidia",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更全部位于 lib/Dialect/TritonInstrument、third_party/nvidia 与 third_party/amd 的 pass 定义与后端 compiler.py 编排中。triton-ascend 不使用 ConvertTritonGPUToLLVM、TritonNvidiaGPUMembar、TritonAMDGPUMembar 或 TritonInstrument 的 ConSan pass（其 lowering 走 TritonToLinalg），也不复用 AscendBackend 之外的 pass 编排。AscendBackend.add_stages 自提供 ttir→linalg→npu 的阶段链，不受 NVIDIA/AMD add_to_llvmir 签名变化影响。",
+        "testing": "无影响。lit 测试改动集中在 test/Conversion、test/TritonNvidiaGPU、test/Analysis 与 test/TritonGPU/consan-capture-reservation.mlir，均为 NVIDIA/AMD 专属用例。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[CONSAN] Make consan and membar passes independent (#11597)"
+    },
+    {
+      "sha": "1175cb427f5ec41873f99162c5842ed8d1314a4a",
+      "comment": "ConSan 阶段完成清理的流式化优化。在 FunctionBuilder::createVerifyAndUpdateBarrierStateCall 中，原先对每个 trackingType 用一次全表 createStoreScratchMemory 写入零值进行阶段完成清理，现改为：先计算形状与行主序 strides，取 track 维（dim 1）的 extent 作为行数，并按 warp 线程数与 strides[1] 的比值切出 chunk；若 chunk == extent 则保留原单次 store 的快路径，否则在 preheader 拆出 continueBlock，创建带 i32 行号参数的 loopBlock，在循环体内用 row * strides[1] 计算偏移、AddPtrOp 生成 viewPtr，以 storeType（dim1 被裁剪为 chunk）加完整 strides 参数调用 createStoreScratchMemory，再 addi/cmpi ult/cond_br 控制回边。关键点在于：完成掩码与下一阶段掩码只依赖 [barrier CTA, K]，因此广播到 storeType（{2,3} 维度）仍然是正确的，只有 B 坐标在迭代间推进，避免了对未变化维度的重复计算与全表存储。测试侧在 test/TritonGPU/consan.mlir 新增 streamed_barrier_phase_clear 用例：B=K=16、4 个 CTA，CHECK 序列验证 write/read 跟踪各自的 chunk=8 分块、step=8/limit=16/stride=4 常量、循环头 cf.br 与 cond_br 回边、以及 [4,16]/[4,16,4] 等常量广播张量（dense<64>/dense<256>/dense<4096>/dense<16384>）和保留的两相位 bank 形状。潜在风险：新增的手工 CFG 构造绕过了常规结构化控制流，需保证 insertion point 在 splitBlock 后正确恢复——代码末尾 fb.setInsertionPointToStart(continueBlock) 处理了这一点；此外 chunk 计算依赖 lookupThreadsPerWarp(fb) 与 strides[1]，若 shape 的 rank 或 dim1 语义在未来变化，chunk 可能退化为 1，仅损失性能不损正确性。总体是低风险性能优化。",
+      "tags": [
+        "performance",
+        "refactor",
+        "low-risk",
+        "instrumentation"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Dialect/TritonInstrument/IR/FunctionBuilder.cpp，属于 TritonInstrument 方言（ConSan）的 IR 构建实现，不在 triton-ascend 必然影响或可能影响路径列表中。triton-ascend 的 AscendBackend.add_stages 走 ttir → ttadapter(linalg) → mlirbc → bcmlir → npubin 链路，不加载 TritonInstrument 方言，也不调用 FunctionBuilder::createVerifyAndUpdateBarrierStateCall。",
+        "testing": "无影响。新增用例位于 test/TritonGPU/consan.mlir，是 NVIDIA/AMD 路径下 ConSan 的 lit 测试，triton-ascend 不运行该测试文件。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ConSan] Stream tracking clears after barrier phase completion (#11452)\n\nOptimize ConSan compilation time by streaming buffer rows during\ncompleted-phase clears. Preserve completion and next-phase masks,\nbacking strides, and all reader origins and phase banks. Small tables\nretain direct stores; lifecycle checks and locking are unchanged.\n\n## Performance\n\nThese measurements use the original stack based on `8ce2ac12`; they have\nnot been repeated on the current main base.\n\nMeasured on an internal workload with the same inputs and hardware,\ncompared with\n[#11451](https://github.com/triton-lang/triton/pull/11451), the\npreceding PR in this stack:\n\n- Cold compilation: **49.20 s → 43.44 s (11.7% less time)**.\n- Instrumented execution: **59.44 s → 59.66 s (0.4% more time)**.\n\nSingle-run measurements; small deltas may be noise. Compilation used\nfresh caches. No execution-time improvement is demonstrated by this\nlayer.\n\n## PR stack\n\nMerge order (base → top):\n\n1. [#11446 — Masked scratch\nstores](https://github.com/triton-lang/triton/pull/11446)\n2. [#11447 — Narrow thread\nmasks](https://github.com/triton-lang/triton/pull/11447)\n3. [#11448 — Single-buffer row\nviews](https://github.com/triton-lang/triton/pull/11448)\n4. [#11449 — Issuing-observer\nviews](https://github.com/triton-lang/triton/pull/11449)\n5. [#11450 — Unique-barrier-slot\nviews](https://github.com/triton-lang/triton/pull/11450)\n6. [#11451 — Streaming large-table\nclears](https://github.com/triton-lang/triton/pull/11451)\n7. [#11452 — Streaming phase-completion\nclears](https://github.com/triton-lang/triton/pull/11452) **← this PR**"
+    },
+    {
+      "sha": "174a7baa5600f86da583f8890f1a2ad7a228e6c4",
+      "comment": "ConSan 性能 PR 栈第 6 层（#11451）：把 createPublishWriteVisibilityCall 中的 clearTable 由整表清空改为按第四维（K/T）流式切片。chunk 取 min(extent, max(1, threadsPerWarp * (128 / bitWidth) / strides[3]))，即保留一个 warp 的 128-bit 向量跨度；对 writeVisibility/readVisibility/readTracking 三张表统一走该路径，strides 显式保留以不压缩 origin/phase bank。copiesType 因无 K/T 轴而被单独拆出，保持原有一次 store。新增 streamed_frontier_clear 用例（B=K=8，TCGen 引入第二逻辑线程）验证 write/read/tracking 三条流式路径及保留的 stride（128/256/1024/4096）。风险：chunk 计算依赖 strides[3] 与 bitWidth，若表布局变化（例如 dim 顺序改变）需同步；同一 commit 中把原本内联的 clearCopies 从 lambda 中移出，需确认 nextArg 的递增次数与调用方传参顺序一致。",
+      "tags": [
+        "performance",
+        "refactor",
+        "medium-risk",
+        "triton-instrument",
+        "compiler"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动范围同上一 commit，仅限 TritonInstrument 的 FunctionBuilder，由 ConSan pass 在 NVIDIA/AMD 后端编译时驱动。",
+        "testing": "无影响。新增用例在 test/TritonGPU/consan.mlir。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ConSan] Stream large visibility and tracking clears (#11451)\n\nReduce ConSan compilation and execution time by clearing large tables\nthrough bounded slices of the barrier/thread axis. Preserve masks,\nbacking strides, and all origin/phase banks. Small tables retain direct\nstores; allocation and locking are unchanged.\n\n## Performance\n\nThese measurements use the original stack based on `8ce2ac12`; they have\nnot been repeated on the current main base.\n\nMeasured on an internal workload with the same inputs and hardware,\ncompared with\n[#11450](https://github.com/triton-lang/triton/pull/11450), the\npreceding PR in this stack:\n\n- Cold compilation: **59.41 s → 49.20 s (17.2% less time)**.\n- Instrumented execution: **63.58 s → 59.44 s (6.5% less time)**.\n\nSingle-run measurements; small deltas may be noise. Compilation used\nfresh caches.\n\n## PR stack\n\nMerge order (base → top):\n\n1. [#11446 — Masked scratch\nstores](https://github.com/triton-lang/triton/pull/11446)\n2. [#11447 — Narrow thread\nmasks](https://github.com/triton-lang/triton/pull/11447)\n3. [#11448 — Single-buffer row\nviews](https://github.com/triton-lang/triton/pull/11448)\n4. [#11449 — Issuing-observer\nviews](https://github.com/triton-lang/triton/pull/11449)\n5. [#11450 — Unique-barrier-slot\nviews](https://github.com/triton-lang/triton/pull/11450)\n6. [#11451 — Streaming large-table\nclears](https://github.com/triton-lang/triton/pull/11451) **← this PR**\n7. [#11452 — Streaming phase-completion\nclears](https://github.com/triton-lang/triton/pull/11452)"
+    },
+    {
+      "sha": "fee3fe608ab32f0277ea6159af8ababfaa01443c",
+      "comment": "ConSan 唯一屏障槽的 slice 跟踪优化。在 FunctionBuilder::createTrackVisibleAccessesCall 中新增 sliceBarrierTracking 判定：取 barriers 值的 defining op，若为 tti::ExperimentalBufferDescriptorsOp，则遍历其 offsets/lengths，按 BufferDescriptorsOpConversion 相同的方式（shared_mem 用 (1ULL<<24)-1 掩码，否则 0xffffffff）构造 (length<<32 | offset&mask) 的 key，若有重复 key 则关闭 slice 跟踪回退全表路径；该布尔值作为 specializationArgs 追加参与缓存函数签名。当 sliceBarrierTracking 为真时：用 MakeRangeOp 生成索引、SelectOp 选出唯一 barrier 索引并用 reduceAll<OrIOp> 归约出 barrierIndex 与 anyMatch；对 phases 做 convertAndBroadcast 到 [1] 维后选择并 reduceLastDim 得到 trackingPhases，phaseDims 从 {2,3} 变为 {2}；createTrackingView lambda 按 shape[0]*shape[1]*shape[2] 计算 barrierStride，用 AddPtrOp 偏移到选中 barrier，并把 dim 3（K 轴）从形状中剔除，逐维累计剩余 strides；createBarrierMask lambda 在 slice 模式下用 SplatOp 广播 anyMatch（而非广播 barriersEqBar），再与 CTA 掩码、phase 掩码相与。写跟踪的 store 使用 trackingType/trackingStrides，读跟踪的 convertAndBroadcast 维度从 {0,1,4} 变为 {0,1, slice?3:4}，读存也带 strides。测试侧新增 mbarrier_multicast_four_ctas 的 CHECK 段（验证 [Cbar,K]=[4,2] reduce 到 [4] 后 reshape/broadcast 成紧凑掩码）以及 equivalent_barrier_descriptor_tracking 用例（验证计算、分布式与复制布局指向同一物理 CTA 存储时去重为同一条 descriptor，K=2 含集群 rendezvous，紧凑视图为 tensor<2x1x2x2x!tt.ptr<i8>> 等）。潜在风险：slice 判定的正确性完全依赖对 offsets/lengths 的掩码与转换逻辑与 BufferDescriptorsOpConversion 保持一致，若未来该 conversion 的地址裁剪方式变化，此处需要同步更新，否则可能错误地启用 slice 跟踪导致漏检；同时 Read/Write 两条路径对 trackingType/phaseDims/readerDims 的维度假设需与新紧凑形状严格对齐，测试覆盖了 multicast 与 descriptor 去重两类边界，风险可控。",
+      "tags": [
+        "performance",
+        "refactor",
+        "medium-risk",
+        "instrumentation"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅限 lib/Dialect/TritonInstrument/IR/FunctionBuilder.cpp 与 test/TritonGPU/consan.mlir，均不属于 triton-ascend 的必然影响或可能影响路径。triton-ascend 不使用 TritonInstrument 方言与 ConSan 的 track_visible_accesses 机制，也不依赖 tti::ExperimentalBufferDescriptorsOp 或 BufferDescriptorsOpConversion（后者位于 NVIDIA/AMD 的 TritonGPUToLLVM 路径，Ascend 完全跳过）。",
+        "testing": "无影响。新增的 mbarrier_multicast_four_ctas 与 equivalent_barrier_descriptor_tracking 检查均为 test/TritonGPU/consan.mlir 中的 lit FileCheck 用例，triton-ascend 不参与。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ConSan] Slice tracking updates for unique barrier slots (#11450)\n\nReduce ConSan compilation and execution time by using one-slot views\nwhen descriptors prove unique barrier matching. Preserve buffer masks,\nrecipient phases, and backing strides. Unknown or colliding descriptors\nretain full-table updates.\n\n## Performance\n\nThese measurements use the original stack based on `8ce2ac12`; they have\nnot been repeated on the current main base.\n\nMeasured on an internal workload with the same inputs and hardware,\ncompared with\n[#11449](https://github.com/triton-lang/triton/pull/11449), the\npreceding PR in this stack:\n\n- Cold compilation: **78.43 s → 59.41 s (24.2% less time)**.\n- Instrumented execution: **78.73 s → 63.58 s (19.2% less time)**.\n\nSingle-run measurements; small deltas may be noise. Compilation used\nfresh caches.\n\n## PR stack\n\nMerge order (base → top):\n\n1. [#11446 — Masked scratch\nstores](https://github.com/triton-lang/triton/pull/11446)\n2. [#11447 — Narrow thread\nmasks](https://github.com/triton-lang/triton/pull/11447)\n3. [#11448 — Single-buffer row\nviews](https://github.com/triton-lang/triton/pull/11448)\n4. [#11449 — Issuing-observer\nviews](https://github.com/triton-lang/triton/pull/11449)\n5. [#11450 — Unique-barrier-slot\nviews](https://github.com/triton-lang/triton/pull/11450) **← this PR**\n6. [#11451 — Streaming large-table\nclears](https://github.com/triton-lang/triton/pull/11451)\n7. [#11452 — Streaming phase-completion\nclears](https://github.com/triton-lang/triton/pull/11452)"
+    },
+    {
+      "sha": "80ba810c79b74f37329ae3ebc8f8be6b428e3e23",
+      "comment": "ConSan 性能 PR 栈第 4 层（#11449）：对 read visibility 表只加载“发布观察者”所在的那一行，而非整表加载后通过 threadColumnMask + sourceCTAMask 屏蔽。实现上先由 ExperimentalClusterCTAIdOp 与 threadVal 计算 observerCTAOffset = observerCTA * (shape[0]*shape[1]) 与 observerThreadOffset = threadVal * (shape[0]*shape[1]*shape[2])，addptr 得到 observerPtr，只 load [Cbuf, B, Creader] 三个维度（去掉 T 轴），并传入 {1, shape[0], observerThreadStride * shape[3]} 作为 strides，随后 broadcast 到 readTrackingType 的 {0,1,4} 维度。这消除了创建 threadColumnMask、zero tensor 与 reduce({2,3}) 的开销。新增 clc_try_cancel_diagonal_effect_recipients 的 CHECK 断言验证 stride 16 与观察者维度。风险：view 的 element 数量减少后，广播到原 layout 的正确性依赖原表布局为列主序且 T 轴 stride 为 shape[3]，若未来引入非平凡行布局需要同步调整。",
+      "tags": [
+        "performance",
+        "refactor",
+        "medium-risk",
+        "triton-instrument",
+        "compiler"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。仅在 TritonInstrument 内部生成 ConSan 跟踪代码的 load 视图选择上做优化。",
+        "testing": "无影响。修改 test/TritonGPU/consan.mlir 中的 CHECK 断言。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ConSan] Load read visibility for the issuing observer (#11449)\n\nReduce ConSan compilation and execution time by selecting the issuing\nCTA and logical thread before loading read visibility. Preserve\nreader-CTA strides, per-recipient barrier phases, and accumulation into\nexisting tracking state.\n\n## Performance\n\nThese measurements use the original stack based on `8ce2ac12`; they have\nnot been repeated on the current main base.\n\nMeasured on an internal workload with the same inputs and hardware,\ncompared with\n[#11448](https://github.com/triton-lang/triton/pull/11448), the\npreceding PR in this stack:\n\n- Cold compilation: **83.02 s → 78.43 s (5.5% less time)**.\n- Instrumented execution: **80.02 s → 78.73 s (1.6% less time)**.\n\nSingle-run measurements; small deltas may be noise. Compilation used\nfresh caches.\n\n## PR stack\n\nMerge order (base → top):\n\n1. [#11446 — Masked scratch\nstores](https://github.com/triton-lang/triton/pull/11446)\n2. [#11447 — Narrow thread\nmasks](https://github.com/triton-lang/triton/pull/11447)\n3. [#11448 — Single-buffer row\nviews](https://github.com/triton-lang/triton/pull/11448)\n4. [#11449 — Issuing-observer\nviews](https://github.com/triton-lang/triton/pull/11449) **← this PR**\n5. [#11450 — Unique-barrier-slot\nviews](https://github.com/triton-lang/triton/pull/11450)\n6. [#11451 — Streaming large-table\nclears](https://github.com/triton-lang/triton/pull/11451)\n7. [#11452 — Streaming phase-completion\nclears](https://github.com/triton-lang/triton/pull/11452)"
+    },
+    {
+      "sha": "fd48965cc60c98b8b0ce27512771296622defc0a",
+      "comment": "ConSan 性能 PR 栈第 3 层（#11448）：当 BufferStateCandidates 证明 bufferMask 是 one-hot（每个 candidate.mask 恰好一位且非 unknown）时，使用带 stride 的单缓冲行视图，把 read visibility/read tracking 表的 B 轴压缩为 1，避免整表 load/select/store。改动横跨四处：FunctionBuilder::createSetReadVisibilityCall 新增可选 bufferIndex 参数并在 specializationArgs 中加入 singleBuffer 位与完整 backing type（注释明确说明相同 view shape 可能有不同物理 stride 与 origin/phase bank 偏移）；createBufferView 消除 dim 1 并计算 strides；selectBufferPointer 以 bufferSelection * shape[0] 计算偏移；bank 循环中 fullBankType 用于 createTrackingOriginPhasePointer，bankStrides 仅取前四个维度传给 load/store。createSingleBufferStateIndex 保证所有 same-base candidate 的 one-hot 索引在所有 CTA 下一致。Utility 的 createPointerTensor/createStoreScratchMemory/createLoadScratchMemory 新增 ArrayRef<int64_t> strides 参数，空则回退为原列主序连续布局。风险：strides 参数是新增的公共工具接口，调用方必须保证长度等于 rank；specializationArgs 中携带 readVisibilityType 而 cleartext 因 bufferIndex 而改变，缓存键语义更敏感。",
+      "tags": [
+        "performance",
+        "refactor",
+        "medium-risk",
+        "triton-instrument",
+        "compiler"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。Utility.h/Utility.cpp 的 createStoreScratchMemory/createLoadScratchMemory 新增 strides 参数属于 TritonInstrument 内部工具接口，triton-ascend 不引用该头文件，也不使用 ConSan 的 scratch 工具函数。FunctionBuilder.h 的 createSetReadVisibilityCall 签名变化同为内部接口。",
+        "testing": "无影响。新增用例在 test/TritonGPU/consan.mlir。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ConSan] Slice proven single-buffer read visibility updates (#11448)\n\nOptimize ConSan execution time with compact strided views when buffer\nanalysis proves a single state row. Preserve reader-generation\nretirement, CTA masks, and original origin/phase-bank strides. Unknown\nor multi-row candidates retain the full-table path.\n\n## Performance\n\nThese measurements use the original stack based on `8ce2ac12`; they have\nnot been repeated on the current main base.\n\nMeasured on an internal workload with the same inputs and hardware,\ncompared with\n[#11447](https://github.com/triton-lang/triton/pull/11447), the\npreceding PR in this stack:\n\n- Cold compilation: **80.15 s → 83.02 s (3.6% more time)**.\n- Instrumented execution: **86.15 s → 80.02 s (7.1% less time)**.\n\nSingle-run measurements; small deltas may be noise. Compilation used\nfresh caches. This layer improves execution time but increases\ncompilation time in this measurement.\n\n## PR stack\n\nMerge order (base → top):\n\n1. [#11446 — Masked scratch\nstores](https://github.com/triton-lang/triton/pull/11446)\n2. [#11447 — Narrow thread\nmasks](https://github.com/triton-lang/triton/pull/11447)\n3. [#11448 — Single-buffer row\nviews](https://github.com/triton-lang/triton/pull/11448) **← this PR**\n4. [#11449 — Issuing-observer\nviews](https://github.com/triton-lang/triton/pull/11449)\n5. [#11450 — Unique-barrier-slot\nviews](https://github.com/triton-lang/triton/pull/11450)\n6. [#11451 — Streaming large-table\nclears](https://github.com/triton-lang/triton/pull/11451)\n7. [#11452 — Streaming phase-completion\nclears](https://github.com/triton-lang/triton/pull/11452)"
+    },
+    {
+      "sha": "646165259c343edcc64fed77384df5434d84dfcc",
+      "comment": "ConSan 性能 PR 栈第 2 层（#11447）：当逻辑线程总数不超过 32 时，把 visibility/read-tracking 的位掩码从 i64 收窄为 i32（packed barrier state 与 proxy mask 仍为 64 位）。Utility.cpp 中 frontierBitWidth = threadLayout.totalNumThreads <= 32 ? 32 : 64，用于 createZeroInitStateTensor 的 element width。FunctionBuilder 中把多处硬编码的 fb.getI64Type() 改为按 writeVisibilityType/visibilityType 的元素类型调整（adjustIntegerWidth），并在 createConstIntTensor 调用中新增 isSigned 参数以正确生成全 1 常量。TritonInstrument.md 更新 thread model：base thread 数 N = 1 + 最大 warp-specialize partition 数，TMA/tcgen05/CLC peer 类按需追加各自 N 个 id，总数至多 64。新增 python/test/gluon/test_consan.py::test_consan_visibility_high_thread_bits 验证 bit31（32 位）与 bit35（64 位）两种宽度下的 clear_reader_mask 生成，并检查 clear_mask 是按位宽生成的。大量 lit CHECK 从 i64 改为 i32，nbytes 与 !tt.ptr<i64> 同步减半。风险：收窄掩码的判定阈值为 32 与 i32 位移语义耦合（1 << 31 在 i32 下为负数），需要 isSigned 常量配合；thread id 分配规则的文档化变更意味着 peer id 计算（thread % N）在未来扩展线程模型时需谨慎。",
+      "tags": [
+        "performance",
+        "bugfix",
+        "medium-risk",
+        "triton-instrument",
+        "compiler",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。均位于 TritonInstrument（FunctionBuilder/Utility）与 Gluon 的 ConSan 测试，triton-ascend 既不使用 TritonInstrument 方言，也不走 ConSan 插桩路径，其 Gluon 支持也未启用 ConSan。",
+        "testing": "无影响。新增 python/test/gluon/test_consan.py 用例与 test/TritonGPU/consan.mlir、test/TritonGPU/amd/amd-consan.mlir 的 CHECK 断言更新均为 NVIDIA/AMD 专属。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ConSan] Use narrow masks for small logical thread sets (#11447)\n\nReduce ConSan compilation and execution time by using 32-bit visibility\nand barrier read-tracking masks when all logical ConSan threads fit.\nLarger thread sets retain 64-bit masks; packed barrier state and proxy\nmasks remain 64-bit.\n\n## Performance\n\nThese measurements use the original stack based on `8ce2ac12`; they have\nnot been repeated on the current main base.\n\nMeasured on an internal workload with the same inputs and hardware,\ncompared with\n[#11446](https://github.com/triton-lang/triton/pull/11446), the\npreceding PR in this stack:\n\n- Cold compilation: **91.31 s → 80.15 s (12.2% less time)**.\n- Instrumented execution: **122.80 s → 86.15 s (29.8% less time)**.\n\nSingle-run measurements; small deltas may be noise. Compilation used\nfresh caches.\n\n## PR stack\n\nMerge order (base → top):\n\n1. [#11446 — Masked scratch\nstores](https://github.com/triton-lang/triton/pull/11446)\n2. [#11447 — Narrow thread\nmasks](https://github.com/triton-lang/triton/pull/11447) **← this PR**\n3. [#11448 — Single-buffer row\nviews](https://github.com/triton-lang/triton/pull/11448)\n4. [#11449 — Issuing-observer\nviews](https://github.com/triton-lang/triton/pull/11449)\n5. [#11450 — Unique-barrier-slot\nviews](https://github.com/triton-lang/triton/pull/11450)\n6. [#11451 — Streaming large-table\nclears](https://github.com/triton-lang/triton/pull/11451)\n7. [#11452 — Streaming phase-completion\nclears](https://github.com/triton-lang/triton/pull/11452)"
+    },
+    {
+      "sha": "8a5c7ee136408e766f7f20e5366e2c5d7a5c4ec8",
+      "comment": "ConSan 性能 PR 栈第 1 层（#11446，栈底）：用带掩码的 scratch store 替代 load/select/store 序列。createMaskedStoreScratchMemory 去掉 numCTAs > 1 时的 oldTensor 加载，直接以 mask 作为 storeMask 调用 createStoreScratchMemory；createPublishWriteVisibilityCall 的 publishWrite 与 clearTable 分别改为直接 store threadMaskTensor/zero 并带上 visibilityMask/tableMask；createTrackVisibleAccessesCall 的 write tracking 直接 store one + barAndVisible，去掉 filterBuffer 分支中专门的 select + masked store（统一走 tti::createStoreScratchMemory 传 barrierMask）。Utility.cpp 中 currentCTAOnly 且无 storeMask 的路径也改为 storeMask = currentCTAMask，不再先 load 再 select。新增 test/TritonGPU/consan.mlir 中 __triton_consan_set_active_mask_ 与 __triton_consan_publish_write_visibility_ 的 CHECK-NOT: tt.load 断言，验证不再有多余读。风险：masked store 的语义要求目标区域被 mask 掉的元素保持原值——Triton 的 tt.store 带 mask 确实具备该语义，但要求底层 lowering 对 predicate 处理正确；此外 createMaskedStoreScratchMemory 与 createCTAScopedStoreScratchMemory 的语义边界需保持一致。",
+      "tags": [
+        "performance",
+        "refactor",
+        "medium-risk",
+        "triton-instrument",
+        "compiler"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动集中在 lib/Dialect/TritonInstrument/IR 的 ConSan 生成逻辑，triton-ascend 不加载该方言。",
+        "testing": "无影响。新增 CHECK 断言位于 test/TritonGPU/consan.mlir。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ConSan] Use masked stores for scratch overwrites (#11446)\n\nReduce ConSan compilation and execution time by replacing\nload/select/store sequences with masked scratch stores for visibility\npublication, tracking updates, and CTA-local state writes. Existing\nmasks still control which entries change; read-modify-write operations\nretain their required loads.\n\n## Performance\n\nThese measurements use the original stack based on `8ce2ac12`; they have\nnot been repeated on the current main base.\n\nMeasured on an internal workload with the same inputs and hardware,\ncompared with the frozen main baseline\n[8ce2ac12](https://github.com/triton-lang/triton/commit/8ce2ac12d21648f0f787ecc7576a26c4b34be3cd):\n\n- Cold compilation: **109.45 s → 91.31 s (16.6% less time)**.\n- Instrumented execution: **153.30 s → 122.80 s (19.9% less time)**.\n\nSingle-run measurements; small deltas may be noise. Compilation used\nfresh caches.\n\n## PR stack\n\nMerge order (base → top):\n\n1. [#11446 — Masked scratch\nstores](https://github.com/triton-lang/triton/pull/11446) **← this PR**\n2. [#11447 — Narrow thread\nmasks](https://github.com/triton-lang/triton/pull/11447)\n3. [#11448 — Single-buffer row\nviews](https://github.com/triton-lang/triton/pull/11448)\n4. [#11449 — Issuing-observer\nviews](https://github.com/triton-lang/triton/pull/11449)\n5. [#11450 — Unique-barrier-slot\nviews](https://github.com/triton-lang/triton/pull/11450)\n6. [#11451 — Streaming large-table\nclears](https://github.com/triton-lang/triton/pull/11451)\n7. [#11452 — Streaming phase-completion\nclears](https://github.com/triton-lang/triton/pull/11452)"
+    },
+    {
+      "sha": "4e15616d25f3d8818a5bec92c5620cec16d72bcc",
+      "comment": "将 Proton 的 instrument(pm, point='llvmir-to-llvm') 从 make_llir 尾部前移到 warp specialization pass 之前。原因：warp specialization pass 假定 loop 参数已是 LLVM 值而非 proton segment 值，否则在 Gluon 动态循环 + warp_specialize 场景下会因捕获 partition operand 而失败。NVIDIA 与 AMD 后端 compiler.py 均把 instrument 调用上移（NVIDIA 在 add_warp_specialize_to_llvm 之前，AMD 在 add_warp_specialize_to_llvm 之前），并删除原位置调用与 AMD 侧“This can not be moved below the di_scope pass”注释。同时修正 ProtonToProtonGPUPass.cpp 中 instrumentWarpSpecializeOps 的判定：原先用 hasProtonEvent(wsOp.getOperation()) 判 wsOp 是否有 proton 事件，改为先取 partOp 再判 hasProtonEvent(partOp.getOperation())，与实际插入 operands 的目标对象一致。新增 test_instrumentation.py::test_gluon_warp_specialized_dynamic_event 验证动态循环下的 warp specialize 事件仍能正确产出 trace。风险：instrument 前移意味着 Proton lowering 生成的值要穿过 WS pass，需确认 WS pass 对这些 value 的捕获与重映射无副作用；di_scope 与 instrument 的相对顺序约束被解除，需确认 line info 不因顺序变化而丢失。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "medium-risk",
+        "proton",
+        "nvidia",
+        "amd",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/nvidia/backend/compiler.py、third_party/amd/backend/compiler.py 与 third_party/proton 内部，均属 NVIDIA/AMD 后端和 Proton 子系统。triton-ascend 的 AscendBackend.add_stages 不调用 instrument(pm, point='llvmir-to-llvm')，proton 在 triton-ascend 中默认不启用。AscendBackend 不继承或复用 NV/AMD 的 compiler.py 逻辑。",
+        "testing": "无影响。新增测试位于 third_party/proton/test/test_instrumentation.py，为 Proton+Gluon 的 NVIDIA 专属用例。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[PROTON] Move Proton lowering before warp specialization (#11523)\n\nwarp specialization pass assumes loop arguments are already llvm values\ninstead of proton, so we need to move it earlier"
+    },
+    {
+      "sha": "7aea09ba4ca3cc49f88664d0013de62362e2dbdf",
+      "comment": "修正 AMD TargetInfo::warpSync 的共享内存副作用契约：原先只发 llvm.amdgcn.wave.barrier 内联调用，不声明对 LDS 的同步语义。现改为在 wave barrier 前后分别发射 syncscope('wavefront') 的 release/acquire LLVM::FenceOp，并挂 amdgpu-synchronize-as='local' 的 mmra tag，从而让 convert_layout 等 pass 在依赖 warpSync 时能正确判定 LDS 的可见性。测试上新增 convert_layout.mlir 用例 convert_layout_warp_sync，CHECK-DAG 定义 LOCAL_MMRA_TAG，验证 llvm.store → release fence → rocdl.wave.barrier → acquire fence → llvm.load 的序列，并断言不生成 rocdl.s.barrier。风险：fence 的加入会略微增加生成指令数（性能开销），但属于正确性修复；mmra tag 与现有 LDSScope/LocalLoads 的 alias scope 体系需保持兼容（用例已用 CHECK-NOT 排除 s.barrier 以确保不引入额外的全 LDS 屏障）。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "amd",
+        "compiler",
+        "memory-model"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。修改位于 third_party/amd/lib/TritonAMDGPUToLLVM/TargetInfo.cpp 的 AMD TargetInfo::warpSync 实现。TargetInfoBase 的纯虚方法签名未变，仅 AMD 具体实现的行为变化；triton-ascend 无 TargetInfoBase 实现（其 lowering 走 TritonToLinalg），不使用 AMD TargetInfo。即使在共享接口层面，TargetInfoBase 的 warpSync 契约（要求声明 shared memory 副作用）在本次 commit 中并未改变签名，因此对 Ascend 无任何传导。",
+        "testing": "无影响。新增用例位于 test/Conversion/amd/convert_layout.mlir，为 AMD 专属 lit 测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Fence LDS around wave synchronization (#11651)\n\n`TargetInfo::warpSync` expects shared memory side effect\nin its contract so tighten it up."
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

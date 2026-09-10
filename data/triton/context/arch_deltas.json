@@ -283,6 +283,72 @@
       "interface_changes": "这是一个为Gluon IR启用编译功能的feature提交，解决了issue #11543。Gluon内核的ASTSource现在使用.glir扩展名（原来是ttgir），以便在编译流水线中区分Gluon IR阶段。修改了python/triton/compiler/compiler.py中的IRSource类，使其能识别.glir文件并将其解析为GLUON语言，同时更新了parse_options和parse函数。此外，编译流水线阶段也增加了对'glir'阶段的支持，NVIDIA和AMD后端现在都包括一个将GLIR直接传递到下游的glir阶段。此变更显著改变了编译流程，引入了新的IR阶段，涉及多个核心模块。",
       "change_summary": "[Frontend] Enable triton.compile for gluon IR (#11628)",
       "ascend_impact": false
+    },
+    "2a179bcd004031d1f29146af460289ca09a3b152": {
+      "date": "2026-09-10",
+      "affected_modules": [
+        "python/triton/language/semantic.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/language/semantic.py"
+      ],
+      "interface_changes": "修复 min/max 类型提升规则（BC-breaking）。原先 `tl.minimum/maximum` 在进入 `binary_op_type_checking_impl` 之前调用 `_semantic.to_tensor(x)`，把 constexpr 标量立即物化为 float32，破坏了『tensor dtype 优先于 constexpr 类型』的提升规则。现改为 `_unwrap_if_constexpr` 保留标量的 Python 原生类型，让类型提升逻辑自行决定结果 dtype；同时 `_promote_bfloat16_to_float32` 从依赖 `t.type.scalar` 改为 `isinstance(t, tensor) and t.dtype is bfloat16`（否则标量路径会 AttributeError），`semantic.minimum/maximum` 签名放宽为 `TensorTy | numbers.Number`。这是明确标注的 BC-breaking 行为变更，会影响所有后端的前端类型推导结果（如 `tl.maximum(t",
+      "change_summary": "[BC-Breaking][Frontend] Fix min/max type promotion (#11472)",
+      "ascend_impact": false
+    },
+    "c19c127f054b4d0bdbbae2a62fb7c2a3d8d899ab": {
+      "date": "2026-09-10",
+      "affected_modules": [
+        "lib/Dialect/Triton/"
+      ],
+      "affected_interfaces": [
+        "lib/Dialect/Triton/"
+      ],
+      "interface_changes": "修复 `CombineBroadcastMulReducePattern` 在处理多结果 `tl.reduce` 时的崩溃。原实现手工检查 reduce 的 combine region 结构（`hasOneBlock()` 且 op 数量为 2 且首个 op 是 `isAddF32`），但未校验 reduce 结果数，导致多结果 reduce 进入 `replaceOpWithNewOp<DotOp>` 时触发 `op->getNumResults() == newOp->getNumResults()` 断言失败。修复方式为改用新增的 `ReduceOp::getSingleCombiner()`（返回单 combiner 或 null），使多结果 reduce 直接 `return failure()` 跳过该 pattern。这是 TTIR 层（lib/Dialect/Triton/Transforms/Combine.cpp）的通用 canonicalization，属于 Ascend 复用的 lib/Dialect/Triton 路径，但 Ascend 的 TritonTo",
+      "change_summary": "[Triton] Don't fold a multi-result reduce in CombineBroadcastMulReducePattern (#11683)",
+      "ascend_impact": false
+    },
+    "5cb4ad8e55d522fd3339a10df1cb28bab176fb15": {
+      "date": "2026-09-10",
+      "affected_modules": [
+        "include/triton/Dialect/Triton/",
+        "lib/Dialect/Triton/"
+      ],
+      "affected_interfaces": [
+        "include/triton/Dialect/Triton/",
+        "lib/Dialect/Triton/"
+      ],
+      "interface_changes": "改进 Gluon 的自动布局传播（auto layout propagation）。核心改动：将 LayoutInfo 中的 `bool mayVary` 替换为 `unsigned distance`（记录到 seed 的模糊推断次数），在冲突解析时优先选择 distance 更小的编码，从而消除 `preserve_join_layout` 场景下正向/反向推断歧义；同时新增 `SameResultsType` trait（include/triton/Dialect/Triton/IR/Traits.h + TritonInterfaces.td + TritonOps.td 的 `tt.split`）与其 verifier `verifySameResultsType`，并在 InferLayoutUtils.cpp 中新增 `hasSameOperandsAndResultEncoding`/`hasSameOperandsEncoding`/`hasSameResultsEncoding` 辅助函数以严格传播同编码约束（解决 `equivalent_join_operand",
+      "change_summary": "[Gluon] Improve auto layout propagation (#11685)",
+      "ascend_impact": false
+    },
+    "8a51a348f1a863c5b0d6a9f06c77902a0bba1705": {
+      "date": "2026-09-10",
+      "affected_modules": [
+        "python/triton/runtime/interpreter.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/runtime/interpreter.py"
+      ],
+      "interface_changes": "修复 interpreter 模式下 `create_atomic_load`/`create_atomic_store` 向 `create_masked_load`/`create_masked_store` 传递多余位置参数导致每次调用 `tl.atomic_load`/`tl.atomic_store` 抛出 TypeError 的问题（Issue #11675）。改动是把多传的 `None` 参数删掉（5 参数 → 4 参数 / 4 参数 → 3 参数），并给 `test_atomic_load_store` 补上 `@pytest.mark.interpreter` 标记使 `make test-interpret` 覆盖到该路径。`python/triton/runtime/interpreter.py` 是 Ascend 通过 `AscendInterpreterBuilder`/`AscendReduceOps`/`AscendScanOps` 继承扩展的路径（triton-ascend 的 CPU 解释执行依赖 InterpreterBuilder 的 op 注册协",
+      "change_summary": "[interpreter] fix argument count mismatch in create_atomic_load/create_atomic_store (#11676)",
+      "ascend_impact": false
+    },
+    "4e33d6ddd0d5b497f630fce0335613a630735575": {
+      "date": "2026-09-10",
+      "affected_modules": [
+        "include/triton/Dialect/Triton/",
+        "lib/Dialect/Triton/",
+        "python/triton/language/semantic.py"
+      ],
+      "affected_interfaces": [
+        "include/triton/Dialect/Triton/",
+        "lib/Dialect/Triton/",
+        "python/triton/language/semantic.py"
+      ],
+      "interface_changes": "Gluon 新增 per-thread `inline_asm` 并允许 `inline_asm_elementwise` 接受 shared/TMEM descriptor 操作数。核心设计是引入 `DialectInlineAsmInterface`（TTIR Dialect.h），让方言在不暴露类型给 Triton dialect 的前提下声明其类型作为 inline asm 操作数的效果与校验；TritonGPU 方言实现 `TritonGPUInlineAsmInterface`（shared descriptor 声明 Read/Write Generic 效果，TMEM descriptor 声明 TensorMemory 效果，并校验纯函数与 partition 数）。新增 `ttg.inline_asm` op（TritonGPUOps.td）带 `DeclareOpInterfaceMethods<MemoryEffectsOpInterface>` 与 `ConditionallySpeculatable`，`TT_ElementwiseInlineAsmOp` ",
+      "change_summary": "[Gluon] Add per-thread inline assembly with descriptor operands (#11623)",
+      "ascend_impact": false
     }
   }
 }
