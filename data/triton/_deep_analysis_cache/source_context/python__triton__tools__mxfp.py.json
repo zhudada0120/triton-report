@@ -1,0 +1,20 @@
+{
+  "content_hash": "f213b31d99601709",
+  "analysis": {
+    "interface_summary": "定义 2 个类；定义 10 个函数",
+    "key_interfaces": [
+      "MXFP4Tensor",
+      "MXScaleTensor",
+      "MXFP4Tensor.__init__",
+      "MXFP4Tensor.random",
+      "MXFP4Tensor.to",
+      "MXFP4Tensor._from_float",
+      "MXFP4Tensor.to_packed_tensor",
+      "MXScaleTensor.__init__",
+      "MXScaleTensor.random",
+      "MXScaleTensor.to",
+      "MXScaleTensor._from_float"
+    ]
+  },
+  "cached_at": "2026-09-12T04:09:05.404909+08:00"
+}

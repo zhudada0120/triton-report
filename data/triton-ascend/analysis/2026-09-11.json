@@ -1,0 +1,91 @@
+{
+  "date": "2026-09-11",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-09-12T04:11:30.021685+08:00",
+  "daily_summary": "当日共 4 个 commit，主线是 Ascend GraphOptimize 体系的一次大规模能力升级：新增寄存器/UB 资源感知的 program-grid 映射（IAT/PTSM 规则）、版本化 program_grid_transforms 契约、ResourceCostModel 成本模型与相关 C++/Python 绑定、Launcher 侧动态 original-grid ABI 与元数据一致性校验，同时把原先 Python 侧运行时开关（_is_auto_map_parallel_blocks_enabled）的判定下沉到编译期 metadata（auto_blockify_enabled/ptsm_cap_authorized）。其余三个 commit 分别为：为 910_95 bishengir 编译路径新增临时 enable_hivm_batch_matmul 编译选项、清理 autotuner 中失效的 simt_stack_limit 逻辑、以及将 do_bench_npu 指南移入 debug_guide 并完善文档。整体方向是强化 Ascend 专属编译期优化/调优与文档建设，不涉及上游 Triton 抽象接口改动。",
+  "test_impact_summary": "本次变更对测试看护影响较大且集中在 Ascend 图优化与启动器契约上。program-grid 映射引入了一整套新的编译期-运行期协议（hacc.program_grid_transforms、hacc.program_mapping_scalar_specialization、program_grid_mapping_applied / auto_blockify_enabled / ptsm_cap_authorized 等 metadata），compiler.py 与 driver.py 均对这些字段做强制校验并在不匹配时抛 RuntimeError，因此必须为新的元数据组合、版本兼容、非匹配映射的回退路径（legacy launcher）以及 C++ binding 缺失/TypeError 的降级路径补充单测与 LIT 用例；已有 test_launcher_export_api.py、test_compiler_layout_memory_contract.py 已同步改造，但 IAT/PTSM 规则本身、ResourceCostModel、ProgramAxisDependence 分析、ProgramGridTransform 契约编解码、scalar specialization 版本 1/2 兼容等仍缺少覆盖。autotuner 删除 simt_stack_limit 后，需确认没有其它入口依赖该注入行为，且 SIMT-only 模式下的 stack limit 行为要有回归看护。整体建议在 third_party/ascend/unittest（pytest_ut/graph_optimize_ut、autotune_ut、launcher_ut）与 third_party/ascend/test（lit GraphOptimize/Conversion）两个层面补齐负向与边界用例。",
+  "commits": [
+    {
+      "sha": "3841a37338b7e342f2a88d95818c81274c947040",
+      "comment": "在 linalg_to_bin_enable_npu_compile_910_95 的 bishengir 编译命令中，当 metadata['enable_hivm_batch_matmul'] 为真时追加 --enable-hivm-batch-matmul；同时在 NPUOptions 中新增 enable_hivm_batch_matmul: bool = False 字段，作为编译选项透传到 metadata。属临时开关（注释说明 Q4 后 NPU 编译器将默认启用），因此默认值 False 保证行为不变，风险低。需要注意的是该字段命名与已有的 NPUOptions 字段风格一致，会被编译流水线序列化进 metadata，如需与 cache key 关联应确认 options.__dict__ 序列化路径（NPUOptions 已有类似 enable_hivm_auto_cv_balance 的先例，机制相同）。潜在风险点在于：仅 910_95 分支使用了该选项，A2/A3 分支未透传，若后续在 A2/A3 上也需要该能力，需要同步补全；另外该字段未做类型/合法性校验（bool 预期），但因是 InitVar 之外普通 dataclass 字段并来自内部 parse_options，可接受。",
+      "tags": [
+        "feature",
+        "compiler",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增编译选项透传逻辑，属于编译参数路径的行为差异，需验证 metadata 中有/无该字段时编译命令列表的差异，以及默认 False 时行为与之前完全一致。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "third_party/ascend/unittest/pytest_ut（npu_compiler 参数拼装相关用例）"
+        ]
+      },
+      "message": "[compiler](feat) add hivm batch matmul compile option (#2117)\n\nForward enable_hivm_batch_matmul on the 910_95 bishengir path so kernels can\nopt into --enable-hivm-batch-matmul until the NPU compiler turns it on by\ndefault.\n\nSigned-off-by: xudezheng <xudezheng1@huawei.com>\nCo-authored-by: xudezheng <xudezheng1@huawei.com>"
+    },
+    {
+      "sha": "67bdc02141e57a6e345e1d8f1688fad9082af2d0",
+      "comment": "本 commit 是当日唯一变更，内容非常庞大（+6310/-190，38 文件），核心是给 Ascend 后端引入「资源门控的 program mapping」能力，属于 Ascend 编译链与 GraphOptimize 框架的一次体系性扩展。实现上前端新增 third_party/ascend/backend/program_grid.py 作为 program_grid_transforms v2 契约的唯一 Python 校验点（严格校验 version/extent_source/hidden_*_axes/transforms 序列，仅允许 IAT16、IAT16+PTSM4、PTSM64 三种序列），compiler.py 用 _export_program_grid_metadata / _finalize_program_launch_policy 统一收敛 metadata 并强校验 auto_blockify、row_coalescing、program_grid_mapping、ptsm_cap 的互斥关系，NPUOptions 新增 InitVar rule_mask 并接入归一化校验；driver.py 的 make_launcher 新增 dynamic original-grid ABI（插入 originalGridX/Y 参数槽与结构体字段）、PTSM grid cap 和基于新 metadata 的策略校验，同时把 auto_blockify 判定从运行时环境变量改为消费编译期 metadata['auto_blockify_enabled']，使编译/启动策略一致。C++ 侧在 TritonToGraph 下新增 ProgramAxisDependenceAnalysis、ProgramGridTransform、ProgramMappingScalarSpecialization、ResourceCostModel、IndependentRowReductionAnalysis，新增 IAT/PTSM 两个实际改写规则（共 ~2200 行）与 4 个 Reserved 占位规则、ReservedGraphOptimizationRule，GraphOptimizationRuleId 由 uint16_t 扩为 uint32_t 掩码并引入 GraphOptimizationRulePhase 分阶段调度；GraphOptimize pass 增加 mapping/PTM 阶段、多 UB 预算选项（mapping_ub_capacity_bytes/store_coalescing_ub_budget_bytes/ub_safety_percent/reserved_ub_bytes）、结构清理 pass pipeline 与 rule 注册去重校验；MaskAnalysis.cpp 支持被 tag 的 unsigned runtime-extent mask（IATRuntimeExtentUnsignedMask/PTSMRuntimeExtentUnsignedMask），RowCoalescing 放行自动溢出 assert；ascend_ir.cc/triton_ascend.cc 暴露 program_grid_transforms、program_mapping_scalar_specialization、analyze_program_axis_dependence 等绑定并扩展 add_graph_optimize 参数；setup_ascend.py 新增 AscendBuildPy 与 TRITON_ASCEND_BISHENGIR_PATH 打包 BishengIR payload；CMakeLists 将 TritonToGraph 与新成本模型（AscendModelAnalysis）有条件链接。潜在风险点较多：1) NPUOptions.__post_init__ 新增 rule_mask 为 InitVar，若上游 BaseBackend 侧对 options 构造方式有变更需同步；2) 编译期 metadata 由「可选 getattr」改为「必须存在且为 bool」会破坏任何未升级阶段产出的旧 metadata，跨版本缓存（磁盘 code cache）命中旧产物时会直接 RuntimeError；3) launcher 对 coalesce/program-grid 的组合做硬失败校验，历史上依赖 metadata 默认值的旧 kernel 将失效；4) dynamic original-grid ABI 改变了 kernel 参数槽布局（原 grid 前后插入 originalGridX/Y 与结构体字段），与纯 SIMT 路径、workspace、ffts 布局相互影响，需回归纯 SIMT/混合模式；5) rule_mask 由 8 位有效扩到 32 位并改变默认值语义（kDefaultGraphOptimizationRuleMask 仍为 511，但 IAT/PTSM 成为 default-eligible），需要确认默认掩码下 IAT/PTSM 是否真的会触发（默认关闭还是默认启用）以避免默认行为变更；6) 新增的 Reserved 规则在 ruleMask 置位时会进入 enabledRules 且返回 no-op，但 GraphOptimizePass 去重/校验逻辑要求 factory 非空且 ID 唯一，若未来新增规则忘注册会直接 signalPassFailure；7) setup_ascend.py 的 AscendBuildPy 在 build_py 阶段复制 BishengIR，若 TRITON_ASCEND_BISHENGIR_PATH 未设置则不拷贝，但 wheel 中若有引用路径需要消费者保证 runtime 可提供。总体上这是一次高耦合、跨 Python/C++/构建的 feature 合入，且已被 cherry-pick 多次（多分支同步），需重点看护编译/启动契约一致性。",
+      "tags": [
+        "feature",
+        "high-risk",
+        "performance",
+        "refactor",
+        "test",
+        "ci"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "变更打破了既有编译-启动契约：(a) 编译期 metadata 由可选变为必需且强类型（program_grid_transforms / program_grid_mapping_applied / row_coalescing_applied / auto_blockify_enabled / ptsm_cap_authorized），driver.make_launcher 会在缺失或类型错误时 RuntimeError；(b) auto_blockify 判定从 `_is_auto_map_parallel_blocks_enabled()` 环境变量改为消费 metadata，旧 launcher 测试（mock 该函数、断言 blockNum cap 出现次数）全部失效；(c) coalesce 与 program-grid metadata 互斥、row_coalescing_applied 与 coalesce_* 必须一致，原 test_make_launcher_shrinks_coalesced_grid_for_both_launch_paths 需改为断言 RuntimeError；(d) GraphOptimize pass 新增 rule phase/mask 语义、多个 UB 预算选项和新增 rule 注册，需要 LIT 覆盖 IAT/PTSM 序列校验、Reserved 规则 no-op、rule_mask 位宽与 phase 顺序；(e) dynamic original-grid ABI 改变了 kernel 参数布局，需要端到端验证 IAT/PTSM kernel 能正确编译并跑出正确结果；(f) setup_ascend.py 新增 BishengIR payload 打包，构建流程需要新的打包/安装测试。仓库内已同步调整 test_launcher_export_api.py 与 test_compiler_layout_memory_contract.py 以匹配新契约（含新增 program_grid 字段、mix_mode、断言改为 RuntimeError/blockNum cap 只由 auto_blockify_enabled 决定、utils_stub 新增 ub_size_in_kbytes_for_arch），这正是 needs_test_update 的直接证据。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_launcher_export_api.py",
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "third_party/ascend/unittest/pytest_ut/（新增 program_grid 契约/metadata 一致性用例）",
+          "third_party/ascend/unittest/Conversion/ 与 LIT（GraphOptimize pass：rule_mask/phase/IAT/PTSM/Reserved 规则、原 grid ABI 与 tail mask）",
+          "third_party/ascend/lib/TritonToGraph/Rules/{IndependentAxisTensorizeRule,PersistentTaskStripMiningRule,ReservedGraphOptimizationRule}.cpp 对应单测",
+          "third_party/ascend/lib/TritonToGraph/{ProgramAxisDependenceAnalysis,ResourceCostModel,ProgramGridTransform,ProgramMappingScalarSpecialization}.cpp 对应单测",
+          "third_party/ascend/backend/program_grid.py（版本/序列/ABI 校验与 apply_program_grid_transforms 语义的单测）",
+          "third_party/ascend/backend/compiler.py（_finalize_program_launch_policy 与 linalg_to_bin_* 的 metadata 终点一致性）",
+          "third_party/ascend/unittest/costmodel_ut/（UB 预算映射与 ResourceSnapshot 路径）",
+          "setup_ascend.py（TRITON_ASCEND_BISHENGIR_PATH 打包路径的构建测试）"
+        ]
+      },
+      "message": "[GraphOptimize](feat) add resource-gated program mapping (#2121)\n\n* [GraphOptimize](feat): add resource-gated program mapping\n\nAdd versioned program-grid specialization and transform contracts, with resource-gated Independent Axis Tensorization, Persistent Task Strip Mining, and Static Program Axis Fusion rules.\n\nInclude MergeSplit D192/D256 and Norm+RoPE mapping coverage, transactional rollback, launcher/cache contracts, and unit/LIT tests.\n\nSigned-off-by: zhanwei33 <493694187@qq.com>\n(cherry picked from commit 0fd9a23bbb70003b1ac5b37ebf3ee87c0ae1bb82)\n\n* [GraphOptimize](fix) move fixed mapping launch out of jit\n\n(cherry picked from commit 3cb58680536b07ffc94f52b61ecc18a3c5a6b2b3)\n\n* build: allow bundling BishengIR payload in Ascend wheel\n\n(cherry picked from commit 3dac82020fdebf3022b267d903a79186d82b6585)\n\n* [Ascend] add dynamic program-grid mapping\n\n(cherry picked from commit 2314fbefafe1e9a4dc792121e88b4a08d6a8f4e0)\n\n* [Ascend] retain IAT runtime extent tail masks\n\n(cherry picked from commit daac218d94097e73cbc66bf4f846b69dbb0fb0b7)\n\n* [Ascend] recognize identity reshapes in row reductions\n\n(cherry picked from commit a657acd75d77102b26e776b3b5999b39b1708974)\n\n* [Ascend] Preserve dynamic program mapping ABI\n\n(cherry picked from commit 173ecfbd97663642a08059a2bacf052768c8e0b4)\n\n* [Ascend] trim program mapping annotations\n\n(cherry picked from commit 6cb722762098f743cd870240522c4b9de7f441db)\n\n* [Ascend] remove added program mapping docstrings\n\n(cherry picked from commit 4de493017120fd664d5080e22d2ba5d5718a704e)\n\n* [Ascend] preserve legacy launcher for unmatched mappings\n\n(cherry picked from commit 41d035f128a66c0d11c0c08b1e5710a02113bf0a)\n\n* [Ascend][test] align launcher tests with compiler policy\n\n(cherry picked from commit 7641b891ed30bff8dc8d6779d47f65461801e85b)\n\n* [Ascend](style) format program mapping sources\n\n(cherry picked from commit 3e4ca56a7143c1edc5d9c223cd8bad6a32249f1b)\n\n* [Ascend][test] align compiler layout-memory contract shim\n\n(cherry picked from commit ecc1e9f5a9ac7b91fe2d0d82d9ad11536b9358e2)\n\n* [Ascend] Remove legacy program grid protocol\n\n(cherry picked from commit 705814594c52dbf5e3f56b8c3ea644615af481a3)\n(cherry picked from commit 1c265f746d4d7a234b7590f2e64e39df243f0256)\n\n* [Ascend] complete program mapping scalar specialization\n\n(cherry picked from commit 2c25de40e2898965e3c448fcc274aa472a1e46b6)\n(cherry picked from commit 83849be321b35636db3563766ffc5516b6d84bca)\n\n* [GraphOptimize](fix) apply clang-format\n\n---------\n\nSigned-off-by: zhanwei33 <493694187@qq.com>"
+    },
+    {
+      "sha": "e3cb82ad3aff8770afa0c9bd9da587b7c40b45cc",
+      "comment": "清理 autotuner 中已废弃的 simt_stack_limit 注入逻辑：删除 _inject_default_simt_stack_limit 辅助函数、AutoTilingTuner.simt_stack_limit 属性以及 run/_batch_bench/_profile/parallel warmup 等 5 处调用，并同步从 autotune_ut 三个测试文件中移除 simt_stack_limit=8192 的构造与断言。属于典型的死代码/无效逻辑清理，行为等价性依赖于上游（NPUOptions 或编译路径）已经不再读取该参数；若仍存在依赖该字段的 SIMT-only 路径，需要确认调用方已由别处补齐。测试侧改动是必要的，否则 SimpleNamespace/_make_*_tuner 会把不存在的属性继续写在 tuner 上而无法反映真实情况。风险低，但需要确认没有外部（例如用户脚本或其它测试）通过 tuner.simt_stack_limit 访问该属性。",
+      "tags": [
+        "refactor",
+        "autotune",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "已同步删除 autotune_ut 中 simt_stack_limit 相关构造与断言。建议确认无其它测试或调用方仍引用该属性；同时可在 SIMT-only 编译模式下保留一条回归用例，保证 stack limit 仍由其它路径（编译选项/默认值）正确设置。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/autotune_ut/test_autotune_param_valid.py",
+          "third_party/ascend/unittest/autotune_ut/test_compile_failure_cache.py",
+          "third_party/ascend/unittest/autotune_ut/test_do_bench_compat.py"
+        ]
+      },
+      "message": "[autotune](fix) delete logic related to simt_stack_Limit\n\nSigned-off-by: gymgit1 <guoyiming17@huawei.com>"
+    },
+    {
+      "sha": "c7e1e6be385812ccf1dc42fae6a6823ca3761fab",
+      "comment": "纯文档变更：将 docs/en/do_bench_npu_guide.md 与 docs/zh/do_bench_npu_guide.md 重命名/移动到 docs/{en,zh}/debug_guide/ 下，并在对应 index.md 的 toctree 中注册新路径。同时修正示例代码（kernel 定义对齐实际参数、补充 import triton 与张量准备），把 libmspti.so 未设置时的行为描述从 'RuntimeError' 更正为 '打印警告' 并给出设置示例，并补充/细化单函数与函数列表两种用法的时间归属约束说明。对代码与测试无影响，但文档重命名可能影响外部对旧路径的链接引用。",
+      "tags": [
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅文档移动与内容修订，不涉及代码/构建/测试逻辑；索引已在 index.md 中更新，无需新增测试。若仓库存在文档链接检查（如 CI 中的 link checker），需要确认旧路径引用已全部更新。",
+        "suggested_test_areas": []
+      },
+      "message": "[docs](feat) add index for do_bench_npu_guide (#2080)\n\nSigned-off-by: gymgit1 <guoyiming17@huawei.com>"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

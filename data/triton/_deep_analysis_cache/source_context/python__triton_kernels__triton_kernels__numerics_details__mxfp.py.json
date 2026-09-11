@@ -1,0 +1,10 @@
+{
+  "content_hash": "e2fae59b99a3f5b9",
+  "analysis": {
+    "interface_summary": "定义 1 个类；定义 7 个函数",
+    "key_interfaces": [
+      "DequantScaleRoundingMode"
+    ]
+  },
+  "cached_at": "2026-09-12T04:09:05.439039+08:00"
+}

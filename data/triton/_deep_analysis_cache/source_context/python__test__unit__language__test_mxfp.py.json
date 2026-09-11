@@ -1,0 +1,23 @@
+{
+  "content_hash": "14e5b328daf0f395",
+  "analysis": {
+    "interface_summary": "定义 3 个类；定义 19 个函数",
+    "key_interfaces": [
+      "MXBaseTest",
+      "TestMXFP4Tensor",
+      "TestMXScaleTensor",
+      "MXBaseTest.device",
+      "TestMXFP4Tensor.test_roundtrip",
+      "TestMXFP4Tensor.test_packed_tensor",
+      "TestMXFP4Tensor.test_padding",
+      "TestMXFP4Tensor.test_zero_values",
+      "TestMXFP4Tensor.test_out_of_range_values",
+      "TestMXScaleTensor.test_positive_values",
+      "TestMXScaleTensor.test_special_values",
+      "TestMXScaleTensor.test_e8m0_nan_to_float_nan",
+      "TestMXScaleTensor.test_random_generation",
+      "TestMXScaleTensor.test_roundtrip"
+    ]
+  },
+  "cached_at": "2026-09-12T04:09:05.351858+08:00"
+}

@@ -1,4 +1,28 @@
 {
+  "543275d4fef9c7fd207aec3210b51d676bc59e85": {
+    "date": "2026-09-11",
+    "msg": "[GPU] Preserve warp context in noinline helpers (#11673)"
+  },
+  "c7342ca311a147b01faa6810ead01ad4b28ae89e": {
+    "date": "2026-09-11",
+    "msg": "[DOCS] Fix broken link to plugins README in top-level README (#11700)"
+  },
+  "66aa2f8a62912e821dd974ace5697fe19ac90968": {
+    "date": "2026-09-11",
+    "msg": "[Triton] Fix E8M0 scale decoding (#11624)"
+  },
+  "2d4fce94e3c98690bcc3f5c7df73a94d4e423654": {
+    "date": "2026-09-11",
+    "msg": "[KERNELS] Support unscaled FP8 E4M3 matmul with FP16/BF16 (#11652)"
+  },
+  "10d342c2a63c3588d2a37c4fbeeff04cdab0a45e": {
+    "date": "2026-09-11",
+    "msg": "[AMD][Gluon] Run test_noinline_call_preserves_live_shared_allocation (#11684)"
+  },
+  "4126d44ce5aae21c6a8f38ce136497bf36ab20c0": {
+    "date": "2026-09-11",
+    "msg": "[Test] Assert the async-copy branch in test_compile_tensor_copy (#11680)"
+  },
   "59c11c8d8d732cbdbf7c5f4159340e546a77278b": {
     "date": "2026-09-10",
     "msg": "[TRITONGPU] Reland empty inner loop flattening fix (#11688)"

@@ -349,6 +349,18 @@
       "interface_changes": "Gluon 新增 per-thread `inline_asm` 并允许 `inline_asm_elementwise` 接受 shared/TMEM descriptor 操作数。核心设计是引入 `DialectInlineAsmInterface`（TTIR Dialect.h），让方言在不暴露类型给 Triton dialect 的前提下声明其类型作为 inline asm 操作数的效果与校验；TritonGPU 方言实现 `TritonGPUInlineAsmInterface`（shared descriptor 声明 Read/Write Generic 效果，TMEM descriptor 声明 TensorMemory 效果，并校验纯函数与 partition 数）。新增 `ttg.inline_asm` op（TritonGPUOps.td）带 `DeclareOpInterfaceMethods<MemoryEffectsOpInterface>` 与 `ConditionallySpeculatable`，`TT_ElementwiseInlineAsmOp` ",
       "change_summary": "[Gluon] Add per-thread inline assembly with descriptor operands (#11623)",
       "ascend_impact": false
+    },
+    "66aa2f8a62912e821dd974ace5697fe19ac90968": {
+      "date": "2026-09-11",
+      "affected_modules": [
+        "python/triton/runtime/interpreter.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/runtime/interpreter.py"
+      ],
+      "interface_changes": "本 commit 修正 E8M0（UE8M0）缩放字节的解码语义：字节 0 应为 2^-127（BF16/FP32 下为次正规数），字节 255 应为 NaN。改动横跨编译器与 Python 侧：编译器 lowering 中 DecomposeScaledBlocked 的 scaleTo16 增加 handleNan 参数，BF16 下用 maxui 保底最小值 0x0040、用 math.fma(scale, 0, scale) 把 infinity 转成 NaN，并在 scaleArg 中按 fastMath 决定是否处理 NaN（fast_math 路径仍不处理）；Passes.td 与 AMD Passes.td 声明 MathDialect 依赖；FpSanitizer（通用与 AMD）同步引入 min-correct 逻辑以保持 payload 一致；AMD ScaledUpcastToLLVM 的 software scaleToF32 增加 umax 与 FMA，并把 scale 参数从 upcast8xMxfp4_SW 中移除（改由上层统一处理）；inline as",
+      "change_summary": "[Triton] Fix E8M0 scale decoding (#11624)",
+      "ascend_impact": false
     }
   }
 }

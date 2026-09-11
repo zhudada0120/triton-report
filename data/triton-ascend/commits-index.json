@@ -1,4 +1,20 @@
 {
+  "3841a37338b7e342f2a88d95818c81274c947040": {
+    "date": "2026-09-11",
+    "msg": "[compiler](feat) add hivm batch matmul compile option (#2117)"
+  },
+  "67bdc02141e57a6e345e1d8f1688fad9082af2d0": {
+    "date": "2026-09-11",
+    "msg": "[GraphOptimize](feat) add resource-gated program mapping (#2121)"
+  },
+  "e3cb82ad3aff8770afa0c9bd9da587b7c40b45cc": {
+    "date": "2026-09-11",
+    "msg": "[autotune](fix) delete logic related to simt_stack_Limit"
+  },
+  "c7e1e6be385812ccf1dc42fae6a6823ca3761fab": {
+    "date": "2026-09-11",
+    "msg": "[docs](feat) add index for do_bench_npu_guide (#2080)"
+  },
   "32620c2297fabd00b38e7880aa405c6056ffb2ef": {
     "date": "2026-09-10",
     "msg": "[ssbuffer](fix) [ssbuffer](fix) modify ssbuffer enabled scenarios"

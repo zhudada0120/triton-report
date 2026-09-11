@@ -1,0 +1,20 @@
+{
+  "content_hash": "03bc4297ed0969b4",
+  "analysis": {
+    "interface_summary": "定义 2 个类；定义 31 个函数",
+    "key_interfaces": [
+      "HopperMXValueLayout",
+      "HopperMXValueLayoutTransformation",
+      "HopperMXValueLayout.__post_init__",
+      "HopperMXValueLayout.name",
+      "HopperMXValueLayout.swizzle_block_shape",
+      "HopperMXValueLayout.make_transformation",
+      "HopperMXValueLayoutTransformation.__post_init__",
+      "HopperMXValueLayoutTransformation._padded_shape",
+      "HopperMXValueLayoutTransformation.storage_shape",
+      "HopperMXValueLayoutTransformation._maybe_mT",
+      "HopperMXValueLayoutTransformation.convert_data"
+    ]
+  },
+  "cached_at": "2026-09-12T04:09:05.470275+08:00"
+}
