@@ -1,4 +1,60 @@
 {
+  "42c5e89c3871e1472968c92dd8e5c02d0b3dd40c": {
+    "date": "2026-09-12",
+    "msg": "[KERNELS] Avoid local output allocation for fused communication (#11724)"
+  },
+  "5caf081322fdfc32943a935af721b002145f1987": {
+    "date": "2026-09-12",
+    "msg": "[FPSan] Use generic fingerprints for E8M0 inline assembly (#11716)"
+  },
+  "979c55829b152507bf2b44815bc7eea4ba7e8803": {
+    "date": "2026-09-12",
+    "msg": "[Python] Avoid symbolic subtraction in cdiv (#11723)"
+  },
+  "b8ccfc1d7d564950807e78a0617f433d14f2172e": {
+    "date": "2026-09-12",
+    "msg": "[BC-breaking][Frontend] Remove outdated bfloat16 promotion rules (#11473)"
+  },
+  "30dd06eab42353242b6413df9ec21cd9d1886b10": {
+    "date": "2026-09-12",
+    "msg": "[Release] Update Triton release cadence for PyTorch 2.15 (#11713)"
+  },
+  "273fb299a5d4b954ec52924eb173d95fa7c7714c": {
+    "date": "2026-09-12",
+    "msg": "[FPSan] Disable Blackwell loop fusion and warp specialization (#11722)"
+  },
+  "64dc6bfdb050260b5580db42748ac1ef46f6e4e7": {
+    "date": "2026-09-12",
+    "msg": "[CI] Remove compile warmup step timeout (#11721)"
+  },
+  "d5b01f5b128c2d2309c0709ff74f1b9ebd3766ad": {
+    "date": "2026-09-12",
+    "msg": "Fix alignment of warp-specialized NVIDIA barriers (#11710)"
+  },
+  "f6f3a082b59f26763aae4060ce0497aaa5d0481b": {
+    "date": "2026-09-12",
+    "msg": "[Build] Refresh Ninja path for cached AMD bootstrap builds (#11717)"
+  },
+  "02f77b2e9d82aaa5b2e35cc67e20e64d3fd41133": {
+    "date": "2026-09-12",
+    "msg": "[FPSan] Fix shadow pointer scope for captured TMEM views (#11665)"
+  },
+  "7fe90e2150e67100e9a7234ef84f117fe4daf3b9": {
+    "date": "2026-09-12",
+    "msg": "[Gluon] Preserve scalar promotion in TMA alignment checks (#11706)"
+  },
+  "24bb8414f7c34625c8cd8490e5d6e2d66f5cdce3": {
+    "date": "2026-09-12",
+    "msg": "[BACKEND] Package separately pinned AMD LLVM codegen (#11485)"
+  },
+  "159bb8aeec5fa53179e485d40eb2b4dec9bd33ad": {
+    "date": "2026-09-12",
+    "msg": "[IR] Canonicalize operations with false predicates (#11695)"
+  },
+  "696c45880d8123c94adbf69e57297403c134edb4": {
+    "date": "2026-09-12",
+    "msg": "[NVIDIA] Fix MMAv2 kWidth for small-K upcast operands (#11691)"
+  },
   "543275d4fef9c7fd207aec3210b51d676bc59e85": {
     "date": "2026-09-11",
     "msg": "[GPU] Preserve warp context in noinline helpers (#11673)"

@@ -1,0 +1,300 @@
+{
+  "date": "2026-09-12",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-09-13T03:46:21.958969+08:00",
+  "daily_summary": "当日变更集中在五个方向：(1) triton_kernels 的 fused communication 路径优化——在提供 FusedComm 且未显式传入输出缓冲区时跳过本地输出分配，改用 meta tensor 与零存储设备指针，并相应修正 profiling 的字节统计逻辑；(2) FPSan（浮点 sanitizer）相关修复——移除 E8M0 inline asm 的专用数值解码特例改用通用 fingerprint、在 Blackwell 上关闭 loop fusion 与 warp specialization 以避免寄存器溢出、修复 warp-specialized 分区内 TMEM view 的 shadow pointer 作用域问题；(3) 前端 bfloat16 类型提升规则的大规模清理——移除历史遗留的 bf16→fp32 强制提升，为 cumsum/cumprod 增加 dtype 参数，并补齐 NVIDIA 侧 bf16 clamp 的 lowering；(4) 规范化/折叠能力增强——为带谓词的操作（store/atomic_store/barrier/TMA/tmem 操作）增加 false-predicate 折叠，并在 Gluon canonicalize 中启用；(5) 构建与后端基础设施——将 AMD codegen 拆分为独立 pin 的 LLVM 共享库并支持 bitcode 传输，修复 AMD bootstrap 构建的 Ninja 路径，修复 MMAv2 小 K upcast 的 kWidth 计算，修复 warp-specialized barrier 的 aligned 属性，以及 cdiv 的符号化计算修复。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 的直接冲击主要来自前端语言语义层：commit b8ccfc1d 移除了 core.py 中的 _promote_bfloat16_to_float32 并重写了 standard.py 中 max/min/cumsum/cumprod 的提升逻辑与 cumprod 签名（新增 dtype 参数），这直接改变了 TTIR 前端的类型推导结果，Ascend 的 TritonToLinalg 转换链与算子单测会受到影响；commit 979c5582 修改了 triton.__init__.py 中的 cdiv 实现（保持 constexpr_function 装饰，语义等价但表达式重排），对 Ascend 无实质影响。commit 159bb8ae 为 PredicatedOpInterface 引入了新的 eraseIfPredicateIsFalse 辅助函数并修改了 tt.store/tt.atomic_store 的 canonicalization 行为，属于 include/triton/Dialect/Triton 与 lib/Dialect/Triton（必然影响路径）的实际语义变更，可能改变 Ascend 前端产出的 TTIR 在 canonicalize 后的形态。其余 commit 均为 NVIDIA/AMD 平台特定代码、FPSan（NVIDIA 专属 sanitizer）、构建系统与 CI，对 Ascend 无影响。",
+  "commits": [
+    {
+      "sha": "42c5e89c3871e1472968c92dd8e5c02d0b3dd40c",
+      "comment": "triton_kernels fused communication 路径的本地输出分配优化。在 matmul.py 中，当 fused_comm 已提供且 c 为 None 或 meta tensor 时设置 omit_local_output，跳过实际的 GPU 输出分配：改为构造 meta tensor 描述逻辑输出形状，并通过 out_matmul_flex.reinterpret(torch.empty(0, ...)) 提供零存储的设备端输出指针，内核的 fused store 只解引用 out_handles 因此不会写入该指针。同时增加约束校验：omit_local_output 时要求 split_k=1、无 output TMA、c_acc_in 为 None、无输出 MX scale，否则抛错。_common.py 中新增 _matmul_output_bytes 辅助函数，将 profiling 的字节统计从依赖 dummy 指针的 numel 改为按逻辑维度（M/batch_size、N/ACTIVATION_REDUCTION_N/Y_VALUE_PACK_FACTOR、n_reduce_shards、SPLIT_K）与 replication 计数推导，同步与异步两条 metadata 路径都走该函数。该改动属于 triton_kernels 用户级 kernel 库，不触及语言前端、编译器抽象或后端接口，风险局限在 fused comm 的正确性与 profiling 数值一致性上。新增的 210 行测试覆盖了 dense/ragged 输出、1/2 GPU、persistent/非 persistent、CUDA graph replay、零额外显存分配与 metadata 字节计算，验证较充分。",
+      "tags": [
+        "performance",
+        "bugfix",
+        "low-risk",
+        "triton_kernels",
+        "matmul"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。该 commit 仅修改 python/triton_kernels/ 下的用户级 matmul kernel 库（matmul.py 与 matmul_details/_common.py）及其测试，不涉及 python/triton/language、python/triton/backends、python/triton/compiler 或任何 C++ 方言/转换路径，triton-ascend 不依赖此目录。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[KERNELS] Avoid local output allocation for fused communication (#11724)\n\n## Summary\n\nFused matmul communication writes results directly to the buffers in\n`FusedComm.out_handles`, but the Python wrapper still allocates a local\noutput tensor when `c` is omitted. That allocation is unused by the\nfused stores.\n\nSkip the local output allocation when fused communication is enabled and\n`c` is omitted or is a meta tensor. Return a meta tensor describing the\nlogical output; callers consume values from their communication buffers.\nSupply zero-storage device tensors for the kernel's output-pointer\narguments. Calls with a real `c` buffer retain their existing behavior.\n\nThis path requires `split_k=1` and rejects output Tensor Memory\nAccelerator (TMA) stores and accumulation. The existing rejection of\noutput microscaling remains in place.\n\nKeep profiling independent of the dummy pointer's size: derive\nfused-output bytes from logical dimensions, activation reduction, and\nreplication count in both synchronous and asynchronous metadata paths.\n\n## Validation\n\n- 107 tests passed in validation on two NVIDIA GB300 GPUs: 68 metadata\ncases and 39 focused fused-communication cases.\n- GPU coverage includes FP16/BF16, dense and ragged/scattered output,\npersistent and nonpersistent kernels, one- and two-GPU writes, numerical\ncomparison, no additional peak CUDA allocation after warmup, and CUDA\ngraph replay.\n- Metadata coverage includes dense and ragged outputs, activation\nreduction, replication, real and dummy output pointers, and\nsynchronous/asynchronous accounting.\n- Metadata suite: `python -m pytest\npython/triton_kernels/tests/test_matmul_metadata.py -s --tb=short`.\n- Fused-communication selection: `python -m pytest\npython/triton_kernels/tests/test_matmul.py -k fused_comm -s --tb=short`.\n- Both ran with this checkout's Python sources and the installed native\ncompiler.\n\n## Lines Changed\n\n| Type | Added | Removed | Net |\n| --- | ---: | ---: | ---: |\n| Tests | 211 | 1 | +210 |\n| Core Logic | 38 | 7 | +31 |\n| AutoGenerated | 0 | 0 | 0 |\n| Total | 249 | 8 | +241 |\n\n## Reviewers Guide\n\n- `python/triton_kernels/triton_kernels/matmul.py`: allocation guards,\nmetadata-only output, and zero-storage output-pointer arguments.\n- `python/triton_kernels/triton_kernels/matmul_details/_common.py`:\nlogical fused-output byte accounting for profiling.\n- `python/triton_kernels/tests/test_matmul.py`: wrapper regression tests\nand GPU correctness, allocation, and graph tests.\n- `python/triton_kernels/tests/test_matmul_metadata.py`: profiling\nregressions for real and dummy output pointers.\n- No file moves or generated changes.\n\n---------\n\nCo-authored-by: Joey Yu <234057141+lyu-oai@users.noreply.github.com>"
+    },
+    {
+      "sha": "5caf081322fdfc32943a935af721b002145f1987",
+      "comment": "FPSan 中移除 E8M0 inline assembly 的专用解码特例。FpSanitizer.cpp 原先对 asm string 精确匹配 'cvt.rn.bf16x2.ue8m0x2 $0, $1;' 且 constraints 为 '=r,h'、packed_element=2 的情况，使用 scaleI8ToComputePayload 走数值解码路径；这导致其它拼写形式（如缺少空格）走通用 inline-asm fingerprint 路径，两条路径行为不一致。本次删除该特例，统一使用 stableStringHash(asmString) 生成 fingerprint，payload 由操作数按有符号扩展与 assembly 字符串 hash 异或得到。测试从'd 数值解码等价性'改为覆盖两种拼写与全部 256 个输入的通用 fingerprint 语义。该改动纯属 NVIDIA FPSan（lib/Dialect/TritonInstrument 与 test/TritonGPU 的 NVIDIA 路径），属于 sanitizer 专属实现，不改变编译器主流程或后端接口。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "low-risk",
+        "fpsan",
+        "nvidia"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。lib/Dialect/TritonInstrument 与 test/TritonGPU/fpsan.mlir、python/test/gluon/test_fpsan.py 均属于 NVIDIA 专属的 FPSan 路径，triton-ascend 不使用 TargetInfoBase、不走 TritonGPUToLLVM，也不启用 FPSan instrumentation。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[FPSan] Use generic fingerprints for E8M0 inline assembly (#11716)\n\nFPSan currently treats one exact spelling of `cvt.rn.bf16x2.ue8m0x2` as\na numeric E8M0 decoder, while other spellings use the generic\ninline-assembly fingerprint. Remove this exception so the conversion\nconsistently uses the input payload and assembly-string hash, as\ndocumented for pure inline assembly.\n\nReplace the native-versus-portable decoder equivalence test with\ncoverage of both assembly spellings and all 256 input bytes, including\nsigned widening to the BF16 payload width.\n\nValidated on GB300 with ptxas 13.3.33: the new regression fails on the\noriginal code, and all 27 selected FPSan GPU cases pass with the fix.\n`test/TritonGPU/fpsan.mlir` also fails before the fix and passes\nafterward.\n\n| Files | Added | Removed | Net |\n| --- | ---: | ---: | ---: |\n| Test | +17 | -23 | -6 |\n| Non-test | +0 | -16 | -16 |\n| All | +17 | -39 | -22 |\n\n### Reviewer's guide\n\n- `lib/Dialect/TritonInstrument/`: remove the assembly-specific rewrite\nand use existing generic fingerprinting.\n- `python/test/gluon/` and `test/TritonGPU/`: check packed\ninteger-to-BF16 fingerprinting instead of numeric decoder equivalence."
+    },
+    {
+      "sha": "979c55829b152507bf2b44815bc7eea4ba7e8803",
+      "comment": "cdiv 的符号化（symbolic）兼容性修复。原实现 (x + y - 1) // y 对于只实现了 __add__ 与 __floordiv__ 的符号表达式（如某些 lazy symbolic 类型）会在 x + (y-1) 的求值顺序上退化：表达式需要先对 x 加上符号化的 y-1，而在 y 为具体整数时 x + y 会先触发一次符号加法再减 1，导致只支持有限运算的符号类型失败。新实现 (x + (y - 1)) // y 先计算 concrete 的 y-1 再与 x 相加，使得结果可保持为 (x + (y-1)) // y 的符号形式。改动仅一行 python/triton/__init__.py，且 cdiv 仍由 @constexpr_function 装饰，整型语义（含负数、大整数、除零）与编译期常量折叠行为完全保持一致。属于低风险的前端工具函数修复。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "frontend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。triton.cdiv 是 python/triton/__init__.py 中的顶层工具函数，triton-ascend 直接 import triton.cdiv 使用，本次改动仅调整了内部求值顺序，对整型输入语义等价（测试覆盖 -33、2**100、2**100+1、除零等边界），不改变函数签名、装饰器或返回类型。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Python] Avoid symbolic subtraction in cdiv (#11723)\n\n`triton.cdiv(N, 32)` currently subtracts from `N + 32`, which fails for\nsymbolic numerators that support addition and floor division only.\nCompute the concrete divisor offset first so the result stays symbolic\nas `(N + 31) // 32`.\n\nPython-integer results and `@constexpr_function` behavior are preserved.\nSymbolic support is scoped to numerators with concrete integer divisors;\nreassociation can change floating-point rounding.\n\nCPU validation: 43 checks passed, covering lazy symbolic expressions,\ninteger boundaries and large integers, division by zero, and a compiled\nconstexpr call. Both symbolic cases fail with `TypeError` on the\noriginal implementation. The before/after runs used the exact changed\nPython module with a prebuilt Linux Triton runtime.\n\n```sh\npytest -s --tb=short python/test/unit/test_utils.py python/test/unit/language/test_frontend.py::test_cdiv_constexpr\n```\n\n| Files | Added | Removed | Net |\n| --- | ---: | ---: | ---: |\n| Test | +41 | -0 | +41 |\n| Non-test | +1 | -1 | +0 |\n| All | +42 | -1 | +41 |\n\n## Reviewer's guide\n\n- `python/triton/`: compute `y - 1` before involving the symbolic\nnumerator.\n- `python/test/unit/`: add CPU symbolic/integer coverage and a frontend\nFileCheck for constexpr compilation.\n\n<!-- codex-thread: 01a0927e-10a4-7aa3-9c4c-d8c138374b42 -->"
+    },
+    {
+      "sha": "b8ccfc1d7d564950807e78a0617f433d14f2172e",
+      "message": "[BC-breaking][Frontend] Remove outdated bfloat16 promotion rules (#11473)",
+      "comment": "BC-breaking 的前端类型提升规则清理。核心改动：(1) python/triton/language/core.py 删除内置函数 _promote_bfloat16_to_float32，并从 minimum/maximum/clamp 中移除对输入调用该函数的逻辑，同时把 tensor.cumsum/cumprod 的方法签名扩展为带 dtype 参数；(2) python/triton/language/standard.py 从 max/min 归约中移除 bf16→fp32 提升，为 cumsum/cumprod 增加 dtype 参数并统一使用 _pick_sum_dtype 决定累加类型（signed narrow int → int32，unsigned/bool → uint32，其他保持），cumprod 此前无 dtype 参数且无文档，现在与 cumsum 对齐。这导致行为变化：tl.minimum/tl.maximum/tl.clamp 对 bf16 输入不再隐式提升到 fp32，返回类型变为 bf16；tl.max/tl.min 在 return_indices=False 时仍走通用归约规则（bf16 会 widen 到 fp32），但在 return_indices=True 时保留 bf16 值类型；bf16 的 cumsum/cumprod 默认不再提升到 fp32，而是按 _pick_sum_dtype 处理（bf16 保持 bf16）。对应补齐了 NVIDIA 后端的 lowering：third_party/nvidia/.../ElementwiseOpToLLVM.cpp 的 ClampFOpConversion 增加 bf16 分支生成 nvvm.fmin.xorsign.abs.bf16 / nvvm.fmin.nan.xorsign.abs.bf16。测试侧更新了 test_core.py 的 scan2d 参考（显式传 dtype=tl.float32 对齐参考）、新增 test_scan_bfloat16 原生 bf16 扫描测试、扩展 test_propagate_nan/test_clamp 到 bf16、重写 test_cumsum_dtype 为通用的 test_scan_dtype，test_frontend.py 中 bf16 标量提升的期望从 float32 改成 bfloat16，并新增元素/扫描/归约三类 bf16 提升断言测试。该改动是明确标注的 BC-breaking，会影响所有后端生成的 TTIR 类型。",
+      "tags": [
+        "feature",
+        "high-risk",
+        "frontend",
+        "language"
+      ],
+      "ascend_impact": {
+        "ascend_affected": true,
+        "functionality": "直接影响 triton-ascend。python/triton/language/core.py 与 python/triton/language/standard.py 位于'可能影响'路径，但本次改动幅度大且改变了 TTIR 生成形态：(1) _promote_bfloat16_to_float32 被删除，Ascend 若在 language 扩展或 patch 中引用该符号会 ImportError/AttributeError；(2) tl.minimum/tl.maximum/tl.clamp 对 bf16 的返回类型从 f32 变为 bf16，tl.max/tl.min 带 return_indices 时值类型变为 bf16，Ascend 的 TritonToLinalg 转换与 CANN 算子映射需要能处理 bf16 的 min/max/clamp；(3) cumsum/cumprod 新增 dtype 参数并改变默认提升规则，Ascend 前端生成的 TTIR 中 arith 累加类型会随之变化，可能导致 Ascend 后端用于扫描的 lowering 在 bf16 输入下产出不同的 IR；(4) tensor.cumsum/cumprod 的方法签名变为 (axis, reverse, dtype)，Ascend 若有自定义语义覆盖需同步签名。third_party/nvidia 的 ClampFOpConversion 改动对 Ascend 无影响。",
+        "testing": "Ascend 的算子单测中若包含 bf16 的 max/min/clamp/cumsum/cumprod 用例，其期望 dtype 与数值参考需要更新；此外需确认 Ascend 前端 patch（third_party/ascend/backend/__init__.py::_apply_ascend_patch 等）未引用 _promote_bfloat16_to_float32。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/ 下涉及 bf16 clamp/minimum/maximum 的算子测试",
+          "third_party/ascend/unittest/pytest_ut/ 下 cumsum/cumprod 的 dtype 与提升语义测试",
+          "Ascend 前端 patch 对 python/triton/language standard.py/core.py 符号的引用（检查 _promote_bfloat16_to_float32 依赖）"
+        ]
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": true,
+        "affected_interfaces": [
+          "python/triton/language/core.py::_promote_bfloat16_to_float32 (removed helper; triton-ascend's patched standard.py still calls it)",
+          "python/triton/language/core.py::minimum/maximum/clamp (bf16 no longer auto-promoted to f32, so TritonSemantic.minimum/maximum/clamp now receive bf16)",
+          "python/triton/language/standard.py::max/min/cumsum/cumprod (bf16 promotion removed; cumprod signature gains dtype=None param; triton-ascend patches max to add propagate_nan)",
+          "python/triton/language/core.py::tensor.cumsum/cumprod (member stubs gain dtype=None param)",
+          "third_party/ascend/backend/ascend_interpreter.py::AscendScanOps.cumsum (only handles fp16 promotion, not bf16; must match new bf16 accumulation semantics)",
+          "third_party/ascend/lib/TritonToLinalg/TritonOpConverter.cpp::ClampFConverter and MinNum/MaxNum/Min/Max lowering (now reachable with bf16 element type)"
+        ],
+        "adaptation_effort": "medium",
+        "adaptation_guide": "1) Rebase the triton-ascend patch `third_party/ascend/patch/triton-ascend-3.6.0.patch` (the `standard.py` hunk at line ~948-982): the `max` hunk keeps `propagate_nan`/`_elementwise_max_propagate_nan` but its context line `input = core._promote_bfloat16_to_float32(input)` is deleted upstream, so the patch must drop that call (and the identical call in `min`) or the patch will no longer apply cleanly and `core._promote_bfloat16_to_float32` will be an AttributeError at runtime. 2) Update `cumsum`/`cumprod` in the patch context to the new `dtype: core.constexpr = None` signature (upstream already added `dtype` to cumsum; this commit adds it to cumprod and changes `_pick_sum_dtype` docstring). 3) Remove the now-stale `_promote_bfloat16_to_float32` usage from the `max`/`min` `propagate_nan` additions so bf16 reduction proceeds in bf16. 4) Verify bf16 min/max/clamp flows correctly through `TritonToLinalg/TritonOpConverter.cpp` (ClampFConverter/arith::MinNumFOp/MaxNumFOp/MinimumFOp/MaximumFOp are type-generic, but confirm bisheng/CANN accepts bf16 for these ops). 5) Update `third_party/ascend/backend/ascend_interpreter.py::AscendScanOps.cumsum` (and cumprod) to handle bf16 the way it handles fp16 (promote/accumulate to fp32) so interpreter matches the new compiler semantics, since the frontend no longer promotes bf16 for scans. 6) Add/adjust pytest coverage for bf16 min/max/clamp/cumsum/cumprod in third_party/ascend/unittest/pytest_ut/.",
+        "risk": "medium"
+      }
+    },
+    {
+      "sha": "30dd06eab42353242b6413df9ec21cd9d1886b10",
+      "message": "[Release] Update Triton release cadence for PyTorch 2.15 (#11713)\n\n## Summary\n\n- align Triton feature releases with every PyTorch minor release\nstarting with PyTorch 2.14\n- schedule Triton 3.9 and 3.10, and move Triton 3.8 to release history\n- add Triton 3.8.0 to the compatibility matrix",
+      "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 triton-ascend。",
+      "tags": [
+        "chore"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "273fb299a5d4b954ec52924eb173d95fa7c7714c",
+      "comment": "FPSan 在 Blackwell（capability // 10 >= 10）上禁用 loop fusion 与 warp specialization。third_party/nvidia/backend/compiler.py 的 CUDABackend 在 sm100 分支中，将 add_fuse_nested_loops 与 add_warp_specialize 两个 pass 用 is_enabled(opt, 'fpsan') 守卫起来。原因是 FPSan 用整数算术模拟浮点 MMA，扁平的 persistent loop 与 warp specialization 会导致过量 spill。改动仅 6 行，局限在 NVIDIA 后端的编译流水线配置，不影响任何抽象接口。风险是 sm100 上启用 FPSan 的性能下降（被有意接受以换取正确性/可编译性），但只影响 FPSan 调试场景。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "fpsan",
+        "nvidia",
+        "compiler-pipeline"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。third_party/nvidia/backend/compiler.py 是 NVIDIA 专属后端实现，AscendBackend 有自己的 add_stages 实现，不读取 nvidia 后端代码。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[FPSan] Disable Blackwell loop fusion and warp specialization (#11722)\n\n<!---\nThe core Triton is a small number of people, and we receive many PRs\n(thank\nyou!).  To help us review your code more quickly, **if you are a new\ncontributor (less than 3 PRs merged) we ask that you complete the\nfollowing\ntasks and include the filled-out checklist in your PR description.**\n\nComplete the following tasks before sending your PR, and replace `[ ]`\nwith\n`[x]` to indicate you have done them.\n-->\n\n# New contributor declaration\n- [ ] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [ ] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [ ] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [ ] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [ ] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)"
+    },
+    {
+      "sha": "64dc6bfdb050260b5580db42748ac1ef46f6e4e7",
+      "message": "[CI] Remove compile warmup step timeout (#11721)\n\nRemove the 10-minute timeout from the Triton compile cache warmup steps\nin both NVIDIA and AMD integration CI so warmup can finish when\ncompilation takes longer. The existing overall job timeouts still apply.\n\nValidation: `git diff --check origin/main...HEAD` passed. Workflow-only\nchange; no build or runtime tests run.",
+      "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 triton-ascend。",
+      "tags": [
+        "chore"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "d5b01f5b128c2d2309c0709ff74f1b9ebd3766ad",
+      "comment": "修复 warp-specialized NVIDIA barrier 的 CTA 对齐属性。ConvertWarpSpecializeToLLVM.cpp 中重写 nvvm.barrier 时，numThreads != 32 的分支原本调用 NVVM::BarrierOp::create(b, loc, handle, numThreads)，默认 aligned=true；但 warp partition 只在 CTA 的一部分线程上执行，aligned barrier 要求 CTA 统一执行会构成语义违规。改为显式传 aligned=false。相应更新 test/Conversion/warp_specialize_to_llvm.mlir 中所有相关 CHECK 行要求 {aligned = false}。属于 NVIDIA 后端的 lowering 细节修复，改动面极小。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "nvidia",
+        "warp-specialization"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/ 属于 NVIDIA 专属 lowering，Ascend 走 TritonToLinalg 替代路径，不使用 ConvertWarpSpecializeToLLVM.cpp。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Fix alignment of warp-specialized NVIDIA barriers (#11710)\n\nWarp partitions execute on only part of a CTA, but their NVVM barriers\ndefault to `.aligned`, which requires CTA-uniform execution. Emit\nnon-aligned barriers to avoid violating that requirement.\n\nExtend the existing warp-specialization conversion regression to require\n`aligned=false`.\n\n# New contributor declaration\n\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n- [x] I have added tests by extending the existing `lit` regression in\n  `/test/Conversion/warp_specialize_to_llvm.mlir`.\n- [x] The `lit` checks follow these\n[best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\n  including the \"tests should be minimal\" section.\n\n---------\n\nCo-authored-by: Thomas Raoux <thomas.raoux@openai.com>"
+    },
+    {
+      "sha": "f6f3a082b59f26763aae4060ce0497aaa5d0481b",
+      "comment": "修复缓存 AMD bootstrap 构建时 Ninja 路径失效的问题。python/build_helpers.py 的 build_amd_codegen 在构造 cmake 命令时新增 shutil.which('ninja') 查询，若当前 PATH 上存在 ninja 则显式传入 -DCMAKE_MAKE_PROGRAM=<resolved path>，否则保留 CMake 自身的查找与错误处理。触发场景是复用另一次 Python 环境留下的 AMD codegen bootstrap 缓存时，CMakeCache 中记录的 ninja 路径已不存在导致配置失败。改动 3 行，纯构建脚本修复，无编译语义变化。",
+      "tags": [
+        "bugfix",
+        "chore",
+        "low-risk",
+        "build"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。python/build_helpers.py 中的 build_amd_codegen 属 AMD 后端 bootstrap 构建路径，triton-ascend 使用 setup_ascend.py 与自己的构建流程，不调用该函数。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Build] Refresh Ninja path for cached AMD bootstrap builds (#11717)\n\nReusing the AMD codegen bootstrap cache across Python environments can\nleave CMake pointing at a missing Ninja executable, as in this [main CI\nfailure](https://github.com/triton-lang/triton/actions/runs/34629811449/job/103363663242).\nWhen Ninja is available on the current `PATH`, pass its resolved path as\n`CMAKE_MAKE_PROGRAM` when configuring the bootstrap. Otherwise, preserve\nCMake's existing lookup and error handling.\n\nValidated by relocating Ninja after a real AMD bootstrap build: the\noriginal code fails; the fix reconfigures successfully without\nrecompiling. Also checked that a valid cached Ninja works when Ninja is\nabsent from `PATH`."
+    },
+    {
+      "sha": "02f77b2e9d82aaa5b2e35cc67e20e64d3fd41133",
+      "comment": "修复 FPSan 在 warp-specialized 分区捕获 TMEM view 时的支配性错误。FpSanitizer.cpp 中为 TTNG_TMEMSubSliceOp、TTG_MemDescIndexOp、TTG_MemDescReinterpretOp 三种 view 计算 shadow pointer 时，原先统一使用消费者所在的 scope（worker partition 内），这会让 view 的 shadow pointer 定义在消费者作用域中，而当 view 定义在外部作用域被捕获传入时会产生支配性错误。修复方式：先调用 getScratchScopeRegion(view) 取得 view 自身定义所在的 region 来创建 shadow pointer，再通过新引入的 remapToScope 把已完成的指针重映射到消费者 scope，对 scale alias 情况同样应用。测试新增 test/TritonGPU/nvidia-fpsan.mlir 中两个 case，覆盖常量/动态索引、subslice、typed reinterpret 与链式 scale alias。改动仅在 lib/Dialect/TritonInstrument（NVIDIA FPSan 专属）。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "fpsan",
+        "nvidia"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。lib/Dialect/TritonInstrument/Transforms/FpSanitizer.cpp 属于 NVIDIA TritonInstrument FPSan 实现，triton-ascend 不使用 FPSan 也不加载 TritonInstrument dialect。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[FPSan] Fix shadow pointer scope for captured TMEM views (#11665)\n\nFix FPSan dominance errors when warp-specialized partitions capture\ntensor-memory views. Compute each view's shadow pointer in its defining\nscope before capturing it in the worker, including scale aliases.\n\nAdd lit coverage for constant and dynamic indexing, subslices, typed\nreinterpretation, and chained scale aliases."
+    },
+    {
+      "sha": "7fe90e2150e67100e9a7234ef84f117fe4daf3b9",
+      "comment": "Gluon TMA 对齐检查中的标量提升修复。python/triton/experimental/gluon/language/nvidia/hopper/tma.py 的 _emit_alignment_check 原先将 align 与 0 两个 Python 整数通过 ttgl.to_tensor 主动装箱为 signed tensor，导致在与 unsigned 类型的 coord 做 __mod__ / __eq__ 时类型检查失败（tensor 类型不匹配）。修复改为直接传 Python 标量 align 与 0，由 Triton 的二元运算标量提升机制把它们提升到 coord 的类型。属于 Gluon（TTGIR 起始的前端）的 NVIDIA Hopper TMA 路径，与 Ascend 使用的 Triton 前端无关。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "gluon",
+        "nvidia"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。python/triton/experimental/gluon/language/nvidia/hopper/ 属于 Gluon NVIDIA/Hopper 专属实现，triton-ascend 默认不使用 Gluon 也不走 Hopper TMA 路径。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Gluon] Preserve scalar promotion in TMA alignment checks (#11706)\n\nThe TMA alignment check eagerly boxes its alignment and zero constants\nas signed tensors, which makes modulo checks on unsigned coordinates\nfail type checking. Keep those constants as Python scalars so Triton\npromotes them to the coordinate type."
+    },
+    {
+      "sha": "24bb8414f7c34625c8cd8490e5d6e2d66f5cdce3",
+      "comment": "将 AMD codegen 从核心 LLVM 中解耦为独立 pin 的共享库。关键改动：(1) 新增 cmake/amd-llvm-build-info.json 与 cmake/amd-llvm-info.json 两份独立 LLVM pin 清单（llvm_hash 941a04e6，build_number 1），不再复用 cmake/llvm-info.json；(2) third_party/amd/backend/codegen/ 新增独立的 CMake 工程与 amdgpu_codegen.cc，导出 C ABI（triton_amdgpu_compile / triton_amdgpu_assemble / triton_amdgpu_free / triton_amdgpu_revision），链接静态 LLVM 且只导出这四个符号；(3) python/build_helpers.py 新增 get_amd_codegen_package_info、download_codegen_llvm、build_amd_codegen、download_and_copy_amd_codegen，将 get_llvm_package_info 拆出 get_llvm_system_suffix 并新增 --triton-amd-codegen-path 参数；(4) third_party/amd/backend/compiler.py 通过 ctypes 加载该库，新增 compile_amdgpu / assemble_amdgcn，并在 make_amdgcn 中改为经 llvm.to_bitcode 序列化后传给后端（bitcode 有跨 LLVM 版本兼容性，文本 IR 没有）；同时把 MIR dump 改为受 knobs.amd.dump_mir 守卫，禁用 pass 的处理从 DISABLE_LLVM_OPT 环境变量推导；(5) HIPBackend.hash 加入 get_amd_codegen_revision()，LLVM 版本变化能正确使缓存失效；(6) python/src/llvm.cc 新增 llvm.to_bitcode 绑定（依赖新增链接的 LLVMBitWriter）；(7) python/triton/knobs.py 新增 amd_knobs.codegen_path；(8) CI 新增 amd-codegen 构建矩阵与缓存路径。改动涉及核心 build 与 python/src/llvm.cc，但对 Ascend 仅新增了一个通用绑定 llvm.to_bitcode，不改变既有接口签名。",
+      "tags": [
+        "feature",
+        "refactor",
+        "medium-risk",
+        "amd",
+        "build",
+        "compiler-pipeline"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动主体是 third_party/amd/ 后端（AMD 专属，Ascend 不加载）与 AMD 专属的构建脚本/CI。python/src/llvm.cc 中新增的 llvm.to_bitcode 绑定是纯增量接口，不修改既有 pybind 函数签名，Ascend 不受影响。python/triton/knobs.py 新增的 amd_knobs.codegen_path 只作用于 AMD 命名空间。",
+        "testing": "无影响。新增测试均在 python/test/unit/test_knobs.py 的 AMD 相关用例与 python/test/unit/runtime/test_bindings.py 的 llvm.to_bitcode 用例，不涉及 Ascend。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Package separately pinned AMD LLVM codegen (#11485)\n\nAMD code generation currently shares Triton's core LLVM pin. This PR\npackages AMDGCN generation and ELF object assembly in a shared library\nbuilt with its own pinned LLVM, allowing backend updates without\nchanging core LLVM or starting a subprocess.\n\nCore LLVM passes serialized bitcode to the backend, which should use the\nsame or a newer LLVM. The library links LLVM statically and exports only\nits C ABI. Bootstrap builds use the LLVM SDK pinned in the AMD manifest\nand a separate cache; they do not read the core LLVM manifest or use\nLLVM_SYSPATH. MIR debugging, replacement, HSACO linking, and\nrevision-based cache invalidation are preserved.\n\nVerified an isolated build without core LLVM configuration, standalone\nloading, rejection of shared LLVM dependencies, and 33 focused tests.\nNine workloads across gfx90a, gfx942, gfx950, and gfx1250 produce\nidentical AMDGCN and HSACO with text and bitcode transport, including\nLLVM 23 bitcode read by LLVM 24. Bitcode adds a median 0.512 ms to\nuncached end-to-end compilation across 20 paired samples per workload on\nmacOS."
+    },
+    {
+      "sha": "159bb8aeec5fa53179e485d40eb2b4dec9bd33ad",
+      "comment": "为带谓词的操作提供 false-predicate 折叠能力。核心抽象：include/triton/Dialect/Triton/IR/OpInterfaces.h 新增自由函数 eraseIfPredicateIsFalse(PredicatedOpInterface, PatternRewriter&)，在 lib/Dialect/Triton/IR/OpInterfaces.cpp 实现——当 op 无结果、有 predicate operand 且该 operand 可被 m_Zero() 匹配时直接 erase，否则返回 failure。安全约束在 td 注释中明确：仅当 false predicate 确实抑制所有副作用时才可调用，带 result、masked-copy zero fill、MMA completion signal 等场景需要各自的替换语义。在此基础上有选择地为具体操作注册 canonicalize：tt.atomic_store、ttng.wait_barrier（仅当 getDeps() 为空，否则依赖会保持 allocation 存活）、ttng.barrier_expect / arrive_barrier（在既有 canonicalizeBarrierFromCTA 之前先尝试擦除）、ttng.async_tma_copy_global_to_local、ttng.async_tma_gather、ttng.tc_gen5_commit、ttng.tmem_store。同时把 tt.store 的 CanonicalizeMaskedStorePattern 与 tt.load 的 CanonicalizeMaskedLoadPattern 从手写 ConstantOp+SplatElementsAttr 检查改为统一的 matchPattern(m_Zero()/m_One())，语义等价但更简洁且支持非 splat dense 常量场景。lib/Dialect/Gluon/Transforms/Canonicalize.cpp 把这些 pattern 注册进 Gluon 的 canonicalize pass。测试覆盖 tt.store/atomic_store 的 false 标量与 tensor mask、tt.load 的 true/false mask 与 other、以及 NVIDIA barrier/TMA/tmem 的 false predicate 擦除，并明确保留 deps 承载的 wait、带 token 的 tmem_store 与独立 completion predicate 的 tc_gen5_mma。该改动位于 tt 方言核心（必然影响路径），会改变所有后端前端产出的 TTIR 经 canonicalize 后的形态。",
+      "tags": [
+        "feature",
+        "refactor",
+        "medium-risk",
+        "ttir",
+        "canonicalization",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "影响 triton-ascend。include/triton/Dialect/Triton/IR/OpInterfaces.h、TritonOps.td 与 lib/Dialect/Triton/IR/Ops.cpp 位于'必然影响'路径，是 Ascend 复用的 TTIR 前端与 TritonToLinalg 转换链的输入来源。具体：tt.atomic_store 新增 hasCanonicalizeMethod=1 并实现 eraseIfPredicateIsFalse；tt.store 的 canonicalize 行为由手写 splat 检查改为 matchPattern(m_One()/m_Zero())，对非 splat dense 常量 mask 现在也能折叠（此前只处理 SplatElementsAttr）；tt.load 的 false-mask 无 other 情况仍需 other 存在才折叠，与之前一致。Ascend 的 add_stages 在 make_ttir 中会运行 canonicalize，因此 Ascend kernel 中带常量 false mask 的 store/atomic_store 现在会在更早阶段被擦除，产出更精简的 TTIR；若 Ascend 的 TritonStructured 或 TritonToLinalg 转换对特定的 store 形态有假设，需确认擦除后的 IR 仍可处理。ttng.* 相关操作与 Gluon canonicalize 注册属 NVIDIA/Gluon 路径，对 Ascend 无影响。",
+        "testing": "Ascend 的 TTIR 级 lit 测试若包含 false-mask 的 store/atomic_store 且期望其保留，CHECK 需要更新；端到端算子测试一般不受影响（语义等价），但值得验证 Ascend 的 canonicalize 流水线与 TritonToLinalg 在 store 被提前擦除后仍正常。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/ 下涉及 tt.store/tt.atomic_store canonicalization 的 lit 测试",
+          "third_party/ascend/unittest/pytest_ut/ 下带 masked store 的算子端到端测试"
+        ]
+      },
+      "message": "[IR] Canonicalize operations with false predicates (#11695)\n\nFold constant-false predicates for stores and NVIDIA barrier, TMA, and\ntensor-memory operations when they suppress all effects. Preserve\ndependency-carrying waits and operations with independent effects or\nresults, and enable the folds in Gluon canonicalization.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "include/triton/Dialect/Triton/",
+          "lib/Dialect/Triton/"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "696c45880d8123c94adbf69e57297403c134edb4",
+      "comment": "修复 MMAv2 在小 K、操作数需 upcast 时 kWidth 计算错误导致的结果不正确。AccelerateMatmul.cpp 中原本仅按 minBitwidth = min(computeOrigBitWidth(a), computeOrigBitWidth(b)) 计算 kWidth = max(32/minBitwidth, 1)，当 K 很小时（如 K=8 配合 i8→f32 upcast，minBitwidth 会因源 i8 而偏小）kWidth 会大于 K 能支持的范围，MMAv2 的 K 通道数（4 个）与 kWidth 相乘超过 K 导致结果错误。修复：minBitwidth = max(minBitwidth, 4 * 32 / getShapePerCTA(oldAType).back())，即按 K 反推出 minBitwidth 的下界，并加 assert 确保不超过操作数元素位宽；注释中给出了完整推导（K>=4、minBitwidth >= 128/K、minBitwidth <= computeBitwidth 与 CUDA 前端 K >= 256/computeBitwidth 约束不冲突）。测试新增 test/TritonGPU/accelerate-matmul.mlir 两个 case（fp32_small_k_i8_upcast 期望 kWidth=2、fp64_small_k_f16_upcast 期望 kWidth=1），regression 测试新增 K=8 的 int8↔float32 组合。改动仅限 lib/Dialect/TritonGPU/Transforms/AccelerateMatmul.cpp（NVIDIA MMA 专属）。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "nvidia",
+        "ttgir",
+        "matmul"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。lib/Dialect/TritonGPU/Transforms/AccelerateMatmul.cpp 是 NVIDIA MMA（含 MMAv2/MMAv3/MMAv4）的布局选择实现，Ascend 不使用 TTGIR 也不走 AccelerateMatmul，绕过 TTGIR 直接用 TritonToLinalg。",
+        "testing": "无影响。新增用例均在 test/TritonGPU/ 与 python/test/regression/test_cast_matmul.py 的 CUDA 分支。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Fix MMAv2 kWidth for small-K upcast operands (#11691)\n\nFix incorrect results for small-K dots with upcast operands by bounding\nMMAv2 kWidth using K and the dot element bitwidth."
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

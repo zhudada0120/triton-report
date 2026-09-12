@@ -1,4 +1,8 @@
 {
+  "abd9a211d4153ba9820c18c37278ac40b8aab293": {
+    "date": "2026-09-12",
+    "msg": "[backend](revert) restore AutoBlockify compiler and launcher gates (#2130)"
+  },
   "3841a37338b7e342f2a88d95818c81274c947040": {
     "date": "2026-09-11",
     "msg": "[compiler](feat) add hivm batch matmul compile option (#2117)"

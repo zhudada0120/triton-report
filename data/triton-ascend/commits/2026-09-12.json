@@ -1,0 +1,54 @@
+{
+  "date": "2026-09-12",
+  "repo": "triton-lang/triton-ascend",
+  "branch": "main",
+  "commits": [
+    {
+      "sha": "abd9a211d4153ba9820c18c37278ac40b8aab293",
+      "author": {
+        "name": "zhan wei",
+        "email": "493694187@qq.com"
+      },
+      "date": "2026-09-12T21:05:21+08:00",
+      "message": "[backend](revert) restore AutoBlockify compiler and launcher gates (#2130)\n\n* [backend](revert) restore three AutoBlockify option conditions\n\n* [backend](fix) restore launcher AutoBlockify block-count cap\n\n* [backend](test) align AutoBlockify policy regression expectations",
+      "parents": [
+        "3841a37338b7e342f2a88d95818c81274c947040"
+      ],
+      "stats": {
+        "total_additions": 38,
+        "total_deletions": 12,
+        "files_changed": 4
+      },
+      "files": [
+        {
+          "filename": "third_party/ascend/backend/compiler.py",
+          "status": "modified",
+          "additions": 4,
+          "deletions": 3,
+          "patch": "@@ -842,7 +842,7 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):\n                 _compile_option_list += \\\n                     [f\"--link-aicore-bitcode={bitcode}\"]\n \n-        if metadata[\"auto_blockify_enabled\"]:\n+        if _is_auto_map_parallel_blocks_enabled() and not metadata.get(\"has_auto_blockify_blacklist_op\", False):\n             _compile_option_list += [\"--enable-auto-blockify-loop\"]\n         npu_compiler_path, env = _get_npucompiler_path()\n         if npu_compiler_path.endswith(\"bishengir-compile\"):\n@@ -1055,7 +1055,7 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):\n         if enable_libdevice:\n             _compile_option_list += [f\"--link-aicore-bitcode={get_libdevice()}\"]\n \n-        if metadata[\"auto_blockify_enabled\"]:\n+        if _is_auto_map_parallel_blocks_enabled() and not metadata.get(\"has_auto_blockify_blacklist_op\", False):\n             _compile_option_list += [\"--enable-auto-blockify-loop\"]\n         npu_compiler_path, env = _get_npucompiler_path()\n         if npu_compiler_path.endswith(\"bishengir-compile\"):\n@@ -1384,7 +1384,8 @@ def ttir_to_npubin(mod, metadata, opt):\n             if bisheng_options is not None:\n                 _compile_option_list += [f\"--append-bisheng-options={bisheng_options}\"]\n \n-            if metadata[\"auto_blockify_enabled\"]:\n+            if (_is_auto_map_parallel_blocks_enabled() and not metadata.get(\"has_auto_blockify_blacklist_op\", False)\n+                    and not metadata.get(\"row_coalescing_applied\", False)):\n                 _compile_option_list += [\"--enable-auto-blockify-loop\"]\n                 if opt.superblock_factor > 1:\n                     _compile_option_list += [f\"--super-block-factor={opt.superblock_factor}\"]"
+        },
+        {
+          "filename": "third_party/ascend/backend/driver.py",
+          "status": "modified",
+          "additions": 10,
+          "deletions": 3,
+          "patch": "@@ -32,8 +32,9 @@ import hashlib\n from triton.runtime.cache import get_cache_manager, get_dump_manager\n from triton.backends.driver import DriverBase\n from triton.backends.compiler import GPUTarget\n-from triton.backends.ascend.utils import (_build_npu_ext, _check_cxx11_abi, convert_sigtype_to_int, is_ffts_supported,\n-                                          force_disable_ffts, get_backend_func, get_cann_version)\n+from triton.backends.ascend.utils import (_build_npu_ext, _check_cxx11_abi, convert_sigtype_to_int,\n+                                          _is_auto_map_parallel_blocks_enabled, is_ffts_supported, force_disable_ffts,\n+                                          get_backend_func, get_cann_version)\n from triton.backends.ascend.program_grid import (\n     PROGRAM_GRID_TRANSFORMS_VERSION,\n     ProgramGridContractError,\n@@ -953,6 +954,12 @@ def make_launcher(constants, signature, metadata):\n     enable_device_print = os.getenv(\"TRITON_DEVICE_PRINT\", 'false').lower() in ('true', '1')\n     enable_taskqueue = os.getenv(\"TRITON_ENABLE_TASKQUEUE\", 'true').lower() in ('true', '1')\n     enable_grid_warn_print = os.getenv(\"TRITON_GRID_WARN_PRINT\", 'false').lower() in ('true', '1')\n+    has_auto_blockify_blacklist_op = getattr(\n+        metadata,\n+        \"has_auto_blockify_blacklist_op\",\n+        False,\n+    )\n+    enable_auto_map_parallel_blocks = (_is_auto_map_parallel_blocks_enabled() and not has_auto_blockify_blacklist_op)\n     npu_utils = NPUUtils()\n     num_physical_blocks = npu_utils.get_aivector_core_num() if mix_mode == \"aiv\" else npu_utils.get_aicore_num()\n     task_type, mix_block_dim_ratio = _format_of_msprof_task_type_ratio(bs_task_type, mix_mode)\n@@ -1316,7 +1323,7 @@ static void release_npu_tensor_handle(void* handle) {{\n         warned = true;\n     }}\n     #endif\n-    {'blockNum = std::min(blockNum, (uint32_t)' + str(num_physical_blocks) + ');' if auto_blockify_enabled else ''}\n+    {'blockNum = std::min(blockNum, (uint32_t)' + str(num_physical_blocks) + ');' if enable_auto_map_parallel_blocks else ''}\n     // set mixBlockNumRation for nodeBasicBlockDim for msprof report\n     uint32_t mixBlockNumRation = {mix_block_dim_ratio};\n     uint32_t nodeBasicBlockDim = (mixBlockNumRation << 16) + blockNum;"
+        },
+        {
+          "filename": "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "status": "modified",
+          "additions": 3,
+          "deletions": 3,
+          "patch": "@@ -596,7 +596,7 @@ def test_make_ttir_forwards_normalized_graph_ub_budget(compiler_module, monkeypa\n \n \n def test_ttir_to_npubin_auto_blockify_argv_matrix(compiler_module, monkeypatch):\n-    \"\"\"Keep the internal-policy-and-safety pure-SIMT auto-blockify argv contract.\"\"\"\n+    \"\"\"Check the pure-SIMT policy, blacklist, and RowCoalescing argv gates.\"\"\"\n     common_options = [\"--common-before-pure-simt\", \"--common-after-pure-simt\"]\n     pure_simt_prefix = [\n         \"--enable-hivm-compile=false\",\n@@ -634,7 +634,7 @@ def test_ttir_to_npubin_auto_blockify_argv_matrix(compiler_module, monkeypatch):\n                 disable_fma=True,\n             )\n \n-        second_injection = env_enabled and not row_applied\n+        second_injection = env_enabled and not blacklisted and not row_applied\n         case = f\"E={env_enabled}, B={blacklisted}, R={row_applied}, superblock={superblock}\"\n \n         expected_options = [*common_options, *pure_simt_prefix]\n@@ -643,7 +643,7 @@ def test_ttir_to_npubin_auto_blockify_argv_matrix(compiler_module, monkeypatch):\n             if superblock > 0:\n                 expected_options.append(f\"--super-block-factor={superblock}\")\n \n-        # The compiler and launcher now agree on the single policy/safety gate.\n+        # Pure-SIMT option emission retains the blacklist and RowCoalescing gates.\n         assert command[0] == \"/fake/bisheng\", case\n         assert Path(command[1]).name == \"kernel.ttir.mlir\", case\n         assert command[2:-2] == expected_options, case"
+        },
+        {
+          "filename": "third_party/ascend/unittest/pytest_ut/test_launcher_export_api.py",
+          "status": "modified",
+          "additions": 21,
+          "deletions": 3,
+          "patch": "@@ -160,7 +160,9 @@ def test_make_launcher_rejects_unmatched_coalescing_metadata(\n @patch.object(driver, \"force_disable_ffts\", return_value=False)\n @patch.object(driver, \"is_ffts_supported\", return_value=True)\n @patch.object(driver, \"get_backend_func\", side_effect=_mock_backend_func)\n+@patch.object(driver, \"_is_auto_map_parallel_blocks_enabled\", return_value=True)\n def test_make_launcher_uses_ceil_div_for_row_coalescing(\n+    _mock_auto_map,\n     _mock_backend_func_patch,\n     _mock_ffts,\n     _mock_disable_ffts,\n@@ -182,7 +184,7 @@ def test_make_launcher_uses_ceil_div_for_row_coalescing(\n \n     assert src.count(\"gridZ = (gridZ + 4 - 1) / 4;\") == 2\n     assert \"ChunkCoalescing: grid[2] not divisible\" not in src\n-    assert \"blockNum = std::min(blockNum\" not in src\n+    assert src.count(\"blockNum = std::min(blockNum, (uint32_t)40);\") == 2\n \n \n @patch.object(driver, \"NPUUtils\")\n@@ -219,29 +221,45 @@ def test_make_launcher_enables_91095_simt_for_sls_mixed_parallel_mode(\n     assert \"sizeof(args)\" in cpp_launch\n \n \n+@pytest.mark.parametrize(\n+    (\"auto_map_enabled\", \"blacklisted\", \"expect_cap\"),\n+    (\n+        (False, False, False),\n+        (False, True, False),\n+        (True, False, True),\n+        (True, True, False),\n+    ),\n+)\n @patch.object(driver, \"NPUUtils\")\n @patch.object(driver, \"force_disable_ffts\", return_value=False)\n @patch.object(driver, \"is_ffts_supported\", return_value=True)\n @patch.object(driver, \"get_backend_func\", side_effect=_mock_backend_func)\n-def test_make_launcher_block_cap_consumes_compiler_auto_blockify_policy(\n+@patch.object(driver, \"_is_auto_map_parallel_blocks_enabled\")\n+def test_make_launcher_block_cap_uses_backend_policy_and_blacklist(\n+    mock_auto_map,\n     _mock_backend_func_patch,\n     _mock_ffts,\n     _mock_disable_ffts,\n     mock_npu_utils,\n+    auto_map_enabled,\n+    blacklisted,\n+    expect_cap,\n ):\n+    mock_auto_map.return_value = auto_map_enabled\n     mock_npu_utils.return_value.get_aivector_core_num.return_value = 40\n     mock_npu_utils.return_value.get_aicore_num.return_value = 20\n     cap = \"blockNum = std::min(blockNum, (uint32_t)40);\"\n \n     for auto_blockify_enabled in (False, True):\n         metadata = _make_metadata()\n+        metadata.has_auto_blockify_blacklist_op = blacklisted\n         metadata.auto_blockify_enabled = auto_blockify_enabled\n         src = driver.make_launcher(\n             constants={},\n             signature={0: \"*fp32\", 1: \"*fp32\"},\n             metadata=metadata,\n         )\n-        expected_per_launch_path = 1 if auto_blockify_enabled else 0\n+        expected_per_launch_path = 1 if expect_cap else 0\n         c_abi_launch, cpp_launch = _split_launch_functions(src)\n         assert c_abi_launch.count(cap) == expected_per_launch_path\n         assert cpp_launch.count(cap) == expected_per_launch_path\n"
+        }
+      ]
+    }
+  ]
+}

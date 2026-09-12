@@ -1,0 +1,34 @@
+{
+  "date": "2026-09-12",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-09-13T03:48:54.952873+08:00",
+  "daily_summary": "当日仅一个 commit，属于对前序 AutoBlockify 策略变更的 revert/修复：将 compiler.py 与 driver.py 中 AutoBlockify 的触发条件从依赖 metadata['auto_blockify_enabled'] 单一开关，回退为『后端环境/策略开关 _is_auto_map_parallel_blocks_enabled() + 黑名单算子 has_auto_blockify_blacklist_op 排除 + RowCoalescing(row_coalescing_applied) 排除』的多重门控，从而让编译器端（linalg_to_bin_enable_npu_compile_910_95 / _A2_A3、ttir_to_npubin）与 launcher 端（make_launcher 的 blockNum 上限裁剪）重新保持一致的安全/策略判定。总体是回归修复而非新功能，重点是恢复被误删的 AutoBlockify 门控语义并同步单测期望。",
+  "test_impact_summary": "本次变更同步修改了两个既有单测（test_compiler_layout_memory_contract.py 的 argv matrix 期望，以及 test_launcher_export_api.py 的 launcher block cap 用例），说明测试策略是『测试与实现门控条件强绑定』的契约式看护：一旦 AutoBlockify 触发条件变化，编译器 argv 生成与 launcher 源码裁剪两条路径都必须有对应用例。当前测试对新增的三个门控维度（策略开关、黑名单算子、RowCoalescing）覆盖较完整（含 parametrize 覆盖 auto_map×blacklist 四种组合），但测试仍主要依赖 monkeypatch 模拟 _is_auto_map_parallel_blocks_enabled 与 metadata，缺乏端到端验证黑名单算子真实触发时 compiler 与 launcher 行为一致性的集成测试；后续若继续调整 AutoBlockify 条件，需同步维护这两处契约用例，避免 compiler/launcher 门控再次漂移。",
+  "commits": [
+    {
+      "sha": "abd9a211d4153ba9820c18c37278ac40b8aab293",
+      "comment": "本 commit 是对 AutoBlockify 门控逻辑的一次 revert+修复。背景推断：此前某次改动把 compiler.py 中三处生成 '--enable-auto-blockify-loop' 的条件从多重门控简化成了仅依赖 metadata['auto_blockify_enabled']（同时 launcher 端 blockNum 裁剪也可能被错误简化），破坏了『编译器与 launcher 必须使用同一策略/安全判定』的约定，本 commit 将该条件恢复为：_is_auto_map_parallel_blocks_enabled()（后端策略开关）且 not metadata.get('has_auto_blockify_blacklist_op', False)（黑名单算子禁止自动分块），在纯 SIMT 快路径 ttir_to_npubin 中额外要求 not metadata.get('row_coalescing_applied', False)（RowCoalescing 已生效时不再叠加 auto-blockify）。实现上：compiler.py 中 910-95 分支、A2/A3 分支、纯 SIMT ttir_to_npubin 分支三处条件恢复；driver.py 的 make_launcher 重新计算 enable_auto_map_parallel_blocks = _is_auto_map_parallel_blocks_enabled() and not has_auto_blockify_blacklist_op，并用它决定是否注入 'blockNum = std::min(blockNum, num_physical_blocks);' 的 block 数上限裁剪；同时从 triton.backends.ascend.utils 引入 _is_auto_map_parallel_blocks_enabled。注意 launcher 侧只包含策略开关+黑名单两个门控，不含 row_coalescing_applied（row coalescing 相关逻辑另有 ceil-div 路径处理）。潜在风险：compiler 与 launcher 的门控维度仍不完全对称（launcher 无 row coalescing 门控），若两者在边界场景（row coalescing 已应用但 auto map 开启）下对 blockNum 的预期不一致，可能出现 launcher 裁剪与编译器不生成 auto-blockify 的语义错配；此外 metadata.get(...) 使用宽松默认值虽提升了向前兼容性，但也意味着上游若忘记写入这些字段会静默退回旧行为。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "medium-risk",
+        "backend",
+        "compiler",
+        "launcher"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "本 commit 已同步更新两个既有单测：test_compiler_layout_memory_contract.py 的 test_ttir_to_npubin_auto_blockify_argv_matrix 将期望从 'env_enabled and not row_applied' 改为 'env_enabled and not blacklisted and not row_applied'；test_launcher_export_api.py 的 test_make_launcher_uses_ceil_div_for_row_coalescing 与 test_make_launcher_block_cap_consumes_compiler_auto_blockify_policy（重命名为 test_make_launcher_block_cap_uses_backend_policy_and_blacklist，并参数化 auto_map_enabled×blacklisted 四组合）同步新门控语义。测试更新已随 commit 提供，需确认这些用例在 CI 中生效。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "third_party/ascend/unittest/pytest_ut/test_launcher_export_api.py",
+          "third_party/ascend/backend/compiler.py",
+          "third_party/ascend/backend/driver.py"
+        ]
+      },
+      "message": "[backend](revert) restore AutoBlockify compiler and launcher gates (#2130)\n\n* [backend](revert) restore three AutoBlockify option conditions\n\n* [backend](fix) restore launcher AutoBlockify block-count cap\n\n* [backend](test) align AutoBlockify policy regression expectations"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

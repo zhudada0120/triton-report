@@ -361,6 +361,32 @@
       "interface_changes": "本 commit 修正 E8M0（UE8M0）缩放字节的解码语义：字节 0 应为 2^-127（BF16/FP32 下为次正规数），字节 255 应为 NaN。改动横跨编译器与 Python 侧：编译器 lowering 中 DecomposeScaledBlocked 的 scaleTo16 增加 handleNan 参数，BF16 下用 maxui 保底最小值 0x0040、用 math.fma(scale, 0, scale) 把 infinity 转成 NaN，并在 scaleArg 中按 fastMath 决定是否处理 NaN（fast_math 路径仍不处理）；Passes.td 与 AMD Passes.td 声明 MathDialect 依赖；FpSanitizer（通用与 AMD）同步引入 min-correct 逻辑以保持 payload 一致；AMD ScaledUpcastToLLVM 的 software scaleToF32 增加 umax 与 FMA，并把 scale 参数从 upcast8xMxfp4_SW 中移除（改由上层统一处理）；inline as",
       "change_summary": "[Triton] Fix E8M0 scale decoding (#11624)",
       "ascend_impact": false
+    },
+    "b8ccfc1d7d564950807e78a0617f433d14f2172e": {
+      "date": "2026-09-12",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "BC-breaking 的前端类型提升规则清理。核心改动：(1) python/triton/language/core.py 删除内置函数 _promote_bfloat16_to_float32，并从 minimum/maximum/clamp 中移除对输入调用该函数的逻辑，同时把 tensor.cumsum/cumprod 的方法签名扩展为带 dtype 参数；(2) python/triton/language/standard.py 从 max/min 归约中移除 bf16→fp32 提升，为 cumsum/cumprod 增加 dtype 参数并统一使用 _pick_sum_dtype 决定累加类型（signed narrow int → int32，unsigned/bool → uint32，其他保持），cumprod 此前无 dtype 参数且无文档，现在与 cumsum 对齐。这导致行为变化：tl.minimum/tl.maximum/tl.clamp 对 bf16 输入不再隐式提升到 fp32，返回类型变为 bf16；tl.max/tl.min 在 return_",
+      "change_summary": "[BC-breaking][Frontend] Remove outdated bfloat16 promotion rules (#11473)",
+      "ascend_impact": true
+    },
+    "159bb8aeec5fa53179e485d40eb2b4dec9bd33ad": {
+      "date": "2026-09-12",
+      "affected_modules": [
+        "include/triton/Dialect/Triton/",
+        "lib/Dialect/Triton/"
+      ],
+      "affected_interfaces": [
+        "include/triton/Dialect/Triton/",
+        "lib/Dialect/Triton/"
+      ],
+      "interface_changes": "为带谓词的操作提供 false-predicate 折叠能力。核心抽象：include/triton/Dialect/Triton/IR/OpInterfaces.h 新增自由函数 eraseIfPredicateIsFalse(PredicatedOpInterface, PatternRewriter&)，在 lib/Dialect/Triton/IR/OpInterfaces.cpp 实现——当 op 无结果、有 predicate operand 且该 operand 可被 m_Zero() 匹配时直接 erase，否则返回 failure。安全约束在 td 注释中明确：仅当 false predicate 确实抑制所有副作用时才可调用，带 result、masked-copy zero fill、MMA completion signal 等场景需要各自的替换语义。在此基础上有选择地为具体操作注册 canonicalize：tt.atomic_store、ttng.wait_barrier（仅当 getDeps() 为空，否则依赖会保持 allocation 存活）、ttng",
+      "change_summary": "[IR] Canonicalize operations with false predicates (#11695)",
+      "ascend_impact": false
     }
   }
 }
