@@ -1,4 +1,28 @@
 {
+  "5a1d73019ad2bbb167dded113acfd0ad53a9259f": {
+    "date": "2026-09-13",
+    "msg": "[ssbuffer] (fix) ssbuffer Add new known NoMemoryEffectCall (#2032)"
+  },
+  "7b4220893eb94f6fc107d1490b3bd8cd38af058f": {
+    "date": "2026-09-13",
+    "msg": "[ssbuffer](fix) do not erase live ops and stale manager entries in RefineArgsBlockId (#2087)"
+  },
+  "0a3a71124ce7709b1a8ea3c1c0b285db43420728": {
+    "date": "2026-09-13",
+    "msg": "[ssbuffer](fix) Earlier store avoid cc overflow (#2094)"
+  },
+  "eca39eaaeb87e77f6ee7f3e97d4b3f351b58d4b2": {
+    "date": "2026-09-13",
+    "msg": "[ssbuffer](fix) tag-driven outer-scope transfer-chain classification with WhileOp polling support (#2099)"
+  },
+  "ca612a4b60722b48f3941c1a2f3b189ba482fd21": {
+    "date": "2026-09-13",
+    "msg": "[ssbuffer](fix) adjust iter_args insertion position in whileOp (#2015)"
+  },
+  "355c07a23b87db4d515bf0eafd106669ef51ed2e": {
+    "date": "2026-09-13",
+    "msg": "Revert \"[backend](fix) remove lib-call no-inline option (#1887)\""
+  },
   "abd9a211d4153ba9820c18c37278ac40b8aab293": {
     "date": "2026-09-12",
     "msg": "[backend](revert) restore AutoBlockify compiler and launcher gates (#2130)"

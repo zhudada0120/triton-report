@@ -1,0 +1,104 @@
+{
+  "date": "2026-09-13",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-09-14T03:56:44.525101+08:00",
+  "daily_summary": "当日变更集中在三块：(1) 上游前端语义层为 FP16<->BF16 强制转换新增原生转换路径（tt.fp_to_fp 直接生成），并在 NVIDIA SM90+ 用 inline PTX cvt 指令、AMD 用 f32 中间路由实现，同时补齐解释器实现与前后端 lit/pytest 测试；(2) AMD 后端修复 XF32 MFMA lowering 中对 kWidth 的重复放大 bug，并放开 small-K 混合精度 matmul 用例；(3) AMD gfx1250 pinned LLVM 版本升级以修复 global_prefetch_b8 导致的 MEMORY_APERTURE_VIOLATION 运行时崩溃；(4) triton_kernels 增加 mixed FP8 matmul 对显式 upcast 的数值/FPSan 等价性测试。整体以 FP16/BF16 转换性能与正确性、AMD 后端稳定性/精度修复、以及测试覆盖增强为主。",
+  "ascend_impact_summary": "commit 972d18aa 修改了 python/triton/language/semantic.py 中 TritonSemantic 的 fp16/bf16 转换分支——属 Ascend monkey-patch 关键路径（semantic.py 在必然影响列表），但本次改动是在 _patched_dot 之外的新增分支，未触碰 dot 签名，故对 AscendBackend 的 patch 机制无破坏性；不过 Ascend 复用同一前端，FP16<->BF16 转换的 IR 形态（tt.fp_to_fp 直接出现）会进入 TTIR，可能改变 Ascend TritonToLinalg 转换链的输入，需关注。python/triton/runtime/interpreter.py 的 create_fp_to_fp 改动命中可能影响路径（AscendInterpreterBuilder 继承 InterpreterBuilder），本次为纯新增分支，不改变既有接口。其余 commit（AMD MFMA 修复、AMD LLVM pin、triton_kernels 测试、NVIDIA ElementwiseOpToLLVM）均落在 third_party/amd、third_party/nvidia、triton_kernels 测试等绝不/可能影响之外的平台特定或纯测试路径，对 triton-ascend 无影响。",
+  "commits": [
+    {
+      "sha": "972d18aa0905dfb403091bd4c5746318d097df4d",
+      "comment": "意图：让 FP16<->BF16 互相转换在后端使用原生硬件指令（NVIDIA SM90+ 的 cvt.rn/rz.(bf16|f16).(f16|bf16)，AMD 走 f32 中间路 + rocdl.cvt.pkrtz），而非一律经 f32 中间再转换，以提高转换性能并保证舍入一致。实现：(1) python/triton/language/semantic.py 在 TritonSemantic 的 fp_to_fp 路径最前面新增 FP16<->BF16 直接走 create_fp_to_fp(input, dst_ty, RTNE) 的分支，不再降到 f32；(2) third_party/nvidia/.../ElementwiseOpToLLVM.cpp 对 FP16<->BF16 在 computeCapability>=90 时用 PTXBuilder 直接发 cvt 内联汇编，<90 时保留经 f32 的 fallback；(3) third_party/amd/.../ConvertFpCastOpToLLVM.cpp 用 useFp32Intermediate 判断并对 bf16->fp16 先转 f32，amd 侧仍走 f32 中间路但修正了 rounding 默认值（RTNE）；(4) python/triton/runtime/interpreter.py 为 InterpreterBuilder.create_fp_to_fp 新增 FP16<->BF16 分支以保持 CPU 解释一致；(5) 新增前后端多处 lit/pytest 测试（test_frontend.py、test_interpreter.py、fp_to_fp.mlir、tritongpu_to_llvm*.mlir）。风险：语义层提前拦截，意味着后端不再能选择其他策略；新增 RTNE 默认舍入可能与某些旧行为不同（bf16->fp16 之前未指定 rounding 时行为可能变化）；SM90 以下走 fallback 但与真实指令的舍入细节需靠测试保证。整体属于中等风险的前端语义+后端 lowering 改动。",
+      "tags": [
+        "performance",
+        "feature",
+        "medium-risk",
+        "language-frontend",
+        "nvidia",
+        "amd",
+        "interpreter"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "python/triton/language/semantic.py 的 TritonSemantic 类被修改（新增 FP16<->BF16 直接 create_fp_to_fp 分支），该文件是 Ascend 通过 third_party/ascend/backend/__init__.py::_apply_ascend_patch 对 TritonSemantic.dot 做 monkey-patch 的关键路径（'必然影响'列表）。本次改动未触碰 dot 签名或默认值，因此 _patched_dot 不受影响；但修改的是同一类中 fp_to_fp 的前端语义，Ascend 复用该前端，生成 TTIR 中 FP16<->BF16 转换将从'降 f32 再转换'变为直接 tt.fp_to_fp，直接改变进入 Ascend TritonToLinalg 转换链的 TTIR 形态，可能影响 Ascend 侧对 fp_to_fp 的 lowering 匹配（如果 Ascend 的 pass 假设了经 f32 的中间形态）。此外 python/triton/runtime/interpreter.py 的 InterpreterBuilder.create_fp_to_fp 是 AscendInterpreterBuilder 的基类方法（'可能影响'列表），本次为新增早期分支，不改变签名，但 Ascend 若覆写或依赖该方法的旧路径需确认。",
+        "testing": "python/test/unit/language/test_frontend.py 与 python/test/unit/runtime/test_interpreter.py 新增 FP16<->BF16 转换用例。triton-ascend 复用同一前端与解释器基类，可在其 Ascend 测试集中新增等价用例以验证 Ascend 侧生成的 npubin 在 FP16<->BF16 转换上与上游语义一致（尤其 bf16->fp16 的 NaN/overflow 行为）。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/（新增 FP16<->BF16 cast 端到端用例）",
+          "third_party/ascend/backend/ascend_interpreter.py（确认 AscendInterpreterBuilder 对 create_fp_to_fp 的覆写与上游新增分支一致）"
+        ]
+      },
+      "message": "[BAKCEND] Use native FP16/BF16 conversions on SM90+ (#11699)",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/language/semantic.py",
+          "python/triton/runtime/interpreter.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "bb7ec53f08ddb40cd6a435422807e2f47d2369d4",
+      "comment": "意图：修复 gfx1250 上 pinned AMD LLVM 引入的运行时崩溃（global_prefetch_b8 用 s[0:1] 导致 HSA_STATUS_ERROR_MEMORY_APERTURE_VIOLATION）。实现：仅更新 cmake/amd-llvm-info.json 中的 llvm_hash 从 941a04e6 到 ce3529423abd，并更新 bootstrap_llvm 的各平台 sha256 校验和（含新增 windows-arm64 项）。该 revision 已作为 Triton core LLVM build 发布，CI 已消费相同 artifact。属于纯构建配置改动，不涉及任何编译器/运行时源码逻辑，风险低。",
+      "tags": [
+        "chore",
+        "bugfix",
+        "low-risk",
+        "amd",
+        "build"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。该 commit 仅修改 cmake/amd-llvm-info.json，属于 AMD 平台特定构建依赖（third_party/amd 路径上的 pinned LLVM 版本），triton-ascend 不使用 AMD 后端，也不使用该 pinned LLVM 配置。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] [gfx1250] Bump pinned AMD LLVM to pick up the entry-sequence fix (#11745)\n\nThe separately pinned AMD codegen LLVM (941a04e6) contains\nllvm/llvm-project@ae98c7d9d386 (\"[AMDGPU][GFX1250] Use null register for\nglobal_prefetch_b8 instead of s[0:1]\", llvm#214127), which makes gfx1250\nkernels fault at runtime:\n\n  HSA_STATUS_ERROR_MEMORY_APERTURE_VIOLATION\n\nUpstream LLVM fixed this in llvm/llvm-project@1109d68feb1b\n(llvm#215450), which restores a real zeroed address, and refined it in\nllvm/llvm-project@739eaa08d45e (llvm#216897).\n\nBump the AMD pin from 941a04e6 to ce3529423abd, which contains both.\nThat revision is already published as a Triton core LLVM build\n(cmake/llvm-info.json at b5505fe8e3), so the artifact and checksums are\nones CI already consumes; the core and AMD pins download from the same\nllvm-builds path."
+    },
+    {
+      "sha": "d71191d420434a7026fb440193a51e3f8a016ce4",
+      "comment": "意图：为 triton_kernels 的 mixed FP8 matmul（E4M3 × FP16/BF16）新增数值等价性测试，验证其与'先把 FP8 操作数显式 upcast 到目标 dtype 后再调用同一 matmul'的结果一致。实现：在 python/triton_kernels/tests/test_matmul.py 新增 test_matmul_mixed_fp8_matches_upcast，覆盖 fp8_lhs 真假两种操作数顺序、fp16/bf16 两种 dtype、5 种 out_dtype、两种 B 布局、默认与 split-K/persistent tail 三种 planning，并在 use_fpsan 时要求输出字节完全一致（FPSan 参考通过 embed/unembed 保留符号扩展语义），非 FPSan 时用 rtol=eps(out_dtype), atol=1e-4 比较。纯测试改动，不含非测试代码，风险低。",
+      "tags": [
+        "test",
+        "low-risk",
+        "matmul"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。该 commit 只修改 python/triton_kernels/tests/test_matmul.py，是 triton_kernels 库的测试代码，不属于 Ascend 后端的接口面或编译链。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[KERNELS] Test mixed FP8 matmul against explicit upcasts (#11743)\n\nCompare mixed E4M3 × FP16/BF16 matmul with the same library call after\nexplicitly widening the FP8 operand. Cover both operand orders, both\nweight layouts, five output dtypes, default planning, split-K tails, and\npersistent tails.\n\nCheck numerical results within output-format precision\n(`rtol=eps(out_dtype)`, `atol=1e-4`) and require identical output bytes\nunder FPSan. The FPSan reference widens signed payloads, preserving\nequivalence across reduction orders. Keep the existing exact FP16\nprecision regression.\n\n### Validation\n\n248 tests pass on each of H100 and GB300: 120 numerical comparisons, 120\nFPSan comparisons, and eight existing precision/resource regressions.\n\n| Files | Added | Removed | Net |\n|---|---:|---:|---:|\n| Tests | +45 | -0 | +45 |\n| Non-tests | +0 | -0 | +0 |\n| All | +45 | -0 | +45 |\n\n### Reviewer's guide\n\n- `python/triton_kernels/tests/`: paired numerical and FPSan comparisons\nbeside the existing mixed-FP8 regressions.\n\n<!-- codex-thread: 01a096ce-69b0-7c53-82ca-8a486403c636 -->"
+    },
+    {
+      "sha": "8eaca83b5a185f1e265341f900912befbc5e025f",
+      "comment": "意图：修复 AMD XF32 MFMA lowering 在小 K 情况下的越界访问。MFMA.cpp 中原本在 allowXF32 时把 kWidth 再乘 2（注释称 'kWidth is double that of F32'），但布局编码本身已经给出了每 lane 所需的 2 个值（kWidth=2）或 4 个值（kWidth=4，两次指令），再次放大导致超出张量边界。实现：删除 MFMA.cpp 中的 kWidth *= 2，直接采用 encoded kWidth，并新增 test/TritonGPU/amd/mfma-xf32.mlir 两个用例（kWidth=2 单指令、kWidth=4 packed 两条指令）验证 lowering；python/test/regression/test_cast_matmul.py 中把原本只在 CUDA 上跑的 (16,8,16,8,16,16) int8/fp32 与 fp32/int8 两个小 K 混合精度用例改为所有后端（含 AMD）都跑。风险：改动仅影响 AMD XF32 路径的 kWidth 语义，lit 测试覆盖了两种 width，回归测试放宽到 AMD 验证实际 matmul 正确性，属低-中风险 bugfix。",
+      "tags": [
+        "bugfix",
+        "amd",
+        "low-risk",
+        "matmul"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更文件为 third_party/amd/lib/TritonAMDGPUToLLVM/DotOpToLLVM/MFMA.cpp、test/TritonGPU/amd/mfma-xf32.mlir、python/test/regression/test_cast_matmul.py，全部属于 AMD 平台特定 lowering/测试或后端无关回归测试，triton-ascend 不加载 AMD 方言/不使用 MFMA lowering，也不受 XF32 kWidth 语义影响。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Fix XF32 MFMA lowering for small K (#11727)\n\nXF32 MFMA lowering doubles the operand's already-correct `kWidth`,\ncausing out-of-bounds access for small K. Preserve the encoded width,\ncover widths 2 and 4, and enable both small-K mixed-precision matmul\ncases on AMD."
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

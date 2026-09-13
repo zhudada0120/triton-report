@@ -1,4 +1,20 @@
 {
+  "972d18aa0905dfb403091bd4c5746318d097df4d": {
+    "date": "2026-09-13",
+    "msg": "[BAKCEND] Use native FP16/BF16 conversions on SM90+ (#11699)"
+  },
+  "bb7ec53f08ddb40cd6a435422807e2f47d2369d4": {
+    "date": "2026-09-13",
+    "msg": "[AMD] [gfx1250] Bump pinned AMD LLVM to pick up the entry-sequence fix (#11745)"
+  },
+  "d71191d420434a7026fb440193a51e3f8a016ce4": {
+    "date": "2026-09-13",
+    "msg": "[KERNELS] Test mixed FP8 matmul against explicit upcasts (#11743)"
+  },
+  "8eaca83b5a185f1e265341f900912befbc5e025f": {
+    "date": "2026-09-13",
+    "msg": "[AMD] Fix XF32 MFMA lowering for small K (#11727)"
+  },
   "42c5e89c3871e1472968c92dd8e5c02d0b3dd40c": {
     "date": "2026-09-12",
     "msg": "[KERNELS] Avoid local output allocation for fused communication (#11724)"

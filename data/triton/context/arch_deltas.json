@@ -387,6 +387,20 @@
       "interface_changes": "为带谓词的操作提供 false-predicate 折叠能力。核心抽象：include/triton/Dialect/Triton/IR/OpInterfaces.h 新增自由函数 eraseIfPredicateIsFalse(PredicatedOpInterface, PatternRewriter&)，在 lib/Dialect/Triton/IR/OpInterfaces.cpp 实现——当 op 无结果、有 predicate operand 且该 operand 可被 m_Zero() 匹配时直接 erase，否则返回 failure。安全约束在 td 注释中明确：仅当 false predicate 确实抑制所有副作用时才可调用，带 result、masked-copy zero fill、MMA completion signal 等场景需要各自的替换语义。在此基础上有选择地为具体操作注册 canonicalize：tt.atomic_store、ttng.wait_barrier（仅当 getDeps() 为空，否则依赖会保持 allocation 存活）、ttng",
       "change_summary": "[IR] Canonicalize operations with false predicates (#11695)",
       "ascend_impact": false
+    },
+    "972d18aa0905dfb403091bd4c5746318d097df4d": {
+      "date": "2026-09-13",
+      "affected_modules": [
+        "python/triton/language/semantic.py",
+        "python/triton/runtime/interpreter.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/language/semantic.py",
+        "python/triton/runtime/interpreter.py"
+      ],
+      "interface_changes": "意图：让 FP16<->BF16 互相转换在后端使用原生硬件指令（NVIDIA SM90+ 的 cvt.rn/rz.(bf16|f16).(f16|bf16)，AMD 走 f32 中间路 + rocdl.cvt.pkrtz），而非一律经 f32 中间再转换，以提高转换性能并保证舍入一致。实现：(1) python/triton/language/semantic.py 在 TritonSemantic 的 fp_to_fp 路径最前面新增 FP16<->BF16 直接走 create_fp_to_fp(input, dst_ty, RTNE) 的分支，不再降到 f32；(2) third_party/nvidia/.../ElementwiseOpToLLVM.cpp 对 FP16<->BF16 在 computeCapability>=90 时用 PTXBuilder 直接发 cvt 内联汇编，<90 时保留经 f32 的 fallback；(3) third_party/amd/.../ConvertFpCastOpToLLVM.cpp 用 useFp32Intermediate ",
+      "change_summary": "[BAKCEND] Use native FP16/BF16 conversions on SM90+ (#11699)",
+      "ascend_impact": false
     }
   }
 }

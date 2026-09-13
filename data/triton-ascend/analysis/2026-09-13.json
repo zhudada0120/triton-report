@@ -1,0 +1,122 @@
+{
+  "date": "2026-09-13",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-09-14T04:01:08.000405+08:00",
+  "daily_summary": "当日变更全部集中在 Ascend 后端的 ssbuffer（DynamicCVPipeline）体系与一个 bishengir 编译选项回退。DynamicCVPipeline 方向密集修复了多处正确性问题：MemoryEffects 追踪新增 triton_stride_load 识别、RefineArgsBlockId 不再误删存活 op 并为 ComputeBlockIdManager 增加 forgetOp 失效缓存、ReorderOpsByBlockId 改为 Kahn 拓扑排序并按 tag 下沉 store 以避免 cc 溢出、AddMultiBufferOuterScope 从 op 类型匹配改为 ssbuffer.transfer_id + 数据流驱动的传输链分类并补齐 WhileOp 轮询（共享轮询条件、counter 归位到 body head、丢弃半握手组）、AddMultiBufferInnerScope 调整 WhileOp iter_args/counter 插入位置。另有 PR #355c07 回退此前移除的 --enable-lib-call-no-inline 选项，恢复 Ascend950 上 CANN 9.1 的 noinline 规避逻辑。整体是 ssbuffer 流水线在 910-95/A2/A3 多核 C/V 流水场景下的一轮稳定性与正确性收敛。",
+  "test_impact_summary": "当日变更以 ssbuffer DynamicCVPipeline 的正确性修复为主，多数改动涉及编译器内部数据结构与 IR 重写顺序，属于难以被现有测试间接覆盖的逻辑，因此测试看护压力集中在 lit 层。本批次已自带上游测试更新：新增 ReorderOpsByBlockId 的 Kahn/tag 排序用例、重写 Outer-scope-whileop 为双缓冲轮询用例（含 counter 注入、共享轮询条件、双 flag 互斥传输组断言）、在 Inner-scope-whileop 中回写 counter add-1 的 block_id 期望并新增 block_id 重定位回归用例，覆盖了 #2094/#2099/#2015 的核心语义。但 #2032（新增 triton_stride_load 为已知无内存副作用调用、白名单函数增删）与 #355c07（回退 lib-call-no-inline）目前没有直接测试落点：#2032 的白名单与 NoMemoryEffect 判定仅影响流水决策，需依赖端到端 kernel 用例或既有白名单回归来间接看护；#355c07 是编译选项回退，需要 Ascend950 目标上的端到端编译用例确认选项被重新下发。建议在合并后关注 910-95 与 A2/A3 两条分支下 DynamicCVPipeline 相关 kernel 的端到端执行结果，确认新增/删除的黑名单项（如 chunkwise_bwd_kernel_dhg、sdf02/pcb08/pcb09/pcb14/flash_fwd）不会因为失去 preload 抑制而引入回归。",
+  "commits": [
+    {
+      "sha": "5a1d73019ad2bbb167dded113acfd0ad53a9259f",
+      "comment": "针对 ssbuffer DynamicCVPipeline 的三处名单/判定微调：(1) AnalyzeName.cpp 的 interceptrFunc 白名单中把 parallel_path_fwd_kernel 替换为 chunkwise_bwd_kernel_dhg；(2) MemoryEffectsTracker.cpp 的 isKnownNoMemoryEffectCall 在 triton_indirect_load 之外新增 triton_stride_load 前缀，使其被视作已知无内存副作用的调用，避免把这类 load 当叶子之外的副作用源而阻碍数据流分析；(3) PreCheckDisablePreload.cpp 从 kBlacklistFuncNames 中移除 parallel_path_fwd_kernel、chunk_bwd_kernel_dv_local、_gqa_sparse_decode_kernel、paged_decode_fd_reduce_kernel，放开这些 kernel 的 preload 抑制。整体是对流水线可分析性与预取策略的名单同步，属于经验性调优，风险在于名单变更会改变这些 kernel 的流水与否，若与真实依赖不符可能引入同步/性能问题。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "compiler",
+        "ssbuffer"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "改动为流水分析内部的白名单/副作用判定前缀增补与禁用列表裁剪，不改变 IR 结构语义，无对应的 lit 断言点；现有 DynamicCVPipeline 用例不会因名单变化而失败。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/"
+        ]
+      },
+      "message": "[ssbuffer] (fix) ssbuffer Add new known NoMemoryEffectCall (#2032)\n\nCo-authored-by: shaoyiyang <shaoyiyang1@huawei.com>"
+    },
+    {
+      "sha": "7b4220893eb94f6fc107d1490b3bd8cd38af058f",
+      "comment": "修复 RefineArgsBlockId 中两个正确性缺陷：(1) eraseOpsWithUnusedUsers 原实现假设 clone 后 yield 定义 op 已无使用者就无条件 erase，但循环携带值在 body 内也可能被使用，导致使用者持有悬空 operand；同时它用 getResult(0).getNumUses() 判断死活，多结果 op 会被误判为死。新实现改为用 isOpTriviallyDead 判定、限制在同 block 内、先收集操作数再 erase、并把 producer 重新入 worklist 复查，语义上更保守也更正确。(2) ComputeBlockIdManager 缓存的原始 Operation* 在 op 被 erase 后未失效，blockIdToOps/opToBlockId 残留悬空指针，而 cloneDepSubgraph/willCreateCycle 会经 getOpsByBlockId 解引用，且 manager 每 module 构造一次，前一个主循环的 erase 会污染后续循环。新增 forgetOp 在 erase 前撤销登记。两处都是典型悬垂指针/误删类 bug，修复方向明确。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "compiler",
+        "ssbuffer"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "修复的是内存安全与 SSA 合法性，行为在多主循环或循环携带值被 body 内消费时才暴露；现有 Inner/Outer-scope lit 用例无法直接断言是否发生过误删，需依赖端到端多主循环 kernel 或后续补充负例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow/"
+        ]
+      },
+      "message": "[ssbuffer](fix) do not erase live ops and stale manager entries in RefineArgsBlockId (#2087)\n\neraseOpsWithUnusedUsers removed the yield's defining op unconditionally, on the assumption that rewiring the yield onto the clone had dropped its last use. A loop-carried value is regularly consumed inside the body as well, so the assumption does not hold and the remaining consumers were left with dangling operands. It also counted uses on getResult(0) rather than on the result that was actually the operand, which reports a multi-result op as dead while other results are live.\n\nComputeBlockIdManager caches raw Operation pointers in blockIdToOps and opToBlockId and had no way to invalidate them, so erased operations stayed in the maps. cloneDepSubgraph and willCreateCycle dereference that vector through getOpsByBlockId, and the manager is constructed once per module, so an erase performed for one main loop corrupts the next. Add forgetOp and withdraw an operation before erasing it.\n\nSigned-off-by: CrDem <147323633+CrDem@users.noreply.github.com>"
+    },
+    {
+      "sha": "0a3a71124ce7709b1a8ea3c1c0b285db43420728",
+      "comment": "针对 MergeCubeBlock/ReorderOpsByBlockId 的调度正确性与 cc 溢出修复：(1) 从 kDisableMergeCubeKernel 中移除 _parallel_hstu_attn_bwd，允许其参与 cube block 合并。(2) ReorderOpsByBlockId 原逻辑是\"先输出非 store op，再把 store op 追加到块尾\"，会破坏 SSA 与访存依赖；新实现引入 orderInOneCBlock：先判断该 block 是否含非 VECTOR_ONLY op（CUBE block 则保持原始程序序，理由是 CUBE 的 store 必用 FIXPIPE 且 C->V 紧随 matmul，store 与 inter transfer 无冲突），否则用 Kahn 拓扑排序按 SSA+MemoryDependenceGraph 排序，平局规则为\"非 store-like 优先、opIndex 小者优先\"，从而在合法前提下把 store 下沉到 VECTOR_ONLY 块尾部（即题述\"earlier store avoid cc overflow\"的相反表述——通过合理排序避免 cc 溢出）。isStoreLikeWithRegion 也改用 ret.wasInterrupted() 更准确。新增了覆盖 CUBE 保持原序、VECTOR store 下沉、scf.if 内 store 下沉且受 SSA 约束的 lit 用例。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "medium-risk",
+        "compiler",
+        "ssbuffer"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "改动重写了 block 内 op 排序算法，输出顺序语义变化，必须有测试锁定新行为；该 commit 已新增 test_reorder_ops_by_block_id.mlir 覆盖 CUBE 保持原序、VECTOR store 下沉与 scf.if 内 store 受 SSA 约束下沉三种情形。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/PlanComputeBlock/test_reorder_ops_by_block_id.mlir"
+        ]
+      },
+      "message": "[ssbuffer](fix) Earlier store avoid cc overflow (#2094)\n\nCo-authored-by: shaoyiyang <shaoyiyang1@huawei.com>"
+    },
+    {
+      "sha": "eca39eaaeb87e77f6ee7f3e97d4b3f351b58d4b2",
+      "comment": "AddMultiBufferOuterScope 的一次较大重构与 WhileOp 支持补齐。核心变化：(1) 传输链分类从 op 类型匹配（fixpipe/hir.copy/memory_space_cast/convert_layout）改为 ssbuffer.transfer_id + 数据流驱动——以携带 transfer_id 的 alloc 作为 group buffer，写该 buffer 的 op 为 sender，第一个把该 buffer 当值读取的 op 为 receiver head，方向由 sender 是否在 VECTOR scope 推导；TransferOpChain 用 bufferOperand 取代\"假定最后一个操作数\"，更鲁棒。(2) findToTensorAfter 替换为 findChainTensorTerminal，沿单用 memref 链走到首个 RankedTensorType 生产者，链分叉/跨块/多结果即放弃。(3) WhileOp 轮询：cond 插入 body 起始以保支配关系，用 resolveLoopOp 取最近祖先循环（While 嵌套于 For 时取 While），每个循环共享一个轮询条件（getOrCreateLoopCond + condCache），anchor 为该循环中最早的 wait。(4) ensureWhileOpHasCounter 将已有的 InnerScope 注入的 counter 更新从 body 尾移到 body head 并重打首个 block_id。(5) 轮询链改为围绕 counter update 就地构建（c2+remsi 在前、c0+cmpi 在后）。(6) 新增 chainComplete 检查，wait/set 缺一的半握手组整体丢弃，避免死锁。(7) PreCheckDisablePreload 放开 sdf02/pcb08/pcb09/pcb14/flash_fwd 等 kernel。这是本批次中最大的一处，逻辑覆盖多个边界（嵌套循环、共享 cond、counter 归位、半握手），但整体是收紧与兜底增强，单元测试已同步重写 Outer-scope-whileop.mlir 覆盖双缓冲轮询路径。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "medium-risk",
+        "compiler",
+        "ssbuffer"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "传输链分类方式、WhileOp 轮询条件插入位置、counter 归位、半握手丢弃均改变 IR 结构，原测试用 inter_core_buf_count=1 规避 while 轮询分支的做法已失效；本 commit 改写 Outer-scope-whileop.mlir 为 buf_count=2 并锁定 counter iter_arg、remsi/cmpi、双互斥 flag 传输组、cross_buffer、iterCounter、main_loop 等结构，同时保留错误的 operand 定义顺序仍被 verifier 拒绝的断言。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AllocMultiCache/Outer-scope-whileop.mlir"
+        ]
+      },
+      "message": "[ssbuffer](fix) tag-driven outer-scope transfer-chain classification with WhileOp polling support (#2099)\n\n- Classify transfer chains by ssbuffer.transfer_id tag + dataflow instead of\n  op-type patterns: group buffers share a transfer_id, sender = buffer writer\n  (write effect or resultless DMA), receiver head = first value operand reader,\n  direction derived from sender scope tcore_type; TransferOpChain carries\n  bufferOperand instead of assuming the last operand\n- Replace findToTensorAfter with findChainTensorTerminal (walks memref chain\n  to the first RankedTensorType producer, requiring exactly one result per\n  chain op)\n- WhileOp outer-scope polling: emit cond at body start for dominance, resolve\n  the nearest enclosing loop (a While nested in a For must win over the For),\n  share one polling condition per loop\n- Normalize while counter updates to the body start: an existing\n  InnerScope-injected counter increment at the body end is moved to the head\n  and re-tagged with the first body block id\n- Build the while polling chain around the counter update in place\n  (c2+remsi before, c0+cmpi after) instead of creating-then-hoisting;\n  findMainLoopOp/findAncestorOp share one ancestor walk; fall back when\n  polling resolves to a counter-less while\n- Drop wait/set-only transfer groups to avoid half-handshake deadlock\n- Unblacklist sdf02/pcb08/pcb09/pcb14/flash_fwd kernels in PreCheckDisablePreload\n- Address review: print the whole loop op in polling fallback diagnostics;\n  structured bindings in addPollingControlFlow group loops (collectTransferGroupData\n  left untouched to stay conflict-free with the flag-budget estimation branch)"
+    },
+    {
+      "sha": "ca612a4b60722b48f3941c1a2f3b189ba482fd21",
+      "comment": "AddMultiBufferInnerScope 中 WhileOp iter_args/counter 插入位置调整。(1) buildAfterRegion 不再在 body 尾就地创建 counter add-1，而是把 counterIterArgOut 作为占位 yield，后续替换。(2) 新增 insertWhileCounterOps，在 processTensorDependencies（dispatch scf.if 生成）之后执行：定位 do-block 中第一个消费 mainLoop.iterCounter 的 op，取其 block_id，在该 block_id 的最后一个 op 之后插入 constant 1 与 add-1，并给二者打 block_id 与 kIterCounter 标记，再回填 scf.yield 的占位 counter 操作数。无 counter 使用者的兜底沿用旧的取最后一个带 block_id 的 op。这使 counter 自增与首个消费它的 dispatch op 落在同一 block_id 上，保证 CloneOps 的连续性。(3) AnalyzeName.cpp 的 interceptrFunc 白名单移除 _jagged_flash_attention_bwd_basic_kernel。测试侧更新 Inner-scope-whileop.mlir 的 block_id 期望并新增 counter 重定位回归用例。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "compiler",
+        "ssbuffer"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "counter add-1 的 block_id 从旧的 body 尾/whileOp 自身 id 变为首个 counter 消费者的 block_id，直接改变 IR 属性，原 CHECK 期望（block_id=10/12）已不成立；本 commit 同步更新期望值并新增 test_while_counter_relocation 覆盖 block_id=5（而非 99/50）的重定位语义。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AllocMultiCache/Inner-scope-whileop.mlir"
+        ]
+      },
+      "message": "[ssbuffer](fix) adjust iter_args insertion position in whileOp (#2015)\n\nSigned-off-by: m-everglow <2276518549@qq.com>"
+    },
+    {
+      "sha": "355c07a23b87db4d515bf0eafd106669ef51ed2e",
+      "comment": "回退 #1887（commit 5f17849d）对 lib-call no-inline 选项的移除，恢复 AscendBackend 中的相关逻辑：新增 _needs_lib_call_no_inline（仅在 arch 以 Ascend950 开头时启用，属 CANN 9.1 规避）、_npu_compiler_supports_option（通过 npu_compiler --help 探测工具链是否支持该 flag，带 lru_cache），并在 linalg_to_bin_enable_npu_compile_910_95 与 linalg_to_bin_enable_npu_compile_A2_A3 两条编译路径中，当条件满足时追加 --enable-lib-call-no-inline=false。特点是先用 help 探测再下发，避免工具链不支持时报错；但每次编译路径会走一次带 10s 超时的子进程调用（有 lru_cache 缓解）。回退意味着 #1887 移除该选项后暴露的问题（推测为 lib call 被内联导致的问题）重现，因此重新启用规避。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "backend",
+        "compiler"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "改动是编译选项下发逻辑的回退，不改变 IR 结构，无 lit 断言点；验证依赖在 Ascend950 目标上端到端编译并确认选项被传入 npu_compiler。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/",
+          "third_party/ascend/unittest/Conversion/"
+        ]
+      },
+      "message": "Revert \"[backend](fix) remove lib-call no-inline option (#1887)\"\n\nThis reverts commit 5f17849d36cebfab46f12de9f4da36c625f8d51c."
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}
