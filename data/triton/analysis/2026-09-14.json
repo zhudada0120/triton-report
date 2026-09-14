@@ -1,0 +1,89 @@
+{
+  "date": "2026-09-14",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-09-15T05:37:09.266304+08:00",
+  "daily_summary": "当日变更集中在 AMD 与 NVIDIA 两个 GPU 后端的正确性修复与 IR 打印质量提升上：AMD BlockPingpong 通过改用 cluster barrier（ttg.barrier local）修复双 cluster 场景下 LDS 覆盖竞争；NVIDIA 将向量原子操作位宽限制在 128 位以适配 Blackwell 的 256 位 load/store 能力并拆分更宽访问；HistogramOpToLLVM 改用 layout redundancy mask 只计数一次输入，移除复制因子除法，修正直方图多计问题；NVWS nvws.warp_group 补全结果类型的打印与解析，使带结果的 warp group 可往返解析。整体属于后端正确性修复 + IR 打印完整性，无接口层变更。",
+  "ascend_impact_summary": "当日 4 个 commit 均未触及 triton-ascend 的可扩展接口面。AMD BlockPingpong 与 NVIDIA 原子向量上限、NVWS warp_group 打印解析均位于 triton-ascend 绝不使用的 NVIDIA/AMD 平台专属路径（third_party/nvidia、third_party/amd、third_party/nvidia/lib/Dialect/NVWS）；HistogramOpToLLVM 位于 lib/Conversion/TritonGPUToLLVM/，该 TritonGPU→LLVM 转换链被 Ascend 用 TritonToLinalg 完全替代，亦不在 Ascend 编译路径上。因此本日变更对 triton-ascend 无功能与测试影响，无需同步或新增测试。",
+  "commits": [
+    {
+      "sha": "fe56d08b694285ad4ff923feaa2fdd2792ecb94d",
+      "comment": "[AMD] 修复双 cluster BlockPingpong 的 LDS 覆盖竞争。原先在第一个 cluster 的 sliced load 后插入 rocdl.s.barrier（普通 barrier）+ sched.barrier，注释说明第一个 cluster 刚好塞进双 cluster pingpong、无法容纳由 ttg.barrier 插入的 local_load 等待，故退化为 s.barrier 并依赖后端稍后在 dot0 cluster 中安排本地内存栅栏。该简化在跨 warp group 覆盖共享内存缓冲时无法保证所有 local_load 完成，存在 LDS race。修复方式：用 appendClusterBarrier(builder, loc) 替换 s.barrier + sched.barrier，产生 ttg.barrier local，确保其他 warp group 在下一轮迭代覆盖 shared memory 缓冲区前，所有 local load 已完成。改动同时更新了 test/TritonGPU/amd/amd-block-pingpong.mlir 的 5 处 FileCheck 断言以匹配新 IR。风险低：改动局限于 AMD TritonAMDGPUTransforms 的 pingpong 变换，且是修复型；但 barrier 语义变更会影响后续 pass 调度，需保证 cluster barrier 的插入位置对 pingpong 流水线吞吐无回退（该 commit 未附性能数据）。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "amd",
+        "tritongpu",
+        "block-pingpong"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/amd/lib/TritonAMDGPUTransforms/BlockPingpong.cpp 及 AMD 专属 lit 测试，属于 AMD/HIP 后端特有路径，triton-ascend 不加载 TritonAMDGPU 方言也不使用该变换。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Fix two-cluster BlockPingpong LDS race (#11765)"
+    },
+    {
+      "sha": "ebe1f76f113a3892d44128fe4d1b24d0224bdb16",
+      "comment": "[NVIDIA] 将向量原子操作上限限制为 128 位。背景：Blackwell 支持 256 位 load/store，getVectorSize(ptr) 会在合适布局下返回更大的向量宽度，而 PTX 原子指令（atom/red）最长仅支持 128 位向量，导致生成不受支持的原子指令。修复：在 AtomicRMWOpConversion 中把 vec 取为 min(getVectorSize(ptr), 128 / valueElemNBits)，把更宽的访问拆分为多个受支持的向量原子访问。测试 test/Conversion/tritongpu_to_llvm_blackwell_256bit.mlir 新增 ATOMIC check prefix 与三段用例，覆盖 f32（v4.f32）、f16/bf16（v8.f16/v8.bf16）在 Blackwell ptx-version=88 下均生成 128 位向量 atom/red 指令。风险低：仅收紧向量宽度上限，行为对既有 ≤128 位场景不变；拆分逻辑须保证语义等价（多次原子累加 vs 单次向量原子），对 fadd 等可结合操作成立，但对可能返回旧值的 atomic_rmw 需依赖拆分实现正确返回各分量。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "nvidia",
+        "atom",
+        "blackwell",
+        "test"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/LoadStoreOpToLLVM.cpp，是 NVIDIA TritonGPU→LLVM lowering 的原子向量宽度裁剪；triton-ascend 不实现 TargetInfoBase、不使用 TritonGPUToLLVM 路径，故不受影响。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Cap vector atomics at 128 bits (#11766)\n\nLimit atomic vectors to 128 bits so Blackwell's 256-bit load/store\nsupport cannot produce unsupported atomic instructions. Split wider\naccesses into supported vector atomics."
+    },
+    {
+      "sha": "984600ab6b293d371b7d2feba49c27a3fb6540cc",
+      "comment": "[GPU] 直方图输入每 CTA 只计数一次。原实现依赖 layout 中重复数据（redundancy）后处理：先用 atomicAdd 累加共享内存直方图，再计算 replicationFactor = (numWarps*numThreadsPerWarp) / (∏threadsPerWarp * ∏warpsPerCTA)，最后将结果整体除以复制因子以纠正过计数——该方案在多 warp 情况下会因共享内存原子累加的竞争与整除误差导致不正确结果。修复引入 layout redundancy mask：getFreeVariableMasks(srcType) 并将 \"block\" 维度掩码置 0（每 CTA 各自计算直方图），调用 emitRedundantThreadPredicate 得到 threadPred，在 computeHistogram 内将其与 updatePred 相与（maybeAnd），使只有代表性 lane/warp 执行共享内存原子更新；同时删除整段 replicationFactor 除法逻辑。computeHistogram 签名新增 threadPred 参数。风险中：变更位于 lib/Conversion/TritonGPUToLLVM/HistogramOpToLLVM.cpp，影响所有使用 tt.histogram 的后端（NVIDIA/AMD），predicate 语义正确性依赖 layout 的 free-variable 分析；但改动方向明确，删除了有缺陷的除法后处理。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "tritongpu",
+        "histogram",
+        "layout"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Conversion/TritonGPUToLLVM/HistogramOpToLLVM.cpp，属于 TritonGPU→LLVM lowering，triton-ascend 用 TritonToLinalg 替代该转换链，不经过此文件。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[GPU] Count each histogram input once (#11767)\n\nUse the layout's redundancy mask to count each histogram input once per\nCTA. Predicate the shared-memory atomic updates on one representative\nlane and warp, and remove the final division by the replication factor."
+    },
+    {
+      "sha": "59eaaff969e731cdea71188fc4aedbd33fa393fe",
+      "comment": "[NVWS] 打印并解析 nvws.warp_group 的结果类型。nvws.warp_group 具有 variadic 结果，但其自定义 assembly format 既不打印结果类型，解析时也不读取，导致带结果的 warp group 无法往返（pretty form 解析报 cannot name an operation with no results）。这使 warp-specialized 且带 loop-carried 值的循环在 nvws-lower-aref 与 nvws-lower-warp-group 之间的 MLIR_ENABLE_DUMP 输出无法回喂给 triton-opt。修复：在 WarpGroupOp::parse 中调用 p.parseOptionalArrowTypeList(result.types)，在 WarpGroupOp::print 中调用 p.printOptionalArrowTypeList(getResultTypes())，将结果类型以可选箭头类型列表打印在 partitions 之后，形如 } -> (tensor<128x64xf32, #blocked1>, i32, ...)。test/NVWS/ops.mlir 新增 @warp_group_results 往返用例（两结果）。风险低：仅补全 asm format 的可选部分，对无结果场景（可选语法）保持向后兼容；新格式会使带结果的旧 dump 文本需要更新，属预期内。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "nvidia",
+        "nvws",
+        "warp-specialization",
+        "test"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/nvidia/lib/Dialect/NVWS/IR/Ops.cpp 与 test/NVWS/ops.mlir，是 NVIDIA Hopper/Blackwell warp specialization 专用方言的 assembly format 修复；triton-ascend 不加载 NVWS 方言、不使用 warp specialization 路径（Ascend 走 TritonToLinalg 与 SIMD/SIMT 编译链），故不受影响。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVWS] Print and parse the result types of nvws.warp_group (#11752)\n\n`nvws.warp_group` has variadic results, but its custom assembly format\nnever printed their types and its parser never read them, so a warp\ngroup with results does not round-trip: the pretty form\n\n```\n%acc:5 = nvws.warp_group\npartition0 num_warps(4) {\n  ...\n  nvws.warp_group.yield %x#0, %x#1, %x#2, %x#3, %x#4 : tensor<128x64xf32, #blocked1>, i32, i32, i32, i32\n}\npartition1 num_warps(4) { ... }\n```\n\nfails to parse with `cannot name an operation with no results`. Every\n`MLIR_ENABLE_DUMP` stage between `nvws-lower-aref` and\n`nvws-lower-warp-group` of a warp-specialized loop with loop-carried\nvalues prints this way (the snippet is from a `tl.range(...,\nwarp_specialize=True)` matmul on `main` 972d18aa0), so those dumps\ncannot be fed back to `triton-opt`; the generic form is fine.\n\nThis prints the result types as an optional arrow type list after the\npartitions and parses them back, so the op now reads `} ->\n(tensor<128x64xf32, #blocked1>, i32, i32, i32, i32)`. A round-trip case\nin `test/NVWS/ops.mlir` covers a warp group with two results;\n`test/NVWS` and `partition-loops.mlir` pass with the change."
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

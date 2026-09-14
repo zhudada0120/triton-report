@@ -1,0 +1,194 @@
+{
+  "date": "2026-09-14",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-09-15T05:37:29.056362+08:00",
+  "daily_summary": "当日变更集中在 Ascend 后端的 ssbuffer（DynamicCVPipeline 多缓冲/跨核同步）与 TritonToGraph 图优化两条主线：一方面修复 DataDependencyAnalysis 对控制流 op 的判定（改为精确匹配 scf.yield）、新增 CheckUnsupportedScenario pass 对 masked memref.load 场景做安全回退、按 (flag, direction) 去重分配外层作用域输出 flag 以修复 flag 预算误判、补充 kernel_da_bwd_kv_ul 白名单，并修正 SinkI1 在控制流边界的分块处理；另一方面调整 AutoBlockify/PTSM/launcher block cap 的启用门控逻辑、默认开启 IAT 与 PTSM 规则掩码（511→3071）、将图优化 UB 预算从 50% 提升至 80%、新增 Radix TopK 的 FoldHistogramParking 与 NarrowUnsignedTensor 两个图重写规则（仅 A5/910_95 生效），并在 IAT/PTSM 候选中拒绝 program-axis 相关的 tensor pointer。整体方向是在提升图优化覆盖率与性能（Radix TopK 提速 2x）的同时，补齐安全回退与预算控制，属于后端编译链的持续打磨与规则默认值演进。",
+  "test_impact_summary": "当日变更对测试看护的影响较大且集中在 Ascend 专属测试面：新增了 graph-optimize-radix-topk-threshold.mlir 的 lit 测试、test_histogram_parking.py 与 test_unsigned_tensor_narrowing.py 两个端到端 pytest、test_backend_npu_utils_build_flags.py 与 test_compiler_layout_memory_contract.py 中大量 UB 预算/规则掩码断言更新、test_launcher_export_api.py 与 test_compiler_layout_memory_contract.py 中新增 program-grid/PTSM/auto-blockify 门控矩阵用例，以及 Outer-scope-whileop.mlir 与 Outer-scope-flag-budget-fallback.mlir 的 flag 期望值调整。这些改动同时涉及默认行为变更（rule mask 默认 511→3071、UB 预算 50%→80%）和新增安全回退路径（CheckUnsupportedScenario），意味着既有基线数值断言普遍需要同步刷新，且新引入的回退分支与 A5/A3 架构差异需要针对性看护。整体测试策略上，仓库已同步补充了覆盖新逻辑的单测与 lit 用例，但对 CheckUnsupportedScenario 这一新增 pass 尚缺少直接的 lit/单元测试，后续应补充其触发与不触发两类场景以固化回退契约。",
+  "commits": [
+    {
+      "sha": "47a182eeb803bdd07580d8c3717d789b5ce4b826",
+      "comment": "将 DataDependencyAnalysis::analyzeExternalOutputs 中对控制流判断由 isControlFlowOp(user) 收窄为 isa<scf::YieldOp>(user)，避免把 scf.for/scf.if 等其它控制流 op 误当作 yield 去按 operand 匹配 output，从而更精确地定位外部输出被 yield 的索引。变更极小且语义更保守，风险低；但需确认 isControlFlowOp 的其它调用点是否也依赖旧语义（本次未动）。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "ssbuffer",
+        "dynamic-cv-pipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "属于判定条件的精确化收窄，未改变输出接口或 IR 结构；现有同目录 lit 测试（AllocMultiCache/Dataflow 相关）可覆盖该路径，无需新增专门用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/"
+        ]
+      },
+      "message": "[ssbuffer](fix) analyzeExternalOutputs controlOp (#2137)"
+    },
+    {
+      "sha": "c38929f28b2e049bc618939f7913a96816f6992e",
+      "comment": "新增 CheckUnsupportedScenario pass，在 SplitDataflow 流水线最前插入，用于检测被 scf.if 直接 yield 的 masked memref.load 流入循环 iter_arg 且被不同 core type 使用的不支持场景，命中则设置 fallback 属性并回退（不再做后续拆分）。同时整理 Passes.h 的 include 顺序与将 SplitDataflowPass.h 提前包含。实现通过 dependsOnValue / hasDifferentCoreTypeUser / isLoopCarryingConflictingIterArg 三个辅助函数做跨作用域依赖与核心类型冲突分析，逻辑较复杂，需注意 walk 的 interrupt 语义、CoreType::CUBE_AND_VECTOR 白名单以及 scope->isProperAncestor 的边界。风险中等：新增回退路径会改变部分 kernel 的优化行为，若误判会静默降级性能。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "medium-risk",
+        "ssbuffer",
+        "dynamic-cv-pipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 pass 带来新的回退分支与 IR 属性（fallback/ERRCODE_IGNORED），属于新的看护点；当前缺少针对该 pass 的 lit 或单元测试来验证命中与不命中两类场景。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/",
+          "third_party/ascend/include/DynamicCVPipeline/Passes.td"
+        ]
+      },
+      "message": "[ssbuffer](fix) Fallback on masked memref.load (#2140)\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>"
+    },
+    {
+      "sha": "0affb25821e25ca4e0694860070b44c55aeb0848",
+      "comment": "重构 AutoBlockify 与 persistent-grid cap 的启用门控：在 _finalize_program_launch_policy 中按 is_pure_simt 分支分别计算 auto_blockify_enabled（纯 SIMT 走 blacklist+row_coalescing 判定，非 SIMT 走 blacklist+ptsm_cap_authorized 判定），使二者互斥且语义更清晰；编译侧 linalg_to_bin_* 改为统一读取 metadata['auto_blockify_enabled'] 而不再重复判定，launcher 侧引入 launcher_cap_enabled = enable_auto_map_parallel_blocks and not ptsm_cap_authorized 以在 PTSM 时禁用 blockNum cap。同时更新 Outer-scope-whileop.mlir 中 flag 期望值（3/8 → 3/7、6/7 → 6/8）以对齐有序分配。变更将默认行为从 'cap 与 auto_blockify 同开' 收敛为互斥，属于行为契约变更，需关注下游 launcher 与编译选项一致性。风险中等。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "medium-risk",
+        "ssbuffer",
+        "backend",
+        "launcher"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "门控逻辑与 metadata 键语义变更，且 lit 期望值已同步修改；新增的 pytest 用例（test_finalize_program_launch_policy_uses_linalg_ptsm_gate、test_make_launcher_allows_auto_blockify_with_iat_mapping、test_make_launcher_disables_block_cap_for_ptsm）已随本 commit 引入，说明测试点必须覆盖。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "third_party/ascend/unittest/pytest_ut/test_launcher_export_api.py",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AllocMultiCache/Outer-scope-whileop.mlir"
+        ]
+      },
+      "message": "[backend](fix) gate AutoBlockify and launcher cap on PTSM (#2138)\n\n* Revert \"[backend](revert) restore AutoBlockify compiler and launcher gates (#2131)\"\n\nThis reverts commit 6966059e8da4b5e0c3331c292b48eac1e07b7af7.\n\n* [backend](fix) disable AutoBlockify only for PTSM\n\n* [ssbuffer](fix) align whileop flags with sorted allocation"
+    },
+    {
+      "sha": "ede3544919ada0da5c6e0d8624f6848af91a290c",
+      "comment": "修复 SinkI1ProducersIntoUsersPass 中当 consumer blockId 为 -1（即跨控制流边界导致无法定位块）时的处理：在第 2 步遍历其它 consumer 时新增 continue 跳过该 consumer，避免用 -1 去查 blockId2Producer 产生未定义行为。属于健壮性补齐，最小改动，风险低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "ssbuffer",
+        "dynamic-cv-pipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "属于边界防御性修复，不改变正常路径的 IR 输出；现有 ComputeBlockOpt 相关测试可覆盖常规场景，无需新增。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/"
+        ]
+      },
+      "message": "[ssbuffer](fix) sink i1 without control op (#2061)\n\nCo-authored-by: shaoyiyang <shaoyiyang1@huawei.com>"
+    },
+    {
+      "sha": "c4f090a56271d0a7be8f6e043dc91abcfee4be13",
+      "comment": "修复 AddMultiBufferOuterScope 中外层作用域输出 flag 分配过度的缺陷：原先每个 transfer group 无论是否有 transfer chain 都通过 FlagIdManager::acquireId() 消耗一个 flag，且后续被 (originalFlag, direction) 合并的组的 id 不回滚，导致 maxOutputFlag 虚高触发 FlagBudget 回退。改为先收集所有 (originalFlag, isCtoV) 去重键（std::map 保证有序确定），再按键分配一个输出 flag，最后回填到各组。同时将 _attn_bwd 加入 3-preload 黑名单（PlanMemoryRegBase UB 溢出）并同步更新 Outer-scope-flag-budget-fallback.mlir 的输入 flag 范围（1..8 → 1..9）以让 6 个 key 仍超出 MAX_FLAG_ID。该修复直接恢复双缓冲可用性，属性能/正确性修复，风险中等。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "medium-risk",
+        "ssbuffer",
+        "dynamic-cv-pipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "flag 分配策略变更导致 flag 编号语义改变，既有 lit 期望值必须同步（已更新 Outer-scope-flag-budget-fallback.mlir）；同时新增 _attn_bwd 黑名单条目需要回归确认不引入其它回退。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AllocMultiCache/Outer-scope-flag-budget-fallback.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AllocMultiCache/Outer-scope-whileop.mlir"
+        ]
+      },
+      "message": "[ssbuffer](fix) Acquire outer-scope output flags per distinct  (#2068)\n\n* [ssbuffer](fix) Acquire outer-scope output flags per distinct (flag, direction) key\n\nPreviously every collected transfer group consumed one flag id via\nFlagIdManager::acquireId(), including groups without a transfer chain,\nand ids taken by groups later merged through (originalFlag, direction)\nsharing were never reclaimed. This inflated maxOutputFlag and caused\nspurious FlagBudget fallbacks to single-buffer mode.\n\nNow output flags are assigned after group collection: one id per\ndistinct (originalFlag, isCtoV) key, iterated in sorted order for\ndeterminism. For a kernel whose main loops reuse flags 7/8/9 across\ntwo parallel loops, the budget is 9+3=12 instead of 18, keeping\ndouble-buffering enabled within the 0..14 flag range.\n\n* [UT](fix) Make flag-budget-fallback test exceed budget on real demand\n\nThe old scenario relied on chain-less transfer groups consuming flag\nids (8 groups acquired 9..16 -> fallback). After output flags are\nacquired per distinct (flag, direction) key, only the 6 main-loop\nkeys consume ids (9..14), which fits the budget and no longer falls\nback. Raise the pre-existing flag range to 1..9 so the 6 keys acquire\n10..15 and genuinely exceed MAX_FLAG_ID.\n\n* [ssbuffer](style) fix clang-format on flag-budget output-flag acquisition\n\n* [ssbuffer](fix) blacklist _attn_bwd for 3-preload (UB overflow in planmemory)\n\n3-preload on _attn_bwd overflows UB in PlanMemoryRegBase while cvpipeline's\ncreatepreload path does not: its preload buffers are pointer_cast views\noutside the PlanMemory ledger. Other risky kernels stay blacklisted until\nthe receiver-chain fixes land."
+    },
+    {
+      "sha": "415a598f50943447f97bcaeaa91cc99dddcc7081",
+      "comment": "在 IAT 候选发现阶段拒绝 program-axis 依赖闭包内包含 tt.make_tensor_ptr 的场景（新增 hasTensorPointerInProgramAxisClosure 并在 dynamic single-moment 与 dynamic merge-split 两处候选分析中前置判断），因为 IAT 会把 program id 变成 lane 张量后无法从标量基地址重建合法 tensor pointer，会令 apply() 阶段调度失败；改为在发现阶段安全回退不启用 program-grid transform。同时把图优化 UB 预算从 raw UB 的 50% 提升至 80%（graph_ub_budget_bytes_for_arch 改为 *80//100），并同步更新 utils.py 弃用说明、test_backend_npu_utils_build_flags.py 与 test_compiler_layout_memory_contract.py 中所有预算数值断言。两处变更：候选拒绝属安全回退修复，预算放宽属容量策略调整（更激进，需关注 PlanMemory 能否兜住）。风险中等。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "medium-risk",
+        "graph-optimize",
+        "triton-to-graph",
+        "independent-axis-tensorize"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "UB 预算数值变更会导致所有涉及图优化 UB 容量的断言全面失效，必须同步刷新（本 commit 已更新两个测试文件的参数化用例）；tensor pointer 拒绝路径也需要为'强制 IAT 但遇到 block-pointer MergeSplit 时安全回退'补充回归用例（commit 消息提到已新增该回归）。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_backend_npu_utils_build_flags.py",
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "third_party/ascend/unittest/Conversion/General/TritonToGraph/"
+        ]
+      },
+      "message": "[GraphOptimize](fix) reject IAT tensor pointers (#2134)\n\n* [GraphOptimize](fix) reject IAT tensor pointers\n\nReject program-axis dependent tt.make_tensor_ptr operations while IAT candidates are discovered. The current IAT materializer cannot lift a scalar-base tensor pointer after the program id becomes a lane tensor, so scheduling the plan fails during apply().\n\nAdd a forced-IAT regression that verifies the block-pointer MergeSplit form safely falls back without a program-grid transform.\n\nAssisted-by: AI\n\n* [GraphOptimize](fix) raise derived UB budget to 80 percent"
+    },
+    {
+      "sha": "d3a00319099576bdcd33d6d060cc40e3ed317fbe",
+      "comment": "从 AnalyzeDataFlow/AnalyzeName.cpp 的 interceptrFunc 黑名单中移除 kernel_da_bwd_kv_ul，使其解除拦截、启用 ssbuffer 路径。属于白名单治理类改动（配合前述 flag 分配修复后可安全启用），单行删除，风险低，但需确认该 kernel 在 A2/A3/A5 各架构下均无回归。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "ssbuffer",
+        "dynamic-cv-pipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅是解除一个 kernel 名拦截，不改动 IR 变换逻辑；现有 _attn_bwd 系列与 pcb06_tc02 等 kernel 的回归测试可覆盖启用后的行为。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/"
+        ]
+      },
+      "message": "[ssbuffer](fix) ssbuffer enable kernel_da_bwd_kv_ul (#2129)"
+    },
+    {
+      "sha": "a7a8285ffbd8c52bdbca1de85166bd93eb0d21a0",
+      "comment": "新增两个 TTIR 级图重写规则用于加速 Radix TopK：NarrowUnsignedTensor（把 i64 无符号语义的张量运算窄化为 i32，要求在 shift/cmp/select 等场景证明高 32 位为零，仅对 u32 安全值生效）与 FoldHistogramParking（把 hist(select(mask, x, 0)) - select(bin_id==0, sum(!mask), 0) 折叠为 hist(select(mask, x, -1))，并清理死掉的 correction 树）。两者仅在 compileOn91095 为真时运行，通过 GraphOptimizePass 的受限 greedy rewrite（只对候选 op 应用，避免波及无关死代码）。同步在 GraphOptimizationOptions 新增 compileOn91095 字段、Passes.td 新增 compile-on-910-95 选项、triton_ascend.cc 绑定新增 compile_on_910_95 参数、_graph_optimize_kwargs 传递该值。规则要求 A5/950 模板，A3 自动跳过。整体为性能特性（宣称 Radix TopK 2x），但引入新的重写模式与作用域约束，风险中偏上。",
+      "tags": [
+        "feature",
+        "performance",
+        "medium-risk",
+        "graph-optimize",
+        "triton-to-graph",
+        "radix-topk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增两个重写规则、新编译选项 compileOn91095 以及新的 pass 行为分支，需要 lit 用例验证 A5（重写生效）与 A3/compile-on-910-95=false（保持原 IR）两条路径；端到端数值正确性（含 u32 上界、负数、其它用户保留）也需覆盖。本 commit 已补充 graph-optimize-radix-topk-threshold.mlir、test_histogram_parking.py、test_unsigned_tensor_narrowing.py 与 test_compiler_layout_memory_contract.py 的相关断言。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToGraph/graph-optimize-radix-topk-threshold.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_histogram_parking.py",
+          "third_party/ascend/unittest/pytest_ut/test_unsigned_tensor_narrowing.py",
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py"
+        ]
+      },
+      "message": "[TritonToGraph](feat) speedup Radix topk by 2x (#2125)\n\n* add two pass : FoldHistogramParking and NarrowUnsignedTensor.\n\n* Fix pre-graph rewrite scope\n\n* Use current greedy rewrite API\n\n* Restrict radix rewrites to A5\n\n* Skip A5-only histogram shape on A3\n\n* Format A3 histogram skip\n\n* Skip A5-only histogram shapes on A3\n\n* Fix scoped radix graph rewrite cleanup\n\n* Format radix graph rewrite cleanup\n\n* Keep unsigned narrowing A5-only\n\n---------\n\nCo-authored-by: yangkaixin <yangkaixin1@huawei.com>"
+    },
+    {
+      "sha": "924f3a50b31868b1c9915286e1af31cd6215df70",
+      "comment": "将 GraphOptimize 默认规则掩码由 511 提升为 3071（= 511 | INDEPENDENT_AXIS_TENSORIZE_RULE_BIT | PERSISTENT_TASK_STRIP_MINING_RULE_BIT），即默认启用 IAT 与 PTSM；同步更新 GraphOptimization.h 的 kDefaultGraphOptimizationRuleMask、program_grid.py 的 DEFAULT_GRAPH_OPTIMIZATION_RULE_MASK、Passes.td 默认 ruleMask、utils.py 的弃用说明以及相关测试断言。默认行为从 '仅 legacy native bundle' 变为 'legacy + IAT + PTSM'，是用户可观测的默认编译语义变更，可能与既有 IAT/PTSM 兼容性约束交互（例如 a7a8285 中新增的 tensor pointer 拒绝逻辑即为其前置保障）。风险中偏上，需要充分回归。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "graph-optimize",
+        "triton-to-graph",
+        "independent-axis-tensorize",
+        "persistent-task-strip-mining"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "默认掩码语义变化会改变所有开启图优化 kernel 的默认 IR 生成路径，既有针对 511 基线的断言需要同步刷新；本 commit 已更新 test_graph_optimize.py 中相关用例与文档字符串，并新增 default mask 断言。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_graph_optimize.py",
+          "third_party/ascend/unittest/Conversion/General/TritonToGraph/",
+          "third_party/ascend/backend/program_grid.py"
+        ]
+      },
+      "message": "[GraphOptimize](feat) enable IAT and PTSM by default (#2124)"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

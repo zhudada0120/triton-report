@@ -1,4 +1,20 @@
 {
+  "fe56d08b694285ad4ff923feaa2fdd2792ecb94d": {
+    "date": "2026-09-14",
+    "msg": "[AMD] Fix two-cluster BlockPingpong LDS race (#11765)"
+  },
+  "ebe1f76f113a3892d44128fe4d1b24d0224bdb16": {
+    "date": "2026-09-14",
+    "msg": "[NVIDIA] Cap vector atomics at 128 bits (#11766)"
+  },
+  "984600ab6b293d371b7d2feba49c27a3fb6540cc": {
+    "date": "2026-09-14",
+    "msg": "[GPU] Count each histogram input once (#11767)"
+  },
+  "59eaaff969e731cdea71188fc4aedbd33fa393fe": {
+    "date": "2026-09-14",
+    "msg": "[NVWS] Print and parse the result types of nvws.warp_group (#11752)"
+  },
   "972d18aa0905dfb403091bd4c5746318d097df4d": {
     "date": "2026-09-13",
     "msg": "[BAKCEND] Use native FP16/BF16 conversions on SM90+ (#11699)"

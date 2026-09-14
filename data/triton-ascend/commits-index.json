@@ -1,4 +1,40 @@
 {
+  "47a182eeb803bdd07580d8c3717d789b5ce4b826": {
+    "date": "2026-09-14",
+    "msg": "[ssbuffer](fix) analyzeExternalOutputs controlOp (#2137)"
+  },
+  "c38929f28b2e049bc618939f7913a96816f6992e": {
+    "date": "2026-09-14",
+    "msg": "[ssbuffer](fix) Fallback on masked memref.load (#2140)"
+  },
+  "0affb25821e25ca4e0694860070b44c55aeb0848": {
+    "date": "2026-09-14",
+    "msg": "[backend](fix) gate AutoBlockify and launcher cap on PTSM (#2138)"
+  },
+  "ede3544919ada0da5c6e0d8624f6848af91a290c": {
+    "date": "2026-09-14",
+    "msg": "[ssbuffer](fix) sink i1 without control op (#2061)"
+  },
+  "c4f090a56271d0a7be8f6e043dc91abcfee4be13": {
+    "date": "2026-09-14",
+    "msg": "[ssbuffer](fix) Acquire outer-scope output flags per distinct  (#2068)"
+  },
+  "415a598f50943447f97bcaeaa91cc99dddcc7081": {
+    "date": "2026-09-14",
+    "msg": "[GraphOptimize](fix) reject IAT tensor pointers (#2134)"
+  },
+  "d3a00319099576bdcd33d6d060cc40e3ed317fbe": {
+    "date": "2026-09-14",
+    "msg": "[ssbuffer](fix) ssbuffer enable kernel_da_bwd_kv_ul (#2129)"
+  },
+  "a7a8285ffbd8c52bdbca1de85166bd93eb0d21a0": {
+    "date": "2026-09-14",
+    "msg": "[TritonToGraph](feat) speedup Radix topk by 2x (#2125)"
+  },
+  "924f3a50b31868b1c9915286e1af31cd6215df70": {
+    "date": "2026-09-14",
+    "msg": "[GraphOptimize](feat) enable IAT and PTSM by default (#2124)"
+  },
   "5a1d73019ad2bbb167dded113acfd0ad53a9259f": {
     "date": "2026-09-13",
     "msg": "[ssbuffer] (fix) ssbuffer Add new known NoMemoryEffectCall (#2032)"
