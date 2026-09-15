@@ -1,0 +1,392 @@
+{
+  "date": "2026-09-15",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-09-16T02:03:14.597481+08:00",
+  "daily_summary": "当日变更以 NVIDIA/AMD 后端性能优化与正确性修复为主：NVIDIA 侧无条件计算分布式共享内存地址（NVVM::MapaOp）以改善 ptxas 代码生成、用 cp.async 的 ignore-src 谓词替代 src-size 选择、简化 fixed-cluster program ID 生成（避免 %clusterid 的昂贵除法展开）、为 64 位整数 min/max 归约引入双 32 位 redux.sync 实现，并修复了 histogram 的 multi-CTA 语义（新增 cluster barrier 与跨 CTA 累积）。AMD 侧让 FpToFp 转换支持 GenericLinearLayout、将 dl_iterate_phdr 的 Python 回调改为原生 nanobind 实现以规避 GIL 死锁。核心 IR/Transforms 侧放宽了 BroadcastOp 的布局约束、修复了 view conversion 吸收时的 operand layout 冲突、修复 OptimizeThreadLocality 对多用途 loop result 的处理、将 shared-layout 的 toLinearLayout 分派下沉到 SharedEncodingTrait 接口、并将 unsigned mulhi 降级为宽整型乘+移位以暴露给 LLVM 优化。此外还包括 interpreter 的 round_f32_to_tf32 支持以及 Proton ROCprofiler 客户端的生命周期修复。",
+  "ascend_impact_summary": "当日变更中，多个核心 IR/Transforms 层的改动会影响 triton-ascend：(1) BroadcastOp 放宽布局约束并在 DialectInferLayoutInterface 上新增纯虚方法 verifyBroadcastOpEncoding，属于 include/triton/Dialect/Triton 与 lib/Dialect/TritonGPU 的必然影响路径，Ascend 复用 TTIR 前端且 TritonToLinalg 链以此为输入；(2) canUseResultEncoding 签名变更、OptimizeThreadLocality 修复、RemoveLayoutConversions 的 BroadcastOp 支持也会影响共享 Transform 基础设施；(3) TargetInfoBase 移除了 getMulhiFuncName 纯虚方法，但该接口 Ascend 不使用，故不影响；(4) mulhi 的 lowering 变更位于 lib/Conversion/TritonGPUToLLVM，Ascend 走 TritonToLinalg 替代路径，理论上不影响其编译链，但如果 Ascend 复用 tt.mulhi 的语义则需要关注。其余 NVIDIA/AMD 后端、Proton、测试与工具改动均为平台特定或纯测试，不影响 triton-ascend。",
+  "commits": [
+    {
+      "sha": "41f45d986a882f88bb6d59ce9f3621559f8100e9",
+      "comment": "NVIDIA 后端性能优化：将分布式共享内存地址计算（mapa）从带谓词的内联 PTX 改为无条件使用 NVVM::MapaOp。原因在于 ptxas 对带谓词的 mapa 会生成额外的 SEL 指令，而地址翻译本身是可推测的（speculatable），因此将谓词通过 NVVM::MapaOp 直接表达即可，内存访问仍保留原谓词。改动集中在 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/TargetInfo.cpp 的 mapa 辅助函数、mapDShared/storeDShared/loadDShared，并更新 lit 测试断言从 'mapa.shared::cluster.u32' 改为 'nvvm.mapa'，同时在 LoadStoreOpToLLVM.cpp 增加注释。风险低：行为语义等价（地址翻译不产生副作用），但需注意 NVVM::MapaOp 必须被正确的 canonicalization/lowering 处理，否则可能在极端情况下因无条件生成 mapa 指令而引入额外寄存器压力。",
+      "tags": [
+        "performance",
+        "refactor",
+        "low-risk",
+        "nvidia-backend",
+        "tritongpu-to-llvm"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 third_party/nvidia 与 NVIDIA 专属的 TargetInfo.cpp，Ascend 不使用 NVVM::MapaOp 也不走 TritonGPUToLLVM 路径。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Compute distributed shared addresses unconditionally (#11794)\n\nCompute distributed shared-memory addresses unconditionally with\n`NVVM::MapaOp`, keeping the original predicates on the memory accesses.\n\nptxas implements `MapaOp` with a `PRMT` so predicating it creates an\nextra `SEL` that just doesn't pay off. We instead emit it\nunconditionally."
+    },
+    {
+      "sha": "a971fe42af31639b7cc99ffe6003523eda9307f5",
+      "comment": "AMD 后端正确性修复：FpToFpOpConversion 在使用 GenericLinearLayout 时因尝试将其识别为 canonical LinearLayout 而触发断言，导致需要额外插入 LDS round-trip 做 layout 转换（在 MoE/GEMM epilogue 类型转换场景中经常触发）。修复方式是将 layoutTy.getElemsPerThread(shape) 替换为通用的 triton::gpu::getElemsPerThread(tensorTy)。新增 gluon 测试 test_generic_linear_fp8_cast（GFX1250 专属）以及 test/Conversion/amd/tritongpu_to_llvm_gfx1250.mlir 的两个 lit 用例（gfx1250 fp32->bf16 noncontiguous、fp32->fp8 partition_aware）。风险低：仅对 AMD 后端 fp_to_fp 转换路径改动，且切换为通用 helper 语义上更安全。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "low-risk",
+        "amd-backend",
+        "tritongpu-to-llvm"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 third_party/amd 与 AMD 专属的 ConvertFpCastOpToLLVM.cpp，Ascend 不走 FpToFpOpConversion 路径。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Support GenericLinearLayout in FpToFpOp Conversion (#11791)\n\nPreviously when we do `tensor.to(dtype)` on a tensor with\n`GenericLinearLayout`, the compiler tries to identify it as a canonical\nLinearLayout and hit assertion.\n\nIt makes us add a specific LDS round-trip to convert layout before doing\nFP conversion. Concretely, it happens in MoE/GEMM epilogue when we need\nto convert the data type of accumulator who is in `GenericLinearLayout`.\nThis PR uses common getElemsPerThread function to avoid this issue."
+    },
+    {
+      "sha": "6387a19e69133ebc229cdf41039ffc785a9ad427",
+      "comment": "NVIDIA 后端功能修复：使 shared memory 中指针元素的加载与存储语义一致——将指针的 load 实现为加载 i64 再 inttoptr 转换为指针（原先用 bitcast），与 store 侧策略对齐，从而让 pointer tensor 在 local_alloc/load/store/gather/scatter（IR 与 Gluon）中普遍可用。核心改动位于 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/TargetInfo.cpp 的 loadDShared：当 elemTy 为 LLVM::LLVMPointerType 时走 inttoptr，否则仍 bitcast。新增 gluon 测试 test_shared_memory_pointers（参数化 write={local_alloc,local_store,local_scatter} × read={local_load,local_gather}）以及 test/Conversion/tritongpu_to_llvm.mlir 的 @shared_memory_pointers lit 用例。风险低，但需注意该修复目前未覆盖 AMD（测试中 skipif is_hip），说明 AMD 侧另有实现。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "low-risk",
+        "nvidia-backend",
+        "tritongpu-to-llvm",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 third_party/nvidia 的 TargetInfo.cpp（NVIDIA 专属 TargetInfo 实现），Ascend 不使用 TargetInfoBase 及其实现。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Fix loading pointer elements from shared memory (#11771)\n\nImplement loading a pointer from a shared memory buffer as loading an\ni64 then convert to a pointer, consistent with the policy for shared\nstores.\n\nThis makes pointer tensors work in general for all of\nlocal_alloc/load/store/gather/scatter in both the IR and Gluon on the\nNVIDIA backend."
+    },
+    {
+      "sha": "51593ac6b6da36d68627e4f0b90c77a15661be8b",
+      "comment": "核心 IR 语义放宽：BroadcastOp 不再要求 SameOperandsAndResultEncoding，允许源与目标布局在无指令代价（不需要在线程间搬移数据、不能置换寄存器）的前提下不同。具体做法：在 DialectInferLayoutInterface 新增纯虚方法 verifyBroadcastOpEncoding(srcType, dstType)，TritonGPU 实现通过 toLinearLayout 后 resizeOutDim 并 removeZeroBasesAlongDim(kRegister) 比较来验证；Gluon 则退回严格的 encoding 相等检查。同步更新 RemoveLayoutConversions、Utility.cpp(inferSrc/DstEncoding)、InferLayoutUtils::encodingsMayVary 将 BroadcastOp 纳入可变布局算子集合，并在 TritonGPU/IR/Dialect.cpp 更新 LinearEncodingTrait::getElemsPerThread 的注释。新增 test/Gluon/auto_encoding.mlir 的 @preserve_broadcast_layouts、test/TritonGPU/canonicalize.mlir、test/TritonGPU/invalid.mlir 用例。同时 ExpandDimsOp::canonicalize 改为使用 std::nullopt loc 并在失败时静默返回 failure。风险中等，因为放宽了 IR 校验并新增了接口纯虚方法，可能影响其他 layout 传播逻辑。",
+      "tags": [
+        "refactor",
+        "feature",
+        "medium-risk",
+        "triton-ir",
+        "tritongpu-ir",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "影响 include/triton/Dialect/Triton/IR/Dialect.h（DialectInferLayoutInterface 新增纯虚方法 verifyBroadcastOpEncoding）与 include/triton/Dialect/Triton/IR/TritonOps.td（BroadcastOp 移除 SameOperandsAndResultEncoding trait），二者均为 Ascend 复用 TTIR 前端并作为 TritonToLinalg 输入源头的必然影响路径。lib/Dialect/Triton/IR/Ops.cpp 的 BroadcastOp::verify 与该新接口的调用链也会进入 Ascend 编译流程。此外 lib/Dialect/TritonGPU/Transforms/Utility.cpp 中 inferSrcEncoding/inferDstEncoding 纳入 BroadcastOp，若 Ascend 复用这些通用 Utility 会受同步影响。ExpandDimsOp::canonicalize 改为静默 failure 可能在 Ascend 的场景下改变 canonicalize 收敛行为。",
+        "testing": "Ascend 的 lit 测试若涉及 tt.broadcast 的布局校验期望（如无效布局报错），可能因新校验放宽/失败路径变化而需更新。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/",
+          "third_party/ascend/unittest/pytest_ut/ (broadcast 相关算子端到端测试)"
+        ]
+      },
+      "message": "Relax broadcast layouts (#11759)\n\nThere are multiple valid ways to broadcast a tensor with a given source\nlayout. Allow `BroadcastOp` to reflect that the destination layout can\nbe different from the source as long as no instructions have to be\ngenerated to do the broadcast.\n\nThis is technically already expressible today by setting the source\nlayout to be the desired destination layout, but that is less convenient\nand may not always be possible in `RemoveLayoutConversions`.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "include/triton/Dialect/Triton/",
+          "lib/Dialect/Triton/"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "92ff4362dadb301b729395bad07a756dfb1c3cc7",
+      "comment": "核心 Transforms 正确性修复：在吸收 view conversion 时，如果 reshape 的源操作数同时位于 backward slice 中，可能被 rematerialize 为新布局，从而与已吸收的结果布局冲突。修复方式是将 canUseResultEncoding 从返回 bool 改为返回 std::optional<SmallVector<OpOperand *>>——返回需要固定布局的操作数集合（reshape 返回 src，NvidiaMma ConvertLayoutOp 返回 src），nullopt 表示不兼容；getConvertBackwardSlice 遍历这些操作数并调用 updateLayout 将源值的 encoding 固定，冲突时返回 failure 从而跳过 rematerialize。新增 test/TritonGPU/combine.mlir 的 @reshape_absorption_source_layout_conflict 用例。风险中等：signature 变更会影响所有调用 canUseResultEncoding 的代码（当前仅 getConvertBackwardSlice），语义收紧可能在未预期路径上产生 failure 而转化为保守的 layout conversion。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "tritongpu-transforms",
+        "layout"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "影响 include/triton/Dialect/TritonGPU/Transforms/Utility.h 与 lib/Dialect/TritonGPU/Transforms/Utility.cpp 中 canUseResultEncoding 的签名（bool -> std::optional<SmallVector<OpOperand*>>）。该函数属于 lib/Dialect/TritonGPU 的共享 Transform 基础设施，位于 Ascend 的必然/可能影响路径（Ascend 不走 TTGIR 但可能复用相关 Analysis/Utility）。若 Ascend 侧 pass 复用该函数需同步适配签名；若不使用则仅受头文件变更的编译影响。",
+        "testing": "Ascend 侧若无直接调用 canUseResultEncoding 则测试无需变更；若 Ascend 复用 layout 传播相关 pass 则需验证 reshape 吸收路径的行为。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Fix operand layouts when absorbing view conversions (#11758)\n\nIn the case of reshape, `canUseResultEncoding` also requires that the\nreshape's source encoding does not change. However, if the source\noperand is also part of the backward slice, we could end up\nrematerialising it with a new layout that might be incompatible with the\nresult encoding that we absorbed.\n\nTo fix this, record the desired encoding for the reshape's operand, so\nthat we skip rematerialisation if the value requires a conflicting\nencoding.",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "b96d510c2047bfe33cd5943c4fff24f3517480a0",
+      "comment": "NVIDIA 后端性能优化：masked async copy 不再通过 select 计算 src-size（nBytes 或 0），而是直接使用 cp.async 的 ignore-src 谓词（传入 mask 的反码，约束字符 'b'），避免生成 llvm.select 与额外的寄存器/指令。改动位于 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/LoadStoreOpToLLVM.cpp 的 AsyncCopyGlobalToLocalOpConversion，lit 断言从 llvm.select 改为 llvm.xor 并检查约束 \"r,l,b。同时增强 gluon 测试 test_async_copy_mbarrier，将 COPY_VEC 参数化（1/2/4）并初始化 shared memory 为 7 以验证 masked 区域被置 0。风险低：语义等价（cp.async 在 ignore-src 时填充 0），但 COPY_VEC=1/2 用例覆盖了非向量对齐路径。",
+      "tags": [
+        "performance",
+        "low-risk",
+        "nvidia-backend",
+        "tritongpu-to-llvm"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 third_party/nvidia 与 NVIDIA 专属 cp.async lowering，Ascend 不用 cp.async。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Use predicate operands for masked async copies (#11789)\n\nUse the predicate `ignore-src` operand of `cp.async` for masked copies.\nPass the inverse of the copy mask directly instead of materializing a\nsource size of either the copy width or zero.\n\nThis improves perf of the gluon pipelined-copy tutorial by 9.6%"
+    },
+    {
+      "sha": "70ded9cd47397aebcca3494b54c96f953a90777f",
+      "comment": "核心 Transforms 正确性修复：OptimizeThreadLocality 的 thread-local reduction rewrite 原先假设 scf.for 结果只有单一使用者（assert(loopResult.hasOneUse())），在 loop result 被多次使用（如 arith.addf %result, %result）时会触发断言崩溃或（在无 assert 构建下）错误编译。修复方式改为使用 forOp.getTiedLoopInit/getTiedLoopResult 获取对应的 init operand 与 result index，并用 newLoop.getResult(resultIndex).replaceAllUsesWith(finalOp) 替换所有使用者，而不再假设单一 use。新增 test/TritonGPU/optimize-locality.mlir 的 @loop_result_multiple_uses 用例。风险低：属于明显的正确性修复，但涉及的 rewrite 逻辑本身较复杂。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "tritongpu-transforms"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "影响 lib/Dialect/TritonGPU/Transforms/OptimizeThreadLocality.cpp，属于 lib/Dialect/TritonGPU 的共享 Transform，位于 Ascend 的可能影响路径。若 Ascend 的编译链复用该 pass（或依赖该 pass 在 TritonGPU 优化阶段的可选路径），修复多用途 loop result 的处理会影响其行为。Ascend 主链走 TritonToLinalg 不经过 TTGIR 优化，因此实际功能影响有限，但该 pass 属于共享基础设施。",
+        "testing": "如上，若 Ascend 复用该 pass，建议验证多用途 loop result 场景；否则无需新增测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[OptimizeThreadLocality] Handle multi-use thread locality results (#11682)\n\nThe thread-local reduction rewrite assumed the corresponding scf.for\nresult had one use. This will crash valid kernels that reused it in a\nbuild with assert, and will lead to a miscompile without asserts:\n```\nlib/Dialect/TritonGPU/Transforms/OptimizeThreadLocality.cpp:342: virtual void\n  mlir::triton::gpu::(anonymous namespace)::TritonGPUOptimizeThreadLocalityPass::runOnOperation(): \n  Assertion `loopResult.hasOneUse()' failed.\n```\n\nFor example, we trigger this when `scf`.for produces `result` that is\nused as both operands in and add operation like so:\n\n```\n    %result = scf.for ... iter_args(%acc = %zero)\n    ..\n    %twice = arith.addf %result, %result\n```\n\nThis can very easily be triggered from source code with an almost\nidentical pattern.\n\nThe rewrite is checking that different values inside the loop have one\nuse, but it forget to check that loopResult.hasOneUse() and thus misses\nthat it can have multiple SSA uses, which all need to be replaced.\n\n<!---\nThe core Triton is a small number of people, and we receive many PRs\n(thank\nyou!).  To help us review your code more quickly, **if you are a new\ncontributor (less than 3 PRs merged) we ask that you complete the\nfollowing\ntasks and include the filled-out checklist in your PR description.**\n\nComplete the following tasks before sending your PR, and replace `[ ]`\nwith\n`[x]` to indicate you have done them.\n-->\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [ ] I have not added any `lit` tests.\n- [x] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "58100bd95bd116f5c2baea1cf45a873b125fda13",
+      "comment": "核心 IR 重构：TritonGPUDialect::toLinearLayout 原先用 dyn_cast<SwizzledSharedEncodingAttr/SharedLinearEncodingAttr/NVMMASharedEncodingAttr/AMDRotatingSharedEncodingAttr/PartitionedSharedEncodingAttr> 枚举具体共享布局类型，遇到未知布局直接 assert(0)。本 PR 改为通过 SharedEncodingTrait 的 toLinearLayout(shape) 接口分派：在 TritonGPUAttrInterfaces.td 为 SharedEncodingTrait 增加 toLinearLayout 接口方法，并为各具体 encoding 增加 extraClassDeclaration 声明；在 LinearLayoutConversions.cpp 中将原自由函数改为各 EncodingAttr 的成员方法 (SwizzledSharedEncodingAttr/AMDRotatingSharedEncodingAttr/NVMMASharedEncodingAttr/PartitionedSharedEncodingAttr::toLinearLayout)，PaddedSharedEncodingAttr 则以 report_fatal_error 显式拒绝。新增 unittest 的 OutOfTreeSharedEncodingExtensionPoint，用 StringAttr 挂 ExternalModel 作为 stand-in 验证分派确实走接口。风险中等：这是接口契约变更（新增接口方法，所有 in-tree 共享布局必须实现），但 in-tree 实现均已覆盖，对 out-of-tree 布局是解锁而非破坏。",
+      "tags": [
+        "refactor",
+        "medium-risk",
+        "tritongpu-ir",
+        "interface"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "影响 include/triton/Dialect/TritonGPU/IR/TritonGPUAttrInterfaces.td（SharedEncodingTrait 新增 toLinearLayout 接口方法与 DeclareSharedEncodingMethods 同步）与 include/triton/Dialect/TritonGPU/IR/TritonGPUAttrDefs.td（新增 extraClassDeclaration）。这些属于 triton-ascend 的\"可能影响\"路径（Ascend 不走 TTGIR，但若复用共享 MLIR 类型定义/AttrInterface 可能需要同步）。此外 lib/Dialect/TritonGPU/IR/LinearLayoutConversions.cpp 中 TritonGPUDialect::toLinearLayout 的分派逻辑变化，仅当 Ascend 的 TritonToLinalg 或 Analysis 间接调用到该函数时才传导。",
+        "testing": "如 Ascend 的 pass 未直接使用共享布局的 toLinearLayout 则测试无需变更；若 Ascend unittest 引用了 TritonGPUAttrInterfaces 的接口实现情况，则可能因新增接口方法而需同步编译。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[LAYOUTS] Dispatch shared-layout lowering through `SharedEncodingTrait` (#11764)\n\n### Problem\n\n`TritonGPUDialect::toLinearLayout` lowers a shared layout by enumerating\nthe concrete encodings it knows about:\n`dyn_cast<Swizzled/SharedLinear/NVMMA/AMDRotating/PartitionedShared>`,\notherwise `assert(0 && \"unknown layout\")`, where\n`PaddedSharedEncodingAttr` already lands.\n\nYet every one of them already implements `SharedEncodingTrait`, whose\ndistributed counterpart has required `toLinearLayout` for a long time.\nAdding a shared layout therefore means editing that switch instead of\nimplementing the interface.\n\n### Change\n\nDispatch through that existing abstraction:\n\n- shared-layout lowering asks the encoding through `SharedEncodingTrait`\n\nThis is the path `DistributedEncodingTrait` and\n`SharedLinearEncodingAttr` already take - it just stops the call site\nfrom naming concrete types.\nA layout core doesn't enumerate (a future in-tree encoding, or an\nout-of-tree one) then lowers without touching the switch.\n\n### Compatibility & tests\n\nNo behavior change: the conversion bodies are unchanged and a\ndifferential over every in-tree shared encoding is identical before and\nafter. `OutOfTreeSharedEncodingExtensionPoint` drives the seam with a\nstand-in layout, which without this change reaches the unknown-layout\nassert.\n\n-------\n\nSame concept as in https://github.com/triton-lang/triton/pull/11025\n@lezcano @peterbell10 @ThomasRaoux",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "38e38e7dc33822d0446e2db4c4024a2bf6929668",
+      "comment": "NVIDIA 后端性能优化：llGetPid 在 numCTAs > 1 时不再使用 NVVM::ClusterIdXOp（%clusterid.x），因为 ptxas 会将其展开为对 CTA ID 做运行时 cluster 宽度的无符号除法（26 条 SASS 指令）。改为 CTA-ID 读取后右移/整除常数 numCTAs，对 X 轴为 BlockIdXOp / numCTAs 的 udiv，对 Y/Z 轴直接读 BlockIdY/BlockIdZ（因为 cluster 只沿 X 轴展开）。lit 测试相应更新为期望 llvm.mlir.constant + nvvm.read.ptx.sreg.ctaid.x + llvm.udiv，并将 profile_scratch 的 clusterid.z 改为 ctaid.z。风险低：需保证 numCTAs 为 2 的幂（cluster 沿 X 展开）时 udiv 可被优化，但常数除法对 ptxas 友好且与 cluster 语义等价（clusters launched with dimensions (numCTAs,1,1)）。",
+      "tags": [
+        "performance",
+        "low-risk",
+        "nvidia-backend",
+        "tritongpu-to-llvm"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 third_party/nvidia 的 Utility.cpp（NVIDIA 专属 TargetInfo 的 llGetPid）与 NVVM 相关 lowering，Ascend 不使用。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Simplify fixed-cluster program IDs (#11790)\n\n`%clusterid.x` expands in `ptxas` into a general unsigned division of\nthe CTA ID by the runtime cluster width. One observed expansion contains\n26 SASS instructions:\n\n<details>\n<summary>Before: expansion of <code>%clusterid.x</code></summary>\n\n```sass\nCS2R.32 R10, SR_CgaSize;\nIMAD R10, R10, -0xa0, RZ;\nR2UR UR8, R10;\nLDCU UR8, c[0x0][UR8+0x2a0];\nS2UR UR9, SR_CTAID.X;\nI2FP.F32.U32 R10, UR8;\nUIADD3 UR4, UPT, UPT, URZ, -UR8, URZ;\nMUFU.RCP R8, R10;\nI2FP.F32.U32.RZ R9, UR9;\nVIADD R8, R8, 0xfffffffe;\nFMUL.RZ R6, R8, R9;\nF2I.U32.TRUNC.NTZ R6, R6;\nR2UR UR6, R6;\nUIMAD UR4, UR4, UR6, UR9;\nI2FP.F32.U32.RZ R9, UR4;\nUIADD3 UR4, UPT, UPT, URZ, -UR8, URZ;\nFMUL.RZ R8, R8, R9;\nF2I.U32.TRUNC.NTZ R8, R8;\nR2UR UR5, R8;\nUIADD3 UR5, UPT, UPT, UR6, UR5, URZ;\nUIMAD UR4, UR4, UR5, UR9;\nUISETP.GE.U32.AND UP0, UPT, UR4, UR8, UPT;\nUSEL UR4, URZ, 0xffffffff, !UP0;\nUISETP.EQ.U32.AND UP0, UPT, UR8, URZ, UPT;\nUIADD3 UR4, UPT, UPT, UR5, -UR4, URZ;\nUSEL UR25, UR4, 0xffffffff, !UP0;\n```\n\n</details>\n\nFor `num_ctas == 2`, the replacement is a CTA-ID read and a right shift:\n\n```sass\nS2UR UR7, SR_CTAID.X;\nUSHF.R.U32.HI UR25, URZ, 0x1, UR7;\n```"
+    },
+    {
+      "sha": "d61ec7f6d033697a88afe257bf496f60896c7eb6",
+      "comment": "NVIDIA 后端性能优化：为 64 位整数 min/max 的全 warp 归约引入 redux.sync 实现，取代原先不可用（matchReduxKind 直接排除 width>32）。实现思路（见注释）：高 32 位以原符号性归约（signed/unsigned），低 32 位只在 high == winningHigh 的 lane 上参与 unsigned 归约（min 时非 winner 置 0xFFFFFFFF，max 时置 0），再拼回。改动位于 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/TargetInfo.cpp 的 matchReduxKind 与 warpReduce。测试包括 test/Conversion/reduce_to_llvm.mlir 的 @reduce_wide_minmax（TERNARY 变体）与 python/test/unit/language/test_core.py 中针对 int64/uint64 min/max 的 tie-breaking 边界值集（覆盖 high word 相等的低位比较、0x80000000 边界等）。风险中等：对 64 位归约的正确性要求高（signedness 语义易错），但新增了较全面的边界测试。",
+      "tags": [
+        "feature",
+        "performance",
+        "medium-risk",
+        "nvidia-backend",
+        "reduction"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 third_party/nvidia 的 TargetInfo.cpp（NVIDIA 专属 warpReduce / matchReduxKind），Ascend 不使用 TargetInfoBase 的 NVIDIA 实现。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Use redux for 64-bit integer min/max reductions (#11788)\n\nLower full-warp 64-bit integer min/max reductions using two 32-bit\n`redux.sync` operations. Reduce the high words with the original\nsignedness, then reduce the low words only from lanes whose high word\nwon.\n\nIdea:\n```cpp\nhigh = uint32_t(x >> 32);\nlow  = uint32_t(x);\n\nwinningHigh = redux_max(high);  // Original signedness.\neligibleLow = high == winningHigh ? low : 0;\nwinningLow  = redux_umax(eligibleLow);\n\nresult = (uint64_t(winningHigh) << 32) | winningLow;\n```"
+    },
+    {
+      "sha": "87b82772805aa07cdc484a3242f6bb2fd4cb8ad0",
+      "comment": "Interpreter 正确性修复：host 端 TensorDescriptor 若以 round_f32_to_tf32=True 创建，TMA 单元会对加载的每个 f32 做 round-to-nearest-even 到 10 位尾数（Inf/NaN 保持）的处理，而 interpreter 在 _implicit_cvt 中丢失了该标志，导致 TRITON_INTERPRET=1 下的数值与设备不一致。修复方式：在 TensorDescHandle 中保留 round_f32_to_tf32，新增 _round_f32_to_tf32（numpy 实现），在 create_descriptor_load 中当 flag 为真且元素类型为 f32 时进行舍入；gather 复用该路径；in-kernel 的 tl.make_tensor_descriptor 不参与舍入。测试从 python/test/unit/cuda/test_tma_descriptor.py 迁移到 python/test/unit/language/test_tensor_descriptor.py 并标记 @pytest.mark.interpreter()，覆盖 tie-to-even、tie-up、mantissa 进位及 NaN/Inf 用例。风险低：仅影响 interpreter 路径。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "interpreter",
+        "tensor-descriptor"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "影响 python/triton/runtime/interpreter.py，属于 Ascend 的必然影响路径（AscendInterpreterBuilder / AscendReduceOps / AscendScanOps 继承 InterpreterBuilder 相关协议）。本 commit 修改了 TensorDescHandle 的 __init__ 签名（新增 round_f32_to_tf32 参数）与 create_descriptor_load 的行为。若 triton-ascend 的 ascend_interpreter.py 中构造 TensorDescHandle 或覆写 create_descriptor_load，需要同步适配新签名/行为，否则 CPU 解释执行 Ascend kernel 可能因参数不匹配而失败。",
+        "testing": "triton-ascend 的 interpreter 测试（如 third_party/ascend/unittest/ 或 python/test 下 Ascend interpreter 相关用例）需验证新签名兼容，并建议补充 round_f32_to_tf32 在 Ascend interpreter 下的行为测试（如果 Ascend 支持 descriptor 路径）。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/backend/ascend_interpreter.py",
+          "third_party/ascend/unittest/pytest_ut/ (interpreter 相关测试)"
+        ]
+      },
+      "message": "[INTERPRETER] Honor round_f32_to_tf32 on host tensor descriptor loads (#11751)\n\nA host `TensorDescriptor` created with `round_f32_to_tf32=True` makes\nthe TMA unit round every f32 it loads to tf32 (round to nearest even at\n10 mantissa bits, Inf and NaN left alone), and\n`RewriteTensorDescriptorToPointer` inlines the same arithmetic for\ntargets without TMA. The interpreter copies the flag in `_init_args_hst`\nand then drops it: `_implicit_cvt` builds the `TensorDescHandle` without\nit and `create_descriptor_load` returns the raw bits, so under\n`TRITON_INTERPRET=1` such a kernel sees different values than on the\ndevice.\n\nThis keeps the flag on the handle and rounds in `create_descriptor_load`\nwhen it is set and the element type is f32. Gathers reuse that path.\nIn-kernel `tl.make_tensor_descriptor` never rounds, matching the pointer\nrewrite.\n\nThe new test covers a tie that rounds to even, a tie that rounds up, a\nmantissa that carries out into the exponent, and NaN/Inf. It passes on\nan RTX PRO 6000 (sm_120) and under the interpreter with this change;\nwithout it the interpreter run fails on 13 of 16 elements.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/runtime/interpreter.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "bd536ba3f2b7346b9eae2ae2b3baf5997dc55482",
+      "message": "[BACKEND][NVIDIA] Fix histogram multi-cta (#11775)\n\n1. We need to insert a cluster barrier\n2. A minor optimization for fully duplicated ctas by skipping the\ncluster barrier\n3. Another minor optimization by skipping accumulation of ctas that are\nduplicated with others in a partially duplicated cta layout",
+      "comment": "NVIDIA 后端 + Analysis 正确性修复：修复 histogram 的 multi-CTA 语义。(1) lib/Analysis/Allocation.cpp 的 hasCrossCTAScratch 为 HistogramOp 增加判定：通过 toLinearLayout 检查 block 维度的 free variable mask 是否等于 block dim size - 1，即输入是否被跨 CTA split；(2) lib/Analysis/Utility.cpp 的 needsClusterBarrier 为 HistogramOp 返回 hasCrossCTAScratch；(3) lib/Conversion/TritonGPUToLLVM/HistogramOpToLLVM.cpp 的 computeHistogram 增加 numCTAsToCombine/ctaBroadcastMask/sourceOp 参数：当需要跨 CTA 合并时插入 targetInfo.clusterBarrier，并用 loadDShared 逐 CTA 读取（跳过 ctaBroadcastMask 中的重复 CTA，即被复制的 CTA 不累积），累加得到最终直方图；(4) gluon 测试 test_histogram 增加 num_ctas 参数及 CGA layout 组合（Hopper+ 才跑）。同时新增大量 lit 测试覆盖 split/replicated 输入与结果的四种 CTA 组合，及 membar-cluster.mlir 中 scratch 复用场景的 cluster barrier 需求。风险中等：跨 CTA 同步语义修改、histogram 结果的聚合路径变化，属于功能修复但语义边界较多。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "nvidia-backend",
+        "analysis",
+        "histogram",
+        "multi-cta"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。lib/Analysis/Allocation.cpp 与 lib/Analysis/Utility.cpp 的改动是为 HistogramOp 增加特殊的 CTA 跨 CTA 判定，lib/Conversion/TritonGPUToLLVM/HistogramOpToLLVM.cpp 属于 NVIDIA/AMD 使用的 TritonGPUToLLVM 路径。虽然 include/triton/Analysis 与 lib/Analysis 位于 Ascend 的可能影响路径（如 Ascend 复用 Allocation/Utility 分析），但本 commit 仅对 HistogramOp 这一 Triton 核心 op 增加了 CTA 语义判定，仅当 Ascend 复用 hasCrossCTAScratch/needsClusterBarrier 时会受同步；Ascend 无 cluster 概念，实际不影响。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "0f77b093091bb773673374370a77c6a65526c3aa",
+      "comment": "核心 Conversion 重构：unsigned mulhi（MulhiUIOp）不再通过 TargetInfo::getMulhiFuncName 调用外部 libdevice 函数（__nv_umulhi/__nv_umul64hi、__ockl_mul_hi_u32/u64），而是降级为宽整型乘（zext 到 2×bitWidth）、右移、trunc 的原生 LLVM 运算，使 LLVM 能进行常量折叠和 known-bits 优化。相应地从 TargetInfoBase 中移除 getMulhiFuncName 纯虚方法，并删除 nvidia/amd TargetInfo 中的实现；populateElementwiseOpToLLVMPatterns 签名去掉 targetInfo 参数（同步更新 NVIDIA/AMD 调用点）。新增 python/test/unit/language/test_core.py 的 test_umulhi_known_bits（校验 masked/非 masked 场景下 PTX 无 mul.hi.、AMD 无 mul_hi），并强化 test_umulhi 对生成汇编的断言。风险中等：移除 TargetInfoBase 纯虚方法属于接口契约变更，会破坏所有实现该接口的后端（编译期），但 in-tree NVIDIA/AMD 已同步，Ascend 不实现 TargetInfo 所以不受影响；MulhiUIOp 的 lowering 语义变化会影响所有复用 ElementwiseOpToLLVM 的路径。",
+      "tags": [
+        "refactor",
+        "performance",
+        "medium-risk",
+        "tritongpu-to-llvm",
+        "interface",
+        "target-info-base"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。虽然 include/triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h 属于 Ascend 的\"绝不影响\"路径（Ascend 不实现 TargetInfoBase），本次移除 getMulhiFuncName 纯虚方法不会破坏 Ascend 编译。lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp 的 MulhiUIOp lowering 变更走的是 TritonGPUToLLVM 路径，Ascend 用 TritonToLinalg 替代。若 Ascend 在处理 tt.mulhi 算子时复用上游的 MulhiUIOp 语义（在 TritonToLinalg 中需要与上游语义一致），则需留意语义等价性，但通常 Ascend 有独立的 mulhi 实现。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[GPU] Expose unsigned mulhi to LLVM optimization (#11768)\n\nLower unsigned 32-bit and 64-bit multiply-high through a double-width\nLLVM multiply, shift, and truncation so LLVM can fold constants and\nknown bits."
+    },
+    {
+      "sha": "e1fd22a017e2f50b988c452dfa19bdee724fe103",
+      "comment": "Proton 生命周期修复：ROCprofiler-SDK 会在进程 shutdown 期间投递缓冲的 profiling 记录，而 Proton 此前允许其 profiler 状态在投递完成前被销毁，导致 late callback 访问已释放状态（表现为 exit 成功/teardown 挂起/heap corruption/SIGSEGV/SIGABRT）。修复方式：在 RocprofilerRuntimeState 中记录 rocprofiler_client_finalize_t 与 client_id，在 doStart 时通过 std::call_once 注册 atexit(finalizeRocprofilerClient)，在 Proton 静态析构前主动调用 SDK 的 client finalize 完成 drain 并阻止 SDK 的 atexit 再次 finalize。新增 subprocess 回归测试 test_rocprofiler_process_exit_without_finalize，启用 MALLOC_PERTURB_ 使悬空状态访问稳定暴露（无修复 10/10 失败，有修复 60/60 通过）。风险中等：涉及进程退出时序与 atexit 顺序，可能与其他依赖 atexit 的生命周期管理交互，但仅在 HIP + rocprofiler 后端路径生效。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "proton",
+        "amd-backend",
+        "profiler"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 third_party/proton（跨后端 profiler 框架），Ascend 默认不启用 Proton，其 ROCprofiler 路径为 AMD 专属。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Proton][AMD] Finalize the ROCprofiler client before process teardown (#11559)\n\nThis reduces flakiness for Proton's rocprofiler-sdk shutdown.\n\nROCprofiler-SDK can deliver buffered profiling records during process\nshutdown. Proton previously allowed its profiler state to be destroyed\nbefore that delivery was complete, so late callbacks could access freed\nstate.\n\nThe resulting failures were timing- and allocator-dependent: affected\nprocesses could exit successfully, hang during teardown, report heap\ncorruption, or terminate with `SIGSEGV`/`SIGABRT` after profiling had\notherwise completed successfully. Explicit `proton.finalize()` often hid\nthe issue by draining pending records earlier, but process exit without\nexplicit finalization remained unsafe.\n\nThis change makes Proton’s lifetime agree with the ROCprofiler-SDK\nclient lifecycle: all callbacks required during terminal SDK shutdown\ncomplete while their Proton destinations remain valid. It also adds\nsubprocess coverage for SDK-driven shutdown, using heap perturbation to\nreliably expose stale- state access that would otherwise depend on\nallocator reuse and timing.\n\nThe included regression test runs profiling in a subprocess, queues GPU\nwork, and deliberately exits without synchronizing the device or calling\n`proton.finalize()`. This leaves rocprofiler-sdk responsible for\ncompleting outstanding work and delivering pending callbacks during its\nprocess-exit shutdown sequence, which is where the lifetime bug occurs.\n\nThe test also enables glibc’s `MALLOC_PERTURB_` debugging behavior.\nWithout it, freed Proton storage often retains enough of its previous\ncontents for the invalid callback to appear to work, making the bug\nhighly sensitive to allocator reuse and timing. I initially used a\nsimpler test that reproduced the original `SIGSEGV`, but only once\nacross many runs, so it was not reliable enough to demonstrate that the\nfix changed the behavior rather than merely getting lucky.\n\nWith heap perturbation, freed allocations are overwritten with a\nrecognizable byte pattern, making callbacks into destroyed Proton state\nconsistently fail instead of accidentally succeeding. Running the test\nfor 10 subprocesses without the fix in this PR resulted in 10 failures\n(non-termination during teardown, at least not within a generous\ntimeout). With the fix, 60 out of 60 runs exited successfully (well\nunder timeout)."
+    },
+    {
+      "sha": "dd34455fcfce44d804a719b3643a3bff59d0d033",
+      "message": "Archive 2025 conference. Add details for 2026 conference. (#11715)\n\n<!---\nThe core Triton is a small number of people, and we receive many PRs\n(thank\nyou!).  To help us review your code more quickly, **if you are a new\ncontributor (less than 3 PRs merged) we ask that you complete the\nfollowing\ntasks and include the filled-out checklist in your PR description.**\n\nComplete the following tasks before sending your PR, and replace `[ ]`\nwith\n`[x]` to indicate you have done them.\n-->\n\n# New contributor declaration\n- [ ] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [ ] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [ ] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [ ] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [ ] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)\n\n---------\n\nCo-authored-by: peterbell10 <peterbell10@openai.com>",
+      "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 triton-ascend。",
+      "tags": [
+        "feature",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "63eacee4d696b63149789befdde6f18e516334b9",
+      "comment": "AMD 后端并发安全修复：AOT cache 加载在 AMD 上线程不安全，Parallel AOT-cache 反序列化可能在 Python GIL 与 glibc 的 _dl_load_write_lock 之间产生 ABBA 死锁（ctypes.CDLL 调 dl_iterate_phdr 释放 GIL 但 glibc 回调进入 Python 需重新获取 GIL，而另一线程在持有 GIL 时调用 hipModuleLoadData 阻塞在 _dl_load_write_lock）。修复方式：将原来用 ctypes.CFUNCTYPE 实现的 Python 回调替换为编译进 triton._C.libtriton.amd 的原生 nanobind 回调（新增 third_party/amd/python/dylib_utils.cc/.h，find_loaded_library 在 py::gil_scoped_release 下通过 dl_iterate_phdr 遍历），driver.py 的 _find_already_mmapped_dylib_on_linux 改为调用 amd.find_loaded_library。CMakeLists 添加 dylib_utils.cc，triton_amd.cc 调用 init_triton_amd_loader。新增 test_libhip_lookup.py 测试。风险低：仅改变实现方式，语义等价（返回首个 basename 包含指定名称的已加载库路径）。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "amd-backend",
+        "build",
+        "concurrency"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 third_party/amd（CMakeLists、backend/driver.py、python/dylib_utils.cc/.h、triton_amd.cc），纯 AMD/HIP 专属路径，Ascend 不使用。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Avoid GIL deadlock during HIP library lookup (#11265)\n\n## Summary\n\nLoading of AOT cache is thread-unsafe on amd. \nAvoid a ROCm startup deadlock by replacing Triton’s dl_iterate_phdr\npython\ncallback with a fully native callback compiled into the existing\ntriton._C.libtriton.amd extension.\n\nThis avoids entering Python while glibc holds its dynamic-loader lock\nwithout\nintroducing a separately runtime-compiled helper.\n\nAnother approach would be to add native callback that is compiled in\nruntime, but this seems a b it cleaner.\n\n## Root cause\n\nParallel AOT-cache deserialization can create an ABBA deadlock between\nPython's GIL and glibc's dynamic linker lock `_dl_load_write_lock`:\n\n- Triton calls `dl_iterate_phdr()` through `ctypes.CDLL`, which releases\nthe\nGIL for the native call. glibc acquires `_dl_load_write_lock` and\ninvokes\nTriton's `ctypes.CFUNCTYPE` callback while still holding it. Entering\nthat\n  Python callback requires reacquiring the GIL.\n\n- Concurrently, another Python thread calls `hipModuleLoadData()`\nthrough a\n  native extension that has not released the GIL. HIP/HSA calls\n`dl_iterate_phdr()` and blocks on `_dl_load_write_lock` while that\nthread\n  still owns the GIL.\n\nThis leaves one thread holding `_dl_load_write_lock` and waiting for the\nGIL,\nand the other holding the GIL and waiting for `_dl_load_write_lock` (as\nshown in gdb and pyspy trace)\n\n---------\n\nSigned-off-by: nemanjaudovic <nudovic@amd.com>\nCo-authored-by: Lei Zhang <antiagainst@gmail.com>"
+    },
+    {
+      "sha": "7369aa3d9b0fae7134bf47b16d83876b09ef8e9f",
+      "comment": "意图与实现：(1) third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/LoadStoreOpToLLVM.cpp 新增 isDefaultCachePolicy()，用于判断 cache policy 是否等价于默认策略（modifier 为 NONE 或等于对应默认 CA/WB，legacy eviction 为 NORMAL，detailed policy 的 L1/L2 均为 NONE 或 EVICT_NORMAL 且 L2 prefetch 为空且 L2 fraction==1.0）；当 load 无 mask 且 policy 默认、store 无 threadPred 且无 llMask 且 policy 默认时，直接发射 LLVM b.load/b.store（向量情形经 vec_ty/packLLVector 处理），跳过内联 PTX 路径，让 LLVM 自行优化寻址与整数扩展；非默认策略仍走原 PTX ASM 路径。(2) 修复 createCachePolicy 中 fractional L2 字面量：若格式化结果不含 '.'/'e'/'E'（例如整数 1），则追加 '.0'，保证 PTX 浮点字面量合法。(3) 将两处 valueElemNBits/dtsize 的 std::max(8,...)/std::max(1,...) 夹取移除，因为类型已被 verifier 保证 >=8bit。(4) lib/Dialect/Triton/IR/Ops.cpp 把原 verifyAtomicLoadStoreType 重命名并提升为通用 verifyLoadStoreType，并接入 LoadOp::verify/StoreOp::verify，禁止 i1/i4 等 sub-byte 及非 int/float 元素。\n\n风险与影响：本变更是 NVIDIA 后端访存 codegen 的行为性变更，直接影响生成的 PTX/最终 SASS。对依赖 cache modifier 的路径，测试相应放宽/调整（.ca/.wb 默认不再单独断言）。verifyLoadStoreType 收紧是潜在的兼容性风险：任何此前能通过 verifier 的 sub-byte 访存（如 !tt.ptr<i1>）现在会报错，test/TritonGPU/combine.mlir 中 assert 用例已从 i1 改为 i8+cmpi。移除 max(8,...) 夹取后，若有路径绕过了 verifier（如直接由 pass 构造 IR），可能产生 0 字节/错误宽度访问，需依赖 verifier 兜底。整体属于 performance + refactor 混合，风险中等偏低。",
+      "tags": [
+        "performance",
+        "refactor",
+        "medium-risk",
+        "nvidia-backend",
+        "triton-ir",
+        "load-store-lowering"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。核心新逻辑（isDefaultCachePolicy、useNativeLoad/useNativeStore 发射 LLVM load/store、fractionStr 补 '.0'）全部位于 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/LoadStoreOpToLLVM.cpp，属 NVIDIA 专属更低层，Ascend 不加载也不调用（Ascend 走 TritonToLinalg，完全跳过 TritonGPU→LLVM 与内联 PTX 生成）；AMD 侧 third_party/amd/lib/TritonAMDGPUToLLVM/LoadStoreOpToLLVM.cpp 的 max(8,...) 移除同样与 Ascend 无耦合。lib/Dialect/Triton/IR/Ops.cpp 的新增 verifyLoadStoreType 位于 TTIR 方言层（“必然影响”路径），但其语义是把原 atomic load/store 已有的类型约束（int/float、bitwidth>=8）提取复用给 LoadOp/StoreOp，仅是更严格的 verifier，不改变 Op 定义、属性或 builder 签名，Ascend 常规 int8/int16/int32/fp16/fp32 访存不受影响，且 AscendBackend 复用的 AST→TTIR 前端产出的访存类型均满足该约束。",
+        "testing": "无影响。测试改动均在 python/test/unit/language/test_core.py、test/Conversion/tritongpu_to_llvm.mlir、test/Conversion/tritongpu_to_llvm_blackwell_256bit.mlir、test/Triton/invalid.mlir、test/TritonGPU/combine.mlir，为 NVIDIA/PTX 专属断言或通用 verifier 诊断测试；Ascend 不使用 TritonGPUToLLVM/NVIDIA PTX 路径，也未使用 sub-byte 访存。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Lower unpredicated global loads and stores through LLVM (#11770)\n\nEmit LLVM loads and stores for unpredicated global accesses with\ndefault-equivalent cache policies so LLVM can optimize addressing and\ninteger extensions. Ensure integral L2 cache-policy fractions use PTX\nfloating-point literals.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "lib/Dialect/Triton/"
+        ],
+        "recommend_refresh": true
+      }
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

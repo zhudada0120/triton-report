@@ -1,0 +1,376 @@
+{
+  "date": "2026-09-15",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-09-16T02:08:03.853620+08:00",
+  "daily_summary": "当日变更集中在 Ascend 后端两大块：(1) DynamicCVPipeline (ssbuffer) 稳定性修复密集——offset 缓存生命周期、sync 插入点、tensor iter_args 回退、block_id 混用、memeffects 与黑名单维护等；(2) 编译器选项/语言清理——libdevice 守卫条件、SIMT 优化选项重命名与恢复、SIMT 下 NPU_DEVICE_LIMIT 透传、TritonToUnstructure/ControlFlowOpt 指针语义修复、以及若干测试与废弃 API 移除。整体方向是收敛动态 CV 流水线的边界条件正确性，同时清理已被替换的旧选项与旧 sync API，保持后端与上游接口同步。",
+  "test_impact_summary": "本日多个 commit 直接新增或修改了测试看护：TritonToUnstructure 引入了 offset 缓存生命周期的 gtest 单测（通过 ELF --wrap 观测 BlockArgument 释放）与 nested pointer 回归 lit 测试；AnalyzeDataFlow 增加 update-before-use 的 lit 用例（含正向 scf.for/scf.while 与反向同 block_id 场景）；ControlFlowOpt 增加 same-base tensor pointer provenance 的 lit 用例；TritonToUnstructure 增加 opaque while backedge lit 与 pytest；SIMT/编译器选项变更更新了 test_compiler_layout_memory_contract.py 与 test_layout_memory_895_closure_differential.py 的 argv 断言；CI workflow 名称与 ctest 调用更新。同时 libdevice 守卫条件由 SIMT 开关改为 A5 目标判定，属于对编译期 static_assert 行为的语义变更，现有 libdevice 测试（如存在）需覆盖 A5/non-A5 分支；废弃选项与 API 移除（disable_size_align_for_cast 恢复、simt_reorder_instruction 废弃、sync_block_all/set/wait 删除）需要确认下游用例/示例未再引用旧名。总体看护强度提升，尤其是指针与流水线边界类回归被显式固化为 lit/gtest/pytest 三层，建议后续将这批复现用例纳入常规 CI 门禁。",
+  "commits": [
+    {
+      "sha": "c808dd9a6e7a41fcbd884e1a65cd1f560c1c5df4",
+      "comment": "libdevice 守卫条件调整：将仅 A5 支持函数的 `not _is_libdevice_simt_enabled(_semantic)` 改为 `not _is_a5_target(_semantic)`，语义从“SIMT 开关未开”变为“非 A5 目标即报错”，更贴近硬件实际支持；同时删除 fast_exp2f。变更仅涉及 third_party/ascend/language/cann/libdevice.py，不影响编译流水线结构，但改变了 simd/非 A5 路径的 static_assert 触发条件，若 _is_a5_target 判定与 arch 配置不一致，可能导致原本可编译的 simd 用例在 A5 上误报或反之。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "low-risk",
+        "ascend-backend",
+        "language-extension"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "守卫条件从 SIMT 开关切换为 A5 目标判定，改变了 libdevice 函数在 A5/非 A5 下的编译期行为；现有的 libdevice 相关用例需要确认是否覆盖 A5 目标与 simd 模式的组合，删除 fast_exp2f 也需确认无引用。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/ (libdevice 相关用例)",
+          "third_party/ascend/language/cann/libdevice.py",
+          "third_party/ascend/unittest/Conversion/ 中涉及 A5/simt 分支的 lit"
+        ]
+      },
+      "message": "[Libdevice](fix) Remove redundant negative libdevice guards\n\nReplace the negative libdevice-simt guards (`not\n_is_libdevice_simt_enabled`) with target checks (`not _is_a5_target`)\nfor all functions that are only supported on the A5 target, so the\nguard reflects the actual hardware support instead of the SIMT toggle.\n\nCherry-pick of 18f783958 ([Libdevice](fix) Remove redundant negative\nlibdevice guards, PR #2066) rebased onto upstream/main after the\nlibdevice interface rework (#1871, #1952, #1889)."
+    },
+    {
+      "sha": "fd13dfeea4b2f0881000eb90a5662cc6dc134785",
+      "comment": "修复 TritonToUnstructure 中 offsetMap 的陈旧缓存命中问题：replacePtrArguments 在擦除旧 IR 前未清理以旧 Value 为 key 的 offsetMap，后续指针重建可能复用已释放 Value 地址并读到陈旧 offset，导致 rank 断言。改为将旧 op 移入 detached Block（retiredOps）而非立即 eraseOp，并在 walk 结束后 offsetMap.clear()，保持被替换 Value 存活至缓存失效。同时新增 OffsetCacheLifetimeTest（通过 ELF --wrap 观测 BlockArgumentImpl 释放）与 nested_pointer_retirement.mlir 回归，并更新 CI 以运行该 ctest。风险在于 retiredOps 会延迟旧 IR 释放，若存在其他依赖旧值立即失效的逻辑需评估；但整体是正确性修复。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "ascend-backend",
+        "conversion",
+        "test"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "已新增 gtest 单测（TestTritonOffsetCacheLifetime）与 lit 回归（nested_pointer_retirement.mlir），并在 CI 中加入 ctest 调用；属于本 commit 自带的看护增强。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/offset_analysis_ut/",
+          "third_party/ascend/unittest/Conversion/General/TritonToUnstructure/",
+          ".github/workflows/integration-tests-ascend.yml"
+        ]
+      },
+      "message": "[TritonToUnstructure](fix) prevent stale offset-cache hits (#2078)\n\n* [TritonToUnstructure](fix) clear offset cache before erasing IR\n\nreplacePtrArguments deletes the old region while retaining offsetMap entries\nkeyed by its Values. Subsequent pointer reconstruction can reuse those Value\naddresses and consume stale offset information, causing intermittent rank\nassertions in TritonToUnstructure.\n\nClear the map before erasing the old operation so replacement IR is analyzed\non demand.\n\nSigned-off-by: lichangdongtw <68023558+lichangdongtw@users.noreply.github.com>\n\n* [TritonToUnstructure] Preserve offset-cache lifetime and add regressions\n\nSigned-off-by: lichangdongtw <68023558+lichangdongtw@users.noreply.github.com>\n\n---------\n\nSigned-off-by: lichangdongtw <68023558+lichangdongtw@users.noreply.github.com>"
+    },
+    {
+      "sha": "cea41e6f593cf42b38d2d21e78e425a090d2e1d7",
+      "comment": "ssbuffer DynamicCVPipeline 修复：MergeSmallBlockPass 的 sitofp-subf-mulf 模式合并由“首次运行即标记/合并”改为“通过 kMergeSmallBlockFirstRunDone 属性标记首次运行并跳过，仅在第二次运行时执行合并”；同时新增 matchSIToFPSubMulPattern / markSubBlockOps 拆分，RemoveAttributes 增加该属性清理；InterCoreTransferAndSync 中 Nd2NzNormalize 与 handleVectorToCube 的 sync 插入点由 origDefOp 改为 getSubBlockStartEnd(...).second（subBlockEnd），并为新建 op 透传 subBlockId。修复目标是 sync 从 producer 移到 subBlockEnd，避免在首次 pass 运行就对已被后续 pass 改写的块做合并标记导致 sync 位置错误。风险在于依赖 pass 调度顺序（两次运行）与属性清理的完备性。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "ascend-backend",
+        "dynamic-cv-pipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "修改了 pass 行为与 sync 插入点，且新增模块级属性；需要 DynamicCVPipeline 相关 lit 用例覆盖两次运行语义、subBlockEnd 位置与属性清理，现有 DynamicCVPipeline_ut 需确认覆盖。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/"
+        ]
+      },
+      "message": "[ssbuffer](fix) move sync from producer to subBlockEnd (#2155)"
+    },
+    {
+      "sha": "f0dc33ed8b4e8536b7f49f3a313ec043701073d0",
+      "comment": "ssbuffer 修复 getFixpipePointAfterProducer 的 fixpipepoint 判定：handleCubeToVector 中对 srcValue.getDefiningOp() 增加空值判断，避免 defining op 为空（如 block argument）时对 nullptr 调用 isa 导致的崩溃或误判。小改动，防御性修复。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "ascend-backend",
+        "dynamic-cv-pipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅增加空指针防护，不改变主路径行为；现有 DynamicCVPipeline 用例应可覆盖正常路径，边界（block argument 作为 srcValue）建议后续补充用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/"
+        ]
+      },
+      "message": "[ssbuffer](fix) fix getFixpipePointAfterProducer fixpipepoint (#2154)"
+    },
+    {
+      "sha": "4e762adac3da61ace6205b644a2427b92958e42b",
+      "comment": "ssbuffer 修复：新增 checkUpdateBeforeUse 检测“tensor iter_arg 的更新定义 op 在代码顺序上早于另一处直接使用且 block_id 不同”的情形，命中则设置 ERRCODE_IGNORED 回退；同时抽取 getTensorIterArgIndex 到 Common/Utils，使用 getLoopCarriedDefOp/getOpBlockId/isMainLoopOp/MainLoop 抽象替代手写 scf.for/while 解析，并移除 _jagged_dense_flash_attention_bwd_dk_kernel 黑名单。该变更提升回退判定的通用性与可读性，风险在于回退条件放宽（新增 update-before-use 触发 ERRCODE_IGNORED）可能使部分原本走 CV pipeline 的 kernel 回退到非 pipeline 路径，需关注性能回归。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "ascend-backend",
+        "dynamic-cv-pipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 update-before-use 判定逻辑并引入新的回退错误码路径，需要新增 lit 覆盖（已新增 check-update-before-use.mlir，含 scf.for/scf.while 正向与同 block_id 反向用例）；回退行为变化需评估现有 pipeline 用例与端到端性能用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AnalyzeDataFlow/",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/",
+          "third_party/ascend/unittest/pytest_ut/ (端到端)"
+        ]
+      },
+      "message": "[ssbuffer](fix) fallback when tensor iter_args update-before-use (#2031)\n\n* [ssbuffer](fix) fallback when tensor iter_args update-before-use\n\nSigned-off-by: m-everglow <2276518549@qq.com>\n\n* [ssbuffer](fix) remove blacklist kernels\n\nSigned-off-by: m-everglow <2276518549@qq.com>\n\n---------\n\nSigned-off-by: m-everglow <2276518549@qq.com>"
+    },
+    {
+      "sha": "723d4ff32d7f899aac231cef185a5deeeb5b0b7c",
+      "comment": "MergeVectorIfBlockPass 新增 isPureVectorOpGroup 校验，避免将含 CUBE 标签 op（或 sync op）的 block 合并进纯 VECTOR 的 block_id，从而产生混合 core_type 的 block_id。由于 block_id 同时被 ReorderOpsByBlockIdPass 用作调度键、被 DataDependencyAnalysis 用作 CUBE/VECTOR 边界，混合会导致下游 pass 行为异常。使用 getCoreTypeOfSimpleOpOrCf 递归控制流 op 体。风险低，属防御性收紧合并条件，可能减少可合并场景。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "ascend-backend",
+        "dynamic-cv-pipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "合并条件收紧后，原本会被合并的混合 core_type 场景现在跳过；需要 lit 用例验证“含 cube op 的 block 不合并进 vector block_id”以及“纯 vector 仍可合并”。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/"
+        ]
+      },
+      "message": "[ssbuffer](fix) avoid mixed core_type block_id in MergeVectorIfBlockPass (#2029)"
+    },
+    {
+      "sha": "18407ada5b734513df86b317a2e36bae458dbd79",
+      "comment": "MemoryEffectsTracker.collectOuterEffects 中移除 bufferization::AllocTensorOp 的 scoped Allocate 副作用，改为返回空列表。意图是让 alloc_tensor 不再被视为产生内存副作用，减少 MemoryDependenceGraph 中不必要的依赖边。风险在于若 alloc_tensor 实际影响 buffer 分配/别名，去掉 effect 可能使依赖分析过于乐观，需确认与后续 bufferization/别名分析的一致性。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "ascend-backend",
+        "dynamic-cv-pipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "副作用建模变化会影响 MemoryDependenceGraph 的依赖边与调度结果，需要 DependentAnalysis / DynamicCVPipeline 相关 lit 用例覆盖 alloc_tensor 前后的依赖关系。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/"
+        ]
+      },
+      "message": "[ssbuffer](fix) remove memeffects of alloc_tensor (#2077)\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>"
+    },
+    {
+      "sha": "3b4915e4274bedf7725d6747402670cfd156b904",
+      "comment": "从 MergeCubeBlock 的禁用合并 kernel 集合中移除 chunk_gated_delta_rule_fwd_kernel_h_blockdim64，从 PreCheckDisablePreload 黑名单中移除 _attn_fwd，让这两类 kernel 重新启用 cube 合并与预取下放。属配置/黑名单维护，风险是这些 kernel 之前被加入黑名单通常有具体问题背景，剔除需端到端验证稳定性与精度。",
+      "tags": [
+        "chore",
+        "medium-risk",
+        "ascend-backend",
+        "dynamic-cv-pipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "黑名单移除直接改变这些 kernel 的编译/调度路径，需要对应端到端用例（如 attention/delta rule 相关）回归验证精度与稳定性，可能需在 pytest_ut 中补充或复测。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/",
+          "third_party/ascend/unittest/kernels/"
+        ]
+      },
+      "message": "[ssbuffer](fix) remove blacklist kernels (#2095)\n\nSigned-off-by: m-everglow <2276518549@qq.com>"
+    },
+    {
+      "sha": "6f4309a14751824b4313a6491c8f231fc7cf3574",
+      "comment": "恢复 disable_size_align_for_cast 选项：在 linalg_to_bin_enable_npu_compile_A2_A3 中按 metadata 透传 --disable-size-align-for-cast，NPUOptions 新增字段，并从 _DEPRECATED_NPU_OPTIONS/_DEPRECATED_NPU_OPTION_DETAILS 中移除。意味着该选项从“被忽略”重新变为可用，可能影响 A2/A3 上 cast 相关内存布局与对齐。风险在于对照测试（如 layout/memory contract）需确认新 argv 与元数据传递正确。",
+      "tags": [
+        "feature",
+        "bugfix",
+        "medium-risk",
+        "compiler",
+        "ascend-backend"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "选项从废弃恢复为有效，改变了 A2/A3 编译 argv 与 NPUOptions 字段；test_compiler_layout_memory_contract.py 等需覆盖该选项为 None/True/False 时的 argv 透传。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "third_party/ascend/backend/compiler.py",
+          "third_party/ascend/backend/utils.py"
+        ]
+      },
+      "message": "[compiler](fix) restore disable_size_align_for_cast option (#1947)"
+    },
+    {
+      "sha": "65b6943d08741c7931261b49c696714aae591c7b",
+      "comment": "在纯 SIMT 路径 ttir_to_npubin 中，当 opt.compile_on_910_95 且 NPUUtils 报告有 device limit 时，向 bishengir-compile 传递 --custom-aic-number/--custom-aiv-number（来自 get_aicore_num/get_aivector_core_num）。使 SIMT 编译与 SIMD 路径一样遵循 NPU_DEVICE_LIMIT 限制，避免超配核心。风险是依赖 NPUUtils 的环境探测可用性，以及在无 device limit 环境下行为不变。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "compiler",
+        "ascend-backend"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 SIMT 路径的编译 argv 分支，且 test_compiler_layout_memory_contract.py 已加入 compile_on_910_95 参数；需要验证有/无 device limit 两种情况下的 argv 生成。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "third_party/ascend/backend/compiler.py"
+        ]
+      },
+      "message": "[compile](fix) pass NPU_DEVICE_LIMIT parameters on SIMT (#2113)"
+    },
+    {
+      "sha": "66fa2bea4ef6eb95254a072b52157ec0a10252a1",
+      "comment": "Ascend 后端编译选项清理与归一化。将 NPUOptions 的 enable_bishengir_simt_optimization(int) 重命名为 simt_optimization_mode，默认值由 000 改为 0000000，并在注释中明确该值按从右到左解析、bishengir-compile 默认为 900101；同时删除独立的 enable_simt_reorder_instruction 布尔项，将其语义合并进 simt_optimization_mode 的首位数字（910_95 纯 SIMT 路径下 simt-reorder-instruction 由该模式位控制）。_normalize_bishengir_simt_optimization_for_context 中的 option_name 与告警文案同步更新，ttir_to_npubin 的 argv 构造由 --enable-bishengir-simt-optimization / --enable-simt-reorder-instruction 改为单条 --simt-optimization-mode。向后兼容通过 utils.py 的 _DEPRECATED_NPU_OPTION_ALIASES 将旧名 enable_bishengir_simt_optimization 映射到新模式名，并把 simt_reorder_instruction 加入 _DEPRECATED_NPU_OPTIONS 与 _DEPRECATED_NPU_OPTION_DETAILS 给出忽略说明。改动集中在 AscendBackend 的选项层与 bishengir-compile 命令行契约，不触及编译阶段结构；风险点在于旧选项名到新选项名的 alias 是否覆盖所有解析入口，以及 simt_optimization_mode 位语义变化后旧配置（如 17）在新解释下含义是否等价——测试中已把 17 改为 1000017 表明存在语义差异，需确认用户侧迁移路径。",
+      "tags": [
+        "refactor",
+        "chore",
+        "low-risk",
+        "backend-compiler",
+        "ascend-backend"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "NPUOptions 字段重命名与删除直接改变了构造参数与 bishengir argv 期望值，现有 pytest_ut 中通过 SimpleNamespace/_make_opt 手动构造选项并断言 argv 的用例必须同步更新（已在本 commit 中修改 test_compiler_layout_memory_contract.py 与 test_layout_memory_895_closure_differential.py）。但仍需检查仓库内其它用例是否残留旧字段名引用，并建议为 deprecated alias（enable_bishengir_simt_optimization→simt_optimization_mode）与 simt_reorder_instruction 的忽略告警补充回归测试。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "third_party/ascend/unittest/pytest_ut/test_layout_memory_895_closure_differential.py",
+          "third_party/ascend/backend/utils.py (deprecated option alias 相关测试)",
+          "third_party/ascend/unittest/pytest_ut/ 中其它引用 NPUOptions 字段的用例"
+        ]
+      },
+      "message": "[compiler](chore) Rename enable-bishengir-simt-optimization option (#2060)\n\n* Rename AscendNPU-IR enable-bishengir-simt-optimization option\n\nRenamed enable-bishengir-simt-optimization option to simt-optimization-mode, removed individual option simt-reorder-instruction (implemented under simt-optimization-mode in AscendNPU IR)\n\n* Added changed options to deprecated lists\nSet up automatic alias for enable_bishengir_simt_optimization (to\nsimt_optimization_mode) and added simt_reorder_instruction to\ndeprecated option list\n\n---------\n\nCo-authored-by: Max <max.wang1@huawei.com>"
+    },
+    {
+      "sha": "13b69e8bc009b4309a744e4fff9a9afcb6210054",
+      "comment": "在 test_common.py 中新增 pytest_collection_modifyitems，为所有带 callspec 的用例添加 case_info(level=P0, type=Functional) 标记；其中保留/过滤逻辑被注释掉，因此当前效果是给全部参数化用例统一打 P0 标记。这会影响测试报告分级，若后续启用过滤逻辑可能改变执行集合。",
+      "tags": [
+        "test",
+        "chore",
+        "low-risk",
+        "test-infrastructure"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "直接影响测试收集与标记，所有参数化用例均被标为 P0/Functional；需确认测试报告/CI 分级策略是否与之一致，避免 P0 泛滥。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_common.py",
+          ".github/workflows/integration-tests-ascend.yml"
+        ]
+      },
+      "message": "[testcase](test) add mark for testcase (#2052)\n\n* add mark for testcase\n\nadd mark for testcase\n\n* add mark for testcase\n\nadd mark for testcase"
+    },
+    {
+      "sha": "6ef5f361d06dd2e2e172e9adb0fe18b7a90f4e97",
+      "comment": "从 third_party/ascend/language/cann/extension/aux_ops.py 移除已废弃的 sync_block_all/sync_block_set/sync_block_wait，并清理对应导入（_tensor_member_fn、custom_op 等）。属 NFC 清理，要求用户改用 al.sync_block_all/set/wait。风险是仍引用旧 API 的 kernel/示例会直接报错。",
+      "tags": [
+        "refactor",
+        "chore",
+        "low-risk",
+        "language-extension",
+        "ascend-backend"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "废弃 API 删除后，任何仍调用旧 sync_block_* 的测试/示例会失败；需要全局检索确认无引用，或在用例外做迁移。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/",
+          "third_party/ascend/language/cann/extension/",
+          "python/test/ (如涉及)"
+        ]
+      },
+      "message": "[tritonop](NFC) remove deprecated sync_block_all/set/wait from aux_ops.py (#1870)"
+    },
+    {
+      "sha": "c36fb3cb12db5ea9d1ffe322a3c5fd8e94ae5169",
+      "comment": "TritonToUnstructure 修复：在 shouldPreserveScalarPointers 中对 scf.while 增加对 yield operands 的 isOpaqueScalarPointerIfResult 检查，若 backedge 产生 opaque 标量指针则整体保留标量指针，避免 while 边界混用 i64 region 参数与指针 backedge。新增 scalar_pointer_while_if_backedge.mlir lit 用例与 test_scalar_pointer_control_flow.py 中的 pytest 参数化用例（steps/switch_at 组合，含 0/1/4 与越界 switch_at）。属正确性修复，风险是保留标量指针会改变后续 lowering 形态。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "ascend-backend",
+        "conversion",
+        "test"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "已新增 lit 与 pytest 回归覆盖 while+if backedge 场景；需确保新 pytest 在 NPU 环境下可运行并纳入 CI。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToUnstructure/",
+          "third_party/ascend/unittest/pytest_ut/test_scalar_pointer_control_flow.py"
+        ]
+      },
+      "message": "[TritonToUnstructure](fix) preserve opaque while backedges (#1949) (#2010)"
+    },
+    {
+      "sha": "9d0fd1ea0b3b2dc0cf5b3b64c40ce866ecb22193",
+      "comment": "TritonControlFlowOpt 修复：新增 ControlFlowRewritePolicy::shouldCacheRebuiltDecomposition 钩子，RewriteEnv::recordDecomposition 在策略允许时将 rebuiltValue 也作为分解缓存 key，使链式指针 producer 复用已有描述符；TensorPtrDecompose 覆写为仅当 hasValidLayout 且 hasScalarBase 时才缓存 rebuilt 值，避免将不透明 tensor-of-pointers 的 tensor.extract 暴露给 T2L。新增 if_tensor_ptr_same_base_chained_addptr lit 用例验证 chained addptr 的 PointerDescriptor 重建。风险在于策略默认返回 true 保持既有行为，但覆盖范围与缓存生命周期需谨慎。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "ascend-backend",
+        "conversion",
+        "test"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "已新增 lit 用例验证 same-base chained addptr 的分解缓存复用；需确认现有 TritonControlFlowOpt lit 用例在默认策略下不受影响。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonControlFlowOpt/scf_pointer_decouple.mlir",
+          "third_party/ascend/lib/TritonControlFlowOpt/"
+        ]
+      },
+      "message": "[ControlFlowOpt](fix) preserve same-base tensor pointer provenance (#2011)"
+    },
+    {
+      "sha": "41b7168434bd55bf65c35599f63275230ac4723e",
+      "comment": "cann 语言扩展 API 弃用与 _deprecated 行为修复。在 third_party/ascend/language/cann/extension/math_ops.py 中对 atan2、isfinited、finitef 三个算子添加 @_deprecated(replacement=...) 装饰，引导用户迁移到 triton.language.extra.cann.libdevice 中的对应实现。关键修复在 cann/utils.py 的 _deprecated：原先对 @jit 装饰的函数进行普通函数包装会导致 code generator 看不到 JITFunction，从而在 kernel 内 inline 时抛出 'Cannot call @triton.jit'd outside the scope of a kernel'，host 端 fn[grid](...) 也会因包装层丢失 JITFunction 类型而 TypeError。修复方式是在装饰时识别 JITFunction 实例，直接 warn(FutureWarning) 并写入 docstring 后原样返回不包装。改动范围小但语义清晰：弃用告警从调用期前移到装饰（import）期，代价是告警只出现一次。风险点在于 _deprecated 的 JITFunction 分支依赖 triton.runtime.jit.JITFunction 的导入与类型判断，若上游 JITFunction 的类层次或模块路径调整需同步；另外 `@_deprecated(...)` 位于 `@core._tensor_member_fn/@jit` 之上，装饰顺序决定了传入的是 JITFunction（jit 已应用），当前写法与之匹配。",
+      "tags": [
+        "feature",
+        "bugfix",
+        "low-risk",
+        "language-extension",
+        "ascend-backend"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "本次修复引入了一个新的可验证行为：对 JITFunction 输入，_deprecated 不再包装函数，因此被弃用的 @jit 函数必须仍能正常 inline 进 kernel 并且能在 host 侧以 fn[grid](...) 启动。这一行为在修复前是坏掉的，需要新增针对性测试防止回归；同时应验证 atan2/isfinited/finitef 调用时能触发 FutureWarning 且结果正确。",
+        "suggested_test_areas": [
+          "third_party/ascend/language/cann/utils.py (_deprecated 对 JITFunction 的处理)",
+          "third_party/ascend/language/cann/extension/math_ops.py",
+          "third_party/ascend/unittest/pytest_ut/ (语言扩展/弃用 API 相关用例，可新增 test_deprecated_jitfunction 类测试)"
+        ]
+      },
+      "message": "[API](feat) deprecate math_ops atan2 isfinited finitef (#1872)\n\n1. deprecate atan2 isfinited finitef in math_ops\n\n2. Fix _deprecated breaking @jit-decorated functions: wrapping a JITFunction\nin a plain function broke in-kernel inlining (the code generator no longer\nsaw a JITFunction and raised \"Cannot call @triton.jit'd outside of the\nscope of a kernel\" at compile time) and host-side launch (`fn[grid](...)`\nraised TypeError). For JITFunction inputs, _deprecated now warns once at\ndecoration time, appends the warning to the docstring, and returns the\nfunction unwrapped."
+    },
+    {
+      "sha": "22a5382e555bf5cb4aaf484768e14a5acf8589d6",
+      "comment": "DynamicCVPipeline 中 ssbuffer 同步点位置调整（把 wait-for-read 移到 sub-block 起始处）。改动分三层：(1) 公共工具层——把原先散落在 InterCoreTransferAndSync.cpp 内的静态 setSubBlockId 上移到 Common/Utils.h/.cpp 作为 CVPipeline::setSubBlockId 公共函数，MergeComputeBlockPass 改为调用该公共函数，消除重复实现；(2) 查询能力扩展——getSubBlockEnd 重命名为 getSubBlockStartEnd 并返回 {start, end} 对，遍历逻辑改为先定位首个匹配 targetSubBlockId 的 op 作为 start 再向后扩展 end；(3) 标签传播补强——在 MergeSmallBlockPass 中新增 markSubBlockIfMaskApplyPattern，识别 small VECTOR block 内 arith.sitofp→arith.subf→arith.mulf 的 mask-apply 模式（数据依赖链校验 subf/mulf 使用前一 op 的结果），匹配后对该 source block 与 target block 的所有 op 打上原 block id 的 kSubBlock 标记，以防后续 updateBlockId 改写 block_id 后丢失原语义；insertCubeToVectorTransfer 中把 vectorStartOp 的 sub-block 标签传播到 memspaceCastOp 与 toTensorOp；insertInterCoreSync 中把 consumerStartOp/consumerEndOp 的标签传播到 waitOpForRead/setOpForWrite；handleCubeToVector 中 consStart/newConsStart 改用 getSubBlockStartEnd(...).first。此外 PreCheckDisablePreload.cpp 移除了 kernel_sdpa_bwd_q 黑名单项。整体 affects ssbuffer + 跨核同步插入点的精确性，属 pipeline 语义微调，风险中等：标签传播遗漏或 start/end 选择错误会直接影响 DMA/同步的时序正确性。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "dynamic-cv-pipeline",
+        "ascend-backend",
+        "compiler-pass"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "同步点位置与 sub-block 标签传播属于编译期 IR 重写行为，若不被测试覆盖，错误只能在端到端 kernel 结果中暴露且难以定位。本次新增了 mask-apply 模式的标记逻辑与多处标签传播点，现有 DynamicCVPipeline_ut 是否覆盖这些路径不明确，建议补充针对 sub-block start/end 选择与标签传播的 lit/FileCheck 或 pytest 单测；PreCheckDisablePreload 黑名单移除也应验证 kernel_sdpa_bwd_q 在新配置下仍能正确编译运行。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/",
+          "third_party/ascend/unittest/Conversion/ (DynamicCVPipeline 相关 lit 测试)",
+          "third_party/ascend/lib/DynamicCVPipeline/SplitDataflow/InterCoreTransferAndSync.cpp (同步点插入验证)",
+          "third_party/ascend/lib/DynamicCVPipeline/ComputeBlockOpt/MergeSmallBlockPass.cpp (mask-apply 模式标记验证)"
+        ]
+      },
+      "message": "[ssbuffer](feat) move sync after small block (#2119)\n\n* [ssbuffer](feat) move sync after small block\n\n* [ssbuffer](fix) move waitOpForRead to subBlock start"
+    },
+    {
+      "sha": "945f6ebcca6ab8ff12b77fcdd03adbff15dc396e",
+      "message_revert_of": "a7a8285ffbd8c52bdbca1de85166bd93eb0d21a0",
+      "comment": "回退 #2125 的 Radix topk 2x 加速改动。回退范围包括：(1) graph-optimize pass 的 compile-on-910-95 选项——从 Passes.td 移除 compileOn91095 Option、从 GraphOptimizationOptions 移除 compileOn91095 字段、从 GraphOptimizationPass 移除该选项的传递与 runOnOperation 中基于该选项的 pre-graph greedy 重写块，同时移除对 Rules/FoldHistogramParking.h、Rules/NarrowUnsignedTensor.h 的 include 与 isNarrowUnsignedTensorCandidate/isFoldHistogramParkingCandidate 辅助函数；(2) Python 侧 _graph_optimize_kwargs 不再传 compile_on_910_95；(3) triton_ascend.cc 的 add_graph_optimize 绑定签名移除 compile_on_910_95 参数与默认值、移除 options.compileOn91095 赋值；(4) 删除 FoldHistogramParking.h（histogram 零值 parking 折叠）与 NarrowUnsignedTensor.h（u32 位宽收窄）两条规则实现；(5) 删除对应测试：graph-optimize-radix-topk-threshold.mlir lit 测试、test_histogram_parking.py、test_unsigned_tensor_narrowing.py，并改写 test_compiler_layout_memory_contract.py 中相关的 kwargs 期望。这是功能性回退，A5/910-95 上依赖这两条规则的 radix topk 优化路径重新失效，需评估是否因正确性/稳定性问题回退，以及后续以何种方式重新引入。",
+      "tags": [
+        "refactor",
+        "bugfix",
+        "medium-risk",
+        "triton-to-graph",
+        "ascend-backend",
+        "compiler-pass"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "回退删除了 3 个测试文件（test_histogram_parking.py、test_unsigned_tensor_narrowing.py 与一个 mlir lit 测试）以及 graph-optimize 的 compile-on-910-95 选项测试，相关功能的行为看护随之消失；同时 test_compiler_layout_memory_contract.py 中的 kwargs 断言被改写。需确认：(a) 是否有其它测试/工具脚本仍引用已删除的 compile_on_910_95 选项或 add_graph_optimize 旧签名；(b) 回退后原 Radix topk / histogram parking 路径是否有替代的端到端用例保留看护。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "third_party/ascend/unittest/Conversion/General/TritonToGraph/",
+          "third_party/ascend/triton_ascend.cc (add_graph_optimize 绑定签名相关用例)",
+          "third_party/ascend/backend/compiler.py (_graph_optimize_kwargs 调用方)"
+        ]
+      },
+      "message": "Revert \"[TritonToGraph](feat) speedup Radix topk by 2x (#2125)\" (#2178)\n\nThis reverts commit a7a8285ffbd8c52bdbca1de85166bd93eb0d21a0."
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

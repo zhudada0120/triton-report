@@ -1,4 +1,72 @@
 {
+  "41f45d986a882f88bb6d59ce9f3621559f8100e9": {
+    "date": "2026-09-15",
+    "msg": "[NVIDIA] Compute distributed shared addresses unconditionally (#11794)"
+  },
+  "a971fe42af31639b7cc99ffe6003523eda9307f5": {
+    "date": "2026-09-15",
+    "msg": "[AMD] Support GenericLinearLayout in FpToFpOp Conversion (#11791)"
+  },
+  "6387a19e69133ebc229cdf41039ffc785a9ad427": {
+    "date": "2026-09-15",
+    "msg": "[NVIDIA] Fix loading pointer elements from shared memory (#11771)"
+  },
+  "51593ac6b6da36d68627e4f0b90c77a15661be8b": {
+    "date": "2026-09-15",
+    "msg": "Relax broadcast layouts (#11759)"
+  },
+  "92ff4362dadb301b729395bad07a756dfb1c3cc7": {
+    "date": "2026-09-15",
+    "msg": "Fix operand layouts when absorbing view conversions (#11758)"
+  },
+  "b96d510c2047bfe33cd5943c4fff24f3517480a0": {
+    "date": "2026-09-15",
+    "msg": "[NVIDIA] Use predicate operands for masked async copies (#11789)"
+  },
+  "70ded9cd47397aebcca3494b54c96f953a90777f": {
+    "date": "2026-09-15",
+    "msg": "[OptimizeThreadLocality] Handle multi-use thread locality results (#11682)"
+  },
+  "58100bd95bd116f5c2baea1cf45a873b125fda13": {
+    "date": "2026-09-15",
+    "msg": "[LAYOUTS] Dispatch shared-layout lowering through `SharedEncodingTrait` (#11764)"
+  },
+  "38e38e7dc33822d0446e2db4c4024a2bf6929668": {
+    "date": "2026-09-15",
+    "msg": "[NVIDIA] Simplify fixed-cluster program IDs (#11790)"
+  },
+  "d61ec7f6d033697a88afe257bf496f60896c7eb6": {
+    "date": "2026-09-15",
+    "msg": "[NVIDIA] Use redux for 64-bit integer min/max reductions (#11788)"
+  },
+  "87b82772805aa07cdc484a3242f6bb2fd4cb8ad0": {
+    "date": "2026-09-15",
+    "msg": "[INTERPRETER] Honor round_f32_to_tf32 on host tensor descriptor loads (#11751)"
+  },
+  "bd536ba3f2b7346b9eae2ae2b3baf5997dc55482": {
+    "date": "2026-09-15",
+    "msg": "[BACKEND][NVIDIA] Fix histogram multi-cta (#11775)"
+  },
+  "0f77b093091bb773673374370a77c6a65526c3aa": {
+    "date": "2026-09-15",
+    "msg": "[GPU] Expose unsigned mulhi to LLVM optimization (#11768)"
+  },
+  "e1fd22a017e2f50b988c452dfa19bdee724fe103": {
+    "date": "2026-09-15",
+    "msg": "[Proton][AMD] Finalize the ROCprofiler client before process teardown (#11559)"
+  },
+  "dd34455fcfce44d804a719b3643a3bff59d0d033": {
+    "date": "2026-09-15",
+    "msg": "Archive 2025 conference. Add details for 2026 conference. (#11715)"
+  },
+  "63eacee4d696b63149789befdde6f18e516334b9": {
+    "date": "2026-09-15",
+    "msg": "[AMD] Avoid GIL deadlock during HIP library lookup (#11265)"
+  },
+  "7369aa3d9b0fae7134bf47b16d83876b09ef8e9f": {
+    "date": "2026-09-15",
+    "msg": "[NVIDIA] Lower unpredicated global loads and stores through LLVM (#11770)"
+  },
   "fe56d08b694285ad4ff923feaa2fdd2792ecb94d": {
     "date": "2026-09-14",
     "msg": "[AMD] Fix two-cluster BlockPingpong LDS race (#11765)"

@@ -1,4 +1,76 @@
 {
+  "c808dd9a6e7a41fcbd884e1a65cd1f560c1c5df4": {
+    "date": "2026-09-15",
+    "msg": "[Libdevice](fix) Remove redundant negative libdevice guards"
+  },
+  "fd13dfeea4b2f0881000eb90a5662cc6dc134785": {
+    "date": "2026-09-15",
+    "msg": "[TritonToUnstructure](fix) prevent stale offset-cache hits (#2078)"
+  },
+  "cea41e6f593cf42b38d2d21e78e425a090d2e1d7": {
+    "date": "2026-09-15",
+    "msg": "[ssbuffer](fix) move sync from producer to subBlockEnd (#2155)"
+  },
+  "f0dc33ed8b4e8536b7f49f3a313ec043701073d0": {
+    "date": "2026-09-15",
+    "msg": "[ssbuffer](fix) fix getFixpipePointAfterProducer fixpipepoint (#2154)"
+  },
+  "4e762adac3da61ace6205b644a2427b92958e42b": {
+    "date": "2026-09-15",
+    "msg": "[ssbuffer](fix) fallback when tensor iter_args update-before-use (#2031)"
+  },
+  "723d4ff32d7f899aac231cef185a5deeeb5b0b7c": {
+    "date": "2026-09-15",
+    "msg": "[ssbuffer](fix) avoid mixed core_type block_id in MergeVectorIfBlockPass (#2029)"
+  },
+  "18407ada5b734513df86b317a2e36bae458dbd79": {
+    "date": "2026-09-15",
+    "msg": "[ssbuffer](fix) remove memeffects of alloc_tensor (#2077)"
+  },
+  "3b4915e4274bedf7725d6747402670cfd156b904": {
+    "date": "2026-09-15",
+    "msg": "[ssbuffer](fix) remove blacklist kernels (#2095)"
+  },
+  "6f4309a14751824b4313a6491c8f231fc7cf3574": {
+    "date": "2026-09-15",
+    "msg": "[compiler](fix) restore disable_size_align_for_cast option (#1947)"
+  },
+  "65b6943d08741c7931261b49c696714aae591c7b": {
+    "date": "2026-09-15",
+    "msg": "[compile](fix) pass NPU_DEVICE_LIMIT parameters on SIMT (#2113)"
+  },
+  "66fa2bea4ef6eb95254a072b52157ec0a10252a1": {
+    "date": "2026-09-15",
+    "msg": "[compiler](chore) Rename enable-bishengir-simt-optimization option (#2060)"
+  },
+  "13b69e8bc009b4309a744e4fff9a9afcb6210054": {
+    "date": "2026-09-15",
+    "msg": "[testcase](test) add mark for testcase (#2052)"
+  },
+  "6ef5f361d06dd2e2e172e9adb0fe18b7a90f4e97": {
+    "date": "2026-09-15",
+    "msg": "[tritonop](NFC) remove deprecated sync_block_all/set/wait from aux_ops.py (#1870)"
+  },
+  "c36fb3cb12db5ea9d1ffe322a3c5fd8e94ae5169": {
+    "date": "2026-09-15",
+    "msg": "[TritonToUnstructure](fix) preserve opaque while backedges (#1949) (#2010)"
+  },
+  "9d0fd1ea0b3b2dc0cf5b3b64c40ce866ecb22193": {
+    "date": "2026-09-15",
+    "msg": "[ControlFlowOpt](fix) preserve same-base tensor pointer provenance (#2011)"
+  },
+  "41b7168434bd55bf65c35599f63275230ac4723e": {
+    "date": "2026-09-15",
+    "msg": "[API](feat) deprecate math_ops atan2 isfinited finitef (#1872)"
+  },
+  "22a5382e555bf5cb4aaf484768e14a5acf8589d6": {
+    "date": "2026-09-15",
+    "msg": "[ssbuffer](feat) move sync after small block (#2119)"
+  },
+  "945f6ebcca6ab8ff12b77fcdd03adbff15dc396e": {
+    "date": "2026-09-15",
+    "msg": "Revert \"[TritonToGraph](feat) speedup Radix topk by 2x (#2125)\" (#2178)"
+  },
   "47a182eeb803bdd07580d8c3717d789b5ce4b826": {
     "date": "2026-09-14",
     "msg": "[ssbuffer](fix) analyzeExternalOutputs controlOp (#2137)"

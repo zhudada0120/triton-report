@@ -401,6 +401,68 @@
       "interface_changes": "意图：让 FP16<->BF16 互相转换在后端使用原生硬件指令（NVIDIA SM90+ 的 cvt.rn/rz.(bf16|f16).(f16|bf16)，AMD 走 f32 中间路 + rocdl.cvt.pkrtz），而非一律经 f32 中间再转换，以提高转换性能并保证舍入一致。实现：(1) python/triton/language/semantic.py 在 TritonSemantic 的 fp_to_fp 路径最前面新增 FP16<->BF16 直接走 create_fp_to_fp(input, dst_ty, RTNE) 的分支，不再降到 f32；(2) third_party/nvidia/.../ElementwiseOpToLLVM.cpp 对 FP16<->BF16 在 computeCapability>=90 时用 PTXBuilder 直接发 cvt 内联汇编，<90 时保留经 f32 的 fallback；(3) third_party/amd/.../ConvertFpCastOpToLLVM.cpp 用 useFp32Intermediate ",
       "change_summary": "[BAKCEND] Use native FP16/BF16 conversions on SM90+ (#11699)",
       "ascend_impact": false
+    },
+    "51593ac6b6da36d68627e4f0b90c77a15661be8b": {
+      "date": "2026-09-15",
+      "affected_modules": [
+        "include/triton/Dialect/Triton/",
+        "lib/Dialect/Triton/"
+      ],
+      "affected_interfaces": [
+        "include/triton/Dialect/Triton/",
+        "lib/Dialect/Triton/"
+      ],
+      "interface_changes": "核心 IR 语义放宽：BroadcastOp 不再要求 SameOperandsAndResultEncoding，允许源与目标布局在无指令代价（不需要在线程间搬移数据、不能置换寄存器）的前提下不同。具体做法：在 DialectInferLayoutInterface 新增纯虚方法 verifyBroadcastOpEncoding(srcType, dstType)，TritonGPU 实现通过 toLinearLayout 后 resizeOutDim 并 removeZeroBasesAlongDim(kRegister) 比较来验证；Gluon 则退回严格的 encoding 相等检查。同步更新 RemoveLayoutConversions、Utility.cpp(inferSrc/DstEncoding)、InferLayoutUtils::encodingsMayVary 将 BroadcastOp 纳入可变布局算子集合，并在 TritonGPU/IR/Dialect.cpp 更新 LinearEncodingTrait::getElemsPerThread 的注释。新增",
+      "change_summary": "Relax broadcast layouts (#11759)",
+      "ascend_impact": false
+    },
+    "92ff4362dadb301b729395bad07a756dfb1c3cc7": {
+      "date": "2026-09-15",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "核心 Transforms 正确性修复：在吸收 view conversion 时，如果 reshape 的源操作数同时位于 backward slice 中，可能被 rematerialize 为新布局，从而与已吸收的结果布局冲突。修复方式是将 canUseResultEncoding 从返回 bool 改为返回 std::optional<SmallVector<OpOperand *>>——返回需要固定布局的操作数集合（reshape 返回 src，NvidiaMma ConvertLayoutOp 返回 src），nullopt 表示不兼容；getConvertBackwardSlice 遍历这些操作数并调用 updateLayout 将源值的 encoding 固定，冲突时返回 failure 从而跳过 rematerialize。新增 test/TritonGPU/combine.mlir 的 @reshape_absorption_source_layout_conflict 用例。风险中等：signature 变更会影响所有调用 canUseResultEncoding",
+      "change_summary": "Fix operand layouts when absorbing view conversions (#11758)",
+      "ascend_impact": false
+    },
+    "70ded9cd47397aebcca3494b54c96f953a90777f": {
+      "date": "2026-09-15",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "核心 Transforms 正确性修复：OptimizeThreadLocality 的 thread-local reduction rewrite 原先假设 scf.for 结果只有单一使用者（assert(loopResult.hasOneUse())），在 loop result 被多次使用（如 arith.addf %result, %result）时会触发断言崩溃或（在无 assert 构建下）错误编译。修复方式改为使用 forOp.getTiedLoopInit/getTiedLoopResult 获取对应的 init operand 与 result index，并用 newLoop.getResult(resultIndex).replaceAllUsesWith(finalOp) 替换所有使用者，而不再假设单一 use。新增 test/TritonGPU/optimize-locality.mlir 的 @loop_result_multiple_uses 用例。风险低：属于明显的正确性修复，但涉及的 rewrite 逻辑本身较复杂。",
+      "change_summary": "[OptimizeThreadLocality] Handle multi-use thread locality results (#11682)",
+      "ascend_impact": false
+    },
+    "58100bd95bd116f5c2baea1cf45a873b125fda13": {
+      "date": "2026-09-15",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "核心 IR 重构：TritonGPUDialect::toLinearLayout 原先用 dyn_cast<SwizzledSharedEncodingAttr/SharedLinearEncodingAttr/NVMMASharedEncodingAttr/AMDRotatingSharedEncodingAttr/PartitionedSharedEncodingAttr> 枚举具体共享布局类型，遇到未知布局直接 assert(0)。本 PR 改为通过 SharedEncodingTrait 的 toLinearLayout(shape) 接口分派：在 TritonGPUAttrInterfaces.td 为 SharedEncodingTrait 增加 toLinearLayout 接口方法，并为各具体 encoding 增加 extraClassDeclaration 声明；在 LinearLayoutConversions.cpp 中将原自由函数改为各 EncodingAttr 的成员方法 (SwizzledSharedEncodingAttr/AMDRotatingSha",
+      "change_summary": "[LAYOUTS] Dispatch shared-layout lowering through `SharedEncodingTrait` (#11764)",
+      "ascend_impact": false
+    },
+    "87b82772805aa07cdc484a3242f6bb2fd4cb8ad0": {
+      "date": "2026-09-15",
+      "affected_modules": [
+        "python/triton/runtime/interpreter.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/runtime/interpreter.py"
+      ],
+      "interface_changes": "Interpreter 正确性修复：host 端 TensorDescriptor 若以 round_f32_to_tf32=True 创建，TMA 单元会对加载的每个 f32 做 round-to-nearest-even 到 10 位尾数（Inf/NaN 保持）的处理，而 interpreter 在 _implicit_cvt 中丢失了该标志，导致 TRITON_INTERPRET=1 下的数值与设备不一致。修复方式：在 TensorDescHandle 中保留 round_f32_to_tf32，新增 _round_f32_to_tf32（numpy 实现），在 create_descriptor_load 中当 flag 为真且元素类型为 f32 时进行舍入；gather 复用该路径；in-kernel 的 tl.make_tensor_descriptor 不参与舍入。测试从 python/test/unit/cuda/test_tma_descriptor.py 迁移到 python/test/unit/language/test_tensor_descriptor.py ",
+      "change_summary": "[INTERPRETER] Honor round_f32_to_tf32 on host tensor descriptor loads (#11751)",
+      "ascend_impact": false
     }
   }
 }
