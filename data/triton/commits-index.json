@@ -1,4 +1,12 @@
 {
+  "84f99580abd493fe2907cb0e8182ab86fcc18493": {
+    "date": "2026-09-16",
+    "msg": "[Gluon] Expose GluonASTSource for offline compilation (#11806)"
+  },
+  "570e5b4dd1e2d1daf785a894d19268fe7b281cb5": {
+    "date": "2026-09-16",
+    "msg": "[AMD][BACKEND] Fix free-variable mask key to enable register deduplication in stores (#11465)"
+  },
   "41f45d986a882f88bb6d59ce9f3621559f8100e9": {
     "date": "2026-09-15",
     "msg": "[NVIDIA] Compute distributed shared addresses unconditionally (#11794)"

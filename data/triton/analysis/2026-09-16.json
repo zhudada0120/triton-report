@@ -1,0 +1,49 @@
+{
+  "date": "2026-09-16",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-09-17T02:03:04.180062+08:00",
+  "daily_summary": "当日两个 commit：一个将 Gluon 的 GluonASTSource 从私有 _runtime 模块提升为 triton.experimental.gluon 的公开导出（支持离线编译、新增 CUDA/HIP 回归测试），属于纯前端 API 可见性调整；另一个修复 AMD 后端 store/atomic 降低中 free-variable mask 键名不匹配（\"reg\" vs \"register\"）导致寄存器去重失效的 bug，并补充了 AMD 专属 lit 测试。整体是前端易用性改进 + AMD 后端性能/正确性修复，不涉及核心抽象接口契约变化。",
+  "ascend_impact_summary": "当日变更均不影响 triton-ascend。Gluon 导出变更仅涉及 triton.experimental.gluon（Ascend 不使用 Gluon，且未改变 ASTSource/JITFunction 基类行为），属于文档/测试/公开导出层面的调整；AMD 修复完全位于 third_party/amd 与 AMD 专属 lit 测试（LoadStoreOpToLLVM.cpp 中 \"reg\"→\"register\"），是 AMD 后端专属代码路径。triton-ascend 无需任何代码或测试改动。",
+  "commits": [
+    {
+      "sha": "84f99580abd493fe2907cb0e8182ab86fcc18493",
+      "comment": "将 GluonASTSource 从 python/triton/experimental/gluon/_runtime.py 的私有模块重新导出到 triton.experimental.gluon 包级命名空间（__init__.py 的 import 与 __all__），并为其补充 docstring，说明可用显式 target 调用 triton.compile 做离线编译而无需激活 GPU driver。同步更新了 docs/gluon/api/runtime.rst、python/triton/_filecheck.py 的导入路径，以及 python/test/gluon/test_frontend.py（把 test_inline_asm_shared_amd_compilation 改为用 gluon.GluonASTSource，并新增 test_gluon_ast_source_without_driver 参数化用例，monkeypatch 屏蔽 triton.runtime.driver.active 以验证离线编译不访问 driver）。类实现与特化行为未变，属纯 API 可见性/文档/测试变更。风险很低：只是把已有类暴露到更公开的路径，唯一需要注意的是新增的公开符号会不会与其它名称冲突，以及 _filecheck.py 的导入路径变更需保证包初始化顺序正确。",
+      "tags": [
+        "feature",
+        "docs",
+        "test",
+        "low-risk",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅涉及 triton.experimental.gluon 包（GluonASTSource 的公开导出）与 python/triton/_filecheck.py 的导入路径。triton-ascend 不使用 Gluon 前端（GluonASTSource 编译到 TTGIR，Ascend 走 TTIR→Linalg 路径），且该 commit 未修改 ASTSource/JITFunction/BaseBackend 等 Ascend 复用的基类契约，也未触碰 compiler.parse 的 monkey-patch 目标。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Gluon] Expose GluonASTSource for offline compilation (#11806)\n\nOffline Gluon compilation currently requires importing `GluonASTSource`\nfrom the private `_runtime` module. Re-export it from\n`triton.experimental.gluon` so callers can construct a source and pass\nan explicit target to `triton.compile` without initializing the GPU\ndriver through the JIT binder.\n\nDocument the class and use the public import in the frontend\nhelpers/tests. Add CUDA and HIP regression coverage that blocks driver\naccess, uses a fresh cache, and checks compilation with constexpr\narguments and explicit pointer-alignment attributes. The class\nimplementation and specialization behavior are unchanged.\n\nValidation:\n- All pre-commit checks for the changed files passed.\n- Public export, wildcard export, and class identity checks passed with\ncurrent Python sources.\n- Both new offline-compilation regression cases passed with the export\napplied to an isolated copy of the locally installed\n`3.8.0+git.b3762cc612` wheel.\n- Current-source compiler validation could not complete locally: the\navailable native binary predates current main and is incompatible with\nits Python bindings. The existing AMD inline-assembly tests also require\nfeatures absent from that older wheel; upstream CI is needed to validate\nthe current source/compiler combination."
+    },
+    {
+      "sha": "570e5b4dd1e2d1daf785a894d19268fe7b281cb5",
+      "comment": "修复 AMD 后端 store/atomic 降低中 free-variable mask 键名不匹配的 bug：tensor 类型的 layout 由 LinearLayout 的 in-dim 名称生成，键名为 \"register\"，而 getAllFreeVarMasks 及调用点一直用 \"reg\" 查找，导致 regMask 恒为 0、寄存器去重分支成为死代码——当一个 layout 在某寄存器维度（register basis 为 0）上广播时，会为每个重复寄存器发射一条 store。改动包括：(1) lib/Conversion/TritonGPUToLLVM/Utility.cpp 中 getAllFreeVarMasks 的 kReg 由 \"reg\" 改为 \"register\"，使标量路径回退键保持一致；(2) StoreOpConversion 与 BufferStoreOpConversion 中的 freeVarMasks[str_attr(\"reg\")] 改为 \"register\"；(3) isRedundantThreadPredWarpUniform 直接去掉 register 项（而非改名），因为冗余线程谓词只由 lane/warp/block 构成，寄存器广播不会使其变为 lane-varying，保留该项反而会强制进入分支、破坏 direct-to-LDS 加载通过 shared 地址掩码的优化；(4) 新增 test/Conversion/amd/redundant_register_store.mlir 覆盖 buffer store/普通 store/标量 store/atomic RMW/CAS 的去重行为，并在 async_ops_to_llvm.mlir 增加 warp-uniform 谓词 + 广播寄存器的 async copy 用例。整体是 AMD 专属 lowering 的性能与正确性修复，风险中等：键名语义与 LinearLayout in-dim 命名强绑定，若将来 in-dim 命名变化需同步；isRedundantThreadPredWarpUniform 去掉 register 项是对该谓词语义的明确收窄。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "medium-risk",
+        "amd",
+        "conversion"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/amd/lib/TritonAMDGPUToLLVM/LoadStoreOpToLLVM.cpp（AMD 专属 lowering）与 lib/Conversion/TritonGPUToLLVM/Utility.cpp 的 getAllFreeVarMasks（其改动仅为 AMD 侧调用点服务的键名修正），以及 AMD 专属 lit 测试。triton-ascend 不实现 TargetInfo、不走 TritonGPUToLLVM lowering（使用 TritonToLinalg 替代），也不加载 TritonAMDGPU 方言，因此该项修改不会传导到 Ascend 编译链。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][BACKEND] Fix free-variable mask key to enable register deduplication in stores (#11465)\n\nThe AMD stores looked up the register free-variable mask under \"reg\", but for tensor types those keys come from LinearLayout in-dim names, which use \"register\". The lookup silently returned 0, so the deduplication branch was dead code: a layout that broadcasts a register emitted one store per duplicate register.\n\nRename the fallback key in getAllFreeVarMasks to match, so scalars keep working once the call sites use \"register\".\n\nisRedundantThreadPredWarpUniform drops the register term instead of renaming it. The redundant-thread predicate is built only from lane, warp, and block, so register duplication cannot make it lane-varying, and including the term would have forced a branch where direct-to-LDS loads can mask through the shared address."
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

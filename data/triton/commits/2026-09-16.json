@@ -1,0 +1,108 @@
+{
+  "date": "2026-09-16",
+  "repo": "triton-lang/triton",
+  "branch": "main",
+  "commits": [
+    {
+      "sha": "84f99580abd493fe2907cb0e8182ab86fcc18493",
+      "author": {
+        "name": "Chenkai Mao",
+        "email": "chenkaim@openai.com"
+      },
+      "date": "2026-09-16T18:23:36+08:00",
+      "message": "[Gluon] Expose GluonASTSource for offline compilation (#11806)\n\nOffline Gluon compilation currently requires importing `GluonASTSource`\nfrom the private `_runtime` module. Re-export it from\n`triton.experimental.gluon` so callers can construct a source and pass\nan explicit target to `triton.compile` without initializing the GPU\ndriver through the JIT binder.\n\nDocument the class and use the public import in the frontend\nhelpers/tests. Add CUDA and HIP regression coverage that blocks driver\naccess, uses a fresh cache, and checks compilation with constexpr\narguments and explicit pointer-alignment attributes. The class\nimplementation and specialization behavior are unchanged.\n\nValidation:\n- All pre-commit checks for the changed files passed.\n- Public export, wildcard export, and class identity checks passed with\ncurrent Python sources.\n- Both new offline-compilation regression cases passed with the export\napplied to an isolated copy of the locally installed\n`3.8.0+git.b3762cc612` wheel.\n- Current-source compiler validation could not complete locally: the\navailable native binary predates current main and is incompatible with\nits Python bindings. The existing AMD inline-assembly tests also require\nfeatures absent from that older wheel; upstream CI is needed to validate\nthe current source/compiler combination.",
+      "parents": [
+        "570e5b4dd1e2d1daf785a894d19268fe7b281cb5"
+      ],
+      "stats": {
+        "total_additions": 39,
+        "total_deletions": 7,
+        "files_changed": 5
+      },
+      "files": [
+        {
+          "filename": "docs/gluon/api/runtime.rst",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 0,
+          "patch": "@@ -10,6 +10,7 @@ Runtime\n     :toctree: generated\n     :nosignatures:\n \n+    GluonASTSource\n     GluonJITFunction\n     jit\n     constexpr_function"
+        },
+        {
+          "filename": "python/test/gluon/test_frontend.py",
+          "status": "modified",
+          "additions": 26,
+          "deletions": 3,
+          "patch": "@@ -3,6 +3,7 @@ import pytest\n import re\n from dataclasses import replace\n \n+import triton\n from triton.backends.compiler import GPUTarget\n from triton.experimental import gluon\n from triton.experimental.gluon import language as ttgl\n@@ -135,8 +136,6 @@ def test_inline_asm_frontend_unresolved_layout(layout):\n \n @pytest.mark.parametrize(\"elementwise\", [False, True])\n def test_inline_asm_shared_amd_compilation(elementwise):\n-    import triton\n-    from triton.experimental.gluon._runtime import GluonASTSource\n \n     @gluon.jit\n     def kernel(Out, ELEMENTWISE: ttgl.constexpr):\n@@ -150,11 +149,35 @@ def test_inline_asm_shared_amd_compilation(elementwise):\n             y = ttgl.inline_asm(asm, \"=&v,v,v\", [smem, x * 4], x.type)\n         ttgl.store(Out + x, y)\n \n-    source = GluonASTSource(kernel, {\"Out\": \"*i32\", \"ELEMENTWISE\": \"constexpr\"}, {\"ELEMENTWISE\": elementwise})\n+    source = gluon.GluonASTSource(kernel, {\"Out\": \"*i32\", \"ELEMENTWISE\": \"constexpr\"}, {\"ELEMENTWISE\": elementwise})\n     compiled = triton.compile(source, target=HIP_TARGET_CDNA3)\n     assert \"ds_read_b32\" in compiled.asm[\"amdgcn\"]\n \n \n+@pytest.mark.parametrize(\"target, binary\", [(AMPERE_TARGET, \"cubin\"), (HIP_TARGET_CDNA3, \"hsaco\")])\n+def test_gluon_ast_source_without_driver(target, binary, monkeypatch, fresh_triton_cache):\n+\n+    def fail_driver_access(self):\n+        raise AssertionError(\"Offline compilation must not access the GPU driver\")\n+\n+    monkeypatch.setattr(type(triton.runtime.driver), \"active\", property(fail_driver_access))\n+\n+    @gluon.jit\n+    def kernel(X, Y, BLOCK: ttgl.constexpr, LAYOUT: ttgl.constexpr):\n+        offsets = ttgl.arange(0, BLOCK, layout=LAYOUT)\n+        ttgl.store(Y + offsets, ttgl.load(X + offsets))\n+\n+    source = gluon.GluonASTSource(\n+        kernel,\n+        signature={\"X\": \"*fp32\", \"Y\": \"*fp32\", \"BLOCK\": \"constexpr\", \"LAYOUT\": \"constexpr\"},\n+        constexprs={\"BLOCK\": 128, \"LAYOUT\": ttgl.BlockedLayout([1], [target.warp_size], [4], [0])},\n+        attrs={(0, ): [[\"tt.divisibility\", 16]], (1, ): [[\"tt.divisibility\", 16]]},\n+    )\n+    compiled = triton.compile(source, target=target)\n+    assert \"tt.divisibility = 16\" in compiled.asm[source.ext]\n+    assert compiled.asm[binary]\n+\n+\n @gluon.jit\n def convert_layout_kernel(XBLOCK: ttgl.constexpr, layout_a: ttgl.constexpr, layout_b: ttgl.constexpr):\n     x = ttgl.arange(0, XBLOCK, layout=layout_a)"
+        },
+        {
+          "filename": "python/triton/_filecheck.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -7,7 +7,7 @@ import tempfile\n import triton\n from triton.compiler import ASTSource, make_backend\n from triton.backends.compiler import GPUTarget\n-from triton.experimental.gluon._runtime import GluonASTSource\n+from triton.experimental.gluon import GluonASTSource\n from triton.runtime.jit import create_function_from_signature\n from triton._C.libtriton import ir\n "
+        },
+        {
+          "filename": "python/triton/experimental/gluon/__init__.py",
+          "status": "modified",
+          "additions": 4,
+          "deletions": 2,
+          "patch": "@@ -1,6 +1,8 @@\n-from ._runtime import GluonJITFunction, constexpr_function, jit\n+from ._runtime import GluonASTSource, GluonJITFunction, constexpr_function, jit\n from triton import must_use_result, aggregate\n from . import nvidia\n from . import amd\n \n-__all__ = [\"aggregate\", \"amd\", \"constexpr_function\", \"GluonJITFunction\", \"jit\", \"must_use_result\", \"nvidia\"]\n+__all__ = [\n+    \"aggregate\", \"amd\", \"constexpr_function\", \"GluonASTSource\", \"GluonJITFunction\", \"jit\", \"must_use_result\", \"nvidia\"\n+]"
+        },
+        {
+          "filename": "python/triton/experimental/gluon/_runtime.py",
+          "status": "modified",
+          "additions": 7,
+          "deletions": 1,
+          "patch": "@@ -7,10 +7,16 @@ from triton._C.libtriton import ir\n \n T = TypeVar(\"T\")\n \n-__all__ = [\"GluonJITFunction\", \"constexpr_function\", \"jit\"]\n+__all__ = [\"GluonASTSource\", \"GluonJITFunction\", \"constexpr_function\", \"jit\"]\n \n \n class GluonASTSource(ASTSource):\n+    \"\"\"An AST source for compiling a Gluon kernel with ``triton.compile``.\n+\n+    Pass an explicit target to ``triton.compile`` to compile without an active\n+    GPU driver. As with ``triton.compiler.ASTSource``, callers supply the\n+    signature, constexpr values, and specialization attributes.\n+    \"\"\"\n \n     def __init__(self, fn, signature, constexprs=None, attrs=None) -> None:\n         super().__init__(fn, signature, constexprs, attrs)\n"
+        }
+      ]
+    },
+    {
+      "sha": "570e5b4dd1e2d1daf785a894d19268fe7b281cb5",
+      "author": {
+        "name": "Daniel Hernandez-Juarez",
+        "email": "dhernandez0@gmail.com"
+      },
+      "date": "2026-09-16T01:17:20+08:00",
+      "message": "[AMD][BACKEND] Fix free-variable mask key to enable register deduplication in stores (#11465)\n\nThe AMD stores looked up the register free-variable mask under \"reg\", but for tensor types those keys come from LinearLayout in-dim names, which use \"register\". The lookup silently returned 0, so the deduplication branch was dead code: a layout that broadcasts a register emitted one store per duplicate register.\n\nRename the fallback key in getAllFreeVarMasks to match, so scalars keep working once the call sites use \"register\".\n\nisRedundantThreadPredWarpUniform drops the register term instead of renaming it. The redundant-thread predicate is built only from lane, warp, and block, so register duplication cannot make it lane-varying, and including the term would have forced a branch where direct-to-LDS loads can mask through the shared address.",
+      "parents": [
+        "41f45d986a882f88bb6d59ce9f3621559f8100e9"
+      ],
+      "stats": {
+        "total_additions": 127,
+        "total_deletions": 6,
+        "files_changed": 4
+      },
+      "files": [
+        {
+          "filename": "lib/Conversion/TritonGPUToLLVM/Utility.cpp",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -1288,7 +1288,7 @@ Value broadcastScalarAtomicResult(Operation *op, Type valueElemTy,\n \n llvm::MapVector<StringAttr, int32_t> getAllFreeVarMasks(MLIRContext *ctx) {\n   // Mask where all elements are redundant\n-  auto kReg = str_attr(\"reg\");\n+  auto kReg = str_attr(\"register\");\n   auto kLane = str_attr(\"lane\");\n   auto kWarp = str_attr(\"warp\");\n   auto kBlock = str_attr(\"block\");"
+        },
+        {
+          "filename": "test/Conversion/amd/async_ops_to_llvm.mlir",
+          "status": "modified",
+          "additions": 24,
+          "deletions": 0,
+          "patch": "@@ -372,3 +372,27 @@ module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32, \"ttg.thr\n     tt.return\n   }\n }\n+\n+// -----\n+\n+// A zero register basis duplicates elements inside a thread and the broadcast\n+// warp bases make the thread predicate non-trivial. The predicate is built from\n+// the lane, warp and block masks only, so it stays warp-uniform and the\n+// out-of-range address masking still applies. Blocked layouts drop their zero\n+// register bases when converted to a linear layout, so spell the layout out as\n+// a linear one to keep the broadcast register.\n+#bcast = #ttg.linear<{register = [[0, 0]], lane = [[1, 0], [2, 0], [4, 0], [8, 0], [16, 0], [32, 0]], warp = [[0, 0], [0, 0]], block = []}>\n+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>\n+#smem = #ttg.shared_memory\n+module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32, \"ttg.threads-per-warp\" = 64 : i32} {\n+  // CHECK-LABEL: @async_copy_warp_uniform_thread_pred_broadcast_register\n+  tt.func @async_copy_warp_uniform_thread_pred_broadcast_register(%ptr: !tt.ptr<f32>, %lds: !ttg.memdesc<64x1xf32, #shared, #smem, mutable>) {\n+    %src = tt.splat %ptr : !tt.ptr<f32> -> tensor<64x1x!tt.ptr<f32>, #bcast>\n+    // CHECK: %[[OOB_I32:.*]] = llvm.mlir.constant(2147483647 : i32) : i32\n+    // CHECK: %[[OOB_PTR:.*]] = llvm.inttoptr %[[OOB_I32]] : i32 to !llvm.ptr<3>\n+    // CHECK: %[[PRED_ADDR:.*]] = llvm.select {{.*}}, {{.*}}, %[[OOB_PTR]] : i1, !llvm.ptr<3>\n+    // CHECK: rocdl.global.load.async.lds {{.*}}, %[[PRED_ADDR]], {{.*}}\n+    %0 = ttg.async_copy_global_to_local %src, %lds : tensor<64x1x!tt.ptr<f32>, #bcast> -> <64x1xf32, #shared, #smem, mutable>\n+    tt.return\n+  }\n+}"
+        },
+        {
+          "filename": "test/Conversion/amd/redundant_register_store.mlir",
+          "status": "added",
+          "additions": 97,
+          "deletions": 0,
+          "patch": "new file mode 100644\n@@ -0,0 +1,97 @@\n+// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1100 | FileCheck %s\n+// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx942 | FileCheck %s\n+\n+// The store conversions skip register indices that a layout maps to an element\n+// another register in the same thread already holds, which they detect via the\n+// \"register\" free-variable mask of getFreeVariableMasks(). A layout whose\n+// register basis is zero broadcasts that register, so only the canonical index\n+// is stored. Blocked layouts drop their zero register bases when converted to a\n+// linear layout, so these cases spell the layouts out as linear ones.\n+\n+// Control: a non-zero register basis addresses two distinct elements, so both\n+// registers are stored.\n+#plain = #ttg.linear<{register = [[1]], lane = [[2], [4], [8], [16], [32]], warp = [], block = []}>\n+module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 1 : i32, \"ttg.threads-per-warp\" = 32 : i32} {\n+  // CHECK-LABEL: @distinct_registers_are_all_stored\n+  // CHECK-COUNT-2: rocdl.raw.ptr.buffer.store\n+  // CHECK-NOT: rocdl.raw.ptr.buffer.store\n+  tt.func @distinct_registers_are_all_stored(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %offset: tensor<64xi32, #plain>, %val: tensor<64xf32, #plain>) {\n+    amdg.buffer_store %val, %arg0[%offset] : !tt.ptr<f32> -> tensor<64xf32, #plain>\n+    tt.return\n+  }\n+}\n+\n+// -----\n+\n+// A zero register basis makes both registers hold the same element, so the\n+// redundant one is not stored.\n+#bcast = #ttg.linear<{register = [[0]], lane = [[1], [2], [4], [8], [16]], warp = [], block = []}>\n+module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 1 : i32, \"ttg.threads-per-warp\" = 32 : i32} {\n+  // CHECK-LABEL: @broadcast_register_buffer_store\n+  // CHECK-COUNT-1: rocdl.raw.ptr.buffer.store\n+  // CHECK-NOT: rocdl.raw.ptr.buffer.store\n+  tt.func @broadcast_register_buffer_store(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %offset: tensor<32xi32, #bcast>, %val: tensor<32xf32, #bcast>) {\n+    amdg.buffer_store %val, %arg0[%offset] : !tt.ptr<f32> -> tensor<32xf32, #bcast>\n+    tt.return\n+  }\n+}\n+\n+// -----\n+\n+// Same deduplication for the non-buffer store path.\n+#bcast = #ttg.linear<{register = [[0]], lane = [[1], [2], [4], [8], [16]], warp = [], block = []}>\n+module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 1 : i32, \"ttg.threads-per-warp\" = 32 : i32} {\n+  // CHECK-LABEL: @broadcast_register_store\n+  // CHECK-COUNT-1: llvm.store\n+  // CHECK-NOT: llvm.store\n+  tt.func @broadcast_register_store(%ptr: tensor<32x!tt.ptr<f32>, #bcast>, %val: tensor<32xf32, #bcast>) {\n+    tt.store %ptr, %val : tensor<32x!tt.ptr<f32>, #bcast>\n+    tt.return\n+  }\n+}\n+\n+// -----\n+\n+// A scalar store has no layout, so getFreeVariableMasks() falls back to\n+// getAllFreeVarMasks(), which marks every dimension redundant. The store must\n+// still happen exactly once, under a predicate that elects a single thread.\n+module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 1 : i32, \"ttg.threads-per-warp\" = 32 : i32} {\n+  // CHECK-LABEL: @scalar_store_is_predicated\n+  // CHECK: llvm.cond_br\n+  // CHECK: llvm.store\n+  // CHECK-NOT: llvm.store\n+  tt.func @scalar_store_is_predicated(%ptr: !tt.ptr<f32>, %val: f32) {\n+    tt.store %ptr, %val : !tt.ptr<f32>\n+    tt.return\n+  }\n+}\n+\n+// -----\n+\n+// The atomic conversions instead unpack only the unique elements of the layout,\n+// so a broadcast register never reaches the loop. Cover them here too to pin\n+// down that a broadcast register still issues a single atomic.\n+#bcast = #ttg.linear<{register = [[0]], lane = [[1], [2], [4], [8], [16]], warp = [], block = []}>\n+module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 1 : i32, \"ttg.threads-per-warp\" = 32 : i32} {\n+  // CHECK-LABEL: @broadcast_register_buffer_atomic_rmw\n+  // CHECK-COUNT-1: llvm.amdgcn.raw.ptr.buffer.atomic.fadd\n+  // CHECK-NOT: llvm.amdgcn.raw.ptr.buffer.atomic.fadd\n+  tt.func @broadcast_register_buffer_atomic_rmw(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %offset: tensor<32xi32, #bcast>, %val: tensor<32xf32, #bcast>) -> tensor<32xf32, #bcast> {\n+    %0 = amdg.buffer_atomic_rmw fadd, acq_rel, gpu, %val, %arg0[%offset] : !tt.ptr<f32> -> tensor<32xf32, #bcast>\n+    tt.return %0 : tensor<32xf32, #bcast>\n+  }\n+}\n+\n+// -----\n+\n+// Same for the compare-and-swap path.\n+#bcast = #ttg.linear<{register = [[0]], lane = [[1], [2], [4], [8], [16]], warp = [], block = []}>\n+module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 1 : i32, \"ttg.threads-per-warp\" = 32 : i32} {\n+  // CHECK-LABEL: @broadcast_register_atomic_cas\n+  // CHECK-COUNT-1: llvm.cmpxchg\n+  // CHECK-NOT: llvm.cmpxchg\n+  tt.func @broadcast_register_atomic_cas(%ptr: tensor<32x!tt.ptr<i32>, #bcast>, %cmp: tensor<32xi32, #bcast>, %val: tensor<32xi32, #bcast>) -> tensor<32xi32, #bcast> {\n+    %0 = tt.atomic_cas acq_rel, gpu, %ptr, %cmp, %val : (tensor<32x!tt.ptr<i32>, #bcast>, tensor<32xi32, #bcast>, tensor<32xi32, #bcast>) -> tensor<32xi32, #bcast>\n+    tt.return %0 : tensor<32xi32, #bcast>\n+  }\n+}"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUToLLVM/LoadStoreOpToLLVM.cpp",
+          "status": "modified",
+          "additions": 5,
+          "deletions": 5,
+          "patch": "@@ -200,8 +200,7 @@ std::pair<Block *, Block *> emitBranch(RewriterBase &rewriter, Location loc,\n \n bool isRedundantThreadPredWarpUniform(\n     const llvm::MapVector<StringAttr, int32_t> &masks, MLIRContext *ctx) {\n-  return masks.lookup(StringAttr::get(ctx, \"lane\")) == 0 &&\n-         masks.lookup(StringAttr::get(ctx, \"reg\")) == 0;\n+  return masks.lookup(StringAttr::get(ctx, \"lane\")) == 0;\n }\n \n Value selectLdsAddressForPredicate(TritonLLVMOpBuilder &b, Value pred,\n@@ -863,7 +862,8 @@ struct BufferLoadToLocalOpConversion\n       // Optimization: for warp-uniform thread predicates and no other values we\n       // can avoid the branch by selecting an out-of-range *shared* address. The\n       // HW will drop the load before fetching the data from global memory so we\n-      // will not overwrite values.\n+      // will not overwrite values. This LDS address is scalar for the whole\n+      // instruction, so it can only mask threads uniformly across the warp.\n       if (isThreadPredWarpUniform && !hasOther) {\n         Value predicatedAddress =\n             selectLdsAddressForPredicate(b, threadPred, shmemAddr);\n@@ -1750,7 +1750,7 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,\n     auto freeVarMasks = getFreeVariableMasks(valueTy);\n     Value threadPred = emitRedundantThreadPredicateNonNull(\n         freeVarMasks, rewriter, loc, targetInfo);\n-    uint32_t regMask = freeVarMasks[str_attr(\"reg\")];\n+    uint32_t regMask = freeVarMasks[str_attr(\"register\")];\n     for (size_t vecStart = 0; vecStart < elemsPerThread; vecStart += vec) {\n       if (!isCanonicalIndex(vecStart, regMask)) {\n         // Don't emit store ops for redundant elements within a thread\n@@ -2088,7 +2088,7 @@ struct BufferStoreOpConversion\n     auto freeVarMasks = getFreeVariableMasks(valueTy);\n     Value threadPred = emitRedundantThreadPredicateNonNull(\n         freeVarMasks, rewriter, loc, targetInfo);\n-    uint32_t regMask = freeVarMasks[str_attr(\"reg\")];\n+    uint32_t regMask = freeVarMasks[str_attr(\"register\")];\n     for (size_t vecStart = 0; vecStart < numElems; vecStart += vec) {\n       if (!isCanonicalIndex(vecStart, regMask)) {\n         // Don't emit store ops for redundant elements within a thread\n"
+        }
+      ]
+    }
+  ]
+}

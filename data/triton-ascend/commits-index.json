@@ -1,4 +1,48 @@
 {
+  "f2d44ebb497fafe4e1b45cc8e690bd8f1510401c": {
+    "date": "2026-09-16",
+    "msg": "[ssbuffer](feat) optimization for load-exp pattern (#2133)"
+  },
+  "ffce7f899ef39fea48f667d3231d28bd189867cf": {
+    "date": "2026-09-16",
+    "msg": "[ssbuffer](fix) support matmulRes used by mamtul's input and init (#2145)"
+  },
+  "9431c1a769854e72412c07036d1791a6e5224f24": {
+    "date": "2026-09-16",
+    "msg": "[MaskAnalysis](fix) fix dynamic lb in iter_arg (#2191)"
+  },
+  "45ee0af824536e66fb368b420dbe02a0a6b8e017": {
+    "date": "2026-09-16",
+    "msg": "[compiler](feat) add VF stack limit compile option (#2188)"
+  },
+  "7a0f9cb8f8420881f356e58d361385635732fe4a": {
+    "date": "2026-09-16",
+    "msg": "[ssbuffer](fix) move fixpipe into splittedif (#2098)"
+  },
+  "85afc72daa8960b4adfab08555ea83c3d85c57d2": {
+    "date": "2026-09-16",
+    "msg": "[frontend](fix) drop read/write effects mark on buffer-language alloc (#2165)"
+  },
+  "ddb198f1284414fa3da3119471c1cfc56627fe38": {
+    "date": "2026-09-16",
+    "msg": "[compiler](fix) preserve deprecated options for compatibility (#2177)"
+  },
+  "bcd376209f3166cf04df30d1628138b23d49ae9f": {
+    "date": "2026-09-16",
+    "msg": "[UT](feat) Add unit test coverage for al ops (#2055)"
+  },
+  "a67022b4fa86e582cbbd3bd5beb635621a1fecb4": {
+    "date": "2026-09-16",
+    "msg": "[build](fix) add td so and update commit (#2162)"
+  },
+  "62b7341e7879cb4c41be50069e2683573d565252": {
+    "date": "2026-09-16",
+    "msg": "[ssbuffer](fix) remove funcname (#2152)"
+  },
+  "7c6d8538b25959bab7fd96660c41d5d7dc3cbcf8": {
+    "date": "2026-09-16",
+    "msg": "[MaskAnalysis](fix) Fix slice bounds for tensor loop iter_args in mas... (#2159)"
+  },
   "c808dd9a6e7a41fcbd884e1a65cd1f560c1c5df4": {
     "date": "2026-09-15",
     "msg": "[Libdevice](fix) Remove redundant negative libdevice guards"

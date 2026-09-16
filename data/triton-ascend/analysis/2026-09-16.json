@@ -1,0 +1,229 @@
+{
+  "date": "2026-09-16",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-09-17T02:03:45.088898+08:00",
+  "daily_summary": "当日变更集中在 Ascend 后端的 DynamicCVPipeline（动态 Cube/Vector 流水线）体系与编译器选项兼容性维护：ssbuffer 侧新增两个优化 pass（ExpLoadPattern 把 VECTOR 块内的 load->exp->broadcast->mulf 模式迁移到新块、MergeInputInitSharedCubeBlock 合并 matmul 结果同时作为下一 matmul input 与 init 的 cube 块）、修复 fixpipe 在 splittedif 子块中的定位与 intra-C2C 的 L1 缓冲分配，并引入 kSplittedIf 属性以便 RemoveAttributes 统一清理；MaskAnalysis 连续两次修复（iter_arg 动态下界/步长、张量 iter_arg 的 slice 边界与算术递推偏移）。编译器侧新增 enable_vf_stack_limit 编译选项，并系统性恢复大量已废弃的 NPUOption 兼容名（init=False 默认值 + init 前统一物化 + 通过 __dict__ 暴露给 JIT/Inductor），同时把 enable_vf_fusion、stream 等纳入废弃路由/消费逻辑。前端修复 bl.alloc 无条件添加 effects=[write,read] 导致的 PlanMemory 误判，构建侧升级 Triton-distributed-ascend 子模块并注册其 csrc 子目录，测试侧补充大量 al（cann extension）算子的端到端单测并整理了若干测试文件。整体看，当日是 Ascend 后端在算子覆盖、动态流水线正确性与选项兼容性上的密集打磨，测试与源码变更基本同步。",
+  "test_impact_summary": "当日变更对测试的看护要求显著提升：其一，多个 pass/分析器修复（ExpLoadPattern、MergeInputInitSharedCubeBlock、fixpipe splittedif 定位、MaskAnalysis 两处修复）改变了 IR 生成路径，需要新增针对性的 .mlir lit 测试与 pytest 用例，仓库当日已同步添加了 merge_input_init_shared_cube_block.mlir、test_fixpipe_nz2nz.mlir 的 intra-C2C 用例以及 test_select_analysis_for_iterarg.py，但 ExpLoadPattern 与 splittedif 相关的行为（如 kSplittedIf 属性清理、realValue 替换）尚缺少直接的端到端断言，建议补充。其二，NPUOptions 的兼容性恢复是一次影响面较广的行为变更，新增的 test_compiler.py 用例与 test_compiler_layout_memory_contract.py 的更新覆盖了空选项、被忽略选项、legacy 路由、stream 消费、未知选项透传与序列化再解析等关键路径，且 test_specialization_cache_npu.py 覆盖了 JIT/Inductor 两种编译图的 legacy 选项不当作 kernel 参数的验收，覆盖较充分；但 enable_vf_stack_limit 新选项仅加了编译选项透传，缺少 A5 非纯 SIMT 路径的编译/运行验证。其三，bl.alloc effects 注解移除需要同时保证 mem_unique 保留且无 effects，test_alloc_annotation.py 已通过 TTIR 断言与 fixpipe 端到端用例覆盖，但该用例仅 A5 生效，910B 上缺少等价看护。其四，新增的 al 算子单测（cast/flip/get_element/extract_slice/insert_slice/sort/compile_hint/parallel）扩展了 cann extension 的覆盖面，compile_hint 用例还额外断言了 ttadapter 中 annotation.mark 的数量与具体属性，属于较有价值的强化。总体而言，当日测试策略在数量上跟上了变更节奏，但部分 DynamicCVPipeline 新 pass 的负向/边界用例（fallback 触发、环检测失败路径）与 enable_vf_stack_limit 的端到端验证仍属薄弱点，需要在后续迭代补齐。",
+  "commits": [
+    {
+      "sha": "f2d44ebb497fafe4e1b45cc8e690bd8f1510401c",
+      "comment": "在 DynamicCVPipeline 的 ComputeBlockOpt 阶段新增 ExpLoadPatternPass，匹配并处理 VECTOR_ONLY 块内 `mulf <- broadcast <- exp/exp2 <- to_tensor <- alloc <- copy` 这一 load-exp 模式：将匹配到的 core ops 及其标量闭包整体迁移到 mulf 所在的 newBlockId，迁移前用 MemoryDependenceGraph + willCreateCycle 做环检测，并调用 cloneScalarOpsForCrossBlockUses 处理跨块使用；为规避块 id 在合并过程中被修改失效的问题，先收集 pattern 再逐个校验 blockId 是否 stale。同时在 ComputeBlockOptPass 的流水线中于 MergeCubeForBlock 之后、UBUsageOpt 之前插入该 pass 并随后再插一次 ReorderOpsByBlockIdPass，passes.h 与 registerComputeBlockOptPasses 同步注册。附带把 Utils.cpp 中 getCoreTypeOfSimpleOpOrCf 的 regionalDisabledOps 黑名单从 4 项缩减为 2 项，移除了两个 chunk_gated_delta_rule 内核——这意味着这两个函数不再被强制 UNDETERMINED，其 core type 将由常规规则推导，可能影响已有模型的 pipeline 划分。风险点：新 pass 的匹配条件较严格（依赖 hasOneUse、copy 与 broadcast 同块、otherOperand 必须是 BlockArgument），若不满足则静默跳过，属于保守优化；但黑名单缩减是与该 pass 无关的行为变更，需要回归相关 chunk_gated_delta_rule 用例。",
+      "tags": [
+        "feature",
+        "performance",
+        "medium-risk",
+        "compiler-backend",
+        "dynamic-cv-pipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 pass 与流水线顺序变更需要 lit 测试校验 IR 迁移结果（块 id 是否更新、是否产生环、stale pattern 是否跳过），黑名单缩减也会改变 chunk_gated_delta_rule 相关内核的 core type 推导，需要回归。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/",
+          "third_party/ascend/lib/DynamicCVPipeline/Common/Utils.cpp 相关内核回归"
+        ]
+      },
+      "message": "[ssbuffer](feat) optimization for load-exp pattern (#2133)\n\n(cherry picked from commit 4fef68e0faa53228bb452af1a25f0d66246a0b67)"
+    },
+    {
+      "sha": "ffce7f899ef39fea48f667d3231d28bd189867cf",
+      "comment": "修复 matmul 结果同时作为下一 matmul 的 input 和 init 时的支持：新增 MergeInputInitSharedCubeBlockPass，通过 getSharedInputInitProducer 识别 init 生产者 matmul 与某个 input（可经 C2C 中间 op 追溯）生产者 matmul 相同的情况，用 tryMergeBlocks 把 consumer 块合并进 producer 块，若合并产生环则置 fallback 属性并返回失败。为此在 Common/Utils 新增 getSourceThroughCIntermediateOps 统一回溯 C2C 中间 op（复用 getFixpipePreQuantMode 判定），InterCoreTransferAndSync 中原本内联的 isValidC2CIntermediateOp 逻辑改为调用该公共函数；DataDependencyAnalysis 新增 analyzeInternalDeps 收集同块内 matmul 间的 intra-C2C 依赖（新增 intraC2CDependencies 与 DependencyInfo::operand 字段），并在 processDependencies 中新增 Step 3 处理 intra-block C2C：校验 operand 必须是 consumer matmul 的 A/B input（不能是 outs），再走 handleCubeToCube。createC2CSharedL1Buffer 新增 isIntraC2C 参数，intra 情况下 alloc 插在 producer fixpipe 之前而非主循环前，且不再打 kIntraDeps 的 producer/consumer 标记；handleCubeToCube 中对 user 替换循环跳过 fixpipeOp 自身，避免自引用。整体设计上把「同块 C2C」与「跨块 C2C」清晰分流，逻辑一致且复用度高；风险在于合并块可能改变后续 pipeline 调度与内存规划，fallback 路径（setFallbackAttr(ERRCODE_FAILED)）在无法合并时会整体放弃动态 CV 流水线，需要确保该降级路径正确。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "medium-risk",
+        "compiler-backend",
+        "dynamic-cv-pipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 pass、新增 intra-C2C 依赖分析维度以及 L1 缓冲分配策略变更都会改变 IR 形态，当日已补 merge_input_init_shared_cube_block.mlir 与 test_fixpipe_nz2nz.mlir 的 intra-C2C 用例，但 fallback 触发路径与跨块/同块混合场景仍需覆盖。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/merge_input_init_shared_cube_block.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow/test_fixpipe_nz2nz.mlir",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/"
+        ]
+      },
+      "message": "[ssbuffer](fix) support matmulRes used by mamtul's input and init (#2145)\n\n* [ssbuffer](fix) support matmulRes used by mamtul's input and init\n\n* [ssbuffer](fix) modify for review comment\n\n(cherry picked from commit eb255da50584f411ad8d80d12122fe7df0028228)"
+    },
+    {
+      "sha": "9431c1a769854e72412c07036d1791a6e5224f24",
+      "comment": "对 MaskAnalysis.cpp 中 scf.for 循环 iter_arg 的掩码范围推导做动态下界修复。变更前，lb 与 step 必须为编译期常量，否则 parse 直接返回 failure；变更后将 lb/step 通过 castIntegerLike 转换为 index 类型并在运行时计算 iterCount = (iv - lb) / step，仅保留 step==0 的失败判定。这使掩码分析能够处理下界为运行时值的循环（如 kernel 中 range 的 lb 来自非 constexpr 参数），扩大了掩码传播的适用范围。潜在风险：1) 当 lb 非零常量时，代码仍走 castIntegerLike 分支而非直接用常量折叠，语义等价但会多生成 cast+sub 指令；2) 动态除法引入运行时整除，若 step 非 1 且循环计数器与 step 的整除关系在 IR 层不成立，可能产生非预期的 iterCount，但由于后续仍走 mulOpFoldResult/addOpFoldResult，需要后续分析保持一致性；3) 该逻辑位于 MaskAnalysis parse 的 iter_arg 分支，仅当 yield 形如 iter_arg + 常量时才生效，属于 Ascend TritonMemoryAccess 分析组件（服务掩码/边界分析），不影响编译流水线阶段契约。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "ascend-memory-access"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "该 commit 将 MaskAnalysis 中 iter_arg 推导的 lb/step 从「必须编译期常量」放宽为「可动态」，属于行为语义扩展。现有测试（test_select_analysis_for_iterarg.py 中三个用例）只覆盖了 tl.constexpr 形式的 START 及常量 step，并未覆盖 lb/step 为运行时标量值的场景，因此新增的动态路径缺少针对性回归测试。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_select_analysis_for_iterarg.py"
+        ]
+      },
+      "message": "[MaskAnalysis](fix) fix dynamic lb in iter_arg (#2191)\n\n* [MaskAnalysis](fix) fix dynamic lb in iter_arg\n\n* fix precommit\n\n(cherry picked from commit 7c76e3dc3239555334bc12a05f44224be578ff42)"
+    },
+    {
+      "sha": "45ee0af824536e66fb368b420dbe02a0a6b8e017",
+      "comment": "为 Ascend 编译器新增 enable_vf_stack_limit 编译选项：NPUOptions 增加布尔字段（默认 False，注释说明仅在 A5 非纯 SIMT 的 BiShengIR 编译路径生效），linalg_to_bin_enable_npu_compile_910_95 中在该选项为真时向 npu compiler 追加 --enable-vf-stack-limit。改动很小且为纯增量开关，不改变默认行为（默认 False），风险低；但选项仅在 910_95 路径透传，A2/A3 路径未处理，若后续需要在 A2/A3 使用需另行扩展。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "compiler-backend"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增编译选项需要验证其在 910_95 编译路径上确实被透传给 npu compiler，且默认 False 不改变现有产物；当前仓库缺少对该选项的编译参数断言与端到端验证。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler.py",
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py"
+        ]
+      },
+      "message": "[compiler](feat) add VF stack limit compile option (#2188)\n\nSigned-off-by: zhanwei33 <493694187@qq.com>\n(cherry picked from commit 76b8fdfb89b24fcdf3eaefbaf53591f22390d96f)"
+    },
+    {
+      "sha": "7a0f9cb8f8420881f356e58d361385635732fe4a",
+      "comment": "修复 fixpipe 在 split-if 拆分后无法正确定位的问题：将 kSplittedIf 字符串常量从 SplitIfByBlockId.cpp 的局部常量提升为 CVPipeline 命名空间公共常量（Utils.h），SplitIfByBlockId 设置/读取统一引用它，RemoveAttributes 把 kSplittedIf 加入待清理属性列表。InterCoreTransferAndSync 新增 findYieldMatmulInSplitIf（从 split-if 的 yield operand 反查被 yield 的 matmul）与 AnalyzeSplittedIf（要求 producer 与 consumer 的 if 都带同值 kSplittedIf 属性），在 handleCubeToVector 中命中时用 realValue（yield 的 matmul result）替换 fixpipe 的 src，并把 prodEnd/consStart 定位到 matmul/before-yield 位置；insertCubeToVectorTransfer 改为优先使用 dep.realValue 作为 fixpipe 源。同时移除了 findMainLoopforTransfer 中「startOp/endOp 不在同一 parent block 即置 fallback」的硬性报错，这在 cross-if 传输场景下过于严格，但去掉后需依赖后续逻辑自行保证正确性。DependencyInfo 新增 isSplitedIf 与 realValue 两个可选字段。整体修复方向合理，属于 dynamic CV pipeline 中 if 拆分后的边界场景补全；风险在于去掉 fallback 报错后，若 LCA 推导在跨 if 场景下仍不成立，可能静默产生错误 IR 而非显式失败。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "compiler-backend",
+        "dynamic-cv-pipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "split-if 相关传输路径此前行为不正确，需要 lit 测试验证 kSplittedIf 属性传播、realValue 替换与 RemoveAttributes 清理；同时移除 fallback 报错后需确认原有依赖该报错的用例是否仍适用。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow/",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/",
+          "third_party/ascend/lib/DynamicCVPipeline/RemoveAttributes.cpp 相关 lit 测试"
+        ]
+      },
+      "message": "[ssbuffer](fix) move fixpipe into splittedif (#2098)\n\n(cherry picked from commit 8a4154e061d5cb51921d1383cd8a173fb9322318)"
+    },
+    {
+      "sha": "85afc72daa8960b4adfab08555ea83c3d85c57d2",
+      "comment": "修复 bl.alloc 无条件给每个 buffer 打 annotation.mark effects=[write, read] 的问题：由于 PlanMemory 依据真实内存效应推导 buffer 生命周期（首次写为 gen、最后读为 kill），这个伪造的 read 会让未初始化 alloc 被误判为活跃 buffer 并因「有 user 无 write」而报错。修复方式是移除该 effects 注解，仅保留 is_mem_unique 时打 mem_unique，由后续 pass 从真实 store/load 推导 effects。语义上更正确（写与否只有调用方知道），属于典型的「注解应与实际 IR 行为一致」修复。同时新增 test_alloc_annotation.py：通过 ASTSource → ast_to_ttir 检查 TTIR 中 annotation.mark 的属性，断言无 effects 且 mem_unique 保留；另加两个 A5-only 端到端用例，用 bl.alloc 的 UB buffer 作为 tl.dot 结果的 fixpipe 目标并用 to_tensor 读回，与 torch 对比。潜在风险是若有其他 pass 隐式依赖该 effects 注解（例如把 alloc 视为已初始化），移除后行为可能变化，需关注内存规划相关测试。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "frontend",
+        "memory-planning"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "移除注解会改变 PlanMemory 的 buffer 生命周期推导，需要新增断言确认不再产生伪造 read，并端到端验证 fixpipe 写入 bl.alloc buffer 的路径；当日已补 test_alloc_annotation.py，但端到端用例仅 A5 可用。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_alloc_annotation.py",
+          "third_party/ascend/unittest/pytest_ut/ 下内存规划/PlanMemory 相关用例",
+          "python/triton/extension/buffer/language/semantic.py 相关 TTIR 断言"
+        ]
+      },
+      "message": "[frontend](fix) drop read/write effects mark on buffer-language alloc (#2165)\n\n* [frontend](fix) drop read/write effects mark on buffer-language alloc\n\nbl.alloc() unconditionally attached an effects = [\"write\", \"read\"] mark to\nevery buffer it allocated, so each alloc carried a synthetic read user even\nwhen it is never written.\n\nPlanMemory derives a buffer's lifetime (gen at first write, kill at last read)\nfrom the real memory effects in the IR, so the bogus read makes it treat an\nuninitialized alloc as a live buffer and then report an error because the\nbuffer has users but no write. Whether a buffer is written is only known to\nthe caller, so annotate nothing but mem_unique here and let the passes derive\neach buffer's effects from the actual stores and loads.\n\nSigned-off-by: jqran <jiaochaoran@huawei.com>\n\n* [frontend](test) cover bl.alloc annotations and a fixpipe buffer end to end\n\nAdd a pytest case for the annotations bl.alloc puts on a buffer:\n\n* the TTIR of kernels that call bl.alloc is checked for the annotation\n  itself: no mark may carry an \"effects\" attribute, and is_mem_unique=True\n  must still be annotated with mem_unique. The is_mem_unique assertion fails\n  on the previous behaviour, where bl.alloc also emitted\n  effects = [\"write\", \"read\"];\n* two end-to-end cases use a bl.allocated UB buffer as the fixpipe destination\n  of a tl.dot result and read it back with to_tensor, comparing the result\n  against torch on the NPU. They are A5 only, like the other tests that use\n  fixpipe.\n\nSigned-off-by: jqran <jiaochaoran@huawei.com>\n\n---------\n\nSigned-off-by: jqran <jiaochaoran@huawei.com>\n(cherry picked from commit 515fef06d287942134b9d784015e633db3d44493)"
+    },
+    {
+      "sha": "ddb198f1284414fa3da3119471c1cfc56627fe38",
+      "comment": "为兼容旧调用方（JIT、Inductor、TorchNPU）恢复一批已废弃的 NPUOption 名称：在 NPUOptions 中新增约 40 个 field(default=..., init=False) 兼容字段（如 add_auto_scheduling、allow_fp8e4nv、force_simt_only、enable_vf_fusion、stream 等），并在 __post_init__ 中把所有 init=False 且不在实例 __dict__ 的字段统一物化到实例上（因 Inductor 与 JIT 会检查 options.__dict__），同时把 arch 也写入 __dict__ 以保持旧名可发现。parse_options 侧改为对副本做 _remove_deprecated_npu_options（不再 in_place 修改调用方 dict），并在非内部选项路径最后 pop 掉社区 JIT 会拒绝的 legacy 关键字 stream；_normalize_bishengir_simt_optimization_for_context 改用 normalized_opts。utils.py 的废弃选项集合新增 enable_bishengir_simt_optimization、enable_simt_reorder_instruction、enable_vf_fusion 并补充说明文案；同时移除 910_95 路径中 enable_vf_fusion 的实际透传（改为忽略）。测试侧新增 test_compiler.py 的大量参数化用例（空选项暴露全部 legacy 名、被忽略选项保持默认与输入不变、legacy 路由优先级、stream 消费、内部 grid 值序列化往返、未知选项透传），并更新 test_compiler_layout_memory_contract.py 与 test_specialization_cache_npu.py（JIT/Inductor 两种编译图下 legacy 选项不应被当作 kernel 参数）。这是本次改动中影响面最广的一处，核心权衡是「保持 __dict__ 完整以兼容外部工具」与「不改变实际编译行为（值被忽略或路由）」；风险在于 __dict__ 变大可能影响 hash/缓存键计算与序列化体积，且未来新增选项时容易忘记同步兼容集合。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "medium-risk",
+        "compiler-backend",
+        "backward-compatibility"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "选项兼容层是行为契约变更，涉及 parse_options 的副本处理、__dict__ 物化、stream 消费与 legacy 路由，属于高回归风险面，必须用单测锁定；当日已大幅补充 test_compiler.py 与更新两个既有测试文件，覆盖较全面。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler.py",
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "third_party/ascend/unittest/pytest_ut/test_specialization_cache_npu.py",
+          "third_party/ascend/backend/utils.py 的废弃选项集合一致性"
+        ]
+      },
+      "message": "[compiler](fix) preserve deprecated options for compatibility (#2177)\n\n(cherry picked from commit 9b43bd6d29eb2b2e198a9b40d3a37221f4ce0cac)"
+    },
+    {
+      "sha": "bcd376209f3166cf04df30d1628138b23d49ae9f",
+      "comment": "为 cann extension（al）算子补充单元测试覆盖：新增 test_cast.py（al.cast int32→float32）、test_get_element.py（al.get_element 取标量，8 种 dtype），大幅扩展 test_flip.py（al.flip dim=0，8 种 dtype）、test_extract_slice.py（新增 al.extract_slice 8 dtype 参数化用例）、test_insert_slice.py（新增 al.insert_slice 8 dtype 参数化用例）、test_sort.py（把原先独立的 test_call_sort.py 的 sort_call 用例并入并改用 al 前缀）、test_parallel.py 与 test_compile_hint.py 统一 import 别名 extension→al。test_compile_hint.py 还额外去掉 skip 标记并断言 ttadapter IR 中 annotation.mark 数量为 5 及各 hint 的具体属性（{hint_a}、{hivm.multi_buffer = 2 : i32}、{hint_b = 42 : i32}、{hint_c = true}、{hint_d = [xblock, xblock_sub]}），这比单纯的数值对比更能证明 hint 真正到达编译器。整体属于纯测试补充，不改变产品代码行为，风险低；但 test_flip.py 的改动实际是替换/重写了原有文件内容（原来 import libentry 的用例被删除），需确认原有 flip 覆盖是否被等价替换。",
+      "tags": [
+        "test",
+        "low-risk",
+        "cann-extension"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "该 commit 本身就是测试变更（新增/合并/参数化 al 算子用例），并新增了 annotation.mark 的 IR 断言；需要保证这些用例在 A5/910B 平台上按预期跳过或执行，且被删除的旧 flip/sort_call 覆盖不出现空档。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_cast.py",
+          "third_party/ascend/unittest/pytest_ut/test_get_element.py",
+          "third_party/ascend/unittest/pytest_ut/test_flip.py",
+          "third_party/ascend/unittest/pytest_ut/test_extract_slice.py",
+          "third_party/ascend/unittest/pytest_ut/test_insert_slice.py",
+          "third_party/ascend/unittest/pytest_ut/test_sort.py",
+          "third_party/ascend/unittest/pytest_ut/test_compile_hint.py"
+        ]
+      },
+      "message": "[UT](feat) Add unit test coverage for al ops (#2055)\n\n(cherry picked from commit 6507a8965a2511694a23b72db166c32e25cac91a)"
+    },
+    {
+      "sha": "a67022b4fa86e582cbbd3bd5beb635621a1fecb4",
+      "comment": "构建侧更新：setup_ascend.py 中 Triton-distributed-ascend 子模块的固定 commit 从 7786ae06 升级到 8c1dae1a，并在 third_party/ascend/CMakeLists.txt 中当 TRITON_BUILD_TD 打开时 add_subdirectory(Triton-distributed-ascend/csrc)，使分布式扩展的 C++ 源码参与构建，从而能产出对应的 td so 库。改动属于构建编排，逻辑简单，风险主要在依赖版本升级本身：新 commit 可能与当前 triton-ascend 的 patch/接口存在不兼容，或新增的 csrc 目标与现有 TritonAscend 目标产生符号/依赖冲突，需要构建验证。",
+      "tags": [
+        "chore",
+        "ci",
+        "low-risk",
+        "build"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "该变更仅调整子模块 commit 与 CMake 构建目标，不改变编译器或运行时行为语义，现有功能测试无需修改；但建议在 CI 中保留 TRITON_BUILD_TD=ON 的构建矩阵以验证新加的子目录可被正确编译。",
+        "suggested_test_areas": [
+          "setup_ascend.py 构建流程",
+          "third_party/ascend/CMakeLists.txt 的 TRITON_BUILD_TD 编译矩阵"
+        ]
+      },
+      "message": "[build](fix) add td so and update commit (#2162)\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>\n(cherry picked from commit e28d648cc79e270e6bd0baea5c24a285407faa7e)"
+    },
+    {
+      "sha": "62b7341e7879cb4c41be50069e2683573d565252",
+      "comment": "在 DynamicCVPipeline 的 AnalyzeName.cpp 中从 interceptrFunc 静态字符串数组中移除硬编码的 'pcb06_tc02_c2v2v2c_chain'。该数组用于判定哪些 kernel 函数需要在动态 CV pipeline 分析中被特殊拦截/命名处理。移除该项表示该函数不再需要特殊处理，属于代码清理/去特例化，削减了对特定算子命名的耦合。潜在风险：若该函数仍依赖此拦截以触发正确的 pipeline 分析路径，移除后可能导致其 DynamicCVPipeline 优化行为变化；但从提交意图看是主动去除已不需要的特例，风险较低。",
+      "tags": [
+        "chore",
+        "bugfix",
+        "low-risk",
+        "dynamic-cv-pipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅删除一个硬编码的函数名拦截项，不改变分析逻辑的通用行为，无需新增测试。但为确认移除该特例后相关 kernel 的 DynamicCVPipeline 优化路径不回归，建议在既有 DynamicCVPipeline 测试上做验证。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/"
+        ]
+      },
+      "message": "[ssbuffer](fix) remove funcname (#2152)\n\nCo-authored-by: shaoyiyang <shaoyiyang1@huawei.com>\n(cherry picked from commit e28f03f704d818adec812cf0abdb19a63c7bf1e0)"
+    },
+    {
+      "sha": "7c6d8538b25959bab7fd96660c41d5d7dc3cbcf8",
+      "comment": "为 MaskAnalysis 增加对 tensor 型 scf.for iter_arg 的切片边界修复。变更要点：1) parse 入口除 IntegerType 外新增 isIndex() 类型分派到 parseIntScalar；2) 在 LoopLikeOpInterface 的 iter_arg 分支中，仅处理 ShapedType 且仅支持 scf::ForOp，通过 blockArgument.getArgNumber()-1 定位 slot 并检查 yielded 值；3) 若 yielded == operand（跨迭代不变）则直接沿用 init 解析结果；4) 若 yielded 形如 iter_arg + 常量（splat DenseElementsAttr 或 IntegerAttr），则按 iterCount = (iv - lb)/step 推导出 offset = iterCount * increment，并将其累加到 start/end（range 状态）或 scalar（标量状态）；5) 引入 #include \"mlir/Dialect/SCF/IR/SCF.h\" 与对 arith::AddIOp/arith::ConstantOp 的识别。此修复主要解决带 tensor 型累加 iter_arg（如 range_val = range_val + BLOCK）的循环在掩码分析中被保守拒绝、导致切片边界推导失败的问题。潜在风险：1) 该推导要求 increment 为常量且 yield 仅为纯加法，若上游优化将加法改写为其他形式（如 affine/select），推导会失败回退；2) iterCount 计算仍要求 lb/step 为常量（本 commit 未放宽，后续 #2191 才放宽）；3) 归属 Ascend TritonMemoryAccess 分析组件，服务于后续的内存访问掩码/边界分析 pass，不直接改变编译阶段契约。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "ascend-memory-access",
+        "test"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "本 commit 同时修改分析逻辑并新增测试文件 test_select_analysis_for_iterarg.py（173 行），已覆盖 where + iter_arg 的常量 lb、负 step、非零 lb 三类场景。但负 step 用例存在疑点：kernel 中 range 的 step 为 -BLOCK，而 kernel 与 torch 参考实现内 range_val 仍按 +BLOCK 递增、range 循环体也不随 start 变化，逻辑上可能无法真正验证负 step 语义，建议评审该用例的有效性。此外本 commit 引入的 tensor iter_arg 推导仍需常量 lb/step，动态场景由后续 commit 处理。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_select_analysis_for_iterarg.py",
+          "third_party/ascend/unittest/pytest_ut/kernel selection / mask 相关用例"
+        ]
+      },
+      "message": "[MaskAnalysis](fix) Fix slice bounds for tensor loop iter_args in mas... (#2159)\n\n* [MaskAnalysis](fix) Fix slice bounds for tensor loop iter_args in mask analysis\n\n* fix\n\n* testcase\n\n* fix precommit\n\n(cherry picked from commit d86c32aaf0c693a64e4a724c44ebe6206637fd46)"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}
