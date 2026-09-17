@@ -1,4 +1,72 @@
 {
+  "b63e34c521dfc55a5f9e419cfeaa64df8263891f": {
+    "date": "2026-09-17",
+    "msg": "[Runtime] Validate thread count against the kernel's compiled warp size (#11711)"
+  },
+  "e9c94a3f2bb1a0f04ed2cfc11a8f9e851bb7d062": {
+    "date": "2026-09-17",
+    "msg": "[AMD][Gluon] Export scaled_upcast layout helper for every supported arch (#11657)"
+  },
+  "9920320f15cc965f0578ee3e8aa198bb72b6d2d9": {
+    "date": "2026-09-17",
+    "msg": "[AMD][BACEND] Fix multi-cta OOB handling of TDM gather/scatter (#11833)"
+  },
+  "6cdc9d5861753a5408fabb0eb36ef4a8615fd15a": {
+    "date": "2026-09-17",
+    "msg": "[AMD][BACKEND] Don't over-subscribe TDM warps on small blocks (#11749)"
+  },
+  "2ff84c3ec392997b5fef81399ca21f1d868834bd": {
+    "date": "2026-09-17",
+    "msg": "Revert \"Fix alignment of warp-specialized NVIDIA barriers\" (#11830)"
+  },
+  "bde7dafd6cb2abb9ee97439e8e4bf07f0383c16c": {
+    "date": "2026-09-17",
+    "msg": "[TRITONGPU] Significantly improve BMM perf with small updates (#11822)"
+  },
+  "67054834aba4497b848949f9062cf7c99ba16de6": {
+    "date": "2026-09-17",
+    "msg": "Revert \"[NVIDIA] Lower unpredicated global loads and stores through LLVM\" (#11828)"
+  },
+  "6a28e790c4306ee7a2479a49447d80b308da1117": {
+    "date": "2026-09-17",
+    "msg": "Revert \"[FPSan] Disable Blackwell loop fusion and warp specialization\" (#11827)"
+  },
+  "9ee20d89e271c53905f737c694a21e187608bc90": {
+    "date": "2026-09-17",
+    "msg": "[AMD] Support shared-memory loads and stores of pointer elements (#11814)"
+  },
+  "2f86fa841667e07a73d8fa58cfda404bacff152f": {
+    "date": "2026-09-17",
+    "msg": "[NFC][AMD] Add mixed FP8/BF8 WMMA lowering tests (#11579)"
+  },
+  "16a0089b128e85dbe3f5098847a0091c0a238ce6": {
+    "date": "2026-09-17",
+    "msg": "Infer slice encodings for legacy reshapes (#11799)"
+  },
+  "60910eb0072b7b720b430eed39fb936d5ffb3c8b": {
+    "date": "2026-09-17",
+    "msg": "[NVIDIA] Simplify fixed-cluster program counts (#11818)"
+  },
+  "e2e356723ce35f46b5144373b145c55c4d712237": {
+    "date": "2026-09-17",
+    "msg": "[NVIDIA] Use redux for 64-bit integer sum reductions (#11816)"
+  },
+  "0903d22f89ec85589153116f5daf733d0547814f": {
+    "date": "2026-09-17",
+    "msg": "[frontend] Normalize nested constexpr tuple containers (#11803)"
+  },
+  "cc47464909c44acbb1c6747a4655a790d1368289": {
+    "date": "2026-09-17",
+    "msg": "[NVIDIA] Use redux for 64-bit bitwise reductions (#11813)"
+  },
+  "55372482a9b8fdeba056af2ba71a0511b25a8315": {
+    "date": "2026-09-17",
+    "msg": "[NVIDIA] Fix CGA layout assignment for batched dots (#11811)"
+  },
+  "43b41e745ae08f06bb990fa46217d346d7c3658d": {
+    "date": "2026-09-17",
+    "msg": "[NVIDIA] Express packed S8-to-BF16 conversion in LLVM IR (#11810)"
+  },
   "84f99580abd493fe2907cb0e8182ab86fcc18493": {
     "date": "2026-09-16",
     "msg": "[Gluon] Expose GluonASTSource for offline compilation (#11806)"

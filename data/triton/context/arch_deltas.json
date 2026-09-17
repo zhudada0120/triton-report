@@ -463,6 +463,42 @@
       "interface_changes": "Interpreter 正确性修复：host 端 TensorDescriptor 若以 round_f32_to_tf32=True 创建，TMA 单元会对加载的每个 f32 做 round-to-nearest-even 到 10 位尾数（Inf/NaN 保持）的处理，而 interpreter 在 _implicit_cvt 中丢失了该标志，导致 TRITON_INTERPRET=1 下的数值与设备不一致。修复方式：在 TensorDescHandle 中保留 round_f32_to_tf32，新增 _round_f32_to_tf32（numpy 实现），在 create_descriptor_load 中当 flag 为真且元素类型为 f32 时进行舍入；gather 复用该路径；in-kernel 的 tl.make_tensor_descriptor 不参与舍入。测试从 python/test/unit/cuda/test_tma_descriptor.py 迁移到 python/test/unit/language/test_tensor_descriptor.py ",
       "change_summary": "[INTERPRETER] Honor round_f32_to_tf32 on host tensor descriptor loads (#11751)",
       "ascend_impact": false
+    },
+    "b63e34c521dfc55a5f9e419cfeaa64df8263891f": {
+      "date": "2026-09-17",
+      "affected_modules": [
+        "python/triton/compiler/compiler.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/compiler/compiler.py"
+      ],
+      "interface_changes": "变更意图：CompiledKernel._init_handles 中检查 num_warps * warp_size > n_max_threads 时，原用 driver.active.get_current_target().warp_size（活跃设备的目标 warp size），这假设 kernel 是为该设备编译的；对支持多 warp size 的硬件（如 Intel SIMD16/SIMD32 每 kernel 选取）会误判。改为读取 self.metadata.warp_size（编译期写入的 kernel 元数据），与 AMD launcher 使用的 num_warps * metadata.warp_size 保持一致。实现方式极简（1 行），复用已存在于 metadata 的 warp_size 字段，属于正确性修复。潜在风险：依赖 metadata.warp_size 在所有后端都已正确填充（NVIDIA/AMD 均如此），否则校验阈值会退化；对 gate 保真度极高的后端此改动是纯改进。",
+      "change_summary": "[Runtime] Validate thread count against the kernel's compiled warp size (#11711)",
+      "ascend_impact": true
+    },
+    "67054834aba4497b848949f9062cf7c99ba16de6": {
+      "date": "2026-09-17",
+      "affected_modules": [
+        "lib/Dialect/Triton/"
+      ],
+      "affected_interfaces": [
+        "lib/Dialect/Triton/"
+      ],
+      "interface_changes": "变更意图：Revert #11770（用 LLVM 原生 load/store 降低无谓延时全局 load/store），因引入功能性问题。实现方式：回退 lib/Dialect/Triton/IR/Ops.cpp 中 verifyLoadStoreType 的提取与对 Load/Store verify 的调用（原 verifyLoadStoreType 被重命名为 verifyAtomicLoadStoreType 仅用于 atomic），删除 test/Triton/invalid.mlir 中相应违规用例，NVIDIA LoadStoreOpToLLVM.cpp 恢复通过 inline asm/PTX 路径生成，重加 sub-byte 元素处理（i1 sign-extend、valueElemNBits 用 max(8, ...)），并回退 test/Conversion/tritongpu_to_llvm*.mlir、test/Conversion/tritongpu_to_llvm_blackwell_256bit.mlir、test/TritonGPU/combine.m",
+      "change_summary": "Revert \"[NVIDIA] Lower unpredicated global loads and stores through LLVM\" (#11828)",
+      "ascend_impact": false
+    },
+    "0903d22f89ec85589153116f5daf733d0547814f": {
+      "date": "2026-09-17",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "变更意图：修复 Gluon 中等价 layout 比较时因一方含嵌套 JIT tuple、另一方含 Python list（如 associative_scan 之后）而抛出 AttributeError: 'list' object has no attribute 'type'。实现方式：python/triton/language/core.py 中 _normalize_tuple 递归归一化子容器（tuple(_normalize_tuple(x) for x in normalized_tuple)），使嵌套 constexpr 比较一致。同步新增 python/test/gluon/test_frontend.py 的 test_layout_nested_constexpr_containers（num_ctas 1/2/4 × list/tuple）与 python/test/unit/language/test_frontend.py 的 test_nested_constexpr_tuple_comparison。风险低，属前端健壮性修复，仅一行生产改动，其余为回",
+      "change_summary": "[frontend] Normalize nested constexpr tuple containers (#11803)",
+      "ascend_impact": false
     }
   }
 }

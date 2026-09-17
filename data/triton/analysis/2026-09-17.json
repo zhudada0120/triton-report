@@ -1,0 +1,362 @@
+{
+  "date": "2026-09-17",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-09-18T02:03:51.448555+08:00",
+  "daily_summary": "当日变更以 AMD 后端修复与 Gluon 布局能力增强为主线，同时包含多个 NVIDIA 后端性能优化与一个上游 revert 系列。核心内容包括：(1) 启动校验改用 kernel 元数据 warp_size 而非设备 warp_size，支持多 warp size 硬件；(2) AMD Gluon scaled_upcast 布局助手导出到各架构（cdna3/cdna5，cdna4 继承 cdna3）；(3) 修复 AMD TDM gather/scatter 多 CTA 场景 OOB 与列偏移问题；(4) 修复小 block 下 TDM warp 过度订阅导致 lowering 中止；(5) 实现 legacy reshape 的 slice encoding 推断（#10796 reland）；(6) NVIDIA 用 redux 优化 64 位整数 sum/bitwise reduce，用 nctaid 替代 nclusterid 简化 cluster 程序计数；(7) 前端 _normalize_tuple 递归归一化嵌套 constexpr 容器，修复 Gluon 布局比较 AttributeError；(8) 三个 revert（warp-specialized barrier 对齐、无谓延时全局 load/store 降低、FPSan 禁用 Blackwell loop fusion）。整体上是一个 bugfix/perf 与前端健壮性并重的日常提交集。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 影响有限。最关键的是 python/triton/compiler/compiler.py 中 CompiledKernel._init_handles 的 warp_size 来源由 driver.active.get_current_target().warp_size 改为 self.metadata.warp_size，这属于 triton-ascend 直接复用的通用编译/启动框架路径，但因其只影响 OutOfResources 线程数校验阈值，且 NPU warp_size 通常为 0/与 metadata 一致，实际影响低。python/triton/language/core.py 的 _normalize_tuple 递归归一化是前端通用改动，triton-ascend 复用该前端，行为上更健壮，无需适配。其余变更均为 AMD-only（TDM/gather/scatter/WMMA/scaled_upcast/gluon amd、shared-memory pointer lowering）、NVIDIA-only（redux、nctaid cluster、warp-specialize barrier、fpsan、lower load/store）或纯测试（test/、unittest/），不进入 triton-ascend 的编译链，无影响。",
+  "commits": [
+    {
+      "sha": "b63e34c521dfc55a5f9e419cfeaa64df8263891f",
+      "comment": "变更意图：CompiledKernel._init_handles 中检查 num_warps * warp_size > n_max_threads 时，原用 driver.active.get_current_target().warp_size（活跃设备的目标 warp size），这假设 kernel 是为该设备编译的；对支持多 warp size 的硬件（如 Intel SIMD16/SIMD32 每 kernel 选取）会误判。改为读取 self.metadata.warp_size（编译期写入的 kernel 元数据），与 AMD launcher 使用的 num_warps * metadata.warp_size 保持一致。实现方式极简（1 行），复用已存在于 metadata 的 warp_size 字段，属于正确性修复。潜在风险：依赖 metadata.warp_size 在所有后端都已正确填充（NVIDIA/AMD 均如此），否则校验阈值会退化；对 gate 保真度极高的后端此改动是纯改进。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "python/triton/compiler",
+        "runtime"
+      ],
+      "ascend_impact": {
+        "ascend_affected": true,
+        "functionality": "python/triton/compiler/compiler.py 的 CompiledKernel._init_handles 属于 triton-ascend 直接复用的通用编译/启动框架（对应跨项目影响规则中 python/triton/compiler/ 的\"可能影响\"路径，具体为 compiler.py 被 Ascend 复用的主流程）。改动将线程数上限校验的 warp_size 由 driver.active.get_current_target().warp_size 改为 self.metadata.warp_size。对 triton-ascend（NPUDriver，warp_size 由 get_current_target 返回）而言，只要 AscendBackend.pack_metadata 已写入 warp_size（通常为编译期 num_warps 对应的值），校验语义不变或更准确；若 metadata 未包含 warp_size 字段，应确认上游 metadata 结构已默认携带该键。无接口签名变化，不破坏 AscendBackend。",
+        "testing": "triton-ascend 现有针对 CompiledKernel 启动/共享内存/线程上限的测试（如 device_ut、runtime 相关 pytest）无需变更；若存在断言使用 driver warp_size 的场景，需确认 metadata 一致性。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Runtime] Validate thread count against the kernel's compiled warp size (#11711)\n\nThe launch check reads the live device's warp size, which assumes the\nkernel was compiled for it.\n\nAMD's launcher already computes the block size as `num_warps *\nmetadata.warp_size` (`third_party/amd/backend/driver.c:668`), the exact\nproduct this check bounds.\n\nIt also opens the check up for out-of-tree backends whose hardware has\nmore than one warp size - e.g. Intel GPUs run SIMD16 or SIMD32, picked\nper kernel.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/compiler/compiler.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": true,
+        "affected_interfaces": [
+          "python/triton/compiler/compiler.py::CompiledKernel._init_handles (thread-count validation now reads self.metadata.warp_size instead of the live device warp size)",
+          "third_party/ascend/backend/npu_utils.cpp::loadKernelBinary (returns hardcoded n_max_threads=0 via Py_BuildValue(\"(KKiii)\", mod, func, 0, 0, n_max_threads))",
+          "third_party/ascend/backend/driver.py::NPUUtils.load_binary (line 106, delegates to loadKernelBinary)",
+          "third_party/ascend/backend/driver.py::NPUDriver.get_current_target (line 275, returns GPUTarget with hardcoded warp_size=0)",
+          "third_party/ascend/backend/compiler.py::NPUOptions.warp_size (line 1201, field(default=32, init=False), materialized into metadata in __post_init__)"
+        ],
+        "adaptation_effort": "low",
+        "adaptation_guide": "The change breaks every Ascend kernel launch. Before the commit, CompiledKernel._init_handles computed warp_size = driver.active.get_current_target().warp_size, which NPUDriver.get_current_target() hardcodes to 0 (third_party/ascend/backend/driver.py:278), so the check 'num_warps * 0 > n_max_threads' never fired (0 > 0 is False) and was silently disabled. After the commit it reads self.metadata.warp_size, which for Ascend is NPUOptions.warp_size = 32 (default, materialized into options.__dict__ in __post_init__ at compiler.py:1339-1341 and serialized into the kernel metadata JSON). Combined with NPUUtils.load_binary -> loadKernelBinary returning n_max_threads = 0 (npu_utils.cpp:209/223), the check becomes 'num_warps(32) * 32 = 1024 > 0' -> True, raising OutOfResources(1024, 0, 'threads') for every kernel at load time. Required adaptation: (1) fix loadKernelBinary in third_party/ascend/backend/npu_utils.cpp to return a real n_max_threads (the actual max threads-per-block supported by the NPU, at least >= num_warps * warp_size, i.e. >= 1024) instead of the hardcoded 0, then rebuild the npu_utils extension module; (2) align NPUDriver.get_current_target()'s warp_size (currently 0) with NPUOptions.warp_size (32) so other consumers of that value stay consistent; (3) ensure NPUOptions.warp_size and the launcher's thread-per-warp model remain consistent so the restored check passes legitimately.",
+        "risk": "High. Without adaptation, the upstream change causes CompiledKernel._init_handles to throw OutOfResources on every Ascend kernel launch (n_max_threads is reported as 0 while metadata.warp_size is 32, so num_warps * warp_size always exceeds it). The fix is small (a one-line C++ change to return a correct n_max_threads plus a rebuild), but it is a hard runtime blocker, not a cosmetic issue."
+      }
+    },
+    {
+      "sha": "e9c94a3f2bb1a0f04ed2cfc11a8f9e851bb7d062",
+      "comment": "变更意图：将 get_scaled_upcast_fp4_scale_layout 从全局 ttgl.amd 模块下沉导出到各支持架构模块（cdna3、cdna5；cdna4 从 cdna3 继承故无需改动），并移除 ttgl.amd 顶层导出，同时更新文档 .rst 与测试引用（ttgl.amd.cdna5.get_scaled_upcast_fp4_scale_layout）。实现方式：在 amd/cdna3/__init__.py、amd/cdna5/__init__.py 的 __all__ 中加入该符号，amd/__init__.py 移除之；测试辅助 _get_amd_arch 统一返回架构模块并按 target 分派，确保 layout 与 scaled_upcast 从同一架构取。潜在风险：破坏了 API（从 ttgl.amd.* 移除）对已依赖顶层导出的下游代码是硬性变更，但属于 Gluon 实验性 API，影响可控；cdna4 依赖 cdna3 的 from ... import 保证行为一致。",
+      "tags": [
+        "refactor",
+        "test",
+        "docs",
+        "low-risk",
+        "gluon",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅涉及 AMD Gluon 后端（python/triton/experimental/gluon/language/amd/**、docs/gluon/api/amd.*、third_party/amd/python/test/**），属于跨项目影响规则中的\"绝不影哬\"路径（python/triton/experimental/gluon/amd/ 为 Gluon AMD 后端专属实现），Ascend 不使用 Gluon AMD 路径。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][Gluon] Export scaled_upcast layout helper for every supported arch (#11657)\n\nFollow up on https://github.com/triton-lang/triton/pull/11470 which\nexposed the layout helper at the global amd module. This PR exports it\nfrom the supported architectures (CDNA3-5).\n\nNote that CDNA4 exports everything from CDNA3 so it requires no changes."
+    },
+    {
+      "sha": "9920320f15cc965f0578ee3e8aa198bb72b6d2d9",
+      "comment": "变更意图：修复 #10685 引入的两个 TDM gather/scatter 多 CTA 回归——(1) 测试中 SRC_COL_OFFSET 成为死代码导致列加载错误；(2) 移除了基于 cga 列偏移的 OOB 上界 clamp，新注释声称在 make/update_tensor_descriptor 处理但实际不可行（ctaId 相关，host 端描述符不可能完成）。实现方式：在 prepareGatherScatterDescriptorBase 中对 tensorShape[1] 调用 clampTensorDimByOffset(b, tensorShape[1], cgaColOffsetElem)；测试补回 inp_desc = update_tensor_descriptor(..., add_offsets=[0, SRC_COL_OFFSET], clamp_bounds=True)。风险低且聚焦：改动与常规 TDM load/store 在 fillTDMDescriptor 中的处理保持一致，测试覆盖两类失败点无需新增用例。",
+      "tags": [
+        "bugfix",
+        "amd",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅涉及 third_party/amd/lib/TritonAMDGPUToLLVM/TDMUtility.cpp 与 third_party/amd/python/test/test_gluon_cdna5.py，属 AMD 专属 TDM 路径，跨项目影响规则明确 third_party/amd/ 为\"绝不影哬\"。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][BACEND] Fix multi-cta OOB handling of TDM gather/scatter (#11833)\n\nFixes 2 recent regressions with TDM gather/scatter in multi-cta\nscenarios caused by https://github.com/triton-lang/triton/pull/10685\n\n1) When [rewriting the\ntest](https://github.com/triton-lang/triton/pull/10685/changes#diff-8e7a74340c9af0bd99dbe56791aabcfc4b64be4168edcf78e994f4b7b78896d1L4054)\nit made `SRC_COL_OFFSET` dead code, so we always load the wrong columns.\n2) It removed the clamping of the oob bounds based on the cga offset.\nThe new comment says that this happens at make/update_tensor_descriptor\nbut that's not true. It cannot happen there because it's ctaId dependent\nso it would be impossible for host side descriptors. Note that the\nclamping is still being done for regular TDM loads and stores as well in\nfillTDMDescriptor.\n\nNote that the modified test exercises both fails, so no new tests are\nrequired."
+    },
+    {
+      "sha": "6cdc9d5861753a5408fabb0eb36ef4a8615fd15a",
+      "comment": "变更意图：修复 tdmGetWarpDistribution 有界贪心循环后把剩余 warp 折进最后一维导致过度订阅（最后一维 warp 数超过元素数），使 getTDMLinearLayout 的 messageShape 被 floor 到 0 进而丢弃 message in-dim 并中止 lowering（gfx1250 上 4xf32 block + num_warps=8 可复现）。实现方式：删除 remainingWarps > 1 时的 fallback，让多余 warp 保持未分配——其 warpId 位已无 basis row，会被 getFreeVariableMasks 报为 free variable 并由 lowering（#10056 路径）predicate off。补充两个 lit 测试（4 元素、4x4 元素 block 对应 num_warps=8/32 的 TDM store）与一个 Gluon 参数 (2,2)；仅参数化测试变更。风险低：依赖 free variable masks 机制正确 predicate，且移除 fallback 后 activeWarps != totalWarps 路径被真正启用，需确保下游 lowering 一致处理。",
+      "tags": [
+        "bugfix",
+        "amd",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅涉及 third_party/amd/backend/include/TDMCommon.h、test/Conversion/amd/** 与 third_party/amd/python/test/test_gluon_cdna5.py，属 AMD TDM 专属路径。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][BACKEND] Don't over-subscribe TDM warps on small blocks (#11749)\n\n`tdmGetWarpDistribution()` folded warps left over by its bounded greedy\nloop into the last dimension. Leftovers only existed once every\ndimension was saturated, so that fold always overshot and the last\ndimension ended up with more warps than elements. `getTDMLinearLayout()`\nthen floored its `messageShape` to 0, dropping the \"message\" in-dim and\naborting the lowering. Repros on gfx1250 with a `4xf32` block and\n`num_warps=8`.\n\nRemove the fallback and leave surplus warps undistributed. Their\n`warpId` bits already get zero basis rows and are reported as free\nvariables by `getFreeVariableMasks()`, so the lowering predicates those\nwarps off (#10056). By forcing `activeWarps == totalWarps` the fallback\nkept that path unreachable from this distribution.\n\nFixes: #11748"
+    },
+    {
+      "sha": "2ff84c3ec392997b5fef81399ca21f1d868834bd",
+      "comment": "变更意图：Revert #11710（修正 warp-specialized NVIDIA barrier 对齐），因该变更造成显著性能回归。实现方式：ConvertWarpSpecializeToLLVM.cpp 中 numThreads != 32 时重新使用 NVVM::BarrierOp::create 默认（CTA-aligned）语义，去掉 aligned=false；同时更新 test/Conversion/warp_specialize_to_llvm.mlir 的 FileCheck 期望去除 {aligned = false}。风险：语义上 revert 到 CTA-aligned 屏障在 warp partition 内可能不完全正确，但上游以性能优先并已知#11710 引入的回归；已有回退计划。",
+      "tags": [
+        "revert",
+        "nvidia",
+        "performance",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅涉及 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/ConvertWarpSpecializeToLLVM.cpp 与 test/Conversion/warp_specialize_to_llvm.mlir，属 NVIDIA 专属 warp specialization 路径（跨项目影响规则\"绝不影哬\"）。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Revert \"Fix alignment of warp-specialized NVIDIA barriers\" (#11830)\n\nReverts triton-lang/triton#11710 as it cause significant perf regression"
+    },
+    {
+      "sha": "bde7dafd6cb2abb9ee97439e8e4bf07f0383c16c",
+      "comment": "变更意图：改进 BMM 性能，避免 batch 维在 warp 间重复计算（repro 可获高达 40x 提升）。实现方式：getMmaV2WarpsPerCTA 在 shape.size()==3 时不再固定返回 {numWarps,1,1}，而是取 batchWarps = min(shape[0], numWarps)，对其 drop_front 后的 2D shape 用 2D 启发式分配剩余 warp（numWarps / batchWarps），再把 batchWarps 插回首位。补充三个 accelerate-matmul.mlir 测试覆盖 batch 每 CTA 为 1/4/2 的用例。潜在风险：改变了 nvidia_mma warpsPerCTA 的默认分布布局，可能影响后续 layout/性能选择及与既有 layout 期望的比较；仅影响 MMA v2 路径，对其它 dot 版本无影响。",
+      "tags": [
+        "performance",
+        "nvidia",
+        "tritongpu",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响但需关注间接信号。变更位于 lib/Dialect/TritonGPU/IR/Dialect.cpp（TritonGPU 方言布局辅助 getMmaV2WarpsPerCTA），在跨项目影响规则中 lib/Dialect/TritonGPU/ 属\"可能影响\"，但仅当 Ascend 复用共享 MLIR 基础设施时才会间接传导。Ascend 走 TritonToLinalg 而非 TTGIR/MMA 路径，且该函数属 NVIDIA MMA v2 layout 专用，Ascend 不调用，故无实际影响。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TRITONGPU] Significantly improve BMM perf with small updates (#11822)\n\nReproducer:\nhttps://gist.github.com/Jokeren/1c19d18f24c538d50a29b830efca2d62, seems\nlike it can achieve up to 40x perf improvement.\n\nThe idea is just simply avoiding duplicate warp computation on the batch\ndimension."
+    },
+    {
+      "sha": "67054834aba4497b848949f9062cf7c99ba16de6",
+      "comment": "变更意图：Revert #11770（用 LLVM 原生 load/store 降低无谓延时全局 load/store），因引入功能性问题。实现方式：回退 lib/Dialect/Triton/IR/Ops.cpp 中 verifyLoadStoreType 的提取与对 Load/Store verify 的调用（原 verifyLoadStoreType 被重命名为 verifyAtomicLoadStoreType 仅用于 atomic），删除 test/Triton/invalid.mlir 中相应违规用例，NVIDIA LoadStoreOpToLLVM.cpp 恢复通过 inline asm/PTX 路径生成，重加 sub-byte 元素处理（i1 sign-extend、valueElemNBits 用 max(8, ...)），并回退 test/Conversion/tritongpu_to_llvm*.mlir、test/Conversion/tritongpu_to_llvm_blackwell_256bit.mlir、test/TritonGPU/combine.mlir 与 python/test/unit/language/test_core.py 的相关断言。风险：移除 tt.load/tt.store 的元素类型 verifier 使 IR 层不再拒绝 i1/i4 等次字节元素，可能重新暴露此前被 verifier 捕获的非法 IR，需由 lowering 层兜底。",
+      "tags": [
+        "revert",
+        "nvidia",
+        "medium-risk",
+        "triton-ir",
+        "conversion"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "间接影响较小但路径命中。改动移除 lib/Dialect/Triton/IR/Ops.cpp 中 Load/Store 的 verifyLoadStoreType 调用——tt 方言 op verifier 变更在跨项目影响规则中属\"必然影响\"（include/triton/Dialect/Triton/、lib/Dialect/Triton/ 为 TTIR 唯一来源，Ascend 从此处开始 TritonToLinalg）。但本次为 revert 恢复既有行为（去除刚加入的次字节限制），triton-ascend 的 TritonToLinalg 转换链输入恢复为宽松语义，不会破坏 Ascend 端已有的合法 IR；同时移除 test/Triton/invalid.mlir 的次字节错误用例仅影响上游 lit 断言。无签名变更、无接口破坏。",
+        "testing": "triton-ascend 侧无需为 verifier 放宽新增测试；但若 Ascend 测试中含依赖该次字节 verifier 报错的负向用例（预计没有），需核实。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Revert \"[NVIDIA] Lower unpredicated global loads and stores through LLVM\" (#11828)\n\nReverts triton-lang/triton#11770 causing functional failures",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "lib/Dialect/Triton/"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "6a28e790c4306ee7a2479a49447d80b308da1117",
+      "comment": "变更意图：Revert #11722（FPSan 下禁用 Blackwell loop fusion 与 warp specialization），恢复对 Blackwell（capability // 10 >= 10）无条件执行 add_fuse_nested_loops 与 add_warp_specialize。实现方式：在 third_party/nvidia/backend/compiler.py 的 CUDABackend.make_ttgir 中移除 is_enabled(opt, 'fpsan') 判断分支，改为直接调用。风险：FPSan 在 Blackwell 上可能重新出现 spill/性能问题（这正是 #11722 想规避的），但上游选择以功能正确路径为主，需后续以其他方式优化 FPSan。",
+      "tags": [
+        "revert",
+        "nvidia",
+        "compiler",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅涉及 third_party/nvidia/backend/compiler.py（CUDABackend 的 Blackwell 流水线），属 NVIDIA 专属编译器配置，Ascend 后端 add_stages 与其完全不共用。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Revert \"[FPSan] Disable Blackwell loop fusion and warp specialization\" (#11827)\n\nReverts triton-lang/triton#11722"
+    },
+    {
+      "sha": "9ee20d89e271c53905f737c694a21e187608bc90",
+      "comment": "变更意图：补齐 AMD 后端对共享内存中 pointer 元素的 load/store 支持，使 local_alloc/load/store/gather/scatter 能处理指针类型（将 ptr 以 i64 形式存入 LDS），对应 #11771 在 AMD 侧的同款能力。实现方式：TargetInfo::storeDShared 检测指针元素类型后 ptrtoint 到 i64（向量则 clone i64 的向量），loadDShared 检测后以 i64 加载再 inttoptr 回原类型；MemoryOpToLLVM.cpp 的 TransLocalLoadOpConversion 用 getIntOrFloatOrPtrBitWidth 替代 getIntOrFloatBitWidth 以避免指针类型崩溃；补 test/Conversion/amd/tritongpu_to_llvm.mlir 用例并在 python/test/gluon/test_core.py 移除 AMD skip。潜在风险：ptrtoint/inttoptr 在 LDS 路径上引入 64 位访存，需确认对齐/vectorization 语义；改动局限于 AMD TargetInfo 与内存 lowering。",
+      "tags": [
+        "feature",
+        "amd",
+        "memory",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅涉及 third_party/amd/lib/TritonAMDGPUToLLVM/{TargetInfo.cpp, MemoryOpToLLVM.cpp}、test/Conversion/amd/** 与 python/test/gluon/test_core.py，属 AMD 专属 TargetInfo 与 shared memory lowering 路径（跨项目影响规则\"绝不影哬\"：include/triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h 与 lib/Conversion/TritonGPUToLLVM/ 为 NV/AMD 使用，Ascend 无 TargetInfo 实现也不调用）。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Support shared-memory loads and stores of pointer elements (#11814)\n\nLoad/store pointers from/to LDS as i64. This enables\nlocal_alloc/load/store/gather/scatter on pointers, completing the same\nfeatures in #11771 for the AMD backend.\nThe change in `TransLocalLoadOpConversion` in `MemoryOpToLLVM.cpp` is\nnecessary to avoid crashes(so it bail correctly)."
+    },
+    {
+      "sha": "2f86fa841667e07a73d8fa58cfda404bacff152f",
+      "comment": "变更意图：为 gfx117x/gfx12 上的 OCP FP8/BF8 WMMA 四种操作数组合（FP8×FP8、FP8×BF8、BF8×FP8、BF8×BF8）补齐转换测试覆盖，上游 lowering 已支持这些组合，本 PR 为 NFC。实现方式：为 gfx1170/gfx1200 RUN 行引入 WMMA2FP8 检查前缀，新增 wmma2_dot_fp8_bf8 / bf8_fp8 / bf8 与 wmma3_dot_fp8 / fp8_bf8 / bf8_fp8 用例，对应 wmma.f32.16x16x16.{fp8,bf8}.* 与 wmma.f32.16x16x64.{fp8,bf8}.* 指令。风险极低，纯测试增补。",
+      "tags": [
+        "test",
+        "amd",
+        "nfc",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅涉及 test/Conversion/amd/tritongpu_wmma_dot_to_llvm.mlir，属 AMD WMMA 转换的 lit 测试。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NFC][AMD] Add mixed FP8/BF8 WMMA lowering tests (#11579)\n\ngfx117x adds WMMA support for all four OCP FP8/BF8 operand pairings:\nFP8×FP8, FP8×BF8, BF8×FP8, and BF8×BF8. Triton already supports lowering\nthese operations, but the conversion tests did not cover every pairing.\nThis PR is therefore NFC and adds regression coverage for the existing\nlowering.\n\nOCP FP8 WMMA is only applicable to gfx117x and gfx12 targets. The tests\nuse separate target-specific check prefixes so these expectations are\nnot applied to unsupported architectures (i.e. gfx11)."
+    },
+    {
+      "sha": "16a0089b128e85dbe3f5098847a0091c0a238ce6",
+      "comment": "变更意图：为 legacy reshape 推断 slice encoding（#10796 reland，但仅用于 legacy 路径，不再为 LinearEncoding 产生 slice）。当 reshape 仅新增/移除单位维度时保留 slice 编码，保持寄存器广播与每线程元素数。实现方式：TritonGPUInferLayoutInterface::inferReshapeOpEncoding 在开头 isa<LinearEncodingTrait>(srcEnc) 时直接 failure；对 SliceEncodingAttr 场景用 sliceEnc.paddedShape(srcShape) == dstShape 且 !isExpensiveView 命中则返回 parent；对移除 size-1 维的反向场景构造 SliceEncodingAttr 并通过 isExpensiveView 检查回退。改动影响多个测试（combine.mlir、accelerate-amd-matmul-wmma-gfx1250.mlir、fpsan.mlir、DialectTest.cpp、gluon test_frontend.py）。风险中等：改变 reshape encoding 推断会影响上游 layout 收敛行为，且 DialectTest 期望更新需谨慎回归；但已限定 legacy 路径，LinearEncoding 路径保持原样。",
+      "tags": [
+        "refactor",
+        "feature",
+        "tritongpu",
+        "medium-risk",
+        "layout"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Dialect/TritonGPU/IR/Dialect.cpp 的 inferReshapeOpEncoding 与相关 test/unittest，属 TritonGPU 布局推断。跨项目影响规则下 lib/Dialect/TritonGPU/ 为\"可能影响\"路径，但 Ascend 用 TritonToLinalg 替代 TTGIR 且不做 TTGIR reshape layout 推断，GPU layout slice encoding 非 Ascend 依赖，无实际传导。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Infer slice encodings for legacy reshapes (#11799)\n\nReland of #10796, but applied only to the \"legacy\" encoding path,\ninstead of also producing slices for `LinearEncoding`s.\n\nPreserve slice encodings when a reshape adds or removes a unit\ndimension. Keep an equivalent destination encoding hint when one is\nsupplied.\n\nOnly use the slice or its parent when it preserves register broadcasting\nand the number of elements per thread. Otherwise, use the existing\nreshape inference path."
+    },
+    {
+      "sha": "60910eb0072b7b720b430eed39fb936d5ffb3c8b",
+      "comment": "变更意图：简化 NVIDIA 固定 cluster 场景下 get_num_programs 的生成，避免 %nclusterid 读取让 ptxas 通过运行期 cluster size 推导常量内存地址查找 grid 维度。实现方式：Triton 以 (num_ctas,1,1) 启动 cluster，因此 num_programs(0) = nctaid.x / num_ctas，num_programs(y/z) 直接读 nctaid.y/z（对应 getNumPrograms 重写）。test/Conversion/tritongpu_to_llvm.mlir 相应更新期望（引入 udiv、nctaid.y/z）。声明可减少 9 条 SASS、128 字节/specialization，寄存器与 spill 不变。风险：假设 cluster 维度恒为 (num_ctas,1,1)，若未来支持非对称 cluster 维度则该推导失效——需与 launch 约定保持一致。",
+      "tags": [
+        "performance",
+        "nvidia",
+        "conversion",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅涉及 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/SPMDOpToLLVM.cpp 的 GetNumProgramsOpConversion（NVIDIA PTX/NVVM 专属 lowering）与 test/Conversion/tritongpu_to_llvm.mlir。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Simplify fixed-cluster program counts (#11818)\n\n`%nclusterid` reads make `ptxas` look up the grid dimensions through a\nconstant-memory address derived from the runtime cluster size.\n\nTriton launches clusters with dimensions `(num_ctas, 1, 1)`, so derive\n`num_programs(0)` from `%nctaid.x / num_ctas` and use `%nctaid.y` and\n`%nctaid.z` directly. This applies the same launch invariant as #11790.\n\nOne observed expansion of `%nclusterid.x` is:\n\n```sass\nCS2R.32 R2, SR_CgaSize;\nIMAD R2, R2, -0xa0, RZ;\nR2UR UR5, R2;\nLDCU UR5, c[0x0][UR5+0x2c0];\n```\n\nFor `num_ctas == 2`, the replacement uses a fixed-offset grid-dimension\nload and a right shift:\n\n```sass\nLDCU UR6, c[0x0][0x370];\nUSHF.R.U32.HI UR9, URZ, 0x1, UR6;\n```\n\nY and Z each become a fixed-offset load. In two inspected\nspecializations, the generated code loses nine SASS instructions and 128\nbytes per specialization, with unchanged register usage and no spills.\n\n<!-- codex-thread: 01a0abbf-e793-7401-97b3-46b2ca1f5944 -->"
+    },
+    {
+      "sha": "e2e356723ce35f46b5144373b145c55c4d712237",
+      "comment": "变更意图：用 3 个 32 位 redux.sync.add 实现全 warp 的 64 位整数 sum 归约（低 16 位 + 中 16 位 + 高 32 位分别归约再 64 位合成），减少 warp reduce 次数。实现方式：TargetInfo.cpp matchReduxKind 把 arith::AddIOp 加入 64 位合法集合；warpReduce 中当 kind==ADD 且 acc 为 i64 时用 and/lshr 拆低中位并用 and(0xFFFF)、lshr(16) 分别 ReduxOp，再 (uint64)low + ((uint64)mid<<16) + ((uint64)high<<32)。GB300 上延迟改善 1.53%~4.08%，寄存器/溢出不变。测试在 test_core.py test_reduce1d 强化 int64/uint64 min/max/sum 用例并新增 test_reduce64_integer。风险：正确性依赖\"每个 16 位小计在 32 lane 内 ≤21 位\"这一范围论证；若未来 lane 数变化需重算。",
+      "tags": [
+        "performance",
+        "nvidia",
+        "reduction",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅涉及 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/TargetInfo.cpp 的 warpReduce（NVIDIA redux 专属）与 python/test/unit/language/test_core.py，属 NVIDIA TargetInfo 路径。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Use redux for 64-bit integer sum reductions (#11816)\n\nLower full-warp 64-bit integer sum reductions using three 32-bit\n`redux.sync` operations. Reduce the low and middle 16-bit chunks and the\nhigh 32-bit word separately, then combine the results with 64-bit\nadditions.\n\nIdea:\n```cpp\nuint32_t low = redux_add(uint32_t(x) & 0xffff);\nuint32_t middle = redux_add(uint32_t(x) >> 16);\nuint32_t high = redux_add(uint32_t(x >> 32));\n\nresult = uint64_t(low) + (uint64_t(middle) << 16)\n       + (uint64_t(high) << 32);\n```\n\nEach 16-bit subtotal fits in 21 bits across 32 lanes, so the final\nadditions preserve carries and 64-bit wraparound.\n\nOn GB300, measured latency improves by **1.93%, 1.53%, and 4.08%**\nacross three configurations, with unchanged register usage and no\nspills.\n\n<!-- codex-thread: 01a0abbf-e793-7401-97b3-46b2ca1f5944 -->"
+    },
+    {
+      "sha": "0903d22f89ec85589153116f5daf733d0547814f",
+      "comment": "变更意图：修复 Gluon 中等价 layout 比较时因一方含嵌套 JIT tuple、另一方含 Python list（如 associative_scan 之后）而抛出 AttributeError: 'list' object has no attribute 'type'。实现方式：python/triton/language/core.py 中 _normalize_tuple 递归归一化子容器（tuple(_normalize_tuple(x) for x in normalized_tuple)），使嵌套 constexpr 比较一致。同步新增 python/test/gluon/test_frontend.py 的 test_layout_nested_constexpr_containers（num_ctas 1/2/4 × list/tuple）与 python/test/unit/language/test_frontend.py 的 test_nested_constexpr_tuple_comparison。风险低，属前端健壮性修复，仅一行生产改动，其余为回归测试。",
+      "tags": [
+        "bugfix",
+        "frontend",
+        "gluon",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "正面影响，无需适配。python/triton/language/core.py 的 _normalize_tuple 属前端类型/常量处理通用路径，在跨项目影响规则中 python/triton/language/ 为\"可能影响\"。triton-ascend 复用同一 Triton 语言前端（含 core.py 与 _normalize_tuple），该递归归一化使嵌套 constexpr/list/tuple 比较更稳定，不会破坏 Ascend 已有行为（仅扩大归一化范围），无需任何接口适配。",
+        "testing": "triton-ascend 侧无需强制新增测试；若 Ascend 有涉及嵌套 constexpr 容器比较/布局比较的用例，可借此改动受益。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[frontend] Normalize nested constexpr tuple containers (#11803)\n\nPR description written by Codex\n\nComparing equivalent Gluon layouts can raise `AttributeError: 'list'\nobject has no attribute 'type'` when one layout contains nested JIT\ntuples and the other contains Python lists, as happens after\n`associative_scan`. The production diff is one line in\n`_normalize_tuple`, recursively normalizing child containers before\ninferring tuple element types.\n\nThe remaining 38 lines add nine regression cases covering nested\nconstexpr comparisons and layout equality followed by scan/subtraction\nwith 1, 2, and 4 CTAs. All nine pass; five fail without the fix. The\ncomplete frontend suites passed 692 tests, with 184 skipped. GB300\ncorrectness checks matched the integer scan oracle and 1,536\nhistogram-query row comparisons exactly.",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "cc47464909c44acbb1c6747a4655a790d1368289",
+      "comment": "变更意图：用 2 个 32 位 redux.sync 操作降低全 warp 64 位整数 AND/OR/XOR 归约（高低 32 位各自归约再合成），替代此前无语义支持的路径。实现方式：TargetInfo.cpp matchReduxKind 放宽 64 位集合包含 AndIOp/OrIOp/XOrIOp；warpReduce 中当 hi/lo 拆分后 lowKind 默认为 *kind，仅在 MIN/MAX/UMIN/UMAX 时切换 unsigned 比较与 select 逻辑；结果用 or(shl(zext(hi),32), zext(lo)) 合成。测试新增 test_reduce64_bitwise（int64/uint64 × num_warps 4/32，验证 redux.sync.{and,or,xor}.b32 次数），lit test reduce_to_llvm.mlir 新增 reduce_wide_bitwise。风险：合成逻辑依赖整数位运算无符号性，需确保 and/or/xor 全为按位而非算术语义；改动与 sum redux 提交同源但独立。",
+      "tags": [
+        "performance",
+        "nvidia",
+        "reduction",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅涉及 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/TargetInfo.cpp 的 warpReduce、test/Conversion/reduce_to_llvm.mlir 与 python/test/unit/language/test_core.py，属 NVIDIA redux 专属路径。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Use redux for 64-bit bitwise reductions (#11813)\n\nLower full-warp 64-bit integer AND, OR, and XOR reductions using two\n32-bit `redux.sync` operations. Reduce the high and low words\nindependently, then combine the results.\n\nIdea (XOR):\n```cpp\nhigh = uint32_t(x >> 32);\nlow  = uint32_t(x);\n\nhigh = redux_xor(high);\nlow  = redux_xor(low);\n\nresult = (uint64_t(high) << 32) | low;\n```\n\n<!-- codex-thread: 01a0aaed-d89f-7fa2-a9f9-8ebb48cafcfe -->"
+    },
+    {
+      "sha": "55372482a9b8fdeba056af2ba71a0511b25a8315",
+      "comment": "修复 batched dot（rank>=3）在 num_ctas>1 时的 CGA layout 分配错误（issue #11808）。原实现 getDotCGASplit 只接受 m/n 两个标量并硬编码 2D 的 CTA split/order（{split.m, split.n} 与 order {1, 0}），对高 rank dot 生成的 CGA layout rank 不正确。新实现改为接收完整 shape（ArrayRef<int64_t>），先按 rank-3 至 0 的 batch 维度（从最后一个 batch 维往前）分配 CTA 数（ctaSplit[dim] = min(shape[dim], numCTAs)），再用既有 M/N 启发式（128/64 chunk size）填充最后两维，最后按 [rank-1, rank-2, ..., 0] 构造 ctaOrder，通过 fromSplitParams 生成 rank-correct CGA layout。实现上把 DotCGASplit 结构体替换为 SmallVector<unsigned>，语义更清晰且支持任意 rank。测试增加了 5 个 MLIR lit case（assign_cga_layouts.mlir：batch-only 2/4 CTAs、batch-then-m、batch-then-n、singleton batch）以及 Python test_dot_multidim 增加 num_ctas=[1,2,4] 参数（对非 CUDA 或 SM<90 跳过）。风险可控：改动集中在 NVIDIA 专属 pass，且 batch-first 的 CTA 分配顺序会造成部分 tile shape 下的性能波动，作者已注明后续处理。潜在边界：当 numCTAs 在 batch 维度被全部消耗时（如 batch-only case），M/N 维 split 退化为 {1,1}，需确认下游 RemoveLayoutConversions/CTA 通信语义仍正确（lit 测试已覆盖）。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "medium-risk",
+        "nvidia-backend",
+        "ttgir-transforms"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。AssignCGALayouts.cpp 位于 lib/Dialect/TritonNvidiaGPU/Transforms/，属于 NVIDIA 专属方言与 pass，且 CGA layout / num_ctas 多 CTA 语义是 NVIDIA Hopper+ 特性；triton-ascend 走 TTIR → TritonToLinalg 路径，不使用 TritonNvidiaGPU 方言，也不走 TTGIR/CGA layout 体系，该 pass 不在 Ascend 编译链中。",
+        "testing": "无影响。新增测试为 test/TritonNvidiaGPU/assign_cga_layouts.mlir（NVIDIA lit）与 python/test/unit/language/test_core.py 的 test_dot_multidim num_ctas 参数化（对非 CUDA 跳过），均不涉及 Ascend 后端。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Fix CGA layout assignment for batched dots (#11811)\n\nFixes #11808 by assigning CTAs to batch dimensions first, then applying\nthe existing M/N split heuristic with a rank-correct CGA layout. Adds\nMLIR and Python regression tests, including higher-rank dots; build,\nlit, and 60 B200 tests pass. Batch-first performance varies by tile\nshape, but this would be fixed later and is irrelevant with this PR."
+    },
+    {
+      "sha": "43b41e745ae08f06bb990fa46217d346d7c3658d",
+      "comment": "将 SM90+ 的 packed S8→BF16 转换实现从内联 PTX（S8_to_Bf16_sm90，使用 prmt/and/sub.bf16x2 位技巧）改为直接用 LLVM IR 表达等价算术：先 ShuffleVectorOp 将 4 个 i8 与常量 0x43 交错扩展为 8×i8，bitcast 为 vector<4xi16>，再分别 and 0xff7f（清零最低指数位，同时清零符号位使得结果为 |x| 的 bf16 近似）、and 0xff80（保留指数），bitcast 为 vector<4xbf16> 后做 LLVM::FSubOp，最后 unpackLLVector。改用 LLVM IR 后 LLVM 可基于 known-bits 做优化（例如非负输入可去掉冗余 and 掩码），在保持 SM90+ 避免低吞吐 cvt 指令的同时获得额外优化机会。SM80 路径保持不变（仍走 S8_to_Bf16 内联 PTX，因为 SM80 无 sub.bf16x2）。实现在 SIToFPOpConversion 中按 computeCapability >= 90 分支，将原 makeConverterFromPtx 调用改为直接调用新函数 convertS8ToBf16。测试在 test/Conversion/tritongpu_to_ptx.mlir 增加 sitofp_s8_to_bf16，并用 CHECK 区分 SM80（cvt.rn.f32.s8 + prmt）与 SM90/SM100（sub.rn.bf16x2），以及 VEC80/90/100 检查 llvm.fsub vector<4xbf16> 是否出现。风险低：属于 NVIDIA 专属 lowering 的内部实现替换，语义等价（依赖 fsub 不区分 NaN/Inf 的输入场景，输入为 s8 整数扩展，属于有限值），且新路径为纯 LLVM IR 更易维护。",
+      "tags": [
+        "performance",
+        "refactor",
+        "low-risk",
+        "nvidia-backend",
+        "llvm-lowering"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/ElementwiseOpToLLVM.cpp，属于 NVIDIA TritonGPU→LLVM lowering（SIToFPOpConversion），其中 computeCapability 判定与 sub.bf16x2 / prmt PTX 均为 NVIDIA SM 专属；triton-ascend 用 TritonToLinalg 替代整个 TritonGPU→LLVM 路径，不加载也不调用该 lowering，且未触及 BaseBackend/DriverBase/TargetInfoBase 等接口。",
+        "testing": "无影响。新增测试 test/Conversion/tritongpu_to_ptx.mlir 为 PTX 专属 lit 测试（SM80/SM90/SM100 检查），Ascend 无对应测试路径，也不影响 Ascend 的 lit/pytest 套件。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Express packed S8-to-BF16 conversion in LLVM IR (#11810)\n\n## Motivation\n\n[#4563](https://github.com/triton-lang/triton/pull/4563) added the SM90+\nbit-trick implementation to avoid low-throughput conversion instructions\nfor SM90+.\n\nWith the current LLVM pin, using LLVM IR can generate packed PTX that is\nas efficient as the inline assembly, while enabling further\noptimizations. For example, non-negative inputs allow LLVM to remove\nredundant and.b32 masking instructions that remain in the inline\nassembly.\n\n<!---\nThe core Triton is a small number of people, and we receive many PRs\n(thank\nyou!).  To help us review your code more quickly, **if you are a new\ncontributor (less than 3 PRs merged) we ask that you complete the\nfollowing\ntasks and include the filled-out checklist in your PR description.**\n\nComplete the following tasks before sending your PR, and replace `[ ]`\nwith\n`[x]` to indicate you have done them.\n-->\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [ ] I have not added any `lit` tests.\n- [x] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)"
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

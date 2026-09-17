@@ -1,0 +1,254 @@
+{
+  "date": "2026-09-17",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-09-18T02:08:13.829644+08:00",
+  "daily_summary": "当日变更集中在 Ascend 后端的编译与 lowering 正确性修复：NormalizeDebugLineLocations 将独立的 FP 类型转换（arith.extf/truncf）从 synthetic 重新归类为 semantic 以保留调试行号；AutoBlockify 与 RowCoalescing 的交互契约被重整（纯 SIMT 模式绕过 blacklist、Row 应用后不再重复注入 block cap / auto-blockify 参数）；TritonToUnstructure 新增 common-base 指针 reshape 的分析与转换支持；DiscreteMaskAccess/TritonToLinalg 修正 loop-carried mask 语义（前缀掩码归一化、mixed if 结果类型保真、carrier GM 标注）并引入 unsupported 诊断；DynamicCVPipeline 加严 for-loop polling 条件构建位置、调整 preload 黑名单、回退 ExpLoad 优化；测试侧更新 do_bench_npu（自动调优场景的 profiling 校验策略与失败降级），并新增/搬运多处 MLIR 与 pytest 回归。另有 maintainer 名单与 stale workflow 的工程/文档类变更。",
+  "test_impact_summary": "当日变更显著增加了测试看护的广度和深度，属于测试策略层面的重点日：(1) 多个 pass 的行为契约被显式化，新增大量 MLIR lit 用例（pointer_reshape.mlir、loop_mask_fallback.mlir、loop_mask_unsupported.mlir、loop_prefix_mask.mlir）与端到端 pytest（test_pointer_reshape.py、test_loop_carried_mask.py），将此前隐含的语义（common base、loop mask 历史、不支持场景的诊断）固化为可回归的断言；(2) 两处解析/分类逻辑（NormalizeDebugLineLocations、TritonToUnstructure offset 分析）新增了需要 MLIR 级 FileCheck 看护的新语义分支（semantic vs synthetic、unstructured 标记+scalarLike 清零）；(3) AutoBlockify/RowCoalescing 的参数注入契约在 compiler/driver/launcher 三处并行修改，配套的 pytest（test_launcher_export_api.py、test_layout_memory_895_closure_differential.py、test_row_coalescing_compat.py、test_compiler_layout_memory_contract.py）被同步重写并新增参数矩阵，意味着该契约已进入必须持续看护的状态；(4) do_bench_npu 的行为变更（fallback 判定、mismatch 抛出开关、0-耗时返回）会影响所有依赖 benchmark 数字的测试稳定性，需评估是否会掩盖真实失败；(5) DynamicCVPipeline 的 for-loop polling 与黑名单调整目前仅靠既有 UT 覆盖，新增的插入点语义缺少专门断言；(6) 测试用例目录结构调整（offset_analysis_ut→Analysis）需确认 CI 构建脚本已同步。整体上现有测试覆盖随本次变更被大幅加强，但 benchmark 与 DynamicCVPipeline 两块仍存在看护缺口。",
+  "commits": [
+    {
+      "sha": "5cafe0e3b43b2bb95bf9caafa5676e1353101add",
+      "comment": "修复 NormalizeDebugLineLocations 对独立浮点扩展/截断（arith.extf/arith.truncf）的调试行号分类。原实现先判断 isArithmeticOrCastOp（应包含 extf/truncf），并在 isAddressComputationOp 之前介入，导致独立 FP 转换被误标为 synthetic；新实现新增 isFloatingPointExtensionOrTruncationOp，并在 isAddressComputationOp 中提前返回 false，在 classifyOperation 中让该类算子按同一行是否已有 semantic anchor（load/store）决定 semantic 或 synthetic，从而保留真正属于源码语义的独立转换行号。该 pass 属于 ttir_to_linalg 链末端的 normalize_debug_line_locations 阶段，改动影响 Ascend 调试信息还原质量（msdebug），不改变数值语义。风险较低，但分类优先级重排需留意与 isArithmeticOrCastOp 的覆盖重叠。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "compiler",
+        "debug-info"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "变更已在 normalize_debug_line_locations.mlir 中新增 floating_point_conversion_classification 用例，覆盖 extf/truncf 在同源行有/无 anchor 的两种分类，属于必须保留的回归断言。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLLVM/normalize_debug_line_locations.mlir"
+        ]
+      },
+      "message": "[Msdebug](fix) preserve debug locations for standalone FP conversions (#2204)"
+    },
+    {
+      "sha": "e91fdc43f59a31a6b84083fa57a0e9785b67fdd8",
+      "message": "[backend](fix) retain AutoBlockify cap after coalescing (#2206)",
+      "comment": "修正 make_launcher 中 AutoBlockify block cap 的判定逻辑：此前 row_coalescing_applied 会无条件抑制 enable_auto_map_parallel_blocks，导致 RowCoalescing 生效后不再注入 blockNum cap；新逻辑改为 enable_auto_map_parallel_blocks = auto_map 环境开关 && (is_pure_simt || !has_auto_blockify_blacklist_op)，即 pure-SIMT 时忽略 blacklist，非 pure-SIMT 时仍受 blacklist 约束，且不再因 row_coalescing_applied 而关闭 cap。这使 launcher 侧的 cap 注入与 compiler 侧 _finalize_program_launch_policy 的策略保持一致（同日晚些的 972e985 进一步统一到同一表达式）。注意该 commit 与 972e985 对同一段代码做先后修改，本 commit 为过渡态，需连同后续 commit 一起理解。风险中等：launcher 生成的 C++ 源码中 cap 是否存在直接影响 grid 调度，测试断言被同步反向修改（count==0 → ==2）。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "compiler",
+        "launcher"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "make_launcher 的输出断言被显式反转（blockNum cap 出现次数由 0 改为 2），并且参数矩阵需要补充 is_pure_simt 维度；test_launcher_export_api.py 与 test_layout_memory_895_closure_differential.py 中的期望值必须同步，否则测试与实现脱节。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_launcher_export_api.py",
+          "third_party/ascend/unittest/pytest_ut/test_layout_memory_895_closure_differential.py"
+        ]
+      }
+    },
+    {
+      "sha": "656ee50c1baa8ea6c16abe3cc6dab47459346ee6",
+      "comment": "修复 AddMultiBufferOuterScope 中 scf.for 的 polling 条件构建位置：原实现在 waitOp 前插入 condBuilder，导致条件不支配后续各 group 的 scf.if 包装体；改为在 for body 起始处（setInsertionPointToStart）构建，并通过 getFirstBlockId(body) 取 block id（与 CloneOps 连续性假设一致），失败时回退到传入的 bid，与 while 分支行为对齐。这修复了 SSBuffer 动态 CV pipeline 中 for-loop 多缓冲轮询条件的作用域/支配性问题，属于 lowering 正确性修复。风险中等：insertion point 与 block id 来源改变可能影响生成 IR 形态，需靠 DynamicCVPipeline UT 看护。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "compiler",
+        "dynamic-cv-pipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "该修复改变生成 IR 的结构（条件构建位置、block id 来源），需要 DynamicCVPipeline 相关 UT/IR 断言确认新形态且无支配性错误；若既有 ssbuffer 测试仅做端到端数值校验，建议补充 IR 级检查。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/",
+          "third_party/ascend/lib/DynamicCVPipeline/AllocMultiCache/AddMultiBufferOuterScope.cpp"
+        ]
+      },
+      "message": "[ssbuffer](fix) always build for-loop polling cond at for body start (#2181)"
+    },
+    {
+      "sha": "00431351e2978d65f4fa28e52408d063ce3d65db",
+      "comment": "从 PreCheckDisablePreload 的 3-preload 黑名单中移除 chunk_fwd_kernel_h，使其可参与三重预取。这是针对具体 kernel 的性能调优放行，属于 DynamicCVPipeline 预检查策略的白名单/黑名单调整。风险中等：该 kernel 在禁用预取名单中通常有历史原因（内存占用或正确性），移除后需确保在真实负载下不引发 UB 溢出或同步问题。",
+      "tags": [
+        "performance",
+        "medium-risk",
+        "compiler",
+        "dynamic-cv-pipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "黑名单属于编译期策略，需要相应 kernel 的端到端/性能回归确认移除后仍正确；建议在 DynamicCVPipeline 测试中覆盖 chunk_fwd_kernel_h 的预取路径。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/",
+          "third_party/ascend/lib/DynamicCVPipeline/PreCheckAvailable/PreCheckDisablePreload.cpp"
+        ]
+      },
+      "message": "Remove chunk_fwd_kernel_h from 3-preload blacklist (#2205)"
+    },
+    {
+      "sha": "24e92ce1efc353288c448a49e5dd3bad5e9c42e1",
+      "comment": "为 TritonToUnstructure 的 offset 分析新增 tt.reshape 支持（parseReshape），处理 pointer 类型 reshape：仅当源具备 common scalar base 且非 allow_reorder+efficient_layout 场景才走 offset 重建路径，否则回退 recordOpaqueTensorPointer；对 allow_reorder 场景移除属性并统一 lane 映射以保证 offset 与剩余 pointer 用户共享同一映射；同时 setUnstructured(rank) 并显式 setScalarLike(false)，避免误导下游 scalar 路径。此外在 parse(BlockArgument) 分支对 RankedTensorType 补充 setUnstructured，保证 block argument 初始状态正确。新增 pointer_reshape.mlir 覆盖 masked load/store、嵌套 addptr、broadcast、uniform、lane-wise base 等场景。实现细致，风险中等——reshape 语义（尤其 allow_reorder）与 offset 结构的关系容易出错，需严格依赖新增 lit 用例。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "compiler",
+        "triton-to-unstructure"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 6 个 MLIR 场景用例与一个端到端 pytest（含 A2/A3 skip 条件），属于必须看护的新功能面；后续任何 reshape/offset 相关改动都必须保持这些断言。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToUnstructure/pointer_reshape.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_pointer_reshape.py"
+        ]
+      },
+      "message": "[TritonToUnstructure](fix) handle common-base pointer reshapes (#2182)"
+    },
+    {
+      "sha": "54d1a45c5575a360bb5398037c6223ef0c445194",
+      "comment": "更新 do_bench_npu：新增 _raise_on_mismatch 开关，仅在显式要求（target_kernel_name 且使用 npu 方法做 autotune）时抛出 ProfilerResultMismatchError，否则打印错误并返回 inf；无 profiling 数据或空 DataFrame 时返回 0 并告警；do_bench_npu 的 fallback 判定改为 force_fallback = prof_dir or keep_res or (target_kernel_name is not None and not use_autotune)，并使 mspti 路径在非 fallback 时优先尝试。这改变了 benchmark 的结果语义（0 vs inf vs 抛异常），对依赖 do_bench_npu 数值的测试与自动调优流程影响较大：0 耗时可能被误当作有效性能、inf 返回可被上层识别为失败。风险中等，尤其是 0 返回值的语义模糊。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "testing",
+        "benchmark"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "do_bench_npu / _collect_prof_result 的返回语义与异常策略变更，需要有单测覆盖空数据、mismatch、autotune 场景下的 0/inf/raise 三种分支，避免上层调优与 PT 测试对结果的误判。",
+        "suggested_test_areas": [
+          "third_party/ascend/backend/testing.py",
+          "third_party/ascend/unittest/pytest_ut/",
+          "third_party/ascend/unittest/autotune_ut/"
+        ]
+      },
+      "message": "[testing](feat) update do_bench_npu (#2079)\n\nSigned-off-by: gymgit1 <guoyiming17@huawei.com>"
+    },
+    {
+      "sha": "456f62810a14e225e3e969d121842d1ef65950d9",
+      "comment": "纯目录/构建结构调整：将 offset_analysis_ut 重命名为 Analysis，并在 unittest/CMakeLists.txt 中同步 add_subdirectory(Analysis)，源文件与内容零改动。属于测试工程整理，无功能风险，但需确认 CI 中任何显式引用旧路径的脚本/文档同步更新。",
+      "tags": [
+        "chore",
+        "low-risk",
+        "test",
+        "build"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅目录重命名与 CMakeLists 路径同步，测试内容与用例未变；唯一风险是外部脚本引用旧路径，需构建验证。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/CMakeLists.txt",
+          "third_party/ascend/unittest/Analysis/CMakeLists.txt"
+        ]
+      },
+      "message": "[TritonToUnstructure] Move offset-cache tests to Analysis (#2164)\n\nSigned-off-by: lichangdongtw <68023558+lichangdongtw@users.noreply.github.com>"
+    },
+    {
+      "sha": "688a9c71e2ba1e3beaa44aecdcbdb2bf2b47d196",
+      "comment": "一次跨多个 Ascend pass 的 mask 语义大修，涉及 4 类问题：(1) TritonToLinalg 的 IfConverter 不再用全局 typeConverter 转换 scf.if 结果类型，非 pointer 结果保持原 SSA 类型，避免 mask 张量被错误转为 memref；(2) 对直接被消费的 ScalarPointerCarrier，在移除 provenance 标记前补一个 GM address-space 的 annotation::MarkOp，保证地址空间标注不丢失；(3) TritonMemoryAccess MaskAnalysis 新增 getInvariantLoopMaskInit，对 scf.for 校验 yield 回边同一值、对 scf.while 校验 before/after 槽位映射（含条件参数置换），只有真正不变的 loop mask 才回退到 init，避免把演进的 mask 当不变量；(4) DiscreteMaskAccessConversion 新增 CanonicalizeLoopPrefixMask 把形如 (lane<bound)&(lane<limit) 的一维前缀掩码规范化为标量 min 边界以保留 subview/copy 走法，并对无法静态归约的 runtime loop mask 打 RuntimeLoopMask+MixCompileDiscreteMask 标记，TritonToUnstructure 据此走守卫式间接寻址、单元素走 scf.if 守卫，最终不支持的配置显式报错而非猜错。整体方向正确、诊断更清晰，但改动面大、触及 mask/类型/地址空间多个契约，回归风险较高，需强依赖新增的 3 个 lit 用例与 2 个 pytest。",
+      "tags": [
+        "bugfix",
+        "high-risk",
+        "compiler",
+        "triton-to-linalg",
+        "triton-to-unstructure",
+        "mask-analysis"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "引入全新的 RuntimeLoopMask 属性契约与不支持场景诊断，新增 loop_mask_fallback.mlir、loop_mask_unsupported.mlir、loop_prefix_mask.mlir 与 test_loop_carried_mask.py、test_scalar_pointer_control_flow.py 新用例，并修改 isin_by_search_kernel.mlir 的期望 IR（scf.if 守卫式加载）；这些都是必须长期看护的核心断言。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/950PR/DiscreteMaskAccess/loop_mask_fallback.mlir",
+          "third_party/ascend/unittest/Conversion/General/DiscreteMaskAccess/loop_mask_unsupported.mlir",
+          "third_party/ascend/unittest/Conversion/General/DiscreteMaskAccess/loop_prefix_mask.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/isin_by_search_kernel.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_loop_carried_mask.py",
+          "third_party/ascend/unittest/pytest_ut/test_scalar_pointer_control_flow.py"
+        ]
+      },
+      "message": "fix(t2l): preserve mixed if results and loop mask semantics (#2040)\n\nKeep non-pointer scf.if results in their original SSA types while\nconverting marked scalar-pointer results to integer address carriers.\nAnnotate directly consumed carrier casts as GM before dropping their\npass-local provenance marker.\n\nPreserve evolving loop masks instead of treating their initial values as\ninvariants. Check the actual forwarding edges, including scf.while slot\nmappings, before following a loop mask to its initial value.\n\nCanonicalize supported one-dimensional prefix intersections to a scalar\nminimum bound so shrinking and growing thresholds retain the full mask\nhistory while keeping contiguous subview/copy lowering. Preserve users\nbefore and after the update, final results, and zero-trip behavior.\n\nRoute other runtime loop masks through supported masked indirect lowering,\nguard singleton loads and stores with scf.if, and diagnose unsupported\nconfigurations instead of issuing unguarded loads followed by a select.\n\nAdd MLIR and NPU regressions for mixed if results and loop masks, and\nupdate the search-kernel check to require conditional memory access. Gate\nthe multi-element runtime-mask tests on the A5 masked-indirect capability,\nand check the unsupported A3 template mode explicitly.\n\nValidation on Ascend950PR:\n- All Ascend MLIR tests: 189 passed.\n- Original S17: 2 passed; loop-mask regressions: 32 passed;\n  mixed-if regressions: 2 passed, with exact numerical comparisons.\n- NPU runs include the existing SSBUFFER dynamic-CV-pipeline fallback.\n- All applicable pre-commit hooks passed individually."
+    },
+    {
+      "sha": "972e985392a0f95fc0d6d127637768248f0aee2b",
+      "comment": "统一并修复 AutoBlockify / RowCoalescing / StoreCoalescing 的策略与失败语义：compiler 侧纯 SIMT 下 auto_blockify_enabled 不再受 has_auto_blockify_blacklist_op 影响（仅受 row_coalescing_applied 影响），ttir_to_npubin 的 --enable-auto-blockify-loop 注入同样去掉 blacklist 门槛；driver.make_launcher 与之对齐；TritonToGraph 引入 RewritePlanApplyResult（Applied/NotApplicable/Failed）区分'不适用'与'失败'，RowCoalescingRule 在 sandbox 校验不通过时返回 NotApplicable 而非 failure，避免把可容忍的 late 不匹配升级为 pass error；RowCoalescing.cpp 改用 seed.entryGuard 作为插入点/有效性判据，替代 seed.pid->getBlock() 与 validCount 定位，使 hoist 到 pid 之前的 bound 也能正确插入；StoreCoalescingRule 新增 enabledForCompileMode 选项，在 SimtOnly 模式下既不要求 alias 分析也不产出候选。整体是策略一致性与失败模式治理，质量提升明显，但涉及 compiler/driver/三处 launcher 断言与 graph rule 语义，风险中等偏高。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "compiler",
+        "triton-to-graph",
+        "launcher"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "大量测试被同步重写：test_launcher_export_api.py 参数矩阵新增 is_pure_simt/row_coalescing_applied 维度，test_compiler_layout_memory_contract.py 新增 _finalize_program_launch_policy 纯 SIMT 用例与 linalg_to_npubin auto-blockify 用例，test_row_coalescing_compat.py 新增 bound-before-pid 与 late-sandbox-decline 用例，test_layout_memory_895_closure_differential.py 大规模改用 rebase base 并对 cap 期望做反向断言。这些断言反映新契约，必须持续看护，且其中差异测试依赖 git 历史 commit（_REBASE_BASE_COMMIT），需注意仓库历史可获取性。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_launcher_export_api.py",
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "third_party/ascend/unittest/pytest_ut/test_row_coalescing_compat.py",
+          "third_party/ascend/unittest/pytest_ut/test_layout_memory_895_closure_differential.py",
+          "third_party/ascend/unittest/Conversion/General/TritonToGraph/graph-optimize-store-coalescing.mlir"
+        ]
+      },
+      "message": "[TritonToGraph](fix) repair RowCoalescing and pure-SIMT AutoBlockify (#1936)\n\n* [TritonToGraph](fix) repair RowCoalescing early-return contract\n\n* [backend](fix) scope AutoBlockify blacklist bypass to pure-SIMT\n\n* [tests](fix) repair RowCoalescing gate fixtures\n\n* [tests](fix) align 895 differential with rebased contracts\n\n* [style](cleanup) remove PR comments and docstrings\n\n* [TritonToGraph](fix) skip StoreCoalescing in pure-SIMT"
+    },
+    {
+      "sha": "b7ba348ed0ffb7dcd54a9a90130d050b8ebd8d03",
+      "comment": "撤销 f2d44eb 的 load-exp 优化：删除 ExpLoadPatternPass（整个 .cpp）、从 Passes.h/ComputeBlockOptPass 注册与 pipeline 中移除、并把 chunk_gated_delta_rule_bwd_kernel_dhu_blockdim64 与 chunk_gated_delta_rule_fwd_kernel_h_blockdim64 加入 getCoreTypeOfSimpleOpOrCf 的 regionalDisabledOps 名单。属于已知回归的回退，方向保守正确；风险在于两点：一是新增的两个 kernel 进入 UNDETERMINED 名单可能影响这些负载的 CV pipeline 并行决策，二是回退后此前 pass 带来的收益消失。",
+      "tags": [
+        "revert",
+        "medium-risk",
+        "compiler",
+        "dynamic-cv-pipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "删除一个 pass 会使其相关 UT/IR 断言失效（若存在），需清理对应的 pass 注册测试；同时新增的 regionalDisabledOps 名单应通过 kernel 端到端测试确认行为符合预期。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/",
+          "third_party/ascend/lib/DynamicCVPipeline/Common/Utils.cpp"
+        ]
+      },
+      "message": "[ssbuffer](revert) revert load-exp optimization (#2133) (#2240)\n\nThis reverts commit f2d44ebb497fafe4e1b45cc8e690bd8f1510401c."
+    },
+    {
+      "sha": "2e5fbe07ab7b38c343d0743b368dd3a581facffd",
+      "comment": "维护者名单新增 Zhao Jingkai（elstainniles，加入日期 2026-09-17），纯文档变更，无代码影响。",
+      "tags": [
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅 MAINTAINERS.md 表格行新增，不涉及任何代码或测试逻辑。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](feat) add Zhao Jingkai to the maintainer roster (#2194)\n\n* docs: propose Zhao Jingkai for the maintainer roster\n\n* docs: set proposed join date to 2026-09-17"
+    },
+    {
+      "sha": "3c5c3830ba94d51a9c22c0a06fa772de38f25ac0",
+      "comment": "维护者名单新增 Yichen Liu（Skyminers，加入日期 2026-09-17），纯文档变更，无代码影响。",
+      "tags": [
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅 MAINTAINERS.md 表格行新增，不涉及任何代码或测试逻辑。",
+        "suggested_test_areas": []
+      },
+      "message": "[docs](feat) add maintainer: Yichen Liu (#2215)\n\nCo-authored-by: Sky_miner <liuyichen23@huawei.com>"
+    },
+    {
+      "sha": "deee9761e376f4a180e77dfa0a4989016615ca2d",
+      "comment": "修复 stale workflow 的饥饿问题：将处理顺序改为 ascending: true（最旧优先）、operations-per-run 由 30 提升到 1000（实际约等于全量扫描）、并把 stale-issue-message 中 Close 窗口描述从 14 天修正为 7 天以匹配 days-before-issue-close 配置。纯 CI 运维变更，无代码影响；潜在副作用是单次运行的操作数与速率更接近 GITHUB_TOKEN 限额，且 x(ascending 改变后) 历史 stale 项会被批量关闭，属预期行为。",
+      "tags": [
+        "ci",
+        "low-risk",
+        "chore"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "GitHub Actions workflow 配置调整，不涉及代码或测试用例，无需测试更新。",
+        "suggested_test_areas": []
+      },
+      "message": "[CI](fix) stop stale bot starvation by sweeping oldest-first without op limit (#2196)\n\nThe stale workflow was configured with operations-per-run: 30 and the\ndefault newest-first order. Each daily run only reached the ~newest 250\nof 421 open items before exhausting its operation budget (\"No more\noperations left! Exiting...\"), so old stale items were never evaluated\nfor closing. The repo accumulated 125+ open stale items while only the\nnewest ones ever got closed.\n\nChanges:\n- ascending: true, so the oldest items are processed first\n- operations-per-run: 1000, effectively unlimited (a full sweep of the\n  repo costs ~350 operations; the GITHUB_TOKEN rate limit is 5000\n  requests/hour)\n- fix stale-issue-message: close window is 7 days (days-before-issue-close\n  was changed from 14 to 7), the message still said 14\n\nCo-authored-by: Claude <noreply@anthropic.com>"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

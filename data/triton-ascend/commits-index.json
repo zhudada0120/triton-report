@@ -1,4 +1,56 @@
 {
+  "5cafe0e3b43b2bb95bf9caafa5676e1353101add": {
+    "date": "2026-09-17",
+    "msg": "[Msdebug](fix) preserve debug locations for standalone FP conversions (#2204)"
+  },
+  "e91fdc43f59a31a6b84083fa57a0e9785b67fdd8": {
+    "date": "2026-09-17",
+    "msg": "[backend](fix) retain AutoBlockify cap after coalescing (#2206)"
+  },
+  "656ee50c1baa8ea6c16abe3cc6dab47459346ee6": {
+    "date": "2026-09-17",
+    "msg": "[ssbuffer](fix) always build for-loop polling cond at for body start (#2181)"
+  },
+  "00431351e2978d65f4fa28e52408d063ce3d65db": {
+    "date": "2026-09-17",
+    "msg": "Remove chunk_fwd_kernel_h from 3-preload blacklist (#2205)"
+  },
+  "24e92ce1efc353288c448a49e5dd3bad5e9c42e1": {
+    "date": "2026-09-17",
+    "msg": "[TritonToUnstructure](fix) handle common-base pointer reshapes (#2182)"
+  },
+  "54d1a45c5575a360bb5398037c6223ef0c445194": {
+    "date": "2026-09-17",
+    "msg": "[testing](feat) update do_bench_npu (#2079)"
+  },
+  "456f62810a14e225e3e969d121842d1ef65950d9": {
+    "date": "2026-09-17",
+    "msg": "[TritonToUnstructure] Move offset-cache tests to Analysis (#2164)"
+  },
+  "688a9c71e2ba1e3beaa44aecdcbdb2bf2b47d196": {
+    "date": "2026-09-17",
+    "msg": "fix(t2l): preserve mixed if results and loop mask semantics (#2040)"
+  },
+  "972e985392a0f95fc0d6d127637768248f0aee2b": {
+    "date": "2026-09-17",
+    "msg": "[TritonToGraph](fix) repair RowCoalescing and pure-SIMT AutoBlockify (#1936)"
+  },
+  "b7ba348ed0ffb7dcd54a9a90130d050b8ebd8d03": {
+    "date": "2026-09-17",
+    "msg": "[ssbuffer](revert) revert load-exp optimization (#2133) (#2240)"
+  },
+  "2e5fbe07ab7b38c343d0743b368dd3a581facffd": {
+    "date": "2026-09-17",
+    "msg": "[Docs](feat) add Zhao Jingkai to the maintainer roster (#2194)"
+  },
+  "3c5c3830ba94d51a9c22c0a06fa772de38f25ac0": {
+    "date": "2026-09-17",
+    "msg": "[docs](feat) add maintainer: Yichen Liu (#2215)"
+  },
+  "deee9761e376f4a180e77dfa0a4989016615ca2d": {
+    "date": "2026-09-17",
+    "msg": "[CI](fix) stop stale bot starvation by sweeping oldest-first without op limit (#2196)"
+  },
   "f2d44ebb497fafe4e1b45cc8e690bd8f1510401c": {
     "date": "2026-09-16",
     "msg": "[ssbuffer](feat) optimization for load-exp pattern (#2133)"
