@@ -1,4 +1,28 @@
 {
+  "e9e7b2ba5622e34e86b4f02c2a4d26bcf9e954b3": {
+    "date": "2026-09-18",
+    "msg": "[AMD] Preserve NaNs in AMD TF32 matmuls (#11783)"
+  },
+  "fe5a423a1e7c754c011205cc35ad0dfd94e3d6fa": {
+    "date": "2026-09-18",
+    "msg": "[Tests] Run leak check in a subprocess (#11849)"
+  },
+  "92d654e2094db0d390db1f4e2992aa47f48e2556": {
+    "date": "2026-09-18",
+    "msg": "[Backend] Emit redux for < 32 elements (#11823)"
+  },
+  "7f41d1f6ca3a36a8487e49efeec040215a87f78f": {
+    "date": "2026-09-18",
+    "msg": "[BACKEND] Broadcast warp-local atomic results with shuffles (#11841)"
+  },
+  "b891c3766756457a0f348e6b5b798e0f9802ac0b": {
+    "date": "2026-09-18",
+    "msg": "[Pipeliner] Only add extra buffer for loads that are already pipelined (#11786)"
+  },
+  "6254d1e2cf2283d1d8ac078483e7c3eee68f7f4d": {
+    "date": "2026-09-18",
+    "msg": "[Backend] Lower atomic_{load,store} with inline ptx (#11821)"
+  },
   "b63e34c521dfc55a5f9e419cfeaa64df8263891f": {
     "date": "2026-09-17",
     "msg": "[Runtime] Validate thread count against the kernel's compiled warp size (#11711)"

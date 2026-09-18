@@ -1,0 +1,84 @@
+{
+  "date": "2026-09-18",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-09-19T02:04:59.019804+08:00",
+  "daily_summary": "当日变更全部为文档维护、维护者名册更新与 CI 镜像/构建矩阵调整，无任何编译器、后端或运行时功能代码改动。具体包括：向 MAINTAINERS.md 追加 Wei Zhan 与 Liu Huan 两名维护者；对中英文编程指南与架构设计文档做大幅内容修订（UB 对齐要求表格化、UB overflow 错误的成因/日志字段/解决步骤/预防措施补全、代码块语言标注修正），并将文档构建接入 sphinxcontrib-mermaid；同时修正 map_elementwise 的 while 循环限制说明并同步到 python-api 约束描述；CI 侧切换华为云 SWR 镜像区域（西南2→华北12）、更新 CANN 版本矩阵（8.5.0/9.0.0-beta.2 → 9.0.0-beta.2/9.2.0-beta.1）、并行度由 6 提到 8。整体无架构级或 API 契约变更，属于典型的 docs/chore/ci 类日常维护。",
+  "test_impact_summary": "当日没有任何 commit 触及 third_party/ascend/backend、lib/ pass、python/triton 前端或运行时逻辑，因此不存在需要新增或修改的功能性测试用例，现有 lit/gtest/pytest_ut 看护范围均不受影响。唯一间接影响来自 CI 变更：build-docker-image.yml 将 CANN 版本矩阵从 8.5.0/9.0.0-beta.2 改为 9.0.0-beta.2/9.2.0-beta.1 并更换镜像仓库区域，这会改变构建镜像所依赖的 CANN 工具链版本，可能间接影响后续以这些镜像为基线的 CI 测试执行结果（如 bishengir-opt/npubin 编译行为随 CANN 版本变化），建议在合并后关注基于新镜像的流水线首轮运行是否出现编译或算子精度回归。文档类变更仅需保证 Sphinx 构建成功（新增 sphinxcontrib-mermaid 依赖已在两个 requirements 文件中声明，且 conf.py 增加了 myst_fence_as_directive），无需算子级测试看护。",
+  "commits": [
+    {
+      "sha": "6c3f6b035766086d8ed5661020f06a5c9082c20f",
+      "comment": "纯文档/名册维护：在 MAINTAINERS.md 表格中追加一行 'Wei Zhan | zhanwei33 | 2026-09-17'，未改动任何代码或构建配置。属于社区治理层面的人员信息更新，对编译流水线（BaseBackend/AscendBackend、TritonToLinalg 转换链）、NPUDriver 运行时以及所有测试均无影响。风险极低，唯一需要注意的是名册表格格式（列数与分隔符）保持一致，避免 Markdown 渲染错位。",
+      "tags": [
+        "docs",
+        "chore",
+        "low-risk",
+        "maintainers"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅修改 MAINTAINERS.md 中的人员名册表格，不涉及任何可执行代码、编译阶段或运行时路径，无需测试覆盖。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](feat) add Wei Zhan to the maintainer roster (#2222)"
+    },
+    {
+      "sha": "d0b7290889b139a970f065afc3627ea4bc0a5276",
+      "comment": "文档质量修复类提交，共改动 11 个文件、+314/-39，涵盖中英文文档体系：1) docs/{en,zh}/architecture_design_and_core_features.md 重写编译流程描述，把原先笼统的 'Triton IR → Linalg IR → AscendNPU IR → triton_xxx_kernel.o' 拆成 'Triton-Ascend 阶段（Triton IR→Linalg IR，由 TritonToLinalg 等 MLIR pass 完成）' 与 'BiSheng Compiler 阶段（Linalg IR→AscendNPU IR→kernel*.o）' 两阶段，并把产物命名从 triton_xxx_kernel.o 改为更准确的 kernel*.o，与架构上下文中 ttir→ttadapter(linalg)→mlirbc→bcmlir(bisheng)→npubin 的实际链路一致；2) docs/{en,zh}/programming_guide/index.md 大幅扩充：把 UB 尾轴对齐要求改写为 'VV 算子 32B / CV 算子 512B' 的表格、把 UB overflow 章节从一句提示扩展为完整的错误信息示例、日志关键字段解读表、原因分析（3072256 vs 1572864 bit 差值核算）、四步解决流程（调小 BLOCK_SIZE、for 循环分块、multibuffer=False、重编译验证）与预防措施表，并新增 A2/A3/A5 系列 UB/L1 规格表；同时把大量误标为 ```diff 的代码块改正为 ```python/```bash/```text，避免语法高亮错乱；3) docs/{en,zh}/conf.py 与 requirements 系列文件引入 sphinxcontrib.mermaid 扩展并设置 myst_fence_as_directive=['mermaid']，使 mermaid 围栏被渲染为图表而非代码块；4) docs/zh/python-api/_ascend_constraints.py 与 docs/zh/triton_api/Elementwise_Ops/map_elementwise.md 补充 map_elementwise 不支持 while 循环的根因说明——TritonToLinalg pass 需将标量函数内所有操作提升到 tensor 级做向量化，而 scf.while 的 scf.condition 要求标量 i1、无法提升为 tensor，故转换阶段报错；if/elif/else 与 for 因控制流可向量化而不受限。潜在风险：_ascend_constraints.py 是 Python 模块（被文档生成流程导入），其字符串修改虽不影响编译器行为，但若字符串中引号/转义处理不当会造成 Python 语法错误、导致文档构建失败；另外新增 sphinxcontrib-mermaid 依赖需要在所有文档构建环境中安装到位，否则 Sphinx 构建会因未知扩展直接失败。由于文档中描述的 UB 预算、multibuffer 开关语义与 costmodel/ubtuner 的实际实现强相关，后续若后端 UB 估算逻辑或 multibuffer 默认值调整，这些文档需要同步维护。",
+      "tags": [
+        "docs",
+        "low-risk",
+        "programming-guide",
+        "api-constraints",
+        "build-docs"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "改动全部位于 docs/ 目录，包含 Markdown 文档、Sphinx 配置与文档约束字符串，不触及任何编译 pass、后端实现或运行时代码，因此不需要新增或修改算子/后端测试。唯一可验证点是文档构建（Sphinx）能够成功：新增 sphinxcontrib-mermaid 扩展与 myst_fence_as_directive 配置须在构建环境生效，且 _ascend_constraints.py 中新增的多行字符串需保证语法正确。",
+        "suggested_test_areas": [
+          "docs 构建流程（Sphinx/MyST 渲染）",
+          "docs/zh/python-api/_ascend_constraints.py 语法与导入校验"
+        ]
+      },
+      "message": "[Docs](fix) resolve skill scan issues (#2123)\n\n* fix the issues of skill evaluation effectiveness in the documentation\n\n* [Docs](fix) resolve skill scan issues\n\n* [Docs](fix) resolve skill scan issues\n\n* [Docs](fix) resolve skill scan issues\n\n* [Docs](fix) resolve skill scan issues\n\n* [Docs](fix) resolve skill scan issues\n\n* [Docs](fix) resolve skill scan issues\n\n* [Docs](fix) resolve skill scan issues\n\n* [Docs](fix) resolve skill scan issues"
+    },
+    {
+      "sha": "345e7ab9e88ed4a485f21a5fc3573d0821412bb8",
+      "comment": "CI 构建配置调整，仅修改 .github/workflows/build-docker-image.yml（+5/-5）。三处变更：1) 构建容器的镜像仓库从 swr.cn-southwest-2 切换到 swr.cn-north-12，同时 cache-from/cache-to 的 registry 引用一并切换，保持镜像与构建缓存同区域（降低跨区拉取超时风险）；2) cann_version 构建矩阵由 [8.5.0, 9.0.0-beta.2] 改为 [9.0.0-beta.2, 9.2.0-beta.1]，即下线 8.5.0、引入 9.2.0-beta.1；3) max-parallel 由 6 提升到 8，以缩短镜像构建总时长。潜在风险：CANN 版本升级会改变 bishengir-opt / npucompiler 等工具链行为，进而可能影响 linalg_to_bc_by_triton_mlir_opt → bc_to_linalg_by_bishengir_opt → linalg_to_bin_enable_npu_compile 这一段 Ascend 后端编译链的输出，若新版本 bisheng 对 Linalg/AscendNPU IR 的支持有变化，可能引发已有 kernel 的编译失败或精度偏差；同时 9.2.0-beta.1 为 beta 版本，稳定性需观察。并行度提升会增加 buildkitd 与 SWR 的并发压力，工作流注释中已说明此前曾出现认证超时/连接重置，需关注是否重新出现 flaky 构建。矩阵只保留 910b/a3 芯片与 9.0.0-beta.2/9.2.0-beta.1 版本组合，测试环境与构建环境的版本对应关系需要保持一致。",
+      "tags": [
+        "ci",
+        "chore",
+        "medium-risk",
+        "build-docker-image",
+        "cann-version"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "该提交只修改 Docker 镜像构建工作流（基础镜像仓库区域、CANN 版本矩阵、并行度），不改动任何源码或测试代码，本身不需要新增/修改测试用例。但 CANN 版本从 8.5.0 变为 9.2.0-beta.1 会改变镜像内工具链版本，需依赖既有测试套件（third_party/ascend/unittest 的算子 pytest_ut 与 Conversion 测试）在基于新镜像的流水线上验证编译与精度是否回归。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut（算子端到端回归）",
+          "third_party/ascend/unittest/Conversion（IR 转换链）",
+          "基于新 CANN 镜像的 CI 流水线首轮构建与测试"
+        ]
+      },
+      "message": "Update the cann version of the image (#2257)"
+    },
+    {
+      "sha": "4e771171723681edc1f39cb045897397fe944b3f",
+      "message": "[docs](feat) add Liu Huan to the maintainer roster (#2231)",
+      "comment": "纯文档/名册维护：在 MAINTAINERS.md 表格中追加一行 'Liu Huan | LH-123L | 2026-09-17'，未改动任何代码、构建或 CI 配置。与同日 commit 6c3f6b0 属同类人员信息更新，对编译后端（AscendBackend/NPUDriver）、TritonToLinalg 转换链及全部测试无任何影响。风险极低，仅需保证表格列对齐一致。",
+      "tags": [
+        "docs",
+        "chore",
+        "low-risk",
+        "maintainers"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅追加 MAINTAINERS.md 名册条目，无任何可执行逻辑变更，无需测试覆盖。",
+        "suggested_test_areas": []
+      }
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

@@ -499,6 +499,18 @@
       "interface_changes": "变更意图：修复 Gluon 中等价 layout 比较时因一方含嵌套 JIT tuple、另一方含 Python list（如 associative_scan 之后）而抛出 AttributeError: 'list' object has no attribute 'type'。实现方式：python/triton/language/core.py 中 _normalize_tuple 递归归一化子容器（tuple(_normalize_tuple(x) for x in normalized_tuple)），使嵌套 constexpr 比较一致。同步新增 python/test/gluon/test_frontend.py 的 test_layout_nested_constexpr_containers（num_ctas 1/2/4 × list/tuple）与 python/test/unit/language/test_frontend.py 的 test_nested_constexpr_tuple_comparison。风险低，属前端健壮性修复，仅一行生产改动，其余为回",
       "change_summary": "[frontend] Normalize nested constexpr tuple containers (#11803)",
       "ascend_impact": false
+    },
+    "6254d1e2cf2283d1d8ac078483e7c3eee68f7f4d": {
+      "date": "2026-09-18",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "atomic_{load,store} 改用 inline PTX 并支持向量化。动机：原 lowering 用 llvm.load/store（atomic monotonic）+ 分支实现，触发 llvm/llvm-project#224146 导致部分 kernel hang。实现：(1) TargetInfoBase 新增两个纯虚方法 loadRelaxed/storeRelaxed（emit 对齐到整个 value 的 relaxed 原子 load/store，pred 为 null 表示所有线程参与，false 时抑制访存且结果为 unspec），新增可选 getMaxAtomicLoadStoreVectorSize(bitWidth)（默认返回 1）。(2) 引入 TargetInfoBase 静态工厂注册机制：TargetInfoBase::Factory + registerFactory(StringRef target, Factory) + fromModuleOp(ModuleOp)（新增 lib/Dialect/TritonGPU/Transforms/",
+      "change_summary": "[Backend] Lower atomic_{load,store} with inline ptx (#11821)",
+      "ascend_impact": false
     }
   }
 }

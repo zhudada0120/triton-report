@@ -1,4 +1,20 @@
 {
+  "6c3f6b035766086d8ed5661020f06a5c9082c20f": {
+    "date": "2026-09-18",
+    "msg": "[Docs](feat) add Wei Zhan to the maintainer roster (#2222)"
+  },
+  "d0b7290889b139a970f065afc3627ea4bc0a5276": {
+    "date": "2026-09-18",
+    "msg": "[Docs](fix) resolve skill scan issues (#2123)"
+  },
+  "345e7ab9e88ed4a485f21a5fc3573d0821412bb8": {
+    "date": "2026-09-18",
+    "msg": "Update the cann version of the image (#2257)"
+  },
+  "4e771171723681edc1f39cb045897397fe944b3f": {
+    "date": "2026-09-18",
+    "msg": "[docs](feat) add Liu Huan to the maintainer roster (#2231)"
+  },
   "5cafe0e3b43b2bb95bf9caafa5676e1353101add": {
     "date": "2026-09-17",
     "msg": "[Msdebug](fix) preserve debug locations for standalone FP conversions (#2204)"

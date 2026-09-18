@@ -1,0 +1,137 @@
+{
+  "date": "2026-09-18",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-09-19T02:03:16.524967+08:00",
+  "daily_summary": "当日变更集中在 GPU 原子操作与规约 lowering 的正确性与性能优化上：AMD TF32 matmul 通过 llvm.canonicalize 保留 NaN；NVIDIA redux 支持 <32 元素的 partitioned/broadcast 规约；atomic_load/store 改用 inline PTX 实现并支持最高 128 位向量化，同时把 warp 内广播从 shared memory 改为 shuffle；此外还有 pipeliner 的 buffer 分配修复与一个测试隔离修复。整体方向是后端 lowering 的健壮性、正确性（修复 hang/NaN 丢失）和吞吐优化。",
+  "ascend_impact_summary": "当日大部分变更位于 NVIDIA/AMD 专属 lowering 路径（third_party/nvidia、third_party/amd、TritonGPUToLLVM 中 NV/AMD 使用的原子与规约 lowering），对 triton-ascend（NPU/昇述后端走 TritonToLinalg，不走 TritonGPUToLLVM）无影响。唯一需要注意的跨项目变更是 TargetInfoBase 新增了纯虚方法 loadRelaxed/storeRelaxed、getMaxAtomicLoadStoreVectorSize，以及 warpReduce 新增 broadcastLaneIdMask 参数，并引入了 TargetInfoBase::registerFactory/fromModuleOp 静态注册机制；但由于 Ascend 不实现也不调用 TargetInfoBase（其纯虚方法增删按架构规则标记为“绝不影哃”），这些 C++ 接口变更不会破坏 triton-ascend 的编译链。需要在编译侧关注的只有 lib/Dialect/TritonGPU/Transforms 中新增的 TargetInfo.cpp 与 Utility.cpp 的静态工厂注册逻辑，若 Ascend 的构建复用了 TritonGPUTransforms 库，需确认未注册 target 时 fromModuleOp 返回 null 的路径不会引发回归（当前实现已做 null 保护）。总体 ascend_affected 均为 false 或仅间接/测试无关。",
+  "commits": [
+    {
+      "sha": "e9e7b2ba5622e34e86b4f02c2a4d26bcf9e954b3",
+      "comment": "AMD TF32 matmul NaN 保留修复。问题：CDNA3 的 XF32 指令会丢弃 FP32 低 13 位尾数，若 NaN 的 payload 全部落在被丢弃位中，截断后 NaN 会变成 ±inf。实现：在 third_party/amd/lib/TritonAMDGPUToLLVM/DotOpToLLVM/MFMA.cpp 的 unpackTensorElements 之后，当 type.isF32() && allowXF32 时对每个元素插入 llvm.canonicalize 内建调用，将 signaling NaN 静默化（CDNA3 上是一条原生指令）。新增 python/test/unit/language/test_core.py::test_dot_tf32_special_values 覆盖两种操作数与两种 MFMA 指令尺寸，并覆盖 NaN/inf/±0/subnormal；test/TritonGPU/amd/mfma-xf32.mlir 增加 CHECK-NOT canonicalize（ieee 路径）与 CHECK-COUNT-4 canonicalize（small_k 路径）的断言。风险：仅影响 AMD XF32 路径，且只在 allowXF32 时插入，正则值/次正规值行为不变，风险低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "backend-amd",
+        "conversion",
+        "dot"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/amd（AMD 专属 MFMA lowering）与 AMD 相关测试，triton-ascend 不加载 TritonAMDGPU dialect、不走 TritonGPUToLLVM 的 AMD 路径。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Preserve NaNs in AMD TF32 matmuls (#11783)\n\nKeep signaling NaNs from becoming infinities when CDNA3 prepares FP32\ninputs for XF32 matrix instructions.\n\n```text\nFP32 input bits       main after truncation    this PR\n0x7f800001 (NaN)       0x7f800000 (+inf)        NaN\n```\n\nXF32 discards the low 13 mantissa bits. If those are a NaN's only\npayload bits, truncation erases the distinction between NaN and\ninfinity. Quiet the NaNs first with LLVM's canonicalization intrinsic,\nwhich becomes one native instruction per value on CDNA3. This preserves\nNaNs in `tl.dot(..., input_precision=\"tf32\")`, including cast-first\nmixed matmuls whose FP8 FNUZ conversion produces a low-payload NaN.\n\nFinite values, including subnormals, are unchanged with the default\nsettings. Explicitly enabling `allow_flush_denorm` permits subnormals to\nbecome signed zero. Tests cover both operands, both MFMA instruction\nsizes, NaNs, infinities, signed zero and subnormals."
+    },
+    {
+      "sha": "fe5a423a1e7c754c011205cc35ad0dfd94e3d6fa",
+      "comment": "测试隔离修复。test_memory_leak 在 xdist 并行下随机失败，因为在同一进程中 tracemalloc 会统计 xdist 后台 work-stealing 通信的分配。实现：将原 test_memory_leak 主体重构为 _check_memory_leak(device)，新的 test_memory_leak 通过 triton._internal_testing.run_in_process 在独立子进程中运行并断言 result.exc is None；同时把阈值从 30000 收紧到 1000（隔离后噪声更小）。纯测试改动，无产品代码影响，风险低。",
+      "tags": [
+        "test",
+        "low-risk",
+        "runtime"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。",
+        "testing": "无影响。该测试为上游 python/test/unit/runtime 下的通用内存泄漏测试，仅使用 triton._internal_testing.run_in_process；triton-ascend 若有对齐测试可参考其隔离方式，但不强制。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Tests] Run leak check in a subprocess (#11849)\n\nWe've been getting random failures of this test, but it doesn't fail\nwhen run on it's own. The hypothesis is that tracemalloc is picking up\nxdist's background communication and that's what triggers the failure.\nRunning it in an isolated process fixes this issue."
+    },
+    {
+      "sha": "92d654e2094db0d390db1f4e2992aa47f48e2556",
+      "comment": "NVIDIA redux 支持 <32 元素的 partitioned 与 broadcast 规约。原先 warpReduce 只在 reduceLaneIdMask == fullMask（全 warp 规约）时启用 redux；本 PR 用 select 把非参与者替换为规约单位元，从而在部分 warp 上也能使用 redux，避免 member mask 带来的额外 reconvergence。实现要点：(1) TargetInfoBase::warpReduce 新增 broadcastLaneIdMask 参数（reduceLaneIdMask 表示本步规约的 lane-ID 位，broadcastLaneIdMask 表示布局中被广播（零基）的 lane 位），NV/AMD 的 TargetInfo 同步更新签名（AMD 忽略该参数）。(2) ReduceOpToLLVM.cpp 在计算 reduceLaneIdMask 的同时计算 broadcastLaneIdMask（laneBases[bit] 全零的位）。(3) NVIDIA TargetInfo.cpp 引入 createReduxIdentity（按 kind 给出单位元，NaN-忽略的 fmin/fmax 在无 nan qualifier 时用 quiet NaN 而非 ±inf，避免全 NaN 组结果被错判为 inf），对 groupMask 的 popcount > 1 直接拒绝；对 partial warp 增加宽度（>32 位拒绝）与最小通道数启发式（SM100+ min/max 更快，阈值不同）；对 ADD/XOR 且存在 broadcast 位时用 uniqueLane select 去重；partitioned 时发两条 full-warp redux 再用 select 选择。(4) 大量 lit 测试（test/Conversion/reduce_to_llvm.mlir、tritongpu_to_llvm.mlir、tritongpu_to_llvm_blackwell.mlir）与 python/test/gluon/test_lowerings.py 新增 test_reduce_partitioned / test_reduce_broadcast_across_warps 覆盖。风险：TargetInfoBase 纯虚签名变更会影响所有实现该接口的后端（NV/AMD 已同步；Ascend 不实现该接口），redux 启发式在具体 shape 上可能改变寄存器/shuffle 使用，需依赖 lit/PTX 断言回归。",
+      "tags": [
+        "performance",
+        "feature",
+        "medium-risk",
+        "conversion",
+        "reduce",
+        "backend-nvidia",
+        "backend-amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更核心是 include/triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h 的 warpReduce 签名（新增 broadcastLaneIdMask）与 include/triton/Conversion/TritonGPUToLLVM 的 ReduceOpToLLVM lowering，以及 NV/AMD 的 TargetInfo 实现；按架构规则 TargetInfoBase 及 lib/Conversion/TritonGPUToLLVM 属于“Ascend 不实现也不调用”的路径（Ascend 走 TritonToLinalg），其纯虚方法增删不影响 Ascend 编译链。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Backend] Emit redux for < 32 elements (#11823)\n\nThe redux lowering already includes an implementation to support masked\nreduxes, but notes that this is never profitable.\n\nThis PR takes a slightly different approach which makes it profitable.\nInstead of using the member mask, which results in extra reconvergence\ninstructions being generated, we instead use `select` to replace\nnon-participants with the identity element of the reduction. So say\nthere are 16 elements in each group, then we emit two full-warp reduxes\nwith selects to chose which one is active.\n\nWe also allow lane broadcasting. For some ops, we have `op(x, x) == x`\ni.e. min, max, and, or. In these cases we can use the redux without\nmasking off any elements in the larger reduction + broadcasting group.\nOr, for add and xor we can mask the non-leader elements out but still\nuse the redux result.\n\nThis leads to a slightly complex matrix of possible combinations of\nbroadcasting and multiple-groups, which have been benchmarked to come up\nwith a concise heuristic. The chosen heuristic is conservative and\nchoses only cases where both latency and throughput improved.\n\nGB300 results:\n<img width=\"2412\" height=\"1368\" alt=\"image\"\nsrc=\"https://github.com/user-attachments/assets/b8c5c85b-a315-451d-bd2c-485779e2c17a\"\n/>\n\nH100 results:\n<img width=\"2412\" height=\"1368\" alt=\"image\"\nsrc=\"https://github.com/user-attachments/assets/622d5470-92bf-426a-8b04-1e1da7776be2\"\n/>"
+    },
+    {
+      "sha": "7f41d1f6ca3a36a8487e49efeec040215a87f78f",
+      "comment": "warp 内原子结果用 shuffle 广播，替代 shared memory 中转。核心：新增 triton::getAtomicResultShuffleMask(Value)（include/triton/Analysis/Utility.h + lib/Analysis/Utility.cpp），通过 toLinearLayout 的 freeVariableMasks 判断结果布局的 warp/block 位是否被广播：若 warpMask 或 blockMask 非零（需要跨 warp/跨 CTA 通信）返回 nullopt，否则返回 laneMask（需要清掉的 lane 位）。Allocation 侧新增 getAtomicResultScratchSize：有 shuffle mask（含 0）时不分配 scratch；仅 nullopt 时按原 getResultBroadcastScratchSize 分配。Lowering 侧 lib/Conversion/TritonGPUToLLVM/Utility.cpp 的 synchronizeAtomicResults 改为：若拿到 laneMask 且非 0，用 targetInfo.shuffleIdx 从每个 group 的 leader lane 广播（源 lane 为 laneId & ~laneMask），完全跳过 shared memory 与 barrier；否则退回 broadcastScalarAtomicResult/broadcastTensorResult。atomicResultHasOrderingBarrier 改为依据 getAtomicResultShuffleMask 判断。AMD 后端删除 BufferAtomic 专用的 getBufferAtomicScratchSizeInBytes，统一走 getAtomicResultScratchSize；删除 AtomicRMWEmitter::emitAtomicRMW 的 sharedMemBase 参数及各处 shared memory 中转/barrier 死代码（AMD 与 NVIDIA LoadStoreOpToLLVM 同步清理，NVIDIA 只保留 bf16 旧分支的简化路径）。测试：test/Analysis/test-membar.mlir 新增 atomic_warp_broadcast_relaxed；test/Conversion/amd/{atomic_cas,tritongpu_to_llvm}.mlir 与 test/Conversion/tritongpu_to_llvm.mlir、tritongpu_to_llvm_gsan.mlir、tritonnvidiagpu_to_llvm.mlir 大量断言从 st.shared/barrier/load 改为 shfl.sync idx。风险：中等——原子结果同步语义与 scratch 大小分析联动，若布局 mask 计算有误会导致结果错误或多余 barrier；GSan 路径与 cluster 场景需重点回归。",
+      "tags": [
+        "performance",
+        "refactor",
+        "medium-risk",
+        "conversion",
+        "atomic",
+        "analysis",
+        "backend-nvidia",
+        "backend-amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更集中在 include/triton/Analysis/{Allocation.h,Utility.h}、lib/Analysis/*、lib/Conversion/TritonGPUToLLVM/Utility.cpp 及 NV/AMD 后端的原子 lowering 与 third_party/amd/lib/Analysis/AMDGPUAllocation.cpp。按架构规则，lib/Conversion/TritonGPUToLLVM 为 NV/AMD 专用（Ascend 用 TritonToLinalg 替代），TargetInfoBase.shuffleIdx 增删不影响 Ascend；lib/Analysis 的变更仅在 Ascend 复用对应分析时才有影响，而 Ascend 的 TritonToLinalg 路径不消费 atomic 结果广播的 scratch 分析。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Broadcast warp-local atomic results with shuffles (#11841)\n\nUse layout replication masks to broadcast warp-local atomic results\nthrough registers on NVIDIA and AMD. Skip shared-memory allocation and\nresult barriers when no cross-warp or cross-CTA communication is needed.\n\nRemove lots of dead code that was not reachable for pre Hopper archs."
+    },
+    {
+      "sha": "b891c3766756457a0f348e6b5b798e0f9802ac0b",
+      "comment": "Pipeliner 修复：只为已流水化的 load 增加额外 buffer。LowerLoops.cpp 的 getDefUseStageDiff 原逻辑在 useCluster > defCluster 时无条件增加一个 buffer，导致 stage 距离为 0（未被流水化）但 user 位于更晚 cluster 的 load 被赋予 numBuffers == stageDiff（=0 时得 1 个 buffer），既无法跨迭代持有值（永不 prefetch），又强制插入 async_wait {num = 0} 排空所有在途拷贝。修复：条件改为 *_useCluster > *defCluster && _useStage > defStage，只对真正有 stage 距离的 load 加 buffer。测试：test/TritonGPU/pipeline-lower-loop.mlir 新增 no_async_copy_for_same_stage_later_cluster 用例（CHECK-NOT ttg.local_alloc / async_copy_global_to_local，CHECK 保留 tt.load）。风险低，是局部启发式修正。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "pipeliner",
+        "tritongpu"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Dialect/TritonGPU/Transforms/Pipeliner/LowerLoops.cpp，为 TTGIR 层软件流水线 pass；Ascend 不走 TTGIR（用 TritonToLinalg 替代），不加载/运行该 pipeliner。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Pipeliner] Only add extra buffer for loads that are already pipelined (#11786)"
+    },
+    {
+      "sha": "6254d1e2cf2283d1d8ac078483e7c3eee68f7f4d",
+      "comment": "atomic_{load,store} 改用 inline PTX 并支持向量化。动机：原 lowering 用 llvm.load/store（atomic monotonic）+ 分支实现，触发 llvm/llvm-project#224146 导致部分 kernel hang。实现：(1) TargetInfoBase 新增两个纯虚方法 loadRelaxed/storeRelaxed（emit 对齐到整个 value 的 relaxed 原子 load/store，pred 为 null 表示所有线程参与，false 时抑制访存且结果为 unspec），新增可选 getMaxAtomicLoadStoreVectorSize(bitWidth)（默认返回 1）。(2) 引入 TargetInfoBase 静态工厂注册机制：TargetInfoBase::Factory + registerFactory(StringRef target, Factory) + fromModuleOp(ModuleOp)（新增 lib/Dialect/TritonGPU/Transforms/TargetInfo.cpp，以 ttg.target 属性冒号前段为 key），NV/AMD 各自在 TargetInfo.cpp 提供 registerTargetInfo() 并在 init_triton_nvidia/init_triton_amd、bin/RegisterTritonDialects.h 中注册。(3) NVIDIA TargetInfo::loadRelaxed/storeRelaxed 用 PTXBuilder 生成 ld/st.relaxed.<scope>.global.v{N}.b{W}，8 位无寄存器约束时用 16 位寄存器并 trunc，浮点用 bitcast，>32 位按 packed 位宽递归重打包，最多 128 位向量；AMD 版本保持标量 llvm.load/store atomic monotonic。(4) lib/Conversion/TritonGPUToLLVM/MemoryOpToLLVM.cpp 的 AtomicLoadOpConversion/AtomicStoreOpConversion 新增 ModuleAxisInfoAnalysis 参数与 getAtomicLoadStoreVectorSize（取 contiguity、target 上限、mask constancy 的最小值），按 vec 打包/解包；AtomicPollOp 改用 targetInfo.loadRelaxed 并用 select 合并 inactive replica 的 poll 条件。populateMemoryOpToLLVMPatterns 签名新增 axisInfoAnalysis，NV/AMD 调用点同步更新。(5) GSan 路径（lib/Conversion/TritonInstrumentToLLVM/GSanToLLVM.cpp）同步改为向量化并限制 vec <= 8/bytesPerElem（AtomicEventState 阴影单元容量）。(6) lib/Dialect/TritonGPU/Transforms/Utility.cpp 的 getAtomicElementsPerThreadCap 改用 TargetInfoBase::fromModuleOp 的 isCuda/getMaxAtomicLoadStoreVectorSize 替代硬编码 ttg.target 前缀判断。测试：test/Conversion/atomic_ldst.mlir、tritongpu_to_llvm.mlir、tritongpu_to_llvm_gsan.mlir、test/Gluon/infer_coalesced_encoding.mlir、test/TritonGPU/coalesce.mlir 大量断言改为 inline_asm 与向量宽度；python/test 新增 test_atomic_load_store_vectorization / test_atomic_load_store_coalesced / test_atomic_load_store_vectorized_shadow 等。风险：高——TargetInfoBase 新增两个纯虚方法、populateMemoryOpToLLVMPatterns 与 GSan populate 签名变更、引入全局工厂注册；atomic_load/store 的合并程度影响 codegen 与 GSan 阴影语义，且修复的是会导致 hang 的 miscompile。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "high-risk",
+        "conversion",
+        "atomic",
+        "gsan",
+        "backend-nvidia",
+        "backend-amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "影响路径为 interface（TargetInfoBase）与可能影响（python/triton/compiler、TritonGPU transforms），但均按架构规则属于“Ascend 不使用”。具体：TargetInfoBase 新增纯虚方法 loadRelaxed/storeRelaxed 与可选 getMaxAtomicLoadStoreVectorSize，并新增静态 registerFactory/fromModuleOp 工厂机制；由于 Ascend 不实现也不调用 TargetInfoBase（Ascend 走 TritonToLinalg，不经过 TritonGPUToLLVM），新增纯虚方法不会造成 Ascend 链接或编译失败。同时 lib/Conversion/TritonGPUToLLVM/{MemoryOpToLLVM.cpp,Utility.cpp,PatternTritonGPUOpToLLVM.h} 与 lib/Conversion/TritonInstrumentToLLVM/GSanToLLVM.cpp 的 populateMemoryOpToLLVMPatterns 签名新增 ModuleAxisInfoAnalysis 参数，这些实现与调用点均属 NV/AMD 专属路径，Ascend 不引用。lib/Dialect/TritonGPU/Transforms/{CMakeLists.txt,TargetInfo.cpp,Utility.cpp} 的改动使 TritonGPUTransforms 库新增 TargetInfo.cpp 并依赖 TargetInfoBase 注册表；若 triton-ascend 构建复用该库（Ascend 的 pass 可能链接 libTritonGPUTransforms），需确认未注册 'npu' target 时 fromModuleOp 返回 null 且 getAtomicElementsPerThreadCap 已做 targetInfo 判空（当前实现有判空，不返回 nullopt 时 fallback 为 1，不会崩溃）。不涉及 BaseBackend/DriverBase/后端发现/JIT/语义层的任何接口，因此 Ascend 的编译链与启动链无需改动。",
+        "testing": "无影响（Ascend 不走 atomic_load/store 的 TritonGPUToLLVM lowering，也不使用 GSan 的 CUDA 路径）。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Backend] Lower atomic_{load,store} with inline ptx (#11821)\n\nThe current lowering using branching and llvm load/store results in a\nmiscompile that causes kernels to hang (see llvm/llvm-project#224146).\n\nThis moves over to inline asm, and also improves vectorization while\nwe're at it. We can now emit full 128 bit vectorized atomic loads and\nstores.",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}
