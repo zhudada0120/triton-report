@@ -1,4 +1,36 @@
 {
+  "fb6ecee87718e09e0aab14351683cd398d1a9115": {
+    "date": "2026-09-19",
+    "msg": "[TritonToLinalg](feat) wrap associative_scan with scope (#2251)"
+  },
+  "12c411fb034c8f7f411e0d1590ac0912871e891f": {
+    "date": "2026-09-19",
+    "msg": "[ssbuffer](fix) fix return code (#2230)"
+  },
+  "314f839868bd7ce87a02308a39ec01bce424238c": {
+    "date": "2026-09-19",
+    "msg": "[ssbuffer](fix) preserve aliased matmul input when splitting (#2216)"
+  },
+  "6c196f6b7f4c338a313a4e16711a1f135167a156": {
+    "date": "2026-09-19",
+    "msg": "[ssbuffer](fix) inline transpose yield (#2228)"
+  },
+  "e32203f5c82a745787a06add1a10523f9ec556b7": {
+    "date": "2026-09-19",
+    "msg": "fix(ascend): support bool in index_select_simd"
+  },
+  "790bb6a4eaf467c13e7051edc6043fb4bb50f8e6": {
+    "date": "2026-09-19",
+    "msg": "[UseAnalysis](fix) preserve custom pointer operands"
+  },
+  "9d5815cdc9b6cb4032282d555963115b6f9b6887": {
+    "date": "2026-09-19",
+    "msg": "[build](fix) change the build entry point to setup.py"
+  },
+  "f5c91de081efd6e4b0b6021c53ed4e13801605dc": {
+    "date": "2026-09-19",
+    "msg": "[Libdevice](fix) Update libdevice binary library (#2242)"
+  },
   "6c3f6b035766086d8ed5661020f06a5c9082c20f": {
     "date": "2026-09-18",
     "msg": "[Docs](feat) add Wei Zhan to the maintainer roster (#2222)"

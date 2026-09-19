@@ -1,7 +1,7 @@
 {
-  "content_hash": "7e67cbd7efb9cf51",
+  "content_hash": "de54a5709bfb2876",
   "analysis": {
-    "interface_summary": "定义 37 个类；定义 176 个函数",
+    "interface_summary": "定义 37 个类；定义 178 个函数",
     "key_interfaces": [
       "Pair",
       "TypeWithJitGetItem",
@@ -59,5 +59,5 @@
       "Base.get_x"
     ]
   },
-  "cached_at": "2026-09-18T02:07:14.763250+08:00"
+  "cached_at": "2026-09-20T02:04:25.908384+08:00"
 }

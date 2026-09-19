@@ -511,6 +511,30 @@
       "interface_changes": "atomic_{load,store} 改用 inline PTX 并支持向量化。动机：原 lowering 用 llvm.load/store（atomic monotonic）+ 分支实现，触发 llvm/llvm-project#224146 导致部分 kernel hang。实现：(1) TargetInfoBase 新增两个纯虚方法 loadRelaxed/storeRelaxed（emit 对齐到整个 value 的 relaxed 原子 load/store，pred 为 null 表示所有线程参与，false 时抑制访存且结果为 unspec），新增可选 getMaxAtomicLoadStoreVectorSize(bitWidth)（默认返回 1）。(2) 引入 TargetInfoBase 静态工厂注册机制：TargetInfoBase::Factory + registerFactory(StringRef target, Factory) + fromModuleOp(ModuleOp)（新增 lib/Dialect/TritonGPU/Transforms/",
       "change_summary": "[Backend] Lower atomic_{load,store} with inline ptx (#11821)",
       "ascend_impact": false
+    },
+    "73126ea7149a05412e60f98eea3b1b59907e7336": {
+      "date": "2026-09-19",
+      "affected_modules": [
+        "lib/Dialect/Triton/"
+      ],
+      "affected_interfaces": [
+        "lib/Dialect/Triton/"
+      ],
+      "interface_changes": "修复 TTIR Combine pass 中 select+masked load 合并模式对 volatile load 的错误处理。原实现无条件用新 LoadOp 替换，对于 volatile load 会生成第二次 volatile 读取并使返回值来自第二次读，违反 volatile 语义。新实现增加两项守卫：要求 load 结果只有单一使用者（hasOneUse），且 falseValue 支配 loadOp（DominanceInfo）。满足条件时改为 modifyOpInPlace 更新 load 的 other 操作数，并用 replaceOp 把 select 替换为原 load 结果。这是对 TTIR 优化 pass 的语义修复，属于 triton-ascend 复用的 TTIR 层（lib/Dialect/Triton）。风险较低，但需要注意 hasOneUse 的保守性可能让部分原本可合并的非 volatile 情况不再合并（性能影响有限，且新测试覆盖了 falseValue 定义在 load 之后的非合并场景）。",
+      "change_summary": "[Triton] Preserve volatile loads in select combining (#11240)",
+      "ascend_impact": false
+    },
+    "2b28d42519f3f378bc2c2d448639ca80f5705865": {
+      "date": "2026-09-19",
+      "affected_modules": [
+        "python/triton/language/semantic.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/language/semantic.py"
+      ],
+      "interface_changes": "修复 tl.store 在向布尔（int1）指针写入整数时的截断错误：原实现先把 val 直接 cast 到 int8 存储类型，导致 256 变成 0/false。新实现先 self.cast(val, elt_ty)（elt_ty 为 int1）得到布尔语义，再在 int1 分支中把 ptr 视为 int8 指针并二次 cast val 到 int8。这样 256 会先经 int1 转换为 true，再存储。新增前端 FileCheck 测试断言出现 arith.cmpi ne。这是 TritonSemantic.store 的行为变更，属于 triton-ascend '必然影响'路径（semantic.py）。风险中等：改变了 store 的 cast 顺序，可能影响其他依赖旧截断行为的 kernel（虽然旧行为是 bug）。",
+      "change_summary": "[Frontend] Fix integer-to-bool stores (#11853)",
+      "ascend_impact": false
     }
   }
 }

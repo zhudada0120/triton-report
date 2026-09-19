@@ -1,0 +1,189 @@
+{
+  "date": "2026-09-19",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-09-20T02:06:12.127027+08:00",
+  "daily_summary": "当日变更集中在 Ascend 后端的 TritonToLinalg 转换链与 dynamic CV pipeline（ssbuffer）相关修复，围绕 scan 的 scope 封装、memref 依赖回退码语义修正、matmul 别名输入切分、transpose yield 内联、custom op 指针操作数保活以及 SIMD index_select 的 bool 支持等多个正确性缺陷进行修复；同时有一项构建入口从 setup_ascend.py 改为直接挂接 setup.py 的构建体系重构（prepare/activate 钩子），以及一次 libdevice 二进制库的更新。整体以 bugfix 为主，附带构建重构与测试补充。",
+  "test_impact_summary": "当日多数 commit 都自带针对性的 lit/pytest 回归用例：scan scope 封装虽未直接新增测试，但依赖既有 TritonToLinalg scan 相关 lit 测试与端到端算子测试看护；ssbuffer 的三项修复均新增或更新了 Conversion/General/DynamicCVPipeline 下的 lit 用例（Inner-scope-memref-dep、Inner_scope_i1_test、split_matmul_aliased_input、test_inline_transpose），把回退码语义（IGNORED vs FAILED）与别名/transpose 行为固化为可看护断言；UseAnalysis 与 bool index_select 分别新增 custom_op_pointer_splat.mlir 与 index_select_simd_bool.mlir，并在 pytest_ut 中增加 bool 端到端用例。风险点在于：scope 封装改变了 ScanConverter 的输出 IR 形态，现有仅做 IR 结构检查的测试可能不足以覆盖 UB 地址空间/tcore_type 语义对下游 pass 的影响；构建重构（setup.py 入口迁移）涉及整个 Ascend 构建链路，属于测试看护盲区（无 CI 构建用例覆盖），需要人工验证 wheel 打包与 entry_points 是否仍正确。建议后续评估是否补充 scan 端到端（含 UB 分配与向量核类型）用例，以及针对 setup.py 钩子机制的构建冒烟测试。",
+  "commits": [
+    {
+      "sha": "fb6ecee87718e09e0aab14351683cd398d1a9115",
+      "comment": "本 commit 在 TritonToLinalg 的 ScanConverter 中将 scan 转换逻辑包进 scope::ScopeOp，并把输出 memref 改用 UB 地址空间（#hivm.address_space<ub>），在 scope 上标注 {hivm.tcore_type = VECTOR}，最后通过 scope::ReturnOp 返回。同时把 ScanConverter 与 isSimt1DCumsum 从 getReductionOps 切换到 getRealReductionOps / 新增的 getRealScanBodyOps（基于 terminator 操作数做反向切片），以忽略 TRITON_DEBUG 下前端插入的溢出断言辅助算子（extsi/cmpi/andi 等），避免这些 op 破坏单 add 判定导致 parallel_mode 从 mix_simd_simt 退化为 simd 并触发 UB 越界（error 341）。构建侧在 CMakeLists.txt 中新增链接 BiShengIRScopeDialect，Pass 侧在 getDependentDialects 与 addDynamicLegal 中注册并使 scope::ScopeDialect 合法。风险点：scope 封装改变了 scan 降级后的 IR 结构与内存地址空间（输出 buffer 从默认地址空间改为 UB），下游 bufferization/内存规划 pass 必须正确处理 scope 边界与 UB 生命周期；此外 getRealScanBodyOps 的反向切片逻辑与 ReductionOpBaseConverter 的对应实现需要保持一致，否则 debug/非 debug 构建可能行为分叉。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "medium-risk",
+        "TritonToLinalg",
+        "conversion",
+        "dynamic-cv-pipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "scan 转换输出 IR 结构（scope 封装、UB 地址空间、tcore_type 标注）发生实质变化，且修复了 TRITON_DEBUG 下 parallel_mode 退化问题，需要 lit 测试固定新的 IR 形态并在 debug 构建下验证 mix_simd_simt 未被降级。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/ (scan 相关 lit 测试)",
+          "third_party/ascend/unittest/pytest_ut/ (cumsum/nonzero 端到端算子测试，TRITON_DEBUG=1 场景)"
+        ]
+      },
+      "message": "[TritonToLinalg](feat) wrap associative_scan with scope (#2251)\n\n* [TritonToLinalg](feat) wrap associative_scan with scope and add UB/tcore_type attributes (#1256) (#1672)\n\nWrap the converted scan op with scope::ScopeOp and scope::ReturnOp, and\nannotate the output memref with #hivm.address_space<ub> plus the\n{hivm.tcore_type = #hivm.tcore_type<VECTOR>} attribute on the scope.\n\n- TritonOpConverter.cpp: create scope::ScopeOp around the scan loop, use\n  UB address space for the output memref, return via scope::ReturnOp and\n  set tcore_type=VECTOR on the scope.\n- TritonToLinalgPass.cpp: register scope::ScopeDialect in\n  getDependentDialects and mark it legal in addDynamicLegal so the\n  converted IR can be legalized.\n- CMakeLists.txt: link BiShengIRScopeDialect.\n\n* [simd_simt](fix) use getRealReductionOps in ScanConverter\n\nCherry-pick of commit 5e2e59e80 from PR #1737 (only TritonOpConverter.cpp).\nOriginal commit: zhangzhengshi <zhangzhengshi@huawei.com>\n\nWhen TRITON_DEBUG=1, the frontend inserts overflow-check assert\nsemantics (tt.assert + its condition ops) directly into the scan\ncombine body alongside the actual reduction op. ScanConverter used\ngetReductionOps, which just returns every op in the body verbatim,\nso reductionOps.front() could resolve to one of these inserted\nassert-related ops instead of the real add/mul/max/min op, breaking\nisReductionOpSupported/funcName selection under TRITON_DEBUG=1.\n\nSwitch to getRealReductionOps, which computes a backward slice from\nthe yielded value, so only ops that truly feed the scan result are\nkept and the inserted assert ops are excluded. This matches how\nReductionOpBaseConverter already resolves the real reduction op.\n\n* [TritonToLinalg](fix) ignore TRITON_DEBUG assert ops in isSimt1DCumsum via backward slice\n\nisSimt1DCumsum previously counted every op in the scan body, so the\nauxiliary ops injected by TRITON_DEBUG (extsi/cmpi/andi feeding the\noverflow assert) made a plain cumsum fail the single-add check and\ndegrade parallel_mode from mix_simd_simt to simd, which led to\nuninitialized partial_sum blocks and a VEC access UB out-of-bounds\nRuntimeError (error 341) in nonzero_kernel.\n\nMirror ReductionOpBaseConverter::getRealReductionOps: compute the\nbackward slice from the scan terminator's yielded values and only\ncount ops that actually contribute to the result. Debug builds now\nkeep parallel_mode=mix_simd_simt, matching non-debug builds.\n\n* [TritonToLinalg](style) format dependent dialect registration\n\n---------\n\nCo-authored-by: king <49424481+kingsirvince@users.noreply.github.com>\nCo-authored-by: zhangzhengshi <zhangzhengshi@huawei.com>\nCo-authored-by: kingsirvince <wzpwzp9002@163.com>\nCo-authored-by: jiangzheng1123 <jiangzheng22@huawei.com>\n(cherry picked from commit 58a1644e95c6fd8447387de25eb0d6b507243ee0)"
+    },
+    {
+      "sha": "12c411fb034c8f7f411e0d1590ac0912871e891f",
+      "comment": "本 commit 修复 AddMultiBufferInnerScope pass 的回退错误码语义：当 depValueMap 中出现 memref 类型依赖时，之前仅在 addInnerMultiBuffer 返回 -1 后被外层包装逻辑统一覆写为 ERRCODE_FAILED(1)，掩盖了 memref 依赖本应属于 ERRCODE_IGNORED(2) 的语义。改动为 addInnerMultiBuffer 增加 memrefFound 出参，当检测到 memref dep 时置位并返回 -1，外层在 walkResult 被中断时仅在没有 fallback attr 时才设置 ERRCODE_FAILED（新增 hasFallbackAttr 判断），从而保留更具体的 IGNORED 码。hasMemrefDepValue 顺带增加 LDBG 日志打印 producer/depVal 的 op 名便于定位。测试侧更新两个 lit 用例的期望 rc 值：Inner-scope-memref-dep.mlir 与 Inner_scope_i1_test.mlir 均从 rc=1 改为 rc=2，并补充了 i1 跨 block 依赖场景的模块结构与 CHECK-NOT 断言。风险点：错误码语义影响 dynamic CV pipeline 的 fallback 决策路径（IGNORED vs FAILED 会决定是否走多缓冲优化或直接回退），需确认下游对 rc=2 的处理与 rc=1 确实不同，避免把真正失败误判为可忽略。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "dynamic-cv-pipeline",
+        "ssbuffer",
+        "conversion"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "回退错误码语义从 FAILED 改为 IGNORED，直接改变了 pass 的外部可观测行为（module attr rc 值），现有两个 lit 用例已同步更新；同时新增 hasFallbackAttr 分支需要覆盖'已有更具体 fallback attr 时不被覆写'的场景。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AllocMultiCache/Inner-scope-memref-dep.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AllocMultiCache/Inner_scope_i1_test.mlir"
+        ]
+      },
+      "message": "[ssbuffer](fix) fix return code (#2230)\n\nSigned-off-by: cxtverygood123 <chenxiaotian12@huawei.com>\n(cherry picked from commit aafe58aaca90ccec96cb9abccf7f0d7f8120166f)"
+    },
+    {
+      "sha": "314f839868bd7ce87a02308a39ec01bce424238c",
+      "comment": "本 commit 修复 SplitMatmulPattern 在 RHS 与 accumulator（DPS init）别名共享同一 SSA value 时的错误替换：原实现统一用 replaceUsesWithIf 只替换 outerDefOp 的 operand，当 matmul 自身的 dps init 就是被切分对象时会漏替或错替。新逻辑判断 outerDefOp == matmulOp 时直接通过 getDpsInitsMutable()[0].assign(zeroVal) 仅替换 matmul 的 accumulator（保留 RHS 仍指向原输入），否则维持原有 replaceUsesWithIf 路径。新增 lit 回归用例 split_matmul_aliased_input.mlir，构造 ins(%a, %b) outs(%b) 的别名场景，CHECK 断言 matmul 的 ins 仍为 (%a, %b)、outs 被替换为 linalg.fill 产生的 zero。风险点：DPS init 的 mutable 修改需保证在 pattern 重写阶段合法（rewriter 的 IR 一致性），且要确认切分后新增的 add_from_matmul 累加语义在别名场景下依然正确（RHS 被复用为累加初值来源）。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "dynamic-cv-pipeline",
+        "ssbuffer",
+        "conversion"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "修复了别名场景下 DPS init 替换逻辑，新增了专门的 lit 回归用例覆盖 RHS 与 accumulator 共享 SSA value 的边界情况，属于新增测试点。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/StandardizeOp/split_matmul_aliased_input.mlir"
+        ]
+      },
+      "message": "[ssbuffer](fix) preserve aliased matmul input when splitting (#2216)\n\nReplace only the DPS init when the RHS and accumulator share an SSA value. Add a StandardizeOp regression test for the aliasing case.\n\n(cherry picked from commit a03c4c457aca67011951100d6369dd20cc5ddaac)"
+    },
+    {
+      "sha": "6c196f6b7f4c338a313a4e16711a1f135167a156",
+      "comment": "本 commit 修改 DataDependencyAnalysis 中 isAllTransposedInVector 的返回类型，从 bool 改为 pair<bool, optional<Operation*>>：在确认 matmul 结果仅被 transpose 消费且其用户全为 VECTOR 核后，额外扫描 transpose 的用户找出 scf::YieldOp 并返回，供 analyzeExternalOutputs 在建立 C2V 依赖时把该 yield op 记录到 c2vDependencies.back().consumerYieldOp。目的是支持 cube→vector 传输时把 transpose 内联进 fixpipe（即数据在搬运过程中完成转置），新增 lit 用例 test_inline_transpose.mlir 验证 matmul 后接 transpose+exp 时生成 hivm.hir.fixpipe{dma_mode=nz2dn} 并保持 linalg.transpose 消费原 matmul 结果。风险点：consumerYieldOp 的赋值位置敏感，若依赖顺序或 yield 归属判断错误可能把 transpose 内联到错误的 block 边界；另外函数返回值改动是接口级变更（.h 同步修改），需确保所有调用点已适配。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "medium-risk",
+        "dynamic-cv-pipeline",
+        "split-dataflow",
+        "conversion"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 transpose 内联到 fixpipe 的能力，并修改了依赖分析接口签名，需要新增 lit 用例覆盖内联路径；test_inline_transpose.mlir 已作为该测试点加入。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow/test_inline_transpose.mlir"
+        ]
+      },
+      "message": "[ssbuffer](fix) inline transpose yield (#2228)\n\n(cherry picked from commit 6aaac067a42eccb82e4b1befdca9d7a4aaa9b1a0)"
+    },
+    {
+      "sha": "e32203f5c82a745787a06add1a10523f9ec556b7",
+      "comment": "本 commit 为 index_select_simd 增加 bool 支持。Python 侧（mem_ops.py）对齐 tl.load 的 ABI：bool（int1）按 i8 字节存储，故在进入 SIMD 实现前把 src 从 pointer<int1> 转成 pointer<int8>，并在结果 builder op 上打 was_bool_to_int8 属性、在返回的 tl.tensor 上设同名 Python 属性。C++ 侧（TritonOpConverter.cpp）的 IndexSelectSimdConverter 读取该属性，将其传递到生成的 memref.copy op 与最终 bufferization.to_tensor op 上，以便后续 pass 识别 i1→i8 的语义并正确处理。新增 lit 用例 index_select_simd_bool.mlir 校验 memref.copy 与 to_tensor 上的 was_bool_to_int8=true，pytest_ut 新增 test_index_select_extension_bool 端到端对拍 torch_index_select。风险点：属性沿 memref.copy/to_tensor 传递依赖后续 pass 尊重该 marker，若有 pass 重建这些 op 或 buffer 类型可能丢失语义；同时把 int1 视作 i8 需要保证读写两端一致（非仅 SIMD 路径）。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "medium-risk",
+        "TritonToLinalg",
+        "language-extension",
+        "conversion"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 bool dtype 支持，引入了 was_bool_to_int8 属性的传递契约，需要 lit 测试固定 IR 属性以及 pytest 端到端验证数值正确性；两处测试均已补充。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/index_select_simd_bool.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_index_select.py"
+        ]
+      },
+      "message": "fix(ascend): support bool in index_select_simd\n\n(cherry picked from commit 0e97a19bb074bcfa83f993c243a1c87c19afcd1a)"
+    },
+    {
+      "sha": "790bb6a4eaf467c13e7051edc6043fb4bb50f8e6",
+      "comment": "本 commit 修复 UseAnalysis 在处理 hivm::CustomOp 与 hivm::CustomMacroOp 时的操作数分类：这两个 op 的 operand 在 visitOperation 中本应视为 MixUse（既作地址又作数据），但当其结果仅被用作内存地址时，原逻辑会走 Default 分支把它误判为 MetaUse，导致其指针 operand 被 MetaUse clone 替换后在 custom op 转换前被擦除而丢失。新增 .Case<hivm::CustomOp, hivm::CustomMacroOp> 显式把这些 consumers 保留在 materialized value 上。新增 lit 用例 custom_op_pointer_splat.mlir 覆盖零偏移、非零偏移、指针被 load 与 custom 共享、custom_macro 四种场景，并额外用 --canonicalize --triton-reorder-broadcast 后的组合流程验证（对应 addptr(splat(base), splat(offset)) 被折叠为 splat(addptr) 的情况）。风险点：显式 .Case 会绕过 Default 对'结果全为 meta 使用'的判定优化，可能使部分本可 clone 的场景不再 clone（性能/IR 体积影响），需确认不会引入冗余地址计算。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "TritonToLinalg",
+        "use-analysis",
+        "conversion"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "修复了 custom op 指针 operand 被 MetaUse clone 擦除的问题，新增 4 组 lit 场景（含 canonicalize/reorder-broadcast 组合）作为回归用例；该修复依赖对 IR 使用分析行为的精确断言。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/custom_op_pointer_splat.mlir"
+        ]
+      },
+      "message": "[UseAnalysis](fix) preserve custom pointer operands\n\nCustomOp and CustomMacroOp operands are MixUse even when their results\nonly feed memory addresses. Keep these consumers off MetaUse clones so\ntheir pointer operands remain available for direct materialization.\n\nAdd TA-only MLIR coverage for zero and nonzero offsets, shared pointer\nusers, and custom macros, including canonicalize/reorder-broadcast.\n\nAssisted-by: AI\nSigned-off-by: zhaojingkai <zhaojingkai4@huawei.com>\n(cherry picked from commit 87b77b51e2a06ba65c06198492e55919a67eb68e)"
+    },
+    {
+      "sha": "9d5815cdc9b6cb4032282d555963115b6f9b6887",
+      "comment": "本 commit 重构 Ascend 的构建入口：删除根目录 setup_ascend.py 与 init_code.py，把 Ascend 构建逻辑移入 third_party/ascend/build 包（__init__.py / setup_patch.py / build_npuir.py），改为在社区 setup.py 顶部调用 prepare()（设默认环境变量、可选拉取 AscendNPU-IR 与 Triton-distributed 子模块）、在 setup(...) 前调用 activate()（通过 sys._getframe(1).f_globals 重绑 caller 的 setup 名，用 _ModuleGlobals 适配器读取/回写 setup.py 全局，再 patch_module + _build_setup_kwargs 注入 ascend backend、Ascend LLVM、自定义 cmake build、packages/entry_points）。原来用 importlib 加载 setup.py 并替换 setuptools.setup 的捕获式方案被弃用。同时新增 restore_sources.py 用于 git checkout 恢复被打补丁的源码，原 init_code.py 的功能迁移至此。风险点：activate() 依赖 sys._getframe(1) 取调用者全局，对 PEP 517 隔离构建/不同构建前端（pip、build、直接 python setup.py）的兼容性需逐一验证；_ModuleGlobals.__setattr__ 直接写入 setup.py globals，patch 顺序与副作用需谨慎；此外 wheel 的 entry_points/packages 依赖 patch 后重新求值，若上游 setup.py 结构调整（如 packages 计算时机变化）会破坏该注入。",
+      "tags": [
+        "refactor",
+        "high-risk",
+        "build",
+        "packaging",
+        "setup"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "构建入口迁移属于影响整个 Ascend wheel 产出的结构性变更，涉及 prepare/activate 钩子、entry_points 与 packages 重新求值、子模块拉取与 LLVM 替换，但仓库内缺少针对构建流程的自动化用例，需要新增构建冒烟/打包校验测试或至少人工验证矩阵。",
+        "suggested_test_areas": [
+          "third_party/ascend/build/setup_patch.py (activete/patch_module 行为)",
+          "构建 CI：pip install . / python setup.py bdist_wheel 后的 entry_points 与 ascend backend 注册校验",
+          "restore_sources.py 恢复流程"
+        ]
+      },
+      "message": "[build](fix) change the build entry point to setup.py\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>\n(cherry picked from commit 5ab7832e9af4a1f53b8edd5b3295f2fab5abe2a8)"
+    },
+    {
+      "sha": "f5c91de081efd6e4b0b6021c53ed4e13801605dc",
+      "message": "[Libdevice](fix) Update libdevice binary library (#2242)",
+      "author": {
+        "name": "Levein",
+        "email": "huangyiming25@huawei.com"
+      },
+      "stats": {
+        "total_additions": 0,
+        "total_deletions": 0,
+        "files_changed": 1
+      },
+      "files": [
+        {
+          "filename": "third_party/ascend/backend/lib/libdevice.10.bc",
+          "status": "modified",
+          "additions": 0,
+          "deletions": 0,
+          "patch": ""
+        }
+      ],
+      "tags": [
+        "bugfix",
+        "chore",
+        "low-risk",
+        "libdevice",
+        "language-cann"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "libdevice.10.bc 二进制文件更新，patch 未展示内容差异，无法从 diff 判断具体语义变化；libdevice 函数（如 exp/rsqrt/pow 等）行为变化会影响依赖 CANN libdevice 的算子数值结果，建议在完整构建后回归 libdevice 相关算子测试（如 math 相关 kernel 端到端用例），但无明确新增测试点。",
+        "suggested_test_areas": [
+          "third_party/ascend/language/cann/libdevice.py 相关算子端到端测试",
+          "third_party/ascend/unittest/pytest_ut/ 中使用 libdevice 函数的算例"
+        ]
+      }
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

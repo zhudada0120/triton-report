@@ -1,0 +1,400 @@
+{
+  "date": "2026-09-19",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-09-20T02:03:24.035432+08:00",
+  "daily_summary": "当日的变更主要围绕编译器正确性与健壮性修复展开：Triton 方言的 Combine pass 修复了 volatile load 与 select 合并时会重复读取内存的问题，改为在同用途、可支配的条件下就地更新 load 的 other 操作数；TritonGPU 的嵌套循环融合修复了两个崩溃场景（重复 epilogue 输出、内层循环被 LICM 提升）；OptimizeThreadLocality 修复了 reduce→一元运算循环更新时的断言失败；AMD MFMA 编码属性 parse 初始化了未定义的 isTransposed 布尔值；ConSan 将 shared memory 的 proxy fence 追踪拆分为读/写两代，避免只读场景误报 fence 缺失；Histogram 新增基于 warp ballot 的小直方图实现并附带启发式选择；前端修复了整数写入布尔指针时的截断错误；NVIDIA 后端按架构选择 ptxas；另有若干测试修整与 Python 3.13 源码位置保留。整体方向是提升编译器 pass 的边界场景正确性、减少 UB 与崩溃，并对小规模 histogram 做定向性能优化。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 的直接影响有限。多数改动物理上位于 triton-ascend 不使用的路径（third_party/nvidia、third_party/amd、TritonInstrument/ConSan、TritonGPU 布局与循环融合 pass、HistogramOpToLLVM）。唯一命中'必然影响'路径的是 python/triton/language/semantic.py 的 store 实现（修复 int→bool 指针写入），triton-ascend 的前端 monkey-patch 会复用该语义层，故其 store 行为会随上游一并修正；另外 lib/Dialect/Triton/Transforms/Combine.cpp 的 volatile load 合并修复属于 TTIR 层优化，Ascend 复用 TTIR，理论上会继承该 pass 的语义修正。Histogram/CtPop/Ballot 相关改动只涉及 Conversion/TritonGPUToLLVM，Ascend 走 TritonToLinalg 路径不受影响。",
+  "commits": [
+    {
+      "sha": "73126ea7149a05412e60f98eea3b1b59907e7336",
+      "comment": "修复 TTIR Combine pass 中 select+masked load 合并模式对 volatile load 的错误处理。原实现无条件用新 LoadOp 替换，对于 volatile load 会生成第二次 volatile 读取并使返回值来自第二次读，违反 volatile 语义。新实现增加两项守卫：要求 load 结果只有单一使用者（hasOneUse），且 falseValue 支配 loadOp（DominanceInfo）。满足条件时改为 modifyOpInPlace 更新 load 的 other 操作数，并用 replaceOp 把 select 替换为原 load 结果。这是对 TTIR 优化 pass 的语义修复，属于 triton-ascend 复用的 TTIR 层（lib/Dialect/Triton）。风险较低，但需要注意 hasOneUse 的保守性可能让部分原本可合并的非 volatile 情况不再合并（性能影响有限，且新测试覆盖了 falseValue 定义在 load 之后的非合并场景）。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "triton-ir-transforms"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "lib/Dialect/Triton/Transforms/Combine.cpp 属于 TTIR 方言转换，triton-ascend 复用 AST→TTIR 前端与 TTIR 层 pass（TritonToLinalg 转换的输入即 TTIR）。此修复使 volatile load 的 select 合并不再产生重复读取，Ascend 后端生成的 TTIR 会继承该语义修正；同时因 hasOneUse/支配性守卫，Ascend 侧原本依赖该合并模式的 kernel 可能不再被合并，但属正确性优先的保守行为。",
+        "testing": "Ascend 若无针对 volatile load 的 lit 测试则不受直接测试影响；但若 Ascend 的 TTIR 单测或端到端测试间接依赖 Combine pass 的旧合并行为（例如断言 select 被消除的 IR 检查），可能需更新期望。",
+        "needs_test_update": false,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion（如存在 TTIR 层 IR 检查）"
+        ]
+      },
+      "message": "[Triton] Preserve volatile loads in select combining (#11240)\n\nA regular unused load can be removed, but a volatile load must remain.\nAs a result, the old code produced two volatile reads instead of one and\nreturned the value from the second read.\n\n---------\n\nCo-authored-by: peterbell10 <peterbell10@openai.com>",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "lib/Dialect/Triton/"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "430d8af9a4fc5df9810fd1e646b69eccd3e99f4b",
+      "comment": "修复 TritonGPU FuseNestedLoops pass 在 epilogue 输出被外层 yield 重复引用时的错误。原实现通过遍历 epilogue 输出的所有 use 来构造 usedIterArgs，当同一输出值被 yield 多次使用时（duplicate epilogue outputs），会把同一个输出映射到多个位置，导致 scf.if 的结果数量与类型不匹配或值错位。新实现改为遍历 outerYield 的操作数，用 llvm::is_contained 判断其是否来自 epilogue 输出，记录位置并通过 zip_equal 逐一 setOperand 回写 scf.if 结果，同时分别构造 then/else 的 yield 值。这是 TritonGPU 的嵌套循环融合 pass 修复，属 NVIDIA/AMD 相关路径；Ascend 不走 TritonGPU 优化栈，理论上不受影响，但其 TTIR/TTGIR 共享基础设施的实现方式（scf.if 构造）无接口级变化。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "tritongpu-transforms"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。lib/Dialect/TritonGPU/Transforms/FuseNestedLoops.cpp 属于 TTGIR 优化，triton-ascend 使用 TritonToLinalg 替代 TTGIR 路径，不经过该 pass。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TRITONGPU] Fix loop fusion with duplicate epilogue outputs (#11621)"
+    },
+    {
+      "sha": "1985cb9b6f7fec177ef764d42b8e4bd971d23783",
+      "comment": "修复 AMDMfmaEncodingAttr::parse 中未初始化局部布尔变量 isTransposed 导致的 UBSan invalid-bool-load。当 MLIR 属性文本未指定 transposed 字段时，该变量保持未初始化即被写入属性，读取未定义值构成 UB。改为 bool isTransposed = false 的显式初始化。虽为 AMD 专属编码属性，但文件位于 lib/Dialect/TritonGPU/IR/Dialect.cpp（共享 TTGIR 方言定义文件），修改本身仅涉及 AMD 路径。风险极低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "amd",
+        "tritongpu-ir"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。AMDMfmaEncodingAttr 是 AMD 专属布局编码，triton-ascend 不加载也不使用该属性。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Fix AMDMfmaEncodingAttr invalid-bool-load UBSan error (#11049)\n\nFixes #4105\nThis PR initializes the `isTransposed` flag in\n`AMDMfmaEncodingAttr::parse` to false. This prevents an undefined\nbehavior sanitizer (UBSan) error when parsing MLIR attributes that do\nnot specify the transposed property."
+    },
+    {
+      "sha": "dc3101b3a6fe03f20fa7384c4d312ee17f160415",
+      "comment": "修复 tutorial 06-fused-attention 中 FP8 路径 V tensor descriptor 的偏移/形状描述错误。V 物理存储为 [Z, H, N_CTX, HEAD_DIM] 时，原代码把 FP8 的 V 描述为 [HEAD_DIM, Z*H*N_CTX] 并按 offset_y*HEAD_DIM 计算 y 偏移，跨了非连续逻辑维度，导致 batch/head>0 时读错数据。改为描述为 [Z*H*HEAD_DIM, N_CTX] 起点 off_hz*HEAD_DIM，并把 _attn_fwd_inner 的参数 offset_y 改为 off_hz，在 host 与 device descriptor 路径统一。新增多 batch/head 回归测试。属 tutorial 与测试修正，对编译器核心无影响。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "docs",
+        "test",
+        "attention"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。python/tutorials/06-fused-attention.py 为 NVIDIA 导向的示例，不参与后端编译，也不被 triton-ascend 复用。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Tutorial] Fix FP8 attention V descriptor offsets (#11461)\n\n## Summary\n\nThe FP8 attention path stores V physically as `[Z, H, HEAD_DIM, N_CTX]`,\nbut the tutorial described it as `[HEAD_DIM, Z * H * N_CTX]`. That\nflattening crosses non-contiguous logical dimensions, so descriptor\nloads for every batch/head after the first read the wrong values.\n\nThis change describes the same storage as `[Z * H * HEAD_DIM, N_CTX]`\nand starts each V tile at row `off_hz * HEAD_DIM`. The layout now\nmatches the physical tensor for both host and device descriptor paths.\n\nA focused regression test compares the Triton output against a reference\ncomputed from the quantized FP8 inputs with multiple batches and heads.\n\nFixes #11440.\n\n## Validation\n\n- On the original code, the new test fails with 1,857 / 32,768\nmismatched elements and a maximum absolute error of 0.4307.\n- On the patched code, the regression test and 16 existing FP8 forward\nconfigurations pass.\n- A separate matrix covering both descriptor paths, causal and\nnon-causal attention, head dimensions 64 and 128, and sequence lengths\n128 through 1024 passes on an RTX 5090.\n- `pre-commit run --from-ref origin/main --to-ref HEAD` passes.\n\n# New contributor declaration\n\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n-\n`python/tutorials/06-fused-attention.py::test_fp8_v_batch_head_descriptor`\n  - [ ] This PR does not need a test.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n  - [ ] The `lit` tests I have added follow these best practices.\n\n---------\n\nCo-authored-by: peterbell10 <peterbell10@openai.com>"
+    },
+    {
+      "sha": "cad9a88370b60e08bb85591d8b308527bc803623",
+      "comment": "修复 Proton ROCprofiler SDK 后端在进程退出阶段 HIP metric buffer 晚于 HIP 运行时 teardown 释放导致 hipFreeHost abort 的问题。新增 hip::init 的动态分派（HipApi.h/cpp 增加 init 声明与 DEFINE_DISPATCH），在注册 shutdown handler 之前先调用 hipInit(0) 保证该 handler 早于 HIP teardown 运行，并在 SDK tool finalizer 中在 flush tracing/PC-sampling buffer 之后调用 releaseMetricBuffers() 重置 pendingGraphPool 与 metricBuffer；普通 session finalize 不释放以保持 graph 可重放。测试大幅扩展（parametrize capture_graph、新增 graph session 退出测试、多 session 测试）。属第三方 Profiler 子系统，与编译后端解耦。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "proton"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 third_party/proton（ROCprofiler/HIP 专属），triton-ascend 除非显式启用 Proton 否则不使用，且该路径为 AMD/HIP 特有。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[PROTON] Release HIP metric buffers before runtime teardown (#11824)\n\nPR description written by Codex\n\nHIP graph metric buffers can survive until after HIP teardown and abort\nprocess exit in `hipFreeHost`, even after `proton.finalize()`. Call\n`hipInit(0)` before registering Proton's existing shutdown handler, then\nrelease the buffers in the SDK tool finalizer after its tracing and\nPC-sampling buffer flushes. Keep the buffers across ordinary session\nfinalization so captured graphs remain replayable.\n\nThe production diff covers ROCprofiler lifecycle handling and a dynamic\nHIP initialization wrapper. Tests cover single and sequential sessions,\nreplay after finalize, exit without explicit finalize, and profiling\nstarted before Torch/HIP initialization. Native Proton passed all 16\nfocused tests, seven lifecycle probes, and ten repeated early-start\ncases on MI355X with ROCm 7.2.3 and SDK 1.3.5, using the existing\ncompiler and Torch binaries. Omitting startup HIP initialization\nreproduces both early-start exit aborts."
+    },
+    {
+      "sha": "01c5d2ac6af3a314839ac6cc5787f71f90ffdb36",
+      "comment": "为 Gluon AMD MFMA 与 mfma_scaled 增加可选 cd_regclass 参数（\"a\"=AGPR、\"v\"=VGPR），记录为 tt.dot / tt.dot_scaled 上的 amdg.cd_regclass 属性，由 MFMA lowering 在每个 tile 的首个 MFMA 前与末个 MFMA 后插入空 inline asm（tie 约束 \"=a,0\"/\"=v,0\"）来钉住累加器寄存器类，实现对单次调用而非进程级 LLVM 选项的控制。实现包含：cdna3/cdna4 前端 _check_cd_regclass/_set_cd_regclass 与文档、MFMA.cpp 新增 getCDPins/pinRegClass 及在普通与 scaled 路径（含 pingpong_2step 分段）插入 pin、新增 lit 测试与 gluon 前端/核心测试。常累加器在 C 侧不 pin（避免阻止 LLVM 折叠立即数）。属 AMD 专属 Gluon 功能，风险中等（涉及降低过程的 IR 生成正确性，但约束链已由 lit 测试覆盖）。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "amd",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更全部位于 python/triton/experimental/gluon/language/amd/**、third_party/amd/lib/TritonAMDGPUToLLVM/DotOpToLLVM/MFMA.cpp 与 AMD 的 lit 测试，属 AMD/Gluon 专属路径，triton-ascend 不使用 Gluon 也不实现 TargetInfoBase。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][gfx950][Gluon] Add cd_regclass to mfma and mfma_scaled (#11792)\n\n`gl.amd.cdna3.mfma` and `gl.amd.cdna4.mfma_scaled` take an optional\n`cd_regclass`: \"a\" to keep the MFMA accumulator (C and D) in AGPRs, \"v\"\nto keep it in VGPRs. It is recorded as `amdg.cd_regclass` on `tt.dot` /\n`tt.dot_scaled`, and the MFMA lowering wraps each tile's accumulator in\nan empty inline asm with a tied \"=a,0\" / \"=v,0\" constraint, right before\nthe tile's first MFMA and right after its last. This gives a kernel\nper-call control over the MFMA form without process-wide LLVM options."
+    },
+    {
+      "sha": "93825b756901d1c3efdc9ac4c1d8696cd354ee4a",
+      "comment": "测试修正：test_int_annotation 中原先用 torch.empty(1) 做缓冲区但 kernel 执行 tl.store(X + v, v) 且 v=3，写越界 3 个元素。虽然设备容忍该越界，但在带边界检查的 TTIR 解释器下暴露为唯一的越界写。将缓冲区改为 torch.empty(4) 以覆盖固定偏移 v=3。纯测试修复，无功能影响。",
+      "tags": [
+        "test",
+        "low-risk",
+        "frontend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。仅修改 python/test/unit/language/test_annotations.py 测试缓冲区大小。",
+        "testing": "无影响。该测试为 CUDA/通用前端测试；triton-ascend 若复制该测试则可能已修正，但不构成上游对 Ascend 的强制变更。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TEST] Give test_int_annotation a buffer its store fits in (#11738)\n\n`test_int_annotation` launches `tl.store(X + v, v)` with `v = 3` on a\n`torch.empty(1)` buffer, so the kernel's only store lands three elements\npast the end of the allocation. The test just inspects the TTIR for the\n`extsi`/`extui` and the device lets the write through, so nothing fails\ntoday; it showed up when I ran the suite under a bounds-checked\ninterpreter of the TTIR, where this is the one out-of-bounds write in\n`test_annotations.py`. Four elements cover the fixed `v = 3` for every\n`width`."
+    },
+    {
+      "sha": "2b28d42519f3f378bc2c2d448639ca80f5705865",
+      "comment": "修复 tl.store 在向布尔（int1）指针写入整数时的截断错误：原实现先把 val 直接 cast 到 int8 存储类型，导致 256 变成 0/false。新实现先 self.cast(val, elt_ty)（elt_ty 为 int1）得到布尔语义，再在 int1 分支中把 ptr 视为 int8 指针并二次 cast val 到 int8。这样 256 会先经 int1 转换为 true，再存储。新增前端 FileCheck 测试断言出现 arith.cmpi ne。这是 TritonSemantic.store 的行为变更，属于 triton-ascend '必然影响'路径（semantic.py）。风险中等：改变了 store 的 cast 顺序，可能影响其他依赖旧截断行为的 kernel（虽然旧行为是 bug）。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "frontend",
+        "language-semantic"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "python/triton/language/semantic.py 的 TritonSemantic.store 是 triton-ascend 直接复用的语义层（其 monkey-patch 未覆写 store，但依赖上游 store 实现生成 TTIR）。此变更调整了 int→bool 指针写入的 cast 顺序：先转 int1 再转 int8，使 256 之类值正确存为 1。Ascend 后端从此变更中受益（修复同类错误），但若 Ascend 有针对 int→int1 指针 store 的自定义 IR 期望，需重新验证。变更不改变 store 签名，不破坏 monkey-patch 协议。",
+        "testing": "Ascend 端到端测试若包含向 int1 指针写入非 0/1 整数的 kernel，其结果会因该修复而改变（旧结果错误、新结果正确）；需要确认相关断言未固化旧行为。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut（涉及 tl.store 到 bool tensor 的用例）",
+          "third_party/ascend/unittest/Conversion（若含 store 相关 IR 检查）"
+        ]
+      },
+      "message": "[Frontend] Fix integer-to-bool stores (#11853)\n\n`tl.store` currently narrows integers directly to the byte storage type\nfor boolean pointers, so values such as 256 become false. Cast to the\nlogical element type first, then handle the boolean storage conversion\nin a single `int1` branch.\n\nThis builds on @guoriyue's fix in #11308 and retains the original commit\n(`4b594ad9fa89c4fb9b1e3bf955bbaa5d928bed0a`) and authorship. Replace the\noriginal runtime tests with one frontend FileCheck test requiring\n`arith.cmpi ne`.\n\nFixes #9991 closes #11308\n\n### Validation\n\n- All commit hooks passed, including Ruff, YAPF, mypy, and Python syntax\nchecks.\n- `git diff --check origin/main...HEAD` passed.\n- Frontend test execution is blocked: the Brix Git checkout endpoint\nredirects to Microsoft sign-in, so the remote test copy could not be\nsynchronized.\n\n---------\n\nCo-authored-by: Mingfei Guo <1800012773@pku.edu.cn>",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/language/semantic.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "51960801b3c476fc16c4cef85d21b619a29892c5",
+      "comment": "修复 FuseNestedLoops 预处理阶段在 LICM 将内层循环提升出外层循环后仍尝试融合导致崩溃的问题。在 preprocessLoopNest 中 moveLoopInvariantCode(outerLoop) 之后新增检查：若 innerLoop 的父 block 不再是 outerLoop 的 body，则返回 failure() 直接放弃融合。同时新增 lit 测试 hoisted_inner_loop。属 TritonGPU 循环融合 pass 的健壮性修复，Ascend 不使用该路径。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "tritongpu-transforms"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。lib/Dialect/TritonGPU/Transforms/FuseNestedLoops.cpp 属 TTGIR 路径，triton-ascend 不经此路径。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TRITONGPU] Skip nested-loop fusion when LICM hoists the inner loop (#11617)\n\nLICM can hoist the inner loop when preprocessing the loop nest. If this\nhappens, we should bail instead of attempting fusion (which would\ncrash).\n\nFixes #11612"
+    },
+    {
+      "sha": "3f2facaa971d1f7a25242f587d486f767f17c71c",
+      "comment": "调整 NVIDIA 后端 ptxas 选择策略：原 get_ptxas 在 arch>=100（Blackwell）时用 ptxas_blackwell，现在改为 arch>=90（Hopper 及更新）即使用 CUDA 13 的 ptxas_blackwell，arch<90 仍用旧 ptxas。为清晰起见把 get_ptxas/get_ptxas_version 重命名为 get_ptxas_for_arch/get_ptxas_version_for_arch，并同步 make_cubin、get_ptx_version_from_options 与 CUDABackend.hash（lru_cache 的版本/arch 参与 hash）。knob 名称 ptxas_blackwell 保持不变以避免流程扰动。属 NVIDIA 后端专属，风险中等（hash 与版本选择影响缓存与 PTX 兼容性，但仅影响 CUDA 后端）。",
+      "tags": [
+        "refactor",
+        "medium-risk",
+        "nvidia"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。third_party/nvidia/backend/compiler.py 为 CUDA 专属后端实现，triton-ascend 不加载 NVIDIA 后端。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Use CUDA 13 ptxas for Hopper (#11854)\n\nUse CUDA 13 ptxas for Hopper and newer while retaining CUDA 12 ptxas\nbelow sm_90. The ptxas-blackwell knob name remains unchanged to avoid\ndisrupting the existing flow until the legacy ptxas is removed.\nPre-commit passes; focused GB200 validation is pending because Brix\nremote-control authentication is currently unavailable."
+    },
+    {
+      "sha": "4a07b061464ab9a3fd44e4ffe3f018108f4c808c",
+      "comment": "修复 OptimizeThreadLocality pass 在 reduce→一元运算（如 negf）循环更新时崩溃的问题。原实现假定 reduce 的唯一使用者是二元运算（通过 user->hasOneUse() 判断），对一元运算会走到后续把该 user 结果当作 accumulator 改写的逻辑并触发断言。新增 user->getNumOperands() != 2 的守卫，非二元使用者直接跳过。新增 lit 回归测试 unary_loop_update（reduce -> negf -> yield）。属 TritonGPU 优化 pass 修复，Ascend 不使用该路径。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "tritongpu-transforms"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。lib/Dialect/TritonGPU/Transforms/OptimizeThreadLocality.cpp 属 TTGIR 优化，triton-ascend 不经此路径。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TritonGPU] Fixed OptimizeThreadLocality crashes on reduction -> unary loop updates (#11637)\n\nSkip non-binary reduction users in `OptimizeThreadLocality` before the\naccumulator rewrite, preventing an assertion failure on unary loop\nupdates such as `acc = -r`.\n\nAdds regression coverage for `reduce -> negf -> yield`.\n\nTesting: `lit -v test/TritonGPU/optimize-locality.mlir` passes.\n\nFixes #11631.\n\n\n<!---\nThe core Triton is a small number of people, and we receive many PRs\n(thank\nyou!).  To help us review your code more quickly, **if you are a new\ncontributor (less than 3 PRs merged) we ask that you complete the\nfollowing\ntasks and include the filled-out checklist in your PR description.**\n\nComplete the following tasks before sending your PR, and replace `[ ]`\nwith\n`[x]` to indicate you have done them.\n-->\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [ ] I have not added any `lit` tests.\n- [x] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)\n\nCo-authored-by: peterbell10 <peterbell10@openai.com>"
+    },
+    {
+      "sha": "c5d635c59d9883b47390b5b1cbb7d99e585c7d0b",
+      "comment": "ConSan（并发 sanitizer）将 shared memory 的 generic-proxy 访问追踪从单一位域拆分为读/写独立代（generation）。原来 set_proxy_access 会为同一 source thread 使所有旧 fence 覆盖失效，导致 generic read 后接 async read 也被要求插入 fence（保守误报）。新实现：seen bit 用低 16 位存 write、次 16 位存 read，fenced bit 相应使用 2*MAX_NUM_BASE_THREADS 偏移（新增 static_assert 2*fencedOffset<=64 保证不溢出）；createSetProxyAccessCall/createVerifyProxyAccessCall 增加 bool isWrite 参数并按访问类型选择 seenMask（写=writeMask|readMask，读=writeMask）；verify 时只对冲突类型（async read 只查 generic write，async write 查 read+write）检查 fence；ConcurrencySanitizer 传入 effect.rw == RW::Write；文档与测试（test_consan.py 将 test_ws_join_publishes_proxy_generation 改写为 test_ws_join_read_read_no_proxy_fence）同步更新。属 TritonInstrument/ConSan，是 NVIDIA 路径的 sanitizer，Ascend 不加载该方言。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "triton-instrument",
+        "consan"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 include/lib/Dialect/TritonInstrument（NVIDIA async-proxy 专用的 ConSan sanitizer）及 Gluon/NVIDIA 测试。triton-ascend 属于 'Ascend 不加载' 的方言路径，不调用该接口。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ConSan] Avoid proxy fence errors for shared-memory read/read accesses (#11852)"
+    },
+    {
+      "sha": "984d1ba63d1daeb03adee1e1dcdb8c781c68e715",
+      "message": "[CI] Make ConSan performance benchmark non-blocking (#11856)\n\nMark the dedicated ConSan performance benchmark step as non-blocking. A\nbenchmark failure will no longer fail the GB200 job or skip the\nremaining tests.",
+      "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 triton-ascend。",
+      "tags": [
+        "performance",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "e0f407478d4d368839f2ddb8a8e86d103b7f4e8c",
+      "comment": "测试修正：更新 tritongpu_to_llvm.mlir 中一 bin histogram 的 FileCheck 期望，以匹配 #11823 引入的 redux 降低（nvvm.redux.sync add + mask 常量），而两 bin 场景仍走 shuffle/add。#11820 基于更早的 main 开发，合并后未产生文本冲突但导致 main 上期望错配。这是与后续 histogram 改动的衔接修正，属 NVIDIA/AMD/GB200 相关 lit 测试。",
+      "tags": [
+        "test",
+        "low-risk",
+        "conversion"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。仅修改 test/Conversion/tritongpu_to_llvm.mlir 中 histogram 的 CHECK 行，属 NV/AMD lowering lit 测试。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TEST] Fix histogram checks after redux change (#11855)\n\nUpdate the one-bin histogram FileCheck expectation to match the redux\nlowering introduced by #11823 while keeping the two-bin case on\nshuffle/add. #11820 tested against an earlier main revision, so the\nchanges merged without a textual conflict but left current main\nexpecting shuffle/add for both. The conversion LIT now passes on GB200,\ngfx90a, and gfx942."
+    },
+    {
+      "sha": "39c755e515abcc5d8ecdf813f36a639ca5cea186",
+      "comment": "为小规模 histogram 新增基于 warp ballot 的实现：computeWarpHistogram（ballot+popcount）→ reduceWarpHistograms（跨 warp 用带 LinearEncoding 的 ReduceOp，复用 histogram 的 allocation.offset 作为 scratch 并断言 scratch 大小足够）→ distributeHistogram（按 index 用 select 分发计数）。启发式在 triton::canUseWarpBallotHistogram 中定义：!hasCrossCTAScratch && bins<=2 && bins*numWarps<=4（代码注释说明 bins<=2 与 N<=128 的取舍），命中时在 Allocation.cpp 中将单 warp 的 scratch 置 0，HistogramOpToLLVM 走新路径并允许 AMD 的 HistogramOpToLLVM 在命中时返回 failure() 交给通用 lowering。新增跨 9 个文件的测试（含 AMD 版）。风险中等：涉及 Allocation 分析 scratch 计算、ReduceOp 复用 allocation.offset、AMD 后端 pattern 优先级变化，以及新增的 canUseWarpBallotHistogram 符号；性能收益已在 GB300 上验证（2 bin 4.5–6.2%、4 bin 1.3–3.9%）。",
+      "tags": [
+        "performance",
+        "feature",
+        "medium-risk",
+        "conversion",
+        "analysis"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动集中在 include/triton/Analysis/Utility.h、lib/Analysis/Allocation.cpp、lib/Conversion/TritonGPUToLLVM/HistogramOpToLLVM.cpp 与 third_party/amd/.../HistogramOpToLLVM.cpp。triton-ascend 使用 TritonToLinalg 而非 TritonGPU→LLVM lowering，不经过 HistogramOpToLLVM；canUseWarpBallotHistogram 依赖 hasCrossCTAScratch/lookupNumWarps 等 TTGIR 侧信息，Ascend 路径不引用。（注：lib/Analysis/Allocation.cpp 的默认 scratch 计算函数在理论上可被复用，但 Ascend 是否引入该 Analysis 取决于其自有 pass，此变更仅新增一个 early-return 分支，不改变接口。）",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[GPU] Count small histograms with warp ballots (#11820)\n\nAdd a new ballot-based histogram\n```\nGeneric:\n  zero shared bins → atomic increment per input → read bins\n\nBallot:\n  computeWarpHistogram (ballot + popcount) → reduceWarpHistograms → distributeHistogram\n``` \n\nWe heuristically choose ballot based on benchmarks for\n```\n!hasCrossCTAScratch(op) && bins * warps <= 4 && (bins <= 2 || N <= 128)\n```\n\nGB300 measurements across 13 configurations showed lower latency as:\n**4.5–6.2% for two bins** and **1.3–3.9% for four bins**, with no\nmeasured regressions."
+    },
+    {
+      "sha": "bea267cf6ede1c938230235dcd1cd243c157a84e",
+      "message": "[Docs] Add Neil Dhar to list of maintainers (#11851)",
+      "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 triton-ascend。",
+      "tags": [
+        "feature",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "6a7e22b55480a57cf824f1c7ef12190d360d639b",
+      "comment": "修复 Python 3.13 下 inspect 源码位置问题。Python 3.13 的 inspect.getsource 使用精确的定义位置：specialize 包装器保留了原始文件名但用 adjust_line_number 把 co_firstlineno 改成生成位置，导致 returns 只拿到签名片段；_aggregate 生成的聚合类保留了 module/qualname 但缺 __firstlineno__，导致 OSError: source code not available。修复：core.py 的 _aggregate 在 cls.__dict__ 含 __firstlineno__ 时一并复制；triton_kernels/specialize.py 改为保留 orig_code.co_firstlineno（不再 adjust）。不影响 JIT 的 source-location 字段与缓存键。涉及 python/triton/language/core.py（triton-ascend '可能影响'路径的通用前端类型系统）与 triton_kernels。风险低，但需确认依赖 adjust_line_number 生成位置的调试/回溯逻辑未受影响。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "frontend",
+        "compatibility"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "对 triton-ascend 无可观察的功能影响。python/triton/language/core.py 的 _aggregate 在 Ascend 侧同样被加载，但该修改仅在 Python 3.13 下复制 __firstlineno__（当原类提供时），不改变类型/值语义、不改变 OpDescriptor 或 code generator 输入形态，也不涉及 monkey-patch 的 dot/CodeGenerator.__init__/compiler.parse 挂载点。triton_kernels/specialize.py 是 triton-kernels 子包，Ascend 不使用。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Preserve source locations for Python 3.13 inspection (#11801)\n\nPython 3.13 uses precise definition locations when `inspect` retrieves\nsource. Triton's `specialize` and `aggregate` wrappers preserve the\noriginal file or class identity but keep a generated location. As a\nresult, `inspect.getsource` can return only a signature fragment for a\nspecialized function or raise `OSError: source code not available` for\nan aggregate class.\n\nPreserve the original Python function and class definition locations.\nThe adjusted JIT source-location fields stay as they are, and the class\nlocation is copied only when the original class provides it.\n\n## Validation\n\n- CPU source-inspection probes reproduced both failures on Python\n3.13.15 and passed with this patch. Python 3.12.13 behavior was\nunchanged.\n- The specialization probe preserved generated source, JIT location\nmetadata, and the cache key. The aggregate probes covered module-level\nand nested classes and preserved observed metadata, hash inputs, and\nvalue construction.\n- Both affected files at upstream base\n`38e38e7dc33822d0446e2db4c4024a2bf6929668` match the source used for\nvalidation. Downstream Python 3.13 compatibility CI passed the relevant\nunquarantined checks using the identical source changes.\n- Pre-commit passed for the exact base-to-head diff, including Ruff,\nYAPF, and mypy.\n\n## New contributor declaration\n\n- [x] This fixes a functional Python 3.13 compatibility problem.\n- [x] The description explains the problem and why the change is needed.\n- [x] I ran `pre-commit run --from-ref\n38e38e7dc33822d0446e2db4c4024a2bf6929668 --to-ref HEAD`, using the exact\nupstream base and a writable Go cache.\n- [x] This PR does not add repository tests because downstream Python\n3.13 CI exercises the affected paths; the local baseline/candidate\nprobes above verify the specific source-inspection behavior.\n- [x] I have not added any `lit` tests."
+    },
+    {
+      "sha": "2fcb594d0e2e6c6c394dde5f8ef9bb274d909ab2",
+      "comment": "修复 warp specialization 寄存器分配越界问题。AllocateWarpGroups::padToMaxWarpGroups 会把较小的 ttg.warp_specialize 补齐到模块内最大 worker 占用，这些合成的 no-op 分区请求 16 个寄存器，可能被写入 actualRegisters，导致 ConvertWarpSpecializeToLLVM 生成 nvvm.setmaxregister ... 16，而 NVVM 只接受 24~256。方案是引入常量 kMinRegisters=24，在每个分区的估测寄存器数上取 std::max(estRegs, kMinRegisters) 后再计算 warp-group 预算，默认 warp group 也复用同一常量。实现准确且最小化：只改了 minRegistersForRegion 的入参与默认分区的字面量 24，不改变任何公共接口签名。风险低，但需注意该 clamp 会略微抬高预算基线，对后续 leftover 分配有连锁影响（已在注释中说明会计入 padding warp group 的真实消耗）。新增 test/Conversion/allocate_warp_groups_then_lower.mlir 端到端从分配验证到 --convert-warp-specialize-to-llvm 的 nvvm.setmaxregister increase 24，覆盖到位。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "compiler",
+        "nvidia",
+        "test"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Conversion/TritonGPUToLLVM/AllocateWarpGroups.cpp（TritonGPU→LLVM lowering 路径），triton-ascend 使用 TritonToLinalg 替代该 lowering，不经过 AllocateWarpGroups，也不生成 nvvm.setmaxregister。",
+        "testing": "无影响。新增的 test/Conversion/allocate_warp_groups_then_lower.mlir 属于 NVIDIA/通用 lit 测试，triton-ascend 不运行该用例，无需同步。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Fix register allocation for padded warp groups (#11287)\n\n## Summary\n\n- Clamp per-partition register allocations to NVVM's minimum of 24\nregisters.\n- Reuse the same minimum for the default warp group.\n- Add an end-to-end regression test from warp-group allocation through\nNVIDIA lowering.\n\n## Problem\n\n`AllocateWarpGroups::padToMaxWarpGroups` pads smaller\n`ttg.warp_specialize` operations to the largest worker footprint in the\nmodule. Those synthetic no-op partitions request 16 registers. The\nallocator could copy that value into `actualRegisters`, so\n`ConvertWarpSpecializeToLLVM` generated `nvvm.setmaxregister ... 16`.\nNVVM only accepts register targets from 24 through 256.\n\nA valid source-level kernel with sequential handoffs using different\nworker-warp counts can therefore fail during compilation.\n\n## Fix\n\nClamp each partition estimate to 24 before computing warp-group budgets.\nThis both keeps the lowered `nvvm.setmaxregister` legal and accounts for\nthe padding warp group's real register consumption when distributing the\nremaining budget to the default warp group.\n\n## Validation\n\n- New allocation-only regression check.\n- New allocation-to-NVVM lowering regression check.\n- Existing `allocate_warp_groups.mlir` checks in normal and instrumented\nmodes.\n- Existing NVIDIA `warp_specialize_to_llvm.mlir` checks.\n- Source-level Gluon reproducer compiled to PTX and cubin and launched\non B200.\n- `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n## New contributor declaration\n\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n[rules](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n- [x] I have added tests.\n  - `/test` for `lit` tests\n- [x] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section."
+    },
+    {
+      "sha": "b4165ead0b4fa98a4afbe71b6a6c70cc9380a597",
+      "comment": "构建改进：让 AMD bootstrap LLVM 与预编译 AMD codegen 的下载走 DependencyArchive 镜像选择，而不是硬编码 oaitriton.blob.core.windows.net 公网 URL，以便在需要 OAIARTIFACTS_BASE_URL 镜像的网络环境中完成 wheel 构建。get_amd_codegen_package_info 改为构造 DependencyArchive（含 mirror 相对路径 triton-llvm/{name}.tar.gz 与 sha256），download_codegen_llvm 改用 get_llvm_archive 复用同一镜像逻辑，并保留独立 pin 的 revision/build_number/checksum。无镜像配置时仍走公网 URL，行为向后兼容。测试新增 2×3 参数化用例覆盖 bootstrap/codegen 与空/带尾斜杠镜像，通过 monkeypatch _download_file 校验 URL 选择、checksum 校验与解包拷贝。风险低，纯构建/工具链侧改动，不涉及编译器运行时代码。",
+      "tags": [
+        "ci",
+        "chore",
+        "low-risk",
+        "build",
+        "amd",
+        "test"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动仅在 python/build_helpers.py 中 AMD codegen/bootstrap LLVM 的下载 URL 构造与 python/test/unit/runtime/test_build.py 测试；triton-ascend 使用自有的 setup_ascend.py / CANN 工具链与 llvm_patch_*.patch 机制，不经过该 AMD 下载路径。",
+        "testing": "无影响。新增测试为上游 build 单测，triton-ascend 不依赖也不运行。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Build] Honor artifact mirrors for AMD codegen downloads (#11850)\n\nAMD bootstrap LLVM and prebuilt AMD codegen downloads construct public\nblob-storage URLs directly, so wheel builds cannot download them when\ntheir network requires the artifact mirror configured by\n`OAIARTIFACTS_BASE_URL`.\n\nRoute both downloads through the existing `DependencyArchive` mirror\nselection. The bootstrap download keeps its independently pinned LLVM\nrevision, build number, and checksum. Public downloads remain the\ndefault when no mirror is configured.\n\nValidation:\n- Added six regression cases in the existing build tests, covering both\nartifacts with no mirror, a mirror, and a mirror with a trailing slash.\nThey exercise download URL selection, checksum verification, extraction,\nand copying with generated archives.\n- On a Brix CPU devbox, the original implementation failed all four\nmirror cases and passed the two public cases; the fix passed all six.\n- All applicable pre-commit checks passed."
+    },
+    {
+      "sha": "18f4ddc0c8f006a9563a530eddf270ae02c5f6ee",
+      "comment": "恢复 cp.async 的分数级 L2 cache policy。此前 #11660 因 ptxas 13.3.33 在 Blackwell 上误编译而全局禁用，本 commit 依据 ptxas 版本门控重新启用：#11669 已把 Blackwell ptxas 升到修复版 13.4.59，实现中用 targetInfo.getPtxVersion() >= 94 作为修复工具链的代理条件。AsyncCopyGlobalToLocalOpConversion 中新增 l2PolicyReg，仅在 PTX>=9.4 时调用 createCachePolicy 并把失败向上传播；PTXCpAsyncLoadInstr 增加 \"L2::cache_hint\" 修饰，并在有 policy 时以 \"l\" 约束追加 policy 操作数（同时更新了 mask 路径的 \"r,l,b\" -> \"r,l,b,l\"）。测试侧在 test/Conversion/tritongpu_to_llvm.mlir 用 ptx-version=88/93/94 三次 RUN 分 OLD-PTX/PTX94 前缀分别校验旧路径不生成 createpolicy、新路径生成 createpolicy.fractional 与 .L2::cache_hint；Gluon 端到端测试新增 cache_policy 参数化并断言 PTX 中是否出现相应指令。实现思路正确、门控策略保守。风险点：以 PTX 版本号作为 toolchain 修复代理是一种启发式，若用户使用非 NVIDIA 打包的 ptxas 或自定义工具链可能不准确；另外 ptxBuilder 新增的操作数形式需要确保所有分支（有/无 mask、有/无 policy）都匹配指令模板。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "low-risk",
+        "nvidia",
+        "compiler",
+        "test",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/LoadStoreOpToLLVM.cpp（NVIDIA 专属 lowering，生成 cp.async PTX 与 createpolicy.fractional）以及 test/Conversion/tritongpu_to_llvm.mlir、python/test/gluon/test_core.py。triton-ascend 不使用 NVIDIA 后端、不生成 PTX，也不经过 AsyncCopyGlobalToLocalOpConversion 或 TargetInfo::getPtxVersion。",
+        "testing": "无影响。测试改动为上游 lit 与 Gluon pytest（依赖 CUDA 硬件/PTX 版本），triton-ascend 既不运行也不需同步。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Restore fractional cache policies for cp.async (#11848)\n\nRe-enable fractional L2 cache policies for `cp.async` when compiling for\nPTX 9.4 or newer. #11660 disabled these policies to work around a ptxas\nmiscompile; #11669 updated Blackwell ptxas to the fixed 13.4.59 version.\n\nI have verified that this passes internal CI."
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

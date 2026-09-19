@@ -1,4 +1,84 @@
 {
+  "73126ea7149a05412e60f98eea3b1b59907e7336": {
+    "date": "2026-09-19",
+    "msg": "[Triton] Preserve volatile loads in select combining (#11240)"
+  },
+  "430d8af9a4fc5df9810fd1e646b69eccd3e99f4b": {
+    "date": "2026-09-19",
+    "msg": "[TRITONGPU] Fix loop fusion with duplicate epilogue outputs (#11621)"
+  },
+  "1985cb9b6f7fec177ef764d42b8e4bd971d23783": {
+    "date": "2026-09-19",
+    "msg": "[AMD] Fix AMDMfmaEncodingAttr invalid-bool-load UBSan error (#11049)"
+  },
+  "dc3101b3a6fe03f20fa7384c4d312ee17f160415": {
+    "date": "2026-09-19",
+    "msg": "[Tutorial] Fix FP8 attention V descriptor offsets (#11461)"
+  },
+  "cad9a88370b60e08bb85591d8b308527bc803623": {
+    "date": "2026-09-19",
+    "msg": "[PROTON] Release HIP metric buffers before runtime teardown (#11824)"
+  },
+  "01c5d2ac6af3a314839ac6cc5787f71f90ffdb36": {
+    "date": "2026-09-19",
+    "msg": "[AMD][gfx950][Gluon] Add cd_regclass to mfma and mfma_scaled (#11792)"
+  },
+  "93825b756901d1c3efdc9ac4c1d8696cd354ee4a": {
+    "date": "2026-09-19",
+    "msg": "[TEST] Give test_int_annotation a buffer its store fits in (#11738)"
+  },
+  "2b28d42519f3f378bc2c2d448639ca80f5705865": {
+    "date": "2026-09-19",
+    "msg": "[Frontend] Fix integer-to-bool stores (#11853)"
+  },
+  "51960801b3c476fc16c4cef85d21b619a29892c5": {
+    "date": "2026-09-19",
+    "msg": "[TRITONGPU] Skip nested-loop fusion when LICM hoists the inner loop (#11617)"
+  },
+  "3f2facaa971d1f7a25242f587d486f767f17c71c": {
+    "date": "2026-09-19",
+    "msg": "[BACKEND] Use CUDA 13 ptxas for Hopper (#11854)"
+  },
+  "4a07b061464ab9a3fd44e4ffe3f018108f4c808c": {
+    "date": "2026-09-19",
+    "msg": "[TritonGPU] Fixed OptimizeThreadLocality crashes on reduction -> unary loop updates (#11637)"
+  },
+  "c5d635c59d9883b47390b5b1cbb7d99e585c7d0b": {
+    "date": "2026-09-19",
+    "msg": "[ConSan] Avoid proxy fence errors for shared-memory read/read accesses (#11852)"
+  },
+  "984d1ba63d1daeb03adee1e1dcdb8c781c68e715": {
+    "date": "2026-09-19",
+    "msg": "[CI] Make ConSan performance benchmark non-blocking (#11856)"
+  },
+  "e0f407478d4d368839f2ddb8a8e86d103b7f4e8c": {
+    "date": "2026-09-19",
+    "msg": "[TEST] Fix histogram checks after redux change (#11855)"
+  },
+  "39c755e515abcc5d8ecdf813f36a639ca5cea186": {
+    "date": "2026-09-19",
+    "msg": "[GPU] Count small histograms with warp ballots (#11820)"
+  },
+  "bea267cf6ede1c938230235dcd1cd243c157a84e": {
+    "date": "2026-09-19",
+    "msg": "[Docs] Add Neil Dhar to list of maintainers (#11851)"
+  },
+  "6a7e22b55480a57cf824f1c7ef12190d360d639b": {
+    "date": "2026-09-19",
+    "msg": "Preserve source locations for Python 3.13 inspection (#11801)"
+  },
+  "2fcb594d0e2e6c6c394dde5f8ef9bb274d909ab2": {
+    "date": "2026-09-19",
+    "msg": "Fix register allocation for padded warp groups (#11287)"
+  },
+  "b4165ead0b4fa98a4afbe71b6a6c70cc9380a597": {
+    "date": "2026-09-19",
+    "msg": "[Build] Honor artifact mirrors for AMD codegen downloads (#11850)"
+  },
+  "18f4ddc0c8f006a9563a530eddf270ae02c5f6ee": {
+    "date": "2026-09-19",
+    "msg": "[NVIDIA] Restore fractional cache policies for cp.async (#11848)"
+  },
   "e9e7b2ba5622e34e86b4f02c2a4d26bcf9e954b3": {
     "date": "2026-09-18",
     "msg": "[AMD] Preserve NaNs in AMD TF32 matmuls (#11783)"
