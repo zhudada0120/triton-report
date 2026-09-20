@@ -1,0 +1,221 @@
+{
+  "date": "2026-09-20",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-09-21T02:03:19.967807+08:00",
+  "daily_summary": "当日变更集中在 Ascend 后端编译/运行时链路的修复、清理与少量新功能：launcher 改为尊重编译器 AutoBlockify 决策（移除运行时黑名单/纯 SIMT 判断）；DynamicCVPipeline 的 ssbuffer IfBlockDAG 纳入 intraDeps 边、rc 错误码重编号（移除 4 号专用码、改用 3 号携带 tuple-preload-failed）、并删除过时的 MergeCubeForBlockPass；atomic 测试用例参考实现重写；GraphOptimize 新增 A5 专属的独立 dot 行合并规则（DotRowCoalescing）；ControlFlowOpt 混合轴 uniform 标量载体的稳定性修复（保留 structured 轴与 opaque 残差）；TritonToStructured 新增 StoreBroadcastConverter 并放宽 LoadBroadcastConverter 跨轴广播；backend runtime 将 arch 相关查询延迟到实例构造期，避免 import 时触发设备初始化。整体以“修复正确性/稳定性 + 移除死代码 + 少量性能优化”为主线，测试用例大量新增/改写。",
+  "test_impact_summary": "当日测试面变化显著：新增大量 lit 测试（row-coalescing-dot-*、intraDep/multi_flow_opt、LoadBroadcastConverter/StoreBroadcastConverter、tensor_pointer_mixed_*）与 pytest 端到端用例（test_load_broadcast.py、test_store_broadcast.py），同时删除/迁移了 test_zero_stride_store_broadcast.py、zero_stride_store_broadcast.mlir 等旧用例。多个修复（AutoBlockify launcher 决策、ssbuffer rc 错误码、IfBlockDAG intraDeps、ControlFlowOpt 混合残差）改变了可观测 IR/metadata 契约与错误码语义，现有测试断言（mock 属性名、rc 期望值、FileCheck 模式）必须同步更新，否则会误报。建议重点看护：AutoBlockify/launcher cap 的 metadata 传播、DynamicCVPipeline 的 rc 与 fallback 路径、DotRowCoalescing 的 A5-only 门控与幂等性、跨轴广播 load/store 的 mask/other 语义、以及 CFO 混合残留 ptr 的 i64/i32 溢出语义。测试策略上应保证新增规则的负例（fallback 不改 IR）与幂等性用例持续覆盖，并核对被删除用例的覆盖是否已被新文件等价替代。",
+  "commits": [
+    {
+      "sha": "60908eb7f4545c2d819cb34a109d7bffc928f1b1",
+      "comment": "意图：修复 launcher 在决定是否对 block 数做 cap 时不再自行推断 AutoBlockify 是否启用，而是直接尊重编译器（CFO/GraphOptimize 阶段）写入 metadata 的决策。实现：driver.py 中删除对 _is_auto_map_parallel_blocks_enabled、is_pure_simt、has_auto_blockify_blacklist_op 的运行时判定，改为读取 metadata.auto_blockify_enabled（由编译器侧产出），launcher_cap_enabled 直接等于该值并去掉 ptsm_cap_authorized 的与运算；utils 导出去掉 _is_auto_map_parallel_blocks_enabled。测试同步改为设置 metadata.auto_blockify_enabled 并移除对该 mock 函数的 patch。风险：中等。这是后端 launcher 与编译器 metadata 之间契约的更改——若某些旧编译产物/缓存的 metadata 缺失 auto_blockify_enabled，getattr 默认值需保持一致语义，否则可能出现 cap 意外开启或关闭；纯 SIMT 路径原先隐含开启 cap 的逻辑被删除，需确认编译器侧确实会为纯 SIMT 写入该字段。测试改动较为彻底，但仍建议检查 metadata 字段的来源与默认值。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "medium-risk",
+        "backend",
+        "launcher"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "测试中原先 patch driver._is_auto_map_parallel_blocks_enabled 并依赖 (auto_map_enabled, is_pure_simt, blacklisted) 组合断言 cap 行为，现已改为读取 metadata.auto_blockify_enabled，必须同步更新 mock 目标与断言维度，否则测试会因属性不存在而失败或误判。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_launcher_export_api.py",
+          "third_party/ascend/backend/driver.py"
+        ]
+      },
+      "message": "[backend](fix) honor compiler AutoBlockify launch policy (#2264)\n\n* [backend](fix) keep pure-SIMT coalesced grid coverage\n\n* [backend](refactor) use compiler AutoBlockify launch policy\n\n* [style] format launcher AutoBlockify policy import\n\n* [style] remove launcher AutoBlockify comment\n\n(cherry picked from commit 36faa575153f505071a1e5539e32e7b46ec222a6)"
+    },
+    {
+      "sha": "a7629c924175f96f7db9ee78dbc84aee2d87097b",
+      "comment": "意图：ssbuffer 的 IfBlockDAG 原先只包含 cross-core 依赖边，导致依赖 intra-core 边才能成立的 flow-opt 条件在跨 core 与 core 内混合依赖场景下漏识别。实现：把 ifBlockCrossCoreDAG 泛化为 ifBlockDAG，边携带 IfBlockDepKind（CrossCore/IntraCore），新增 addIfBlockEdge 去重，buildIfBlockDAG 同时遍历 crossCoreDependentMap 与 intraCoreDependentMap（同块视为非法返回失败），环检测与 flowOpt 对收集改用新 DAG，并把原来基于“距离=2”的 DFS 改为带权（CrossCore 权重 1、IntraCore 权重 0）的逐起点深度传播，目标深度改为 3；UpdateConditionInfo 中的 DAG 替换逻辑同步改为 pair 形式。测试新增 intraDep_flow_opt_test.mlir 与 multi_flow_opt_test.mlir 覆盖 intra 依赖触发 flow-opt 条件。风险：中等偏高。深度语义由“跳数”改为“带权路径长度”会改变哪些 if 块会附加 flow-opt 条件，属于编译期 pipeline 生成的语义变化；同时 intra-core 环检测现在也会触发 ERRCODE_IGNORED 回退，可能让此前可编译的图回退。需关注新深度模型在 diamond/重汇合图上的行为与幂等性。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "medium-risk",
+        "dynamic-cv-pipeline",
+        "ssbuffer"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "依赖分析语义（边类型与深度计算）发生变化，需新增/更新 lit 用例验证 intra-core 边能触发 flow-opt、带权深度=3 的目标选择、以及 intra-core 环的正确回退；已有相关 MLIR 测试的 FileCheck 期望可能因 DAG 结构变化而失效。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AddControlFlowCondition/",
+          "third_party/ascend/lib/DynamicCVPipeline/AddControlFlowCondition/InitDependentMap.cpp"
+        ]
+      },
+      "message": "[ssbuffer](fix) include intraDeps in IfBlockDAG (#2226)\n\nSigned-off-by: zhuxinguang33 <1074959344@qq.com>\n(cherry picked from commit eaecca8a330de33867eacf1bf189367be6fcb203)"
+    },
+    {
+      "sha": "c208031e3bbd276383fc7073c316c80a8827d035",
+      "comment": "意图：修正 atomic_cas/atomic_xchg 测试用例的参考实现与其 kernel 语义不一致的问题。原 kernel 中 yindex 取 tl.arange(0, BLOCK_SIZE)，与 xindex 使用同一段地址，导致参考实现用 per-core 循环模拟存在竞争；改动把 yindex 也改为 xoffset + arange，使每个 program 写入不同偏移、无跨 program 同址竞争，并把参考实现简化为对前 covered=ncore*split_size 行做 torch.where 计算，pointer 由 (split_size, shape[1]) 改为完整 shape。风险：低。这是纯测试修正，但需注意新参考实现假设“只有前 ncore*split_size 行被覆盖”，若 shape[0] 不能被 ncore 整除，未覆盖行保持初值，测试需确保该行为被验证（注释已说明）。同时 xchg 测试的 reference 由原来的分片拼接改为 val.clone()，需确认与 kernel 的交换语义严格一致（每个位置只被一个 program 处理）。",
+      "tags": [
+        "test",
+        "bugfix",
+        "low-risk",
+        "atomic"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "该 commit 本身即为测试用例参考实现的更新，需确保更新后的参考逻辑覆盖无竞争语义（含 shape[0] 不整除 ncore 的边界），并移除对旧 pointer_old_ref 拼接逻辑的依赖。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_atomic_cas.py",
+          "third_party/ascend/unittest/pytest_ut/test_atomic_xchg.py"
+        ]
+      },
+      "message": "[testcase](test) update atomic testcase reference (#2275)\n\n(cherry picked from commit 79c94bdf4e0d746fa25938f664e62d115dee48eb)"
+    },
+    {
+      "sha": "03d3ed845b618ae0ce7d723a6a8b483c0c331bde",
+      "comment": "意图：在 GraphOptimize 中新增“独立 dot 行合并”规则（DotRowCoalescing），把多个独立 program 各自的 M 行 matmul 合并为一个更大的 M，提升 cube 利用率；限定 A5（Ascend950）且非 simt_only，纯 SIMT 的旧 RowCoalescing 仍独占 simt_only 路径。实现：新增 DotRowCoalescing.h/.cpp（约 819 行），用 matchDotRows 做结构化模式匹配（单一 program_id x、单一 scf.for、输出单 store、禁止 reduce/不透明加载、对上界做单调有界性证明），chooseRowCoalescingFactor 依 grid/maxDotRows/maxTensorBytes 选 2/4/8/16/32，静态 grid 用精确因子并设置 hacc.coalesce_factor/axis/grid_ceil_div，无静态 grid 时新增 runtime extent 隐藏参数并加 per-row mask；在 sandbox ModuleOp 中私有重写并 verify 后才提交；RowCoalescingRule 增加 enableLegacy 开关，program_grid.py 增加 (0, {2,4,8,16,32}, false, false) 序列，ProgramGridTransform.cpp 增加 isDotRowTransform，Passes.td 描述更新。风险：高。这是新增的图级重写规则，涉及 dot/loop 上界重写、runtime 隐藏参数与 ABI 契约、mask 语义与 NaN/Inf 保持、溢出/非 speculatable 算术回退等，逻辑复杂且直接改变 kernel 形态；虽然实现做了 sandbox 验证与多个 fallback 用例，但需谨防在非 A5 目标、缺 target 属性、混合 grid 情形下的误判与回退不彻底。",
+      "tags": [
+        "feature",
+        "performance",
+        "high-risk",
+        "graph-optimize",
+        "triton-to-graph"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增规则必须配套 lit 正/负例测试：包括静态 grid 精确因子、runtime grid 隐藏参数与 mask、bf16/f16、reshape/trans、幂等性（重复运行不变）、simt_only 与 rule-mask=0 不得生效、非 A5 与缺 target 不变、以及各类 fallback（奇 grid、上界溢出、重叠 store、fp32、不安全投机、捕获 combinator 的 reduce、窄 offset 等）保持 IR 不变。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToGraph/row-coalescing-dot-basic.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToGraph/row-coalescing-dot-fallback.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToGraph/row-coalescing-dot-runtime-grid.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToGraph/row-coalescing-dot-operation-rewrite.mlir",
+          "third_party/ascend/backend/program_grid.py"
+        ]
+      },
+      "message": "[GraphOptimize](feat) Coalesce independent dot rows (#2212)\n\n* [GraphOptimize](feat) Coalesce independent dot rows\n\n* [GraphOptimize](fix) Restrict dot row coalescing to non-SIMT modes\n\n* [GraphOptimize](fix) Restrict dot row coalescing to A5\n\n* [GraphOptimize](fix) Coalesce dot rows using the original runtime grid\n\n(cherry picked from commit 98ff8121ea7a3b928989f45da512aac8159768e2)"
+    },
+    {
+      "sha": "ccf1d3e0d5fb8d1d1e77368ccd3b379cdc4aaadf",
+      "comment": "意图：清理 ssbuffer/DynamicCVPipeline 的错误码语义——原先 4 号码 ERRCODE_DISABLE_VF_SUBSTITUTION 只由硬编码 kernel 名单 checkAndDisableVfSub 触发（按 kernel 名禁用 vf 替换），改动删除该函数与 4 号码，改为正常的 tuple-preload 重试流程，并在重试成功时用 3 号码（ERRCODE_TUPLE_PRELOAD_FAILED）落盘以保留其语义。实现：AddDynamicCVPipeline.cpp 删除 checkAndDisableVfSub 与末尾调用，引入 tuplePreloadFailed 标志用于最终成功时设置 fallback attr；Utils.h 删除 ERRCODE_DISABLE_VF_SUBSTITUTION；compiler.py 中 _adjust_metadata_by_module_result 的 rc==4 判断改为 rc==3。风险：中等。错误码被重编号意味着 metadata 语义变化，任何仍依赖 rc==4 的下游（缓存中的旧模块、外部脚本、其他 pass 的 fallback 判定）会失效；同时删除了按 kernel 名的硬编码禁用路径，需确认相关模型（chunk_gated_delta_rule_fwd_kernel_h_blockdim64）在 tuple-preload 失败重试后确实能正确编译。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "medium-risk",
+        "dynamic-cv-pipeline",
+        "ssbuffer"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "错误码从 4 改为 3，涉及 compiler.py 的 metadata 分支与 fallback 语义，需要更新/新增测试验证 rc==3 时 disable_vf_operand_substitution 被设置，以及 tuple 重试失败后回退的路径；同时应确认原基于 rc==4 的测试期望（若有）已移除。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/",
+          "third_party/ascend/backend/compiler.py",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/"
+        ]
+      },
+      "message": "[ssbuffer](fix) update rc_code in ssbuffer (#2176)\n\nSigned-off-by: m-everglow <2276518549@qq.com>\n(cherry picked from commit acea528f986aa3248368e89210b0fdf9fd93e126)"
+    },
+    {
+      "sha": "7b2223be7c46477092d8319e85f103ea4911303e",
+      "comment": "意图：移除已过时的 cube-for merge 优化路径，同时保证从 VECTOR 抽取出来的 load/store loop 不再被误判为 CUBE loader loop。实现：删除 MergeCubeForBlockPass.cpp（209 行）及其注册与 ComputeBlockOptPass 中的调用，删除 setEnableCubeBlockMerge/isCubeBlockMergeEnabled 全局开关与 Python 绑定 set_enable_cube_block_merge，compiler.py 中对应的调用删除；OpClassifier 的 penetrateCubeIntoForLoops 由返回 int 改为 LogicalResult，并在 isCubeLoaderForOp 开头排除带 hivm::ExtractLoadStoreAttr 的 for loop（即抽取出的 load/store loop 不再被渗透成 CUBE）。风险：中等。删除 pass 与全局开关是行为回退（虽然开关默认 false 因此默认路径不变，但显式开启该选项的用户/测试会失效）；classifier 新增的排除条件改变了 loop 着色，需确认抽取出的 load/store loop 在 VECTOR 侧的行为与后续 pipeline 兼容。",
+      "tags": [
+        "refactor",
+        "bugfix",
+        "medium-risk",
+        "dynamic-cv-pipeline",
+        "compute-block-opt"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "移除了一个 pass 与一项编译选项，任何引用 EnableCubeBlockMerge / merge-cube-for-block 的测试或 CLI 需删除或更新；同时 classifier 的 ExtractLoadOrStore 排除逻辑需要新的 lit 用例验证抽取出的 loop 不再被标记为 CUBE loader。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/",
+          "third_party/ascend/lib/DynamicCVPipeline/ComputeBlockOptPass.cpp",
+          "third_party/ascend/triton_ascend.cc"
+        ]
+      },
+      "message": "[AscendNPU IR][CVPipeline] fix: Remove cube-for merge passes (#2259)\n\nMotivation: Remove the obsolete cube-for merge path without changing extracted load/store loops from VECTOR to CUBE.\n\nDesign: Remove the merge pass and its option, run loader penetration directly, and exclude loops carrying ExtractedLoadOrStore from CUBE loader classification.\n\nRisks: Low; the classification change is limited to extracted load/store loops.\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>\n\nAssisted-by: AI\n\nCo-authored-by: chenwuyang <chenwuyang1@huawei.com>\n(cherry picked from commit 2e2860eb85cd05ceeab50022c6836e3a0e623a93)"
+    },
+    {
+      "sha": "9fa241df8cc6d621a1e40e0ef5d355207f74a38a",
+      "comment": "上游 cherry-pick（eb2788a9）的 ssbuffer 修复，改动 third_party/ascend/lib/DynamicCVPipeline/AddControlFlowCondition/ProcessArgs.cpp。三处变更：(1) collectArgIndexToBlockIds 由遍历 body->without_terminator() 查找带 kBlockId 属性的 op，改为遍历 body->getArguments() 的 iter_arg，并通过 iterArg.getUses() + getLoopDirectChildBlockId 收集使用点所属 blockId。这修正了原实现在 scf.if（或其它嵌套区域）内使用 iter_arg 时，因 kBlockId 属性挂在嵌套 op 而非直接 op 上导致块归属丢失的问题；同时复杂度从 O(op×operands) 收敛为基于 use-list 的精确反查，避免了非 iter_arg 相关操作的无效扫描。(2) collectChainOps 原先仅检查当前 op 的操作数定义者，现改为对 op->walk 递归遍历嵌套区域内的所有操作，捕获 scf.if/yield 等子区域内引用的、定义于同一 loopOp 下但尚未入链的 op，修复了链式依赖收集不完整的缺陷。(3) replaceIterArgsInBlock 由『遍历 newBlock 内所有 op 检查 kBlockId 是否等于 nonOwnerBlockId，再逐 operand 匹配 argRemapping』改为『遍历 newBlock 的 block argument，若在 argRemapping 中则收集其 uses 中归属 nonOwnerBlockId 的 OpOperand，再统一 set 并打 kArg 属性』，修正了当 iter_arg 通过 scf.if 等嵌套结构间接用于非属主块时替换与标注遗漏的问题，并避免在遍历操作数过程中修改 IR 造成的迭代器失效风险（先收集到 usesToReplace 再统一修改，是更安全的 IR 变更模式）。潜在风险：getLoopDirectChildBlockId 若对某些 owner（如嵌套 scf.for 的 terminator、块外操作）返回空可选项，逻辑上以 continue/条件分支跳过，行为应符合预期；另需确认 walk 递归是否会造成重复入链（有 chainOps.contains 与 set 去重，理论上安全）。整体属于局部 bugfix，不改变 pass 对外契约，但因涉及 scf.if/iter_args 语义，仍需 IR-level 回归验证。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "medium-risk",
+        "DynamicCVPipeline",
+        "compiler-pass"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "改动直接修正 scf.if 场景下 iter_args 的块归属收集与替换逻辑，并扩展了操作数依赖的递归收集，属于可观测的 IR 变换行为变化。现有 DynamicCVPipeline_ut 测试若仅覆盖 scf.for 线性场景，则无法看护本次修复点（scf.if 内使用 iter_arg、嵌套区域操作数依赖、nonOwnerBlockId 归属判定）。建议补充覆盖这两类场景的回归用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/",
+          "third_party/ascend/lib/DynamicCVPipeline/AddControlFlowCondition/ProcessArgs.cpp 对应的 lit 测试",
+          "test/ 下 Ascend Conversion/Pass 相关 FileCheck 用例"
+        ]
+      },
+      "message": "[ssbuffer](fix) ProcessArgs consider iter_args in scf.if (#2223)\n\n* [ssbuffer](fix) ProcessArgs consider iter_args in scf.if\n\n* fix: use getUsers instead of walking all ops in body expect terminator\n\n(cherry picked from commit eb2788a9a93e1a4bd032b4ba91ab8667ce76a7cc)"
+    },
+    {
+      "sha": "a03a733ed4ca9d82e060192d8660f3f379f17bda",
+      "comment": "意图：TritonToStructured 的规范化增强——LoadBroadcastConverter 放宽 ptr/mask 广播轴不同的情形，并新增 StoreBroadcastConverter 把 store 提前到广播之前。实现：LoadBroadcastConverter 分两路：ptr/mask 广播源同形时沿用快路径（小 load 带 mask/other + broadcast）；形状不同时改为无 mask/other 的小 load + broadcast + arith.select(mask_b, v_bc, other)，其中 other 缺省时用零 splat（把原先 tensor.empty 毒值改为 0，符合 Triton 默认语义）。StoreBroadcastConverter 对 ptr 来自 broadcast 的 store，计算广播轴，对 value/mask 做 extract_slice（或在 mask 也有同形广播源时直接复用 maskSrc），用 ptrBroadcast.getSrc() 以小形状写回；同时把原零 stride store broadcast 测试合并进新文件并删除旧文件。风险：中等偏高。改动涉及 masked store/load 的语义忠实性（广播轴上地址别名、mask 与 value 形状不一致时的选择逻辑），并且改变了此前 StoreConverter 对零 stride 广播“延迟处理”的契约——需确认新的 StoreBroadcastConverter 与后续 pointer-broadcast lowering 不产生重复或冲突重写。",
+      "tags": [
+        "feature",
+        "bugfix",
+        "medium-risk",
+        "triton-to-structured"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 pattern 与新语义（select 替代 masked load、zero-splat 默认 other、store 下沉）需要正/负例 lit 测试：涵盖同轴/异轴广播、有无 mask/other、零 stride 指针广播保持延迟、非广播 store 不变；并需删除/迁移旧 zero_stride_store_broadcast 用例。同时新增 pytest 端到端验证广播 load/store。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToStructured/LoadBroadcastConverter.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToStructured/StoreBroadcastConverter.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_load_broadcast.py",
+          "third_party/ascend/unittest/pytest_ut/test_store_broadcast.py"
+        ]
+      },
+      "message": "[TritonToStructure](feat) Add LoadBroadcastConverter and StoreBroa... (#2209)\n\n* [TritonToStructured](fix) Relax LoadBroadcastConverter for different-axis ptr/mask broadcast\n\nPreviously LoadBroadcastConverter required ptr and mask broadcast source shapes to match exactly. When ptr and mask broadcast on different axes (e.g. ptr on dim0: [1,64] -> [256,64], mask on dim1: [256,1] -> [256,64]), the pattern failed to match, causing the load to fall through to MemOpConverter's PtrAnalysis path which could lose mask information and trigger an inefficient scf.for fallback in TritonToUnstructure.\n\nNow supports two cases depending on whether the broadcast source shapes match:\n\nCase 1 (shapes match, original fast path):\n  %ptr_b = tt.broadcast %ptr_src\n  %mask_b = tt.broadcast %mask_src\n  %v = tt.load %ptr_b, %mask_b, %other_splat\nbecomes:\n  %v_small = tt.load %ptr_src, %mask_src, %other_small\n  %v = tt.broadcast %v_small\n\nCase 2 (shapes differ, e.g. ptr and mask broadcast on different axes):\n  %ptr_b  = tt.broadcast %ptr_src\n  %mask_b = tt.broadcast %mask_src\n  %v = tt.load %ptr_b, %mask_b, %other\nbecomes:\n  %v_small = tt.load %ptr_src              (no mask/no other - safe)\n  %v_bc    = tt.broadcast %v_small\n  %v       = arith.select %mask_b, %v_bc, %other\n\nThe small load in case 2 does not need a mask because in ptr's non-broadcast dimensions the mask is guaranteed to be all-true, and in ptr's broadcast dimensions only one element is loaded (no OOB risk). The full mask is applied via select after broadcast; downstream Select Analysis lowers this to extract_slice / insert_slice.\n\nAlso fixes the default masked-off value from tensor.empty (poison) to a zero splat constant, matching Triton's de-facto behavior.\n\n* [TritonToStructured](feat) Add StoreBroadcastConverter to sink stores before broadcasts\n\nWhen store.ptr is defined by a `tt.broadcast`, every pointer along a broadcast axis points to the same memory address, so storing only at the first index of each broadcast axis is sufficient.\n\nThis commit adds `StoreBroadcastConverter` which:\n- Rewrites stores whose ptr comes from a broadcast to use the broadcast source (smaller-shaped) ptr instead.\n- Slices the value tensor along broadcast axes via `tensor::ExtractSliceOp`.\n- Handles mask analogously: reuses the mask's broadcast source when available, otherwise slices the full-shaped mask.\n- Includes unit tests for broadcast axis 0/1, with and without mask, and a negative test ensuring non-broadcast stores are left unchanged.\n\n* fix\n\n* test case\n\n* fix precommit\n\n* add test cases\n\n* fix precommit\n\n* fix precommit\n\n(cherry picked from commit fbc49bafa77485bbbc7176092dee997d3cdb06ee)"
+    },
+    {
+      "sha": "51c948c83669f77a7fd7814428c0ff0ff6bdc6e0",
+      "comment": "意图：修复 ControlFlowOpt（CFO）在混合轴（structured + opaque）指针描述符下的 uniform 标量载体与残差处理，避免把每次 backedge 的 uniform 更新退化成完整大张量残差，同时保持溢出/符号扩展语义。实现：ControlFlowRewrite 新增虚接口 normalizeLoopCarriedValue（默认走原 normalizeControlFlowValue，策略可覆写），并在所有 loop 相关归一化点（init、region arg、yield、result）改用它；TensorPtrDecompose 增加 hasMixedAxisKinds/isPureUniformUpdate/isShapeOnlyRangeOffset/canPreserveMixedResidual 等判定，addptr 分析在混合轴且为纯 uniform 更新或可保留残差时把更新并入 scalar uniformOffset 分量、保留 i64 opaque 残差类型（必要时广播），并新增 normalizeLoopCarriedValue 覆写以在同一 kinds 且仅携带 uniform 分量时走紧凑路径；broadcast 的 opaque 分量在非零时改为按 value 重新取 identity 而非强制置零；BlockPtrAnalysis 删除 getMarkedMakeRangeCarrierSlots 窄路径，TritonToLinalg 与 OffsetAnalysis 相应删除/改写（materializeAffineForOffsetCarrier 用 iv-lower/step 计算位移，getRecoverableCarrierAxes 从 carrier 自身 provenance 恢复轴）。风险：高。涉及 CFO 分解/重组、i32→i64 溢出语义、以及 T2U/T2L 对 offset carrier 的重新分类，边界条件多（sext 不可分配到加法、窄描述符不能拆分加宽、opaque 轴上的 range 必须进残差）；若判定过宽会改变指针语义，过窄则退回旧行为。",
+      "tags": [
+        "bugfix",
+        "high-risk",
+        "triton-control-flow-opt",
+        "triton-to-linalg"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "语义变化复杂且涉及多级 pass 协作，需要大量正/负例：混合广播 loop/if、非零 range start 与显示 sext、窄 i32 offset 加法不得分配 sext、窄描述符必须完整重建、opaque 轴上 range 进残差、以及 T2U/T2L 端到端不产生 triton_indirect_load/memref.load 而用 memref.copy。已有 d007 与 tensor_pointer_descriptor_loop 测试也已相应改动。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonControlFlowOpt/tensor_pointer_mixed_broadcast.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonControlFlowOpt/tensor_pointer_mixed_residual.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonControlFlowOpt/d007_per_axis_structured_opaque_e2e.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/tensor_pointer_descriptor_loop.mlir"
+        ]
+      },
+      "message": "[ControlFlowOpt](fix) stabilize mixed uniform scalar carriers (#2265)\n\n* [ControlFlowOpt](fix) stabilize mixed uniform scalar carriers\n\nApply the mixed-axis loop normalization fix on top of the latest main-dev without reintroducing the temporary PR1958 changes.\n\n* fix(cfo): preserve mixed pointer broadcast residuals\n\nPreserve structured axes and broadcast the opaque residual when a\nscalar-base pointer descriptor is broadcast. Reuse an existing i64 mixed\nresidual for shape-only range updates instead of rebuilding (R + C) - C.\nKeep the fallback for narrow descriptors and arithmetic offsets to\npreserve integer overflow and sign-extension semantics.\n\nAdd regression coverage for mixed broadcasts, conditional residuals,\nscalar loop carriers, range updates, and narrow-offset fallbacks.\n\nValidation: pre-commit passed. The unchanged compiler source passed\n203 MLIR tests, 14 A5 forward/backward configurations, and 99 host\ninteger-semantics configurations in isolated remote environments.\n\n(cherry picked from commit 1e14032861bcbf49f8c71d03f031e4033032f589)"
+    },
+    {
+      "sha": "80da06aa4c6698c57456f8bfcfd98fa20a588bd7",
+      "comment": "意图：HardwareConstraints 与 TileGenerator 原先在类体/模块 import 时读取 target.arch、num_vector_core、ub_size_in_kbytes 等设备相关信息，导致仅 import runtime 模块就触发设备初始化。实现：HardwareConstraints 用 field(default_factory=lambda: _arch_default(...)) 替换类体 if 覆盖（显式传参仍优先），_arch_default 只在缺省时读 target.arch 并区分 Ascend910_95/Ascend950 与 legacy 值；TileGenerator 改为在 __init__ 内通过 runtime_utils 读取 num_vector_core/rf_size_in_kbytes/ub_size_in_kbytes 并把 num_vector_core 快照到实例，所有引用改为 self.num_vector_core。风险：低到中。行为在正常构造路径下等价，但延迟求值意味着若在未初始化设备时构造 HardwareConstraints/TileGenerator 才会触发设备访问（这类场景本身也不应构造）；需确认 utils 模块级变量在架构切换（如测试中 mock target）时的时效性，避免实例快照陈旧。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "low-risk",
+        "autotuner",
+        "runtime"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "构造时机的改变会影响依赖 import 副作用或模块级快照的测试；若已有 costmodel/ubtuner 单测 mock utils.num_vector_core 等符号，需确认 patch 目标仍有效（改为经 runtime_utils 访问），并新增验证 import 不再触发设备初始化、显式传参仍覆盖默认值的用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/costmodel_ut/",
+          "third_party/ascend/unittest/ubtuner_ut/",
+          "third_party/ascend/unittest/autotune_ut/",
+          "third_party/ascend/backend/runtime/cv_autotune/hardware_consts.py",
+          "third_party/ascend/backend/runtime/tile_generator.py"
+        ]
+      },
+      "message": "[backend](fix) defer arch-dependent queries out of import time (#2238)\n\nHardwareConstraints and TileGenerator read `target.arch` /\n`num_vector_core` / `ub_size_in_kbytes` at class-body and module\nimport time, which forces device initialization as soon as the runtime\nmodule is imported.\n\n- hardware_consts: replace the class-body `if target.arch...` overrides\n  with `field(default_factory=...)` calling `_arch_default`, evaluated\n  only when an argument is omitted. Explicit values still win.\n- tile_generator: snapshot `num_vector_core` on the instance and read\n  the other device-dependent sizes through the `utils` module at\n  construction time instead of binding them at import.\n\nCo-authored-by: Claude Code <noreply@anthropic.com>\n(cherry picked from commit 8b9d00e9972221e60b2678e8b8a65cca622910de)"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

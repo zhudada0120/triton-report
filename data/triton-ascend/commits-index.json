@@ -1,4 +1,44 @@
 {
+  "60908eb7f4545c2d819cb34a109d7bffc928f1b1": {
+    "date": "2026-09-20",
+    "msg": "[backend](fix) honor compiler AutoBlockify launch policy (#2264)"
+  },
+  "a7629c924175f96f7db9ee78dbc84aee2d87097b": {
+    "date": "2026-09-20",
+    "msg": "[ssbuffer](fix) include intraDeps in IfBlockDAG (#2226)"
+  },
+  "c208031e3bbd276383fc7073c316c80a8827d035": {
+    "date": "2026-09-20",
+    "msg": "[testcase](test) update atomic testcase reference (#2275)"
+  },
+  "03d3ed845b618ae0ce7d723a6a8b483c0c331bde": {
+    "date": "2026-09-20",
+    "msg": "[GraphOptimize](feat) Coalesce independent dot rows (#2212)"
+  },
+  "ccf1d3e0d5fb8d1d1e77368ccd3b379cdc4aaadf": {
+    "date": "2026-09-20",
+    "msg": "[ssbuffer](fix) update rc_code in ssbuffer (#2176)"
+  },
+  "7b2223be7c46477092d8319e85f103ea4911303e": {
+    "date": "2026-09-20",
+    "msg": "[AscendNPU IR][CVPipeline] fix: Remove cube-for merge passes (#2259)"
+  },
+  "9fa241df8cc6d621a1e40e0ef5d355207f74a38a": {
+    "date": "2026-09-20",
+    "msg": "[ssbuffer](fix) ProcessArgs consider iter_args in scf.if (#2223)"
+  },
+  "a03a733ed4ca9d82e060192d8660f3f379f17bda": {
+    "date": "2026-09-20",
+    "msg": "[TritonToStructure](feat) Add LoadBroadcastConverter and StoreBroa... (#2209)"
+  },
+  "51c948c83669f77a7fd7814428c0ff0ff6bdc6e0": {
+    "date": "2026-09-20",
+    "msg": "[ControlFlowOpt](fix) stabilize mixed uniform scalar carriers (#2265)"
+  },
+  "80da06aa4c6698c57456f8bfcfd98fa20a588bd7": {
+    "date": "2026-09-20",
+    "msg": "[backend](fix) defer arch-dependent queries out of import time (#2238)"
+  },
   "fb6ecee87718e09e0aab14351683cd398d1a9115": {
     "date": "2026-09-19",
     "msg": "[TritonToLinalg](feat) wrap associative_scan with scope (#2251)"
