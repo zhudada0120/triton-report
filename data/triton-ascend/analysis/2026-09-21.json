@@ -1,0 +1,156 @@
+{
+  "date": "2026-09-21",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-09-22T02:03:40.839119+08:00",
+  "daily_summary": "当日变更集中在 Ascend 后端的稳定性与 ssbuffer（DynamicCVPipeline）流水线修复上：一是 DebugUtils 在带 scope 的 kernel 中跳过 Debug NOP 插入以避免干扰 scoped kernel；二是 TritonToStructured 的 PtrAnalysis 修复除零崩溃；三是 AddMultiBufferInnerScope 新增对 memref.alloc + bufferization.to_tensor（无载荷）依赖的 clone 处理路径，避免空 tensor 被错误多缓冲；四是 DynamicCVPipeline 多个 pass 补充 nullptr 检查、BufferCountManager 属性缺失时回退默认值、移除死代码 findMainloopInScope；五是 AnalyzeName 修正拦截函数名列表；此外还有 SplitIfByBlockId 的大规模重构（按 cube/vector 双向跨核依赖决定是否拆分、tensor.empty 上提并补零填充、引入 splitted_if 整数 tag）、libdevice 二进制更新、以及 CODEOWNERS 按模块重新分配。整体方向是收敛 ssbuffer/DynamicCVPipeline 的边界条件与正确性，并同步维护测试与代码归属。",
+  "test_impact_summary": "当日变更显著提升了测试看护需求：SplitIfByBlockId 重构与 ssbuffer 空 tensor clone 修复分别新增了多个 lit 测试（positive_split.mlir、skip_negative.mlir、else_placeholder_fill.mlir、splitted_if_tag.mlir、Inner-scope-alloc-to-tensor-clone.mlir）并大幅改写 Inner-scope-whileop.mlir，属于必须随代码同步看护的高价值测试点，覆盖了拆分决策、tag 唯一性、yield 不携带 block_id、以及 memref.alloc+to_tensor 的 clone 路径。DebugUtils 的 scope 跳过、PtrAnalysis 除零、BufferCountManager 默认回退、AnalyzeName 函数名列表等修复目前没有对应的 lit 测试（部分可能需要新增回归用例）；libdevice 二进制更新无可验证的测试手段，属纯产物替换。建议后续补充针对 moduleContainsScope 跳过逻辑、除零保护、属性缺失默认值以及拦截函数名列表的回归测试，以防止这些边界修复被回退。",
+  "commits": [
+    {
+      "sha": "2268ec8bc806644c3a36dbc459d890da8707c440",
+      "comment": "在 DebugUtils.cpp 中新增 moduleContainsScope 辅助函数，通过遍历 module 查找 'scope.scope' op 判断当前是否处于 scoped kernel；insertDebugNop 与 insertDebugNopForAllLines 在检测到 scope 时直接返回，不再插入 Debug NOP。意图是避免 Debug NOP 干扰带 scope 的 kernel（可能与 ssbuffer/DynamicCVPipeline 的 scoped kernel 结构冲突）。实现方式为在两个入口统一加守卫，风险较低；但注意 moduleContainsScope 每次调用都会全 module walk，且用字符串比较 op 名而非 dialect 接口，若 module 中任意位置存在 scope.scope 就会影响整个 module 的 Debug NOP 插入，粒度偏粗，可能在某些混合场景下过度关闭 debug 信息。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "third_party/ascend"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "该变更仅调整 Debug NOP 插入的守卫条件，未改变 IR 结构或算子语义，现有 lit 测试不直接覆盖 Debug NOP 的 scope 跳过行为，也没有对应测试文件可更新。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline"
+        ]
+      },
+      "message": "Fix debug NOP insertion for scoped kernels (#2270)"
+    },
+    {
+      "sha": "711d329d1e7e6c69c99b238d5b8f82b7267d8eed",
+      "comment": "在 TritonToStructured 的 PtrAnalysis.cpp 中为 isMultiple 增加 divisor==0 的短路判断，避免 staticDivisor.value()==0 时执行取模导致除零崩溃（UB/断言失败）。同时更新 third_party/ascend/patch/triton-ascend-3.6.0.patch，移除 CMake 中对 LLVM FileCheck 的 configure_file 拷贝步骤。前者是明确的健壮性修复，风险低；后者涉及构建产物拷贝的移除，可能影响依赖 wheel 中 FileCheck 的测试流程，需确认测试是否引用 ${TRITON_WHEEL_DIR}/FileCheck。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "third_party/ascend",
+        "build"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "除零修复属于防御性编程，未新增可观测行为变化；patch 中 FileCheck 拷贝移除是构建配置变更，不涉及功能测试用例本身。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General"
+        ]
+      },
+      "message": "[TritonToStructured](fix) fix Division by zero issue (#2297)\n\nSigned-off-by: gymgit1 <guoyiming17@huawei.com>"
+    },
+    {
+      "sha": "24b9ddb232d7892d0adc8513bbedd21f0c56f389",
+      "comment": "在 AddMultiBufferInnerScope.cpp 中新增 isAllocToTensorPattern 判定，识别 bufferization.to_tensor 包裹一个在其之前无任何数据拷贝落地的 memref.alloc 的模式，并在 depValueMap 收集与 processTensorDependencies 中跳过这类依赖；新增 cloneAllocToTensorsInBlocks，在 Phase 2 将该 memref.alloc + to_tensor 对按消费者 block 克隆，避免对空 tensor 做多缓冲产生 read-before-write 拷贝。测试上新增 Inner-scope-alloc-to-tensor-clone.mlir（单/多消费者两例），并大幅改写 Inner-scope-whileop.mlir 的期望从『多缓冲』改为『克隆』。这是正确的语义修复，但 whileop 测试期望的大面积反转表明原有的多缓冲路径被替换，需确认其它依赖多缓冲行为的 kernel 不受回归影响。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "third_party/ascend",
+        "ssbuffer"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 Inner-scope-alloc-to-tensor-clone.mlir 并重写了 Inner-scope-whileop.mlir 的 FileCheck 期望，以匹配 alloc+to_tensor 被克隆而非多缓冲的新行为。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AllocMultiCache/Inner-scope-alloc-to-tensor-clone.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AllocMultiCache/Inner-scope-whileop.mlir"
+        ]
+      },
+      "message": "[ssbuffer](fix)fix empty tensor transfer by cloning (#2268)\n\nSigned-off-by: cxtverygood123 <chenxiaotian12@huawei.com>"
+    },
+    {
+      "sha": "a2b77006e497ba9381d0600a6d7a35e4a2b35c7b",
+      "comment": "更新 Ascend 后端的 libdevice 二进制库（libdevice.10.bc）。该文件为编译期链接的预编译 LLVM bitcode，属于产物替换，diff 无法展示内容变化。风险取决于上游 libdevice 行为是否变化，可能影响依赖 libdevice 数学函数的 kernel 数值结果，需通过端到端算子测试验证。",
+      "tags": [
+        "chore",
+        "low-risk",
+        "third_party/ascend"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯二进制产物更新，无源码逻辑改动，无需新增或更新测试用例；但应通过现有算子端到端测试验证数值正确性。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut"
+        ]
+      },
+      "message": "[Libdevice](fix) Update libdevice binary library (#2294)"
+    },
+    {
+      "sha": "66a53cdf24a00fb551cb9fb0da863ac52df7039d",
+      "comment": "在 DynamicCVPipeline 多个 pass 中补充空指针/缺失属性检查：ProcessArgs.cpp 的 cloneChainForBlock 在 clone 返回空时返回 failure；InterCoreTransferAndSync.cpp 的 handleVectorToCube 在 insertVectorToCubeTransfer 返回空时返回 failure；BufferCountManager::getBufferCountByType 在模块缺少对应属性时回退到默认 buffer count 并记录日志；同时删除 AddMultiBufferInnerScope.cpp 中未使用的 findMainloopInScope 死代码。整体是健壮性修复，将潜在的 nullptr 解引用/崩溃转化为优雅失败，风险低；BufferCountManager 的回退逻辑行为变化需确认默认值与既有语义一致。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "third_party/ascend",
+        "ssbuffer"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "防御性 nullptr 检查与死代码删除不改变正常路径的 IR 输出，现有 lit 测试未覆盖 clone 失败等异常路径，暂无新增用例需求。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline"
+        ]
+      },
+      "message": "[ssbuffer](fix) Add checks for possible nullptr (#2282)"
+    },
+    {
+      "sha": "18d9abdce7f64c68313bbf1bdea70abd3d0827da",
+      "comment": "在 AnalyzeName.cpp 的 interceptrFunc 列表中，将 'chunkwise_bwd_kernel_dhg' 替换为 'parallel_nsa_fwd_kernel'。该列表用于 verifyFuncNames，决定哪些函数名被拦截/特殊处理。变更可能影响特定 kernel 的命名校验与后续 pass 分支，属于配置性修复，需确认新名称与实际 kernel 命名一致，且旧名称不再需要拦截。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "third_party/ascend",
+        "ssbuffer"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅为拦截函数名列表的单项替换，无 IR 结构变化，现有测试未直接覆盖该名单。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AnalyzeDataFlow"
+        ]
+      },
+      "message": "[ssbuffer](fix) Fix AnalyzeNmae (#2299)\n\nCo-authored-by: shaoyiyang <shaoyiyang1@huawei.com>"
+    },
+    {
+      "sha": "4b3a2b587afe5cbb3cbd881eb21de9d6c29e9fad",
+      "comment": "重写 .github/CODEOWNERS，将原有的单 owner（@TecJesh）替换为按模块划分的多 owner，并对 third_party/ascend 下的 backend/patch/dialect/ssbuffer/control flow/graph/linalg/structured/unstructured/annotation/hfusion/hivm/llvm 等子目录分别指定负责人。属于流程治理变更，不影响编译与运行时行为，风险可忽略。",
+      "tags": [
+        "ci",
+        "chore",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "CODEOWNERS 属于仓库治理配置，不涉及代码逻辑或测试用例。",
+        "suggested_test_areas": []
+      },
+      "message": "[CI](feat) reassign CODEOWNERS by module ownership (#2262)"
+    },
+    {
+      "sha": "e2777e8b0f2b01b035bf7b946ba24ee56570a547",
+      "comment": "对 SplitIfByBlockId pass 做大规模重构：(1) 弃用『分组数>=2 即拆分』的启发式，改为预计算 shouldSplitThen/shouldSplitElse——仅当组内同时存在 CUBE 与 VECTOR 组且二者存在双向跨核数据依赖（通过 MemoryDependenceGraph + DependencyHelper 判定）时才拆分，并引入 CoreType 枚举（CUBE_ONLY/VECTOR_ONLY/CUBE_AND_VECTOR/UNDETERMINED）与 groupIsCube/groupFeedsGroup/hasBidirectionalCrossCoreDeps；(2) 扫描分组不再合并连续同类型组，保留 block_id；(3) postProcess 不再在 scf.yield 上设置 block_id，并引入 SplittedIfTagGenerator 给同一源 if 的所有拆分 if 打统一整数 tag（ssbuffer.splitted_if），同时将 kCoreType 设置到 then/else yield；(4) createPlaceholderValue 为 tensor.empty 设置 block_id 并补 linalg.fill 零填充，createMatmulPlaceHolderValue 增加 blockId 参数；(5) 移除拆分后对 kSplittedIf 属性的删除，使下游 pass 可见；(6) 跳过 kernel 名单由三个收敛为仅 'parallel_deltaformer_fwd_kernel'。该重构显著改变了 pass 的判定条件与产物结构，逻辑复杂、风险较高；需重点验证拆分决策不会漏拆（VCV/CVC/CCVC 正例）也不会误拆（无数据流、仅两分组、CUBE_AND_VECTOR、CCV 无尾 CUBE 负例），以及 tag 唯一性与 yield 不再携带 block_id 的约定。",
+      "tags": [
+        "refactor",
+        "bugfix",
+        "medium-risk",
+        "high-risk",
+        "third_party/ascend",
+        "ssbuffer"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 positive_split.mlir、skip_negative.mlir、else_placeholder_fill.mlir、splitted_if_tag.mlir 四个测试文件，分别覆盖双向跨核依赖下的正例拆分、无数据流/分组不足/CUBE_AND_VECTOR/CCV 等负例不拆分、else 分支 placeholder 的 fill 零填充与 matmul placeholder 无 fill、以及 splitted_if tag 在同一源 if 内唯一且跨源 if 递增的行为。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/SplitIfByBlockId/positive_split.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/SplitIfByBlockId/skip_negative.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/SplitIfByBlockId/else_placeholder_fill.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/SplitIfByBlockId/splitted_if_tag.mlir"
+        ]
+      },
+      "message": "[ssbuffer](fix) hoist tensor.empty (#1897)\n\n* [SplitIfByBlockId] split scf.if only when CUBE and VECTOR groups have bidirectional cross-core data deps\n\nReturn CUBE_AND_VECTOR for mixed groups, rename isCube vars to type\nenums (CUBE_ONLY, VECTOR_ONLY, CUBE_AND_VECTOR). Merge consecutive\nsame-core-type groups so split boundaries align with core-type\ntransitions. Pre-compute split decisions via hasBidirectionalCrossCoreDeps:\nonly split when both CUBE and VECTOR groups exchange data bidirectionally,\navoiding unnecessary splits for simple VECTOR-only or CUBE-only patterns.\n\n* [SplitIfByBlockId] stop merging consecutive same-core-type groups; preserve existing block_id; set block_id on placeholder tensor.empty; set ssbuffer.core_type on then/else yield ops in postProcess; fill else-branch tensor placeholders with zero via linalg::FillOp"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

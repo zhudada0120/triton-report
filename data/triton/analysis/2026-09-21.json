@@ -1,0 +1,88 @@
+{
+  "date": "2026-09-21",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-09-22T02:03:25.178456+08:00",
+  "daily_summary": "当日变更集中在三块：(1) NVIDIA 后端正确性修复——OptimizeAccumulatorInit 在清除 TMEM 分配初始化值时误删了作为 MMA 操作数 A 而非累加器的分配初始化（会导致非法未初始化 immutable 分配）；(2) triton_kernels matmul 在 sm_12x(消费级 Blackwell) 上错误地走了 TMA scatter 路径，因为 has_tma_gather() 对 10.0+ 全为真而 sm_12x 仅支持 gather 不支持 scatter，新增 has_tma_scatter() 加以区分；(3) AMD 后端 HIPOptions.hash 未纳入 extern_libs 文件内容摘要，导致外部库内容变更无法使缓存失效，现补齐 SHA-256 内容哈希（与 NVIDIA 对齐）；另有一处 CallGraph::doWalk 递归访问集未插入导致环检测永不触发的 bugfix。整体是多个小范围、高确定性的编译器正确性与缓存一致性修复。",
+  "ascend_impact_summary": "当日四个 commit 均不影响 triton-ascend：OptimizeAccumulatorInit 属于 lib/Dialect/TritonGPU/Transforms（Ascend 走 TritonToLinalg 路径，不使用 TTGIR 优化 pass 与 TMEM/tc_gen5_mma），且其 lit 测试为 TritonNvidiaGPU 专属；triton_kernels matmul/target_info 为 NVIDIA 专属 kernel 库（依赖 cuda_capability_geq/is_cuda，Ascend 不使用该库）；HIPOptions.hash 为 third_party/amd 平台专属代码；CallGraph.h 变更属 include/triton/Analysis 且 Ascend 的 TritonToLinalg 转换链当前并不复用 CallGraph::doWalk 进行环检测（分析基础设施仅在 Ascend 显式复用该分析时才传导），风险可忽略。因此无需为 triton-ascend 新增或修改任何测试用例。",
+  "commits": [
+    {
+      "sha": "d1fc86be1b90ccaef377a9891aa8080e67fc8291",
+      "comment": "修复 TMEMAllocWithUnusedInit（在 OptimizeAccumulatorInit.cpp 中实现）的判定缺陷：原逻辑只要找到一个 useAccumulator=false 的 MMA 用户就删除该 TMEM 分配的初始化值，但该分配可能作为 MMA 的 operand A 传入而非累加器，此时初始内容仍被使用，删除后会产生非法的未初始化 immutable 分配。改动仅一行：在 `!mmaOp` 基础上追加 `|| mmaOp.getAccumulator() != op.getResult()`，把删除条件严格限定为“该分配就是 MMA 的累加器”。同时新增 lit 用例 @preserve_mma_input_initialization，构造带初始化的 operand A 加独立累加器，用 FileCheck 验证 tmem_alloc 的初始化值被保留给 tc_gen5_mma。变更小而精准，属于 NVIDIA Blackwell TMEM 路径的编译器正确性修复，风险低；潜在风险仅是若其它路径也依赖旧的宽松删除语义需要复核，但从 MMA accumulator 语义上看新条件更严格且正确。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "nvidia",
+        "tritongpu-transforms",
+        "tmem"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Dialect/TritonGPU/Transforms/OptimizeAccumulatorInit.cpp，针对 NVIDIA TMEM(tmem_alloc/tc_gen5_mma) 的累加器初始化优化，属于 TTGIR 层的 NVIDIA 专属 pass。triton-ascend 走 TTIR→linalg→毕昇 IR 的 TritonToLinalg 路径，不使用 TTGIR 优化 pass，也不用 TensorMemory/TCGen5 MMA，因此该文件与 AscendBackend 的编译链无任何交互。",
+        "testing": "无影响。新增的 lit 用例位于 test/TritonGPU/accumulator-init.mlir，依赖 ttng.tensor_memory_encoding 与 ttng.tc_gen5_mma 等 NVIDIA 专属方言和 ttg.target=\"cuda:100\"，Ascend 测试体系（third_party/ascend/unittest/ 与 test/ 下的 Ascend 用例）不运行该文件。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Preserve MMA input initialization during accumulator cleanup (#11887)\n\n## Summary\n\n`TMEMAllocWithUnusedInit` can remove a tensor-memory allocation's\ninitializer when an MMA user has `useAccumulator=false`, even when that\nallocation supplies operand A rather than the accumulator. Operand A\nstill needs its initial contents.\n\nOnly remove the initializer when the allocation is the MMA's\naccumulator. Add a minimal regression to the existing\naccumulator-initialization lit test with initialized operand A and a\nseparate accumulator.\n\n## Validation\n\n- Rebuilt upstream main (`68c8a8107`) before and after the fix. Before\nthe fix, the new regression fails because the pass produces an invalid\nuninitialized immutable allocation; after the fix, FileCheck passes.\n- `lit -j8 -v test/TritonGPU test/TritonNvidiaGPU`: **161 passed** on\nLinux ARM64.\n- All applicable pre-commit checks pass, including clang-format.\n\n## New contributor declaration\n\n- [x] This is a compiler correctness fix, not a trivial change.\n- [x] The description explains the problem and why the change is needed.\n- [x] Ran pre-commit checks on the complete two-file change: `pre-commit\nrun --from-ref 66aa2f8a62912e821dd974ace5697fe19ac90968 --to-ref HEAD`.\n- [x] Added a minimal lit regression in `/test`.\n- [x] The lit test follows the MLIR FileCheck best practices.\n\nThe branch starts at `66aa2f8a` to support a single-fix update for a\ndownstream pinned build. Both modified files are unchanged between that\nrevision and the tested upstream main."
+    },
+    {
+      "sha": "3fb26ceeed7846b05fbbe7357023812ea77af188",
+      "comment": "修复 triton_kernels 在 sm_12x（消费级 Blackwell，如 RTX PRO 6000 sm_120）上因错误启用 TMA scatter 导致 ptxas 报 `Feature '.tile::scatter4' not supported on .target 'sm_120a'` 的问题。根因是 matmul.py 中 has_scatter_tma 复用了 has_tma_gather()（其定义为 cuda_capability_geq(10, 0)，对 10.x/12.x 皆为真），但 sm_12x 只有 TMA gather 没有 scatter。实现方式：在 target_info.py 新增 has_tma_scatter() 常量函数（cuda_capability_geq(10,0) 且 arch//10 != 12），并导出到 __all__；matmul.py 的 has_scatter_tma 改用它，从而让 sm_12x 退回 Hopper 已有的非 TMA scatter 路径，gather 逻辑保持不变（仍由 has_gather_tma/has_tma_gather 控制）。变更为纯 NVIDIA 目标能力判定，风险低；需注意 arch 判定用 arch//10 != 12 是对 cc 数值的整数比较，若后续出现其它只支持 gather 的架构需再扩展。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "nvidia",
+        "kernels",
+        "sm12x",
+        "tma"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 python/triton_kernels/triton_kernels/{matmul.py,target_info.py}，该 kernel 库完全面向 NVIDIA（target_info 中 has_tma_gather/has_native_mxfp 等均基于 cuda_capability_geq、is_cuda/is_hip 判定），新增的 has_tma_scatter 同样只在 CUDA 语义下有意义。Ascend 后端不使用 triton_kernels 库，也不消费 has_tma_gather/has_tma_scatter 这类 constexpr_function（Ascend 的 target_info 语义由 NPUDriver.get_current_target 返回 GPUTarget('npu', ...) 提供），故不影响 AscendBackend/NPUDriver 或任何 Ascend 编译阶段。",
+        "testing": "无影响。上游未新增独立测试文件，仅依赖既有 triton_kernels/tests/test_matmul.py 与 is_sm12x() 跳过逻辑。Ascend 测试不覆盖 triton_kernels 目录。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[KERNELS] Don't take the TMA scatter path on sm_12x (#11862)\n\nFixes #11859.\n\n`has_tma_gather()` is `cuda_capability_geq(10, 0)`, which is also true\non consumer Blackwell (12.x), and `matmul.py` uses it for both\n`has_gather_tma` and `has_scatter_tma`. sm_12x has TMA gather but no\nscatter (#11344, and `test_tma_scatter` is skipped for `is_sm12x()`), so\na matmul with a scatter index and a persistent output failed in ptxas\nwith `Feature '.tile::scatter4' not supported on .target 'sm_120a'`.\n\nThis adds `has_tma_scatter()`, false on 12.x, and uses it for\n`has_scatter_tma`, so those cards take the non-TMA scatter that Hopper\nalready takes. Gather is unchanged.\n\nOn an RTX PRO 6000 (sm_120) with `main` bde7dafd6, of the 288\n`test_matmul.py::test_op` cases that failed this way 280 pass; the other\n8 are #11860 and pass with #11861 on top. With both, what still fails in\n`triton_kernels/tests` on that card is the 99 KB shared memory limit\n(`OutOfResources`)."
+    },
+    {
+      "sha": "68c8a8107db2c040d07e0f9fb52fef846bbcc2a6",
+      "comment": "修复 AMD HIPOptions.hash() 未包含外部库内容摘要导致缓存失效不生效的问题。原实现仅用 `_`.join(self.__dict__ 的 name-val)，extern_libs 只记录文件名/路径，因此在不改名的情况下修改 libdevice/自定义 .bc 内容不会改变编译缓存键，可能复用旧产物。实现方式：新增带 lru_cache 的 file_hash(path)（SHA-256 读取文件字节），在 hash() 中把 extern_libs 替换为 (name, file_hash(path)) 元组（保留顺序，注释说明链接对重叠符号是顺序敏感的），并将字段按名称排序后拼接，与 NVIDIA 的内容哈希行为对齐。同时新增参数化测试 test_extern_libs_hash_contents，覆盖 amd/HIPOptions 与 nvidia/CUDAOptions 两种后端，通过改写库文件并 cache_clear file_hash 验证哈希变化。风险低；注意 file_hash 使用进程级 lru_cache，若同进程内文件被就地修改需显式 cache_clear（测试已示范），生产路径下每次编译进程重新读取，语义正确。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "amd",
+        "cache",
+        "build"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/amd/backend/compiler.py（HIPOptions.hash 与 file_hash 辅助函数），属 AMD HIP 后端平台专属实现。triton-ascend 使用 AscendBackend.parse_options 与 NPUOptions 自身的 hash 逻辑，不继承也不复用 HIPOptions；虽然 BaseBackend.parse_options 契约未变，但本次改动未触及该抽象方法签名或基类行为。",
+        "testing": "无影响。新增测试位于 python/test/unit/runtime/test_cache.py 的 test_extern_libs_hash_contents，参数化为 amd/nvidia 两种 options 类型及 gfx950/sm90 架构，不涉及 npu 后端选项。Ascend 的缓存相关测试（third_party/ascend/unittest/ 下）无需联动。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][BACKEND] Hash external library contents in compiler options (#11884)\n\nInclude SHA-256 digests of external library contents in\nHIPOptions.hash(), matching NVIDIA content hashing. Without this changes\nto the contents (but not the filename) of an external library currently\nfail to invalidate the cache on HIP."
+    },
+    {
+      "sha": "84fa223cb8fe44f671a0fcd543236f44df975dda",
+      "comment": "修复 include/triton/Analysis/CallGraph.h 中 CallGraph::doWalk 的环检测失效问题（上游 issue #11726）。原代码用 `if (visited.count(funcOp))` 判断环并 report_fatal_error，但从未对 visited 做 insert，导致环检测永远不触发：遇到循环调用图会无限递归直至栈溢出，而不是给出明确错误；而退出路径上的 visited.erase(funcOp) 说明插入本就是设计意图。修复为一行 `if (!visited.insert(funcOp).second)`，即在检查的同时把当前节点加入访问集，保持路径作用域语义（insert 返回 pair.second 为 false 表示本次插入失败即已在集合中），因此菱形调用 a->b->d、a->c->d 仍会走两次 d 而不会误报。变更为通用 Analysis 基础设施的正确性修复，风险低；语义上把 visited 从“已访问全局集合”明确为“当前递归路径集合”，与 erase 配对一致。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "analysis",
+        "callgraph",
+        "cplusplus"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 include/triton/Analysis/CallGraph.h，只修正 CallGraph::doWalk 内部的 visited 集合插入时机，未改变 CallGraph 对外接口（构造/查询方法签名与语义契约保持），也未触及 BaseBackend/DriverBase/TargetInfoBase 等 Ascend 必须实现的接口。triton-ascend 的 TritonToLinalg 等 Ascend 专用 pass 若不显式调用 CallGraph::doWalk，则不感知此改动；即便复用，行为也只是从“栈溢出”变为“正确报告环”，属正向修复，不会破坏 Ascend 编译链。",
+        "testing": "无影响。上游未新增测试（仅一行修复），无 lit/gtest 用例变化。Ascend 侧的 Conversion 与 pass 测试不涉及 CallGraph 环检测场景，无需联动。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Analysis] Mark the recursion path in CallGraph::doWalk's visited set (#11756)\n\nFixes #11726.\n\n## What\n\n`CallGraph::doWalk` checked `visited.count(funcOp)` to report \"Cycle\ndetected in call graph\" but never inserted into the set, so the check\ncould never fire: a cyclic call graph recursed until the stack gave out\ninstead of reporting the cycle. The matching `visited.erase(funcOp)` on\nexit shows the insert was always intended.\n\n## Fix\n\nOne line: `visited.insert(funcOp)` after the check, marking the current\nrecursion path before descending. Path-scoped semantics, so a diamond\n(a->b->d, a->c->d) is still walked twice without tripping the guard."
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

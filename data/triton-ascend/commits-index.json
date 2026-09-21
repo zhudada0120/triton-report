@@ -1,4 +1,36 @@
 {
+  "2268ec8bc806644c3a36dbc459d890da8707c440": {
+    "date": "2026-09-21",
+    "msg": "Fix debug NOP insertion for scoped kernels (#2270)"
+  },
+  "711d329d1e7e6c69c99b238d5b8f82b7267d8eed": {
+    "date": "2026-09-21",
+    "msg": "[TritonToStructured](fix) fix Division by zero issue (#2297)"
+  },
+  "24b9ddb232d7892d0adc8513bbedd21f0c56f389": {
+    "date": "2026-09-21",
+    "msg": "[ssbuffer](fix)fix empty tensor transfer by cloning (#2268)"
+  },
+  "a2b77006e497ba9381d0600a6d7a35e4a2b35c7b": {
+    "date": "2026-09-21",
+    "msg": "[Libdevice](fix) Update libdevice binary library (#2294)"
+  },
+  "66a53cdf24a00fb551cb9fb0da863ac52df7039d": {
+    "date": "2026-09-21",
+    "msg": "[ssbuffer](fix) Add checks for possible nullptr (#2282)"
+  },
+  "18d9abdce7f64c68313bbf1bdea70abd3d0827da": {
+    "date": "2026-09-21",
+    "msg": "[ssbuffer](fix) Fix AnalyzeNmae (#2299)"
+  },
+  "4b3a2b587afe5cbb3cbd881eb21de9d6c29e9fad": {
+    "date": "2026-09-21",
+    "msg": "[CI](feat) reassign CODEOWNERS by module ownership (#2262)"
+  },
+  "e2777e8b0f2b01b035bf7b946ba24ee56570a547": {
+    "date": "2026-09-21",
+    "msg": "[ssbuffer](fix) hoist tensor.empty (#1897)"
+  },
   "60908eb7f4545c2d819cb34a109d7bffc928f1b1": {
     "date": "2026-09-20",
     "msg": "[backend](fix) honor compiler AutoBlockify launch policy (#2264)"

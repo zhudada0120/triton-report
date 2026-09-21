@@ -1,0 +1,132 @@
+{
+  "date": "2026-09-21",
+  "repo": "triton-lang/triton",
+  "branch": "main",
+  "commits": [
+    {
+      "sha": "d1fc86be1b90ccaef377a9891aa8080e67fc8291",
+      "author": {
+        "name": "mostafarohani",
+        "email": "rohaninejadm@gmail.com"
+      },
+      "date": "2026-09-21T20:58:26+08:00",
+      "message": "[NVIDIA] Preserve MMA input initialization during accumulator cleanup (#11887)\n\n## Summary\n\n`TMEMAllocWithUnusedInit` can remove a tensor-memory allocation's\ninitializer when an MMA user has `useAccumulator=false`, even when that\nallocation supplies operand A rather than the accumulator. Operand A\nstill needs its initial contents.\n\nOnly remove the initializer when the allocation is the MMA's\naccumulator. Add a minimal regression to the existing\naccumulator-initialization lit test with initialized operand A and a\nseparate accumulator.\n\n## Validation\n\n- Rebuilt upstream main (`68c8a8107`) before and after the fix. Before\nthe fix, the new regression fails because the pass produces an invalid\nuninitialized immutable allocation; after the fix, FileCheck passes.\n- `lit -j8 -v test/TritonGPU test/TritonNvidiaGPU`: **161 passed** on\nLinux ARM64.\n- All applicable pre-commit checks pass, including clang-format.\n\n## New contributor declaration\n\n- [x] This is a compiler correctness fix, not a trivial change.\n- [x] The description explains the problem and why the change is needed.\n- [x] Ran pre-commit checks on the complete two-file change: `pre-commit\nrun --from-ref 66aa2f8a62912e821dd974ace5697fe19ac90968 --to-ref HEAD`.\n- [x] Added a minimal lit regression in `/test`.\n- [x] The lit test follows the MLIR FileCheck best practices.\n\nThe branch starts at `66aa2f8a` to support a single-fix update for a\ndownstream pinned build. Both modified files are unchanged between that\nrevision and the tested upstream main.",
+      "parents": [
+        "3fb26ceeed7846b05fbbe7357023812ea77af188"
+      ],
+      "stats": {
+        "total_additions": 23,
+        "total_deletions": 1,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "lib/Dialect/TritonGPU/Transforms/OptimizeAccumulatorInit.cpp",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -37,7 +37,7 @@ public:\n         mmaOp = mma;\n       }\n     }\n-    if (!mmaOp)\n+    if (!mmaOp || mmaOp.getAccumulator() != op.getResult())\n       return failure();\n     if (tmemLoad && !mmaOp->isBeforeInBlock(tmemLoad))\n       return failure();"
+        },
+        {
+          "filename": "test/TritonGPU/accumulator-init.mlir",
+          "status": "modified",
+          "additions": 22,
+          "deletions": 0,
+          "patch": "@@ -449,3 +449,25 @@ module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32} {\n     tt.return\n   }\n }\n+\n+// -----\n+\n+#blocked = #ttg.blocked<{sizePerThread = [1, 128], threadsPerWarp = [32, 1], warpsPerCTA = [4, 1], order = [0, 1]}>\n+#shared = #ttg.nvmma_shared<{swizzlingByteWidth = 128, transposed = false, elementBitWidth = 16}>\n+#tmem = #ttng.tensor_memory_encoding<blockM = 128, blockN = 128, colStride = 1>\n+module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32, ttg.target = \"cuda:100\", \"ttg.threads-per-warp\" = 32 : i32} {\n+  // CHECK-LABEL: @preserve_mma_input_initialization\n+  // CHECK: %[[A:.+]] = ttng.tmem_alloc %arg0\n+  // CHECK: ttng.tc_gen5_mma %[[A]],\n+  tt.func @preserve_mma_input_initialization(\n+      %a: tensor<128x128xf16, #blocked>,\n+      %b: !ttg.memdesc<128x128xf16, #shared, #ttg.shared_memory>) -> tensor<128x128xf32, #blocked> {\n+    %false = arith.constant false\n+    %true = arith.constant true\n+    %input = ttng.tmem_alloc %a : (tensor<128x128xf16, #blocked>) -> !ttg.memdesc<128x128xf16, #tmem, #ttng.tensor_memory>\n+    %acc, %tok = ttng.tmem_alloc : () -> (!ttg.memdesc<128x128xf32, #tmem, #ttng.tensor_memory, mutable>, !ttg.async.token)\n+    %mma = ttng.tc_gen5_mma %input, %b, %acc[%tok], %false, %true : !ttg.memdesc<128x128xf16, #tmem, #ttng.tensor_memory>, !ttg.memdesc<128x128xf16, #shared, #ttg.shared_memory>, !ttg.memdesc<128x128xf32, #tmem, #ttng.tensor_memory, mutable>\n+    %result, %load_tok = ttng.tmem_load %acc[%mma] : !ttg.memdesc<128x128xf32, #tmem, #ttng.tensor_memory, mutable> -> tensor<128x128xf32, #blocked>\n+    tt.return %result : tensor<128x128xf32, #blocked>\n+  }\n+}\n"
+        }
+      ]
+    },
+    {
+      "sha": "3fb26ceeed7846b05fbbe7357023812ea77af188",
+      "author": {
+        "name": "Alessandro Potenza",
+        "email": "ap.alessandro.potenza@gmail.com"
+      },
+      "date": "2026-09-21T20:45:44+08:00",
+      "message": "[KERNELS] Don't take the TMA scatter path on sm_12x (#11862)\n\nFixes #11859.\n\n`has_tma_gather()` is `cuda_capability_geq(10, 0)`, which is also true\non consumer Blackwell (12.x), and `matmul.py` uses it for both\n`has_gather_tma` and `has_scatter_tma`. sm_12x has TMA gather but no\nscatter (#11344, and `test_tma_scatter` is skipped for `is_sm12x()`), so\na matmul with a scatter index and a persistent output failed in ptxas\nwith `Feature '.tile::scatter4' not supported on .target 'sm_120a'`.\n\nThis adds `has_tma_scatter()`, false on 12.x, and uses it for\n`has_scatter_tma`, so those cards take the non-TMA scatter that Hopper\nalready takes. Gather is unchanged.\n\nOn an RTX PRO 6000 (sm_120) with `main` bde7dafd6, of the 288\n`test_matmul.py::test_op` cases that failed this way 280 pass; the other\n8 are #11860 and pass with #11861 on top. With both, what still fails in\n`triton_kernels/tests` on that card is the 99 KB shared memory limit\n(`OutOfResources`).",
+      "parents": [
+        "68c8a8107db2c040d07e0f9fb52fef846bbcc2a6"
+      ],
+      "stats": {
+        "total_additions": 8,
+        "total_deletions": 1,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "python/triton_kernels/triton_kernels/matmul.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -535,7 +535,7 @@ def matmul(a, b, bias,\n         available_sms = target_info.num_sms() - opt_flags.idle_sms\n         grid = min(opt_flags.occupancy_target * available_sms, grid)\n     # canonicalize storage\n-    has_scatter_tma = has_scatter and out_matmul.element_size() <= 4 and target_info.has_tma_gather()\n+    has_scatter_tma = has_scatter and out_matmul.element_size() <= 4 and target_info.has_tma_scatter()\n     c = wrap_torch_tensor(out_matmul.view(math.prod(out_matmul.shape[:-1]), out_matmul.shape[-1]) if has_scatter else out_matmul.view(math.prod(out_matmul.shape[:-2]), *out_matmul.shape[-2:]))\n     a = Tensor(_canonicalize_storage(a.storage, 2 if has_gather_tma else 3, flex.lhs_data), dtype=a.dtype, shape=a.shape, shape_max=a.shape_max)\n     b_storage_ndim = 5 if b_is_shuffled else 3"
+        },
+        {
+          "filename": "python/triton_kernels/triton_kernels/target_info.py",
+          "status": "modified",
+          "additions": 7,
+          "deletions": 0,
+          "patch": "@@ -15,6 +15,7 @@ __all__ = [\n     \"get_cdna_version\",\n     \"get_rdna_version\",\n     \"has_tma_gather\",\n+    \"has_tma_scatter\",\n     \"has_native_mxfp\",\n     \"is_cuda\",\n     \"is_hip\",\n@@ -64,6 +65,12 @@ def has_tma_gather():\n     return cuda_capability_geq(10, 0)\n \n \n+@triton.constexpr_function\n+def has_tma_scatter():\n+    # sm_12x has TMA gather but not scatter: ptxas rejects `.tile::scatter4` on sm_120a.\n+    return cuda_capability_geq(10, 0) and tl.target_info.current_target().arch // 10 != 12\n+\n+\n @triton.constexpr_function\n def has_native_mxfp():\n     return cuda_capability_geq(10, 0)\n"
+        }
+      ]
+    },
+    {
+      "sha": "68c8a8107db2c040d07e0f9fb52fef846bbcc2a6",
+      "author": {
+        "name": "Quinn Dawkins",
+        "email": "qdawkins@amd.com"
+      },
+      "date": "2026-09-21T12:04:52+08:00",
+      "message": "[AMD][BACKEND] Hash external library contents in compiler options (#11884)\n\nInclude SHA-256 digests of external library contents in\nHIPOptions.hash(), matching NVIDIA content hashing. Without this changes\nto the contents (but not the filename) of an external library currently\nfail to invalidate the cache on HIP.",
+      "parents": [
+        "84fa223cb8fe44f671a0fcd543236f44df975dda"
+      ],
+      "stats": {
+        "total_additions": 30,
+        "total_deletions": 1,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "python/test/unit/runtime/test_cache.py",
+          "status": "modified",
+          "additions": 20,
+          "deletions": 0,
+          "patch": "@@ -18,6 +18,26 @@ from triton._internal_testing import is_hip\n from triton.runtime.cache import FileCacheManager, RemoteCacheManager\n \n \n+@pytest.mark.parametrize(\"backend, options_type, arch\", [\n+    (\"amd\", \"HIPOptions\", \"gfx950\"),\n+    (\"nvidia\", \"CUDAOptions\", \"sm90\"),\n+])\n+def test_extern_libs_hash_contents(backend, options_type, arch, tmp_path):\n+    compiler = importlib.import_module(f\"triton.backends.{backend}.compiler\")\n+    library = tmp_path / \"custom.bc\"\n+    library.write_bytes(b\"original library\")\n+    options = getattr(compiler, options_type)(arch=arch, extern_libs={\"custom\": str(library)})\n+    try:\n+        original = options.hash()\n+        assert options.hash() == original\n+        library.write_bytes(b\"modified library\")\n+        # File hashes are memoized per process. Start cold, as in a new invocation.\n+        compiler.file_hash.cache_clear()\n+        assert options.hash() != original\n+    finally:\n+        compiler.file_hash.cache_clear()\n+\n+\n def test_file_cache_manager_get_group_rejects_missing_child(fresh_knobs, tmp_path):\n     fresh_knobs.cache.dir = str(tmp_path)\n     manager = FileCacheManager(\"key\")"
+        },
+        {
+          "filename": "third_party/amd/backend/compiler.py",
+          "status": "modified",
+          "additions": 10,
+          "deletions": 1,
+          "patch": "@@ -215,6 +215,12 @@ def _parse_llvm_fn_attrs(attrs):\n     return tuple(parsed)\n \n \n+@functools.lru_cache(None)\n+def file_hash(path):\n+    with open(path, \"rb\") as f:\n+        return hashlib.sha256(f.read()).hexdigest()\n+\n+\n @dataclass(frozen=True)\n class HIPOptions:\n     num_warps: int = 4\n@@ -274,7 +280,10 @@ class HIPOptions:\n         object.__setattr__(self, 'extern_libs', tuple(extern_libs.items()))\n \n     def hash(self):\n-        key = '_'.join([f'{name}-{val}' for name, val in self.__dict__.items()])\n+        hash_dict = dict(self.__dict__)\n+        # Linking is order-sensitive when libraries provide overlapping symbols.\n+        hash_dict[\"extern_libs\"] = tuple((k, file_hash(v)) for k, v in hash_dict[\"extern_libs\"])\n+        key = \"_\".join([f\"{name}-{val}\" for name, val in sorted(hash_dict.items())])\n         return hashlib.sha256(key.encode(\"utf-8\")).hexdigest()\n \n \n"
+        }
+      ]
+    },
+    {
+      "sha": "84fa223cb8fe44f671a0fcd543236f44df975dda",
+      "author": {
+        "name": "Yufeng He",
+        "email": "40085740+he-yufeng@users.noreply.github.com"
+      },
+      "date": "2026-09-21T07:58:43+08:00",
+      "message": "[Analysis] Mark the recursion path in CallGraph::doWalk's visited set (#11756)\n\nFixes #11726.\n\n## What\n\n`CallGraph::doWalk` checked `visited.count(funcOp)` to report \"Cycle\ndetected in call graph\" but never inserted into the set, so the check\ncould never fire: a cyclic call graph recursed until the stack gave out\ninstead of reporting the cycle. The matching `visited.erase(funcOp)` on\nexit shows the insert was always intended.\n\n## Fix\n\nOne line: `visited.insert(funcOp)` after the check, marking the current\nrecursion path before descending. Path-scoped semantics, so a diamond\n(a->b->d, a->c->d) is still walked twice without tripping the guard.",
+      "parents": [
+        "73126ea7149a05412e60f98eea3b1b59907e7336"
+      ],
+      "stats": {
+        "total_additions": 1,
+        "total_deletions": 1,
+        "files_changed": 1
+      },
+      "files": [
+        {
+          "filename": "include/triton/Analysis/CallGraph.h",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -122,7 +122,7 @@ private:\n   void doWalk(FunctionOpInterface funcOp,\n               DenseSet<FunctionOpInterface> &visited, UpdateEdgeFn updateEdgeFn,\n               UpdateNodeFn updateNodeFn) {\n-    if (visited.count(funcOp)) {\n+    if (!visited.insert(funcOp).second) {\n       llvm::report_fatal_error(\"Cycle detected in call graph\");\n     }\n     if constexpr (UpdateNodeOrder == WalkOrder::PreOrder) {\n"
+        }
+      ]
+    }
+  ]
+}

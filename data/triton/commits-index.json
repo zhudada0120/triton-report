@@ -1,4 +1,20 @@
 {
+  "d1fc86be1b90ccaef377a9891aa8080e67fc8291": {
+    "date": "2026-09-21",
+    "msg": "[NVIDIA] Preserve MMA input initialization during accumulator cleanup (#11887)"
+  },
+  "3fb26ceeed7846b05fbbe7357023812ea77af188": {
+    "date": "2026-09-21",
+    "msg": "[KERNELS] Don't take the TMA scatter path on sm_12x (#11862)"
+  },
+  "68c8a8107db2c040d07e0f9fb52fef846bbcc2a6": {
+    "date": "2026-09-21",
+    "msg": "[AMD][BACKEND] Hash external library contents in compiler options (#11884)"
+  },
+  "84fa223cb8fe44f671a0fcd543236f44df975dda": {
+    "date": "2026-09-21",
+    "msg": "[Analysis] Mark the recursion path in CallGraph::doWalk's visited set (#11756)"
+  },
   "73126ea7149a05412e60f98eea3b1b59907e7336": {
     "date": "2026-09-19",
     "msg": "[Triton] Preserve volatile loads in select combining (#11240)"
