@@ -1,4 +1,24 @@
 {
+  "d1c8b179ed86d19243b7445777805fa8bbd6e198": {
+    "date": "2026-09-22",
+    "msg": "[Docs](fix) resolve AIDD scan issues (#2274)"
+  },
+  "9b1eb144e58e065da93c984fb34c1639349d5189": {
+    "date": "2026-09-22",
+    "msg": "[compiler](fix) Remove forced bishengir-compile debug options (#2287)"
+  },
+  "a610dbdd34efa473cf4055c843daea2b48b34783": {
+    "date": "2026-09-22",
+    "msg": "[dtype](fix) add dtype check (#2313)"
+  },
+  "e79c381bc3a4c1d1c47ca16f1998b5aa6a207b74": {
+    "date": "2026-09-22",
+    "msg": "[dtype](fix) add dtype check (#2190)"
+  },
+  "a9cf13bf67580a5054f3fe38f6cad367e7306941": {
+    "date": "2026-09-22",
+    "msg": "[docs](feat) change the build entry point to setup.py (#2288)"
+  },
   "2268ec8bc806644c3a36dbc459d890da8707c440": {
     "date": "2026-09-21",
     "msg": "Fix debug NOP insertion for scoped kernels (#2270)"

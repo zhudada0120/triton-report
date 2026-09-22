@@ -1,0 +1,119 @@
+{
+  "date": "2026-09-22",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-09-23T02:03:23.642398+08:00",
+  "daily_summary": "当日提交主要集中在 Triton 编译器正确性与测试覆盖上：ConSan 并发检测器恢复了 operation-local compiler scratch 检查并引入 NVIDIA-only 的 PTXAS masked-store barrier workaround；TMEM 分配分析修复了 arith.select 导致生命周期截断的漏洞；TritonGPU 修复了 partition warp relayout 中 convert_layout 静态合法化问题，以及 OptimizeThreadLocality 在循环内读取累加器时的误编译；此外还包含 3.8.0→3.9.0 版本号提升和一个 Gluon fused MoE 针对 Rubin 架构的性能调优示例。整体属于核心编译器（TTGIR/TritonNvidiaGPU/Conversion）正确性修复 + 少量性能调优与版本管理。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 基本无实质影响。ConSan 相关变更集中于 lib/Dialect/TritonInstrument 与 lib/Dialect/TritonNvidiaGPU/Transforms/ConSanNVIDIA.cpp（Sanitizer 属于 NV/AMD 专用路径，Ascend 不使用）；TMEM 分配修复位于 lib/Dialect/TritonNvidiaGPU（NVIDIA 专属方言，Ascend 不加载）；RelayoutTritonGPU 与 OptimizeThreadLocality 修改了 lib/Conversion/TritonToTritonGPU 与 lib/Dialect/TritonGPU/Transforms 中的通用 TTGIR 路径——Ascend 走 TritonToLinalg 而非 TTGIR 落地，理论上不受影响，但这两处属于 Ascend 可能复用的 MLIR 基础设施语义变更，建议在同步上游时留意与 Ascend 自有的 layout/local-load 处理逻辑是否存在交互；版本号提升会改变 TritonSemantic monkey-patch 所依赖的上游 dot/parse 约定中的版本字符串，但这些 patch 本身不依赖 __version__ 值，因此仅为形式上的版本标签变化；Gluon MoE 调优仅涉及示例文件，不影响后端接口。结论：全部 5 个有效提交均不影响 triton-ascend 的编译链或接口契约。",
+  "commits": [
+    {
+      "sha": "ee07f7ff302740dbb858b84c7c1ea9f1d1ffc782",
+      "comment": "ConSan 并发检测器恢复 operation-local compiler scratch 检查：此前 #11533 因 PTXAS 对 predicated store 后产生分歧控制流合并的误分析而临时禁用了该检查。本 commit 在 ConSanTargetHooks.h 中新增 needsPtxasMaskedStoreBarrierWorkaround() 虚函数（默认 false），NVIDIA 实现 ConSanNVIDIA.cpp 覆写为 true；ConcurrencySanitizer.cpp 新增 addPtxasMaskedStoreBarrierWorkaround(module)，在 ConSan 创建 helper 函数之前先快照所有带 mask 的 tt.store 并在其后插入 ttg.barrier GlobalWrite，从而避免影响 sanitizer 内部生成的 masked store。getConSanMemEffectsOpInfo 去掉了对 CallOpInterface 的限制，重新对 operation-local scratch 生效（对外部调用仍使用 'Callee scratch'）。同步更新了 TritonInstrument.md 文档、consan.mlir/amd-consan.mlir/tritongpu_to_llvm.mlir 与 test_consan.py 测试。风险：workaround 依赖插入顺序（必须在 ConSan helper 创建前）与 barrier 的 GlobalWrite 语义；一旦 PTXAS 修复后需手动移除，NVIDIA hook 显式拥有开关使其可维护。",
+      "tags": [
+        "bugfix",
+        "test",
+        "medium-risk",
+        "lib/Dialect/TritonInstrument",
+        "lib/Dialect/TritonNvidiaGPU"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更集中在上游 NVIDIA/AMD 专用的 Concurrency Sanitizer（lib/Dialect/TritonInstrument 与 lib/Dialect/TritonNvidiaGPU/Transforms/ConSanNVIDIA.cpp），ConSanTargetHooks.h 是 NV/AMD 的 target hook 抽象，新增的 virtual needsPtxasMaskedStoreBarrierWorkaround 是纯 NV hook 扩展，Ascend 无 ConSan 实现也不调用该路径。Ascend 使用 TritonToLinalg 而非 TTGIR，ttg.barrier workaround 仅在 NVIDIA conversion pipeline 中生效，Ascend 编译链不经过该 pass。",
+        "testing": "无影响。测试变更位于 test/TritonGPU/consan.mlir、test/TritonGPU/amd/amd-consan.mlir、test/Conversion/tritongpu_to_llvm.mlir 与 python/test/gluon/test_consan.py，均为 NV/AMD lit/python 测试，与 Ascend 测试体系（third_party/ascend/unittest）无交集。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ConSan] Restore scratch checks with masked-store workaround (#11857)\n\n## Summary\n\nPTXAS can mis-analyze divergent control-flow joins around predicated\nstores in ConSan-instrumented CUDA programs. Add a temporary CUDA-only\nworkaround that places a CTA barrier after each source masked store.\n\nWith the workaround in place, restore the operation-local\ncompiler-scratch instrumentation that was temporarily disabled by\n#11533. This restores race detection for compiler-owned scratch while\nretaining the existing explicit-memory and callee-frame checks.\n\nThe pass snapshots stores before ConSan creates its helper functions, so\nsanitizer-internal masked stores are unchanged. The NVIDIA ConSan hook\nexplicitly owns the temporary workaround, making its removal\nstraightforward once the assembler issue is fixed.\n\n## Validation\n\n- ConSan and AMD lit coverage, including restored compiler-scratch\nchecks\n- Focused ConSan-enabled and disabled NVIDIA lowering checks\n- Reduced CUDA reproducer: the unpatched compiler stalls, while the\nworkaround completes three consecutive runs with only the expected\nbarriers added after predicated stores"
+    },
+    {
+      "sha": "0002b46dadfc6f8fbe7464c285651311c709fdc6",
+      "comment": "修复 TMEM 分配生命周期分析漏洞（#11634）：TensorMemoryAllocation.cpp 的 getLiveIntervals 原本只沿 MemDescViewTrait 的 user 扩展 alloc 的 liverange，当结果被 arith.select 选用时，生命周期遍历在 select 处停止，导致后续 tmem_alloc 可能覆盖仍被选中描述符持有的分配。修复为遍历时同时接受 arith::SelectOp user，并加入 DenseSet<Operation*> seen 去重，避免 select/view 路径汇聚到共享 user 时重复扩展。新增 4 个 lit 回归测试覆盖直接 select、view+select、select+view、以及链式 select 场景。风险：seen 去重改变了原有对重复 user 的处理顺序，理论上不影响语义但需注意与 ViewTrait 混合场景；life range 扩展后可能略微降低 TMEM 复用率（性能影响微小、正确性优先）。",
+      "tags": [
+        "bugfix",
+        "test",
+        "low-risk",
+        "lib/Dialect/TritonNvidiaGPU"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Dialect/TritonNvidiaGPU/Transforms/TensorMemoryAllocation.cpp，TritonNvidiaGPU 方言（tmem/tensor_memory）是 NVIDIA 专属，Ascend 不加载该方言、不经过 TMEM 分配分析。Ascend 的内存分配走自身 TritonToLinalg/UB 调优路径。",
+        "testing": "无影响。新增测试位于 test/TritonNvidiaGPU/test_tensor_memory_allocation.mlir，是 NVIDIA 专属 lit 测试，不进入 Ascend 测试集。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Keep selected TMEM descriptors live through their last use (#11636)\n\nFixes #11634.\n\nKeep both possible TMEM source allocations live through uses of a\nselected descriptor. Origin analysis already follows `arith.select`, but\nlifetime traversal stops there, allowing a later temporary to overwrite\nthe selected allocation.\n\n## Tests\n\nFour allocation-pass lit regressions cover direct and chained selects,\nviews before and after selection, and reuse after the last selected use.\nAll four fail with the original lifetime implementation.\n\n[Compiler\ntests](https://github.com/1sgtpepper/triton/actions/runs/34259182594):\n`check-triton-lit-tests` and `check-triton-unit-tests` pass (263 C++\ntests, 299 lit tests; two unsupported). [Formatting\nchecks](https://github.com/1sgtpepper/triton/actions/runs/34458190284)\npass.\n\n# New contributor declaration\n\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n[rules](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --show-diff-on-failure --verbose\n--files ...` on the complete base-to-head changed-file list.\n- [x] I have added tests in `/test` for `lit` tests.\n- [x] The added `lit` tests follow the [FileCheck best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices)\nand exercise the allocation pass directly.\n\n---------\n\nSigned-off-by: 1sgtpepper <cynejarviszarceno@gmail.com>"
+    },
+    {
+      "sha": "08a3cd4364d87bf2c281067f7a40e17808f22e7b",
+      "comment": "版本号提升 3.8.0→3.9.0：docs/conf.py 的 smv_tag_whitelist 更新为 '^(v3.9.0)$'；python/triton/__init__.py 的 __version__ 改为 3.9.0；setup.py 的 TRITON_VERSION 改为 '3.9.0' + 后缀。属于 3.8 发布完成后的常规版本推进，无功能变化。",
+      "tags": [
+        "chore",
+        "low-risk",
+        "build"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。Ascend 的 monkey-patch 与 patch 机制（third_party/ascend/backend/__init__.py::_apply_ascend_patch、setup_ascend.py::_apply_triton_ascend_patch）均不读取 __version__ 或 TRITON_VERSION 来决定 patch 内容；其 release patch 按版本号命名（triton-ascend-<version>.patch）由 Ascend 侧自行管理，与上游 __version__ 值无耦合。BaseBackend/DriverBase/ASTSource 等接口签名未变。",
+        "testing": "无影响。仅版本号变更，不涉及任何测试路径。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Advance version 3.8.0->3.9.0 (#11891)\n\nUpdate the Triton version on main from 3.8 -> 3.9 to reflect that the\n3.8 release is finished."
+    },
+    {
+      "sha": "0f6b74ca6c49412d2159135abccf83420dbc9d05",
+      "comment": "Gluon fused MoE 示例针对 Rubin（CUDA capability 10.7）架构调优：新增 is_cuda()/is_rubin() 判定；make_tensor_descriptor 增加 fp4_padded 参数以支持非 padded FP4 共享内存布局，并用 NVMMASharedLayout.get_default_for 替代手工构造（FP4/FP8 分支）；KernelConfig 新增 FP4_PADDED 字段；select_kernel_config 在 is_rubin() 时应用 replace(FP4_PADDED=False, BLOCK_K=256, ACC_NUM_BUFS=2 当 slice_size>=384)。Blackwell 配置保持不变。属于示例/调优代码，非编译器核心路径。",
+      "tags": [
+        "performance",
+        "low-risk",
+        "python/examples",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅位于 python/examples/gluon/05-moe-bmm1-fused-gather.py 这一示例脚本，不涉及任何后端接口（BaseBackend/DriverBase/TargetInfoBase）、不涉及 Gluon ASTSource/JITFunction 基类行为、不涉及 TTIR/TTGIR 方言定义。Ascend 不使用 Gluon（Gluon 编译到 TTGIR，Ascend 走 TritonToLinalg）。",
+        "testing": "无影响。示例脚本无独立单元测试要求，且非 Ascend 测试范围。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Tune Gluon fused MoE for Rubin (#11892)\n\nTune the Gluon fused MoE kernel for Rubin:\n  - Increase BLOCK_K to 256\n  - Use packed FP4 shared-memory layouts\n  - Double-buffer accumulators for larger token counts\n  - Select legal shared-memory layouts for the wider K tile\n\nBlackwell configuration selection remains unchanged."
+    },
+    {
+      "sha": "0043f382292318f609249c2186930cca094be382",
+      "comment": "修复 TritonGPUOptimizePartitionWarps 中 convert_layout 的重布局问题（#11860）：该 pass 会先剥离 tensor encodings 再重跑 RelayoutTritonGPU，而 RelayoutTritonGPU.cpp 原有实现将 ttg.convert_layout 视为静态合法，其未编码的 result type 一直保留到 layout cleanup 时解引用空 source encoding 而崩溃。修复在 RelayoutTritonGPU 中新增 ConvertLayoutOpPattern，通过 getTypeConverter()->convertType() 重建 ConvertLayoutOp，并将 ConvertLayoutOp 注册为动态合法（addDynamicallyLegalOp），同时加入 pattern set。新增 test/TritonGPU/optimize-partition-warps.mlir 的 @convert_layout_in_partition 回归用例（warp-specialized partition 内 layout 转换）。风险：将 ConvertLayoutOp 改为动态合法会引入额外 conversion 开销，但仅影响 RelayoutTritonGPU 这一特定 pass，且是修复崩溃所需。",
+      "tags": [
+        "bugfix",
+        "test",
+        "medium-risk",
+        "lib/Conversion/TritonToTritonGPU"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Conversion/TritonToTritonGPU/RelayoutTritonGPU.cpp，属于 TTGIR 内部的重布局/转换路径（TritonToTritonGPU）。Ascend 不经过 TTGIR，走 TTIR→linalg→bisheng 路径，RelayoutTritonGPU 的 ConvertLayoutOp 动态合法化不影响 Ascend 的 TritonToLinalg 转换链。此外该修复针对 warp-specialize partition，Ascend 不使用 warp specialization 的 TTGIR 分区机制。",
+        "testing": "无影响。新增测试位于 test/TritonGPU/optimize-partition-warps.mlir，属于 TritonGPU lit 测试，Ascend 不运行该测试集。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Fix partition warp relayout for convert_layout (#11878)\n\n## Summary\n\n`TritonGPUOptimizePartitionWarps` strips tensor encodings before\nrerunning `RelayoutTritonGPU`. Existing `ttg.convert_layout` operations\nwere treated as statically legal, so their unencoded result types\nsurvived until layout cleanup dereferenced a null source encoding.\n\nMake `ConvertLayoutOp` dynamically legal and rebuild it through\n`TritonGPUTypeConverter`, matching the relayout handling for other\nencoded operations. Add a minimized lit regression that exercises a\nlayout conversion inside a warp-specialized partition.\n\nFixes #11860.\n\n## Verification\n\n- Full editable Linux x86_64 C++ build (546/546 targets) with GCC 12.3.0\n- `lit -v test/TritonGPU/optimize-partition-warps.mlir` (1 passed)\n- `lit -v test/Conversion/relayout_tritongpu.mlir\ntest/Conversion/triton_to_tritongpu.mlir` (2 passed)\n- `pre-commit run --from-ref origin/main --to-ref HEAD`\n- `git diff --check origin/main...HEAD`\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n[rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- [x] I have added tests.\n  - `/test` for `lit` tests\n  - `/unittest` for C++ tests\n  - `/python/test` for end-to-end tests\n\n- [x] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section."
+    },
+    {
+      "sha": "591f849d6fdd47f26d1f544d0630e4171df89d38",
+      "comment": "修复 OptimizeThreadLocality 误编译（#11836）：在 collector walk 中，原实现仅要求 reduce 与 update 各有一 use，未检查累加器 region iter arg 是否只被 update 使用。当循环体内还读取累加器（例如在 update 前 store 快照）时，rewrite 会把累加器重新归属为线程局部 partial，仅在循环结束后才 merge 回 running value，导致循环内读取到 partial 而非 running 值（快照全为 0，但最终累加结果正确）。修复仅新增一行门控：forOp.getRegionIterArgs()[argNum].hasOneUse() 不满足则跳过该 reduce。新增 test/TritonGPU/optimize-locality.mlir::in_loop_accumulator_use 负向用例验证循环、in-loop store 与 update 均保持不变。属最小化单行修复，风险极低，但会牺牲该场景下的 thread-locality 优化机会。",
+      "tags": [
+        "bugfix",
+        "test",
+        "low-risk",
+        "lib/Dialect/TritonGPU"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Dialect/TritonGPU/Transforms/OptimizeThreadLocality.cpp，是 TritonGPU（TTGIR）层级的优化 pass。Ascend 不走 TTGIR（使用 TritonToLinalg 替代），不运行该 pass；OptimizeThreadLocality 的累加器重归属逻辑与 Ascend 的 reduction 处理无关。",
+        "testing": "无影响。新增测试位于 test/TritonGPU/optimize-locality.mlir，属于 TritonGPU lit 测试，与 Ascend 的 third_party/ascend/unittest 测试体系无交集。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TritonGPU] Skip thread-locality rewrite when the accumulator is read in-loop (#11842)\n\n## Summary\n\n`TritonGPUOptimizeThreadLocality` miscompiles a reduction accumulator\nthat is also read inside the loop body (#11836). The collector walk in\n`OptimizeThreadLocality.cpp` gates on the reduce having one use and the\nupdate having one use, but never on the accumulator's region block\nargument. For a loop that reads the accumulator in its body, e.g.\nstoring a snapshot before the update, the rewrite re-homes the\naccumulator into a thread-local partial under the optimized view and\nonly merges the running value back after the loop, so every in-loop read\nobserves the partial state instead of the running value. The reported\nsymptom follows exactly: snapshots read zero, the final accumulator\nstays correct.\n\nThe fix adds one gate to the collector walk: the accumulator's region\niter arg must have exactly one use (the update), otherwise the reduce is\nskipped.\n\n## Test plan\n\nNew negative lit test `in_loop_accumulator_use` in\n`test/TritonGPU/optimize-locality.mlir`: a loop that stores the\naccumulator in its body before the update. Without the gate the pass\nrewrites the loop signature and emits the `efficient_layout` view ops\nthe checks reject; with the gate the loop, the in-loop store, and the\noriginal update survive unchanged.\n\nVerification scope, stated honestly: the mechanism above is established\nby reading the walk and the rewrite on current main, and the reporter's\nPython reproducer maps to every accepted gate (innermost axis, load\noperands, one-use reduce, one-use update feeding `scf.yield`, constant\ninit). I did not execute the lit test locally: this checkout has no\n`triton-opt` build and producing one needs the full in-tree LLVM build,\nwhich is disproportionate for a one-line gate; the lit run is left to\nCI. No GPU was used at any point.\n\nCloses #11836"
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

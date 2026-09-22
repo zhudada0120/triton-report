@@ -1,4 +1,28 @@
 {
+  "ee07f7ff302740dbb858b84c7c1ea9f1d1ffc782": {
+    "date": "2026-09-22",
+    "msg": "[ConSan] Restore scratch checks with masked-store workaround (#11857)"
+  },
+  "0002b46dadfc6f8fbe7464c285651311c709fdc6": {
+    "date": "2026-09-22",
+    "msg": "Keep selected TMEM descriptors live through their last use (#11636)"
+  },
+  "08a3cd4364d87bf2c281067f7a40e17808f22e7b": {
+    "date": "2026-09-22",
+    "msg": "Advance version 3.8.0->3.9.0 (#11891)"
+  },
+  "0f6b74ca6c49412d2159135abccf83420dbc9d05": {
+    "date": "2026-09-22",
+    "msg": "Tune Gluon fused MoE for Rubin (#11892)"
+  },
+  "0043f382292318f609249c2186930cca094be382": {
+    "date": "2026-09-22",
+    "msg": "Fix partition warp relayout for convert_layout (#11878)"
+  },
+  "591f849d6fdd47f26d1f544d0630e4171df89d38": {
+    "date": "2026-09-22",
+    "msg": "[TritonGPU] Skip thread-locality rewrite when the accumulator is read in-loop (#11842)"
+  },
   "d1fc86be1b90ccaef377a9891aa8080e67fc8291": {
     "date": "2026-09-21",
     "msg": "[NVIDIA] Preserve MMA input initialization during accumulator cleanup (#11887)"

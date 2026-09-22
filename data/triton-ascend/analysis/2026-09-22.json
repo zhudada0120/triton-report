@@ -1,0 +1,115 @@
+{
+  "date": "2026-09-22",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-09-23T02:03:49.298426+08:00",
+  "daily_summary": "当日共 5 个 commit，围绕文档治理、编译器调试选项清理、Ascend 算子 dtype 约束校验落地、以及构建入口统一四条主线展开。（1）文档类：修正 AIDD 扫描发现的拼写/链接/表格问题（gitcode→github、manylinux 白名单补 NVTX/CUPTI、安装指南重构为表格化并补充验证与镜像章节）；（2）编译器：移除 linalg_to_bin 两处分支（910_95 与 A2_A3）中在 debug 模式下强制注入的 --bishengir-print-ir-after=hivm-graph-sync-solver，把调试选项交还用户；（3）dtype 校验：新增 op_dtype_config.py（机器可读算子 dtype 规则，源自 docs/zh/python-api/_ascend_constraints.py 的 dtype_support 表）与 dtype_guard.py（基于 builtin-dunder 层 + CodeGenerator.call_Function 入口层的双层 monkey-patch 拦截），并在 backend/__init__.py 的 _apply_ascend_patch 中注册安装；同时配套调整 pytest_ut 中因新约束而不再合法的用例（uint16/uint32/uint64 store、clamp 浮点、logical_and/or fp16、not int8/int16/int32/int64、rand/randint4x store 需转 int32）；（4）构建入口：README/安装指南与 setup 脚本引用由 setup_ascend.py 改为 setup.py，并同步更新 cmake/bisheng-version.txt 的 AscendNPU-IR 1.2.0-0910 包名与 sha256。整体方向是收敛文档正确性、减少编译器对用户的强制干预、并把 Ascend 硬件 dtype 支持矩阵前置到前端拦截以加速反馈，属于低-中风险、对测试看护有明确增量的变更日。",
+  "test_impact_summary": "当日变更对测试看护有明确的实质影响，核心是 commit e79c381 引入的前端 dtype 校验（dtype_guard + op_dtype_config）改变了 Ascend 算子的合法输入边界：此前许多「能跑但语义不正确」的 dtype 组合现在会在前端直接抛 UnsupportedDtypeError，因此 third_party/ascend/unittest/pytest_ut 下一批既有用例必须同步修正（已验证在 test_annotations/test_histogram/test_hoistbroadcast/test_lanzcos/test_logical_and/test_logical_or/test_nearest/test_not/test_rand 等文件中按新约束调整或加 skipif）。同时 a610dbd（同一 PR 的另一 cherry-pick）把 op_dtype_config 中大量规则改为注释态，说明当前启用的拦截规则集合是有意收窄的，测试需关注「未启用规则」是否会造成误报或漏报。此外 commit 9b1eb14 移除 debug 下强制的 bishengir-print-ir-after 选项，可能改变 CI 中依赖该 IR 打印进行比对/排障的流程；commit a9cf13b 把构建入口文档从 setup_ascend.py 切换为 setup.py 并更新 bishengir-version.txt 包名与 sha256，属于构建/安装路径的变更，需确保安装验证与冒烟用例仍能覆盖。总体而言，现有测试不足以自动覆盖新引入的 dtype 拦截路径，建议补充针对 dtype_guard 的单元测试（各 bucket 的正/负例、dunder 层与 entry 层、internal composite 跳过逻辑）以及架构分桶（a2 vs a5）的用例；同时文档中的 dtype_support 表与新 op_dtype_config 规则应建立一致性校验测试，避免二者漂移。",
+  "commits": [
+    {
+      "sha": "d1c8b179ed86d19243b7445777805fa8bbd6e198",
+      "comment": "纯文档/CI 修正类提交，Squash 了 PR #2274 以解决 AIDD 扫描问题。变更覆盖 7 个文件：（1）.github/docs-ci/codespell.whitelist.json 增加 NVTX/CUPTI 两个专有名词白名单，避免拼写检查误报；（2）SECURITYNOTE.md 与 docs/zh/community/SECURITYNOTE_zh.md 将 triton-ascend 源码仓地址从 gitcode.com/Ascend 迁移为 github.com/triton-lang，并把 LLVM 仓地址由 gitclone.com 代理改为 github.com/llvm/llvm-project，属于仓库地址与实际托管一致性的修正；（3）docs/en/installation_guide.md 与 docs/zh/installation_guide.md 做了较大重构：首段改为「提供自动调优/编译/部署能力」的中性表述并新增安装方式导览；Python 版本表述由 python3.11 改为 3.11；TRITON_WHEEL_NAME 示例从 triton-ascend 改为 triton_ascend（与架构上下文的 wheel 名一致）；TRITON_BUILD_NPUIR 说明改为示例性的 source /usr/local/Ascend/ascend-toolkit/set_env.sh；删除了大段开发镜像表格与旧镜像使用说明，改为新的 Table 2 芯片分类镜像表（A2/A3/950），并新增「Installation Verification & Testing」小节，把验证、pytest UT、并行测试命令合并到统一章节，同时修正了 clone 后运行示例的路径为 ./triton-ascend/third_party/...；（4）docs/meetups/05-01-2025/notes.md 修正 'an will need' → 'and will need'；（5）docs/zh/programming_guide/index.md 将 '从share中select目标值' 改为 '从shared中select'。风险整体为 low-risk，仅为文档与配置白名单，不影响编译或运行时行为。但删除了原有「开发镜像」（CANN 9.0.0/9.1.0 按 CANN/芯片/Python 版本维度）对照表，仅保留「开箱即用镜像」表，可能会丢失部分开发者参考信息，建议关注是否有意合并。",
+      "tags": [
+        "docs",
+        "ci",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅修改 Markdown 文档、docs CI 的 codespell 白名单与文档内的表格内容，不涉及任何 Python/C++ 源码、编译流水线或后端行为。因此无需新增或修改测试用例。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](fix) resolve AIDD scan issues (#2274)\n\nSquash all commits of PR #2274 into a single commit.\n\nCo-authored-by: yanggaofeng (C) <y60124509@china.huawei.com>"
+    },
+    {
+      "sha": "9b1eb144e58e065da93c984fb34c1639349d5189",
+      "comment": "针对 Ascend 编译器中 linalg_to_bin 阶段的一处小修复。third_party/ascend/backend/compiler.py 中，linalg_to_bin_enable_npu_compile_910_95 和 linalg_to_bin_enable_npu_compile_A2_A3 两个函数此前在 opt.debug 为真时会无条件向 bishengir-compile 传入 --bishengir-print-ir-after=hivm-graph-sync-solver，本次删除这两行。变更意图是：编译器不应替用户强制打开特定 IR 打印开关，用户如需要可自行在编译选项中添加，避免 debug 模式下的日志被无关 IR dump 淹没。从架构上下文看，这两个函数正是「Ascend 编译 lowering 链」中最后一步调 CANN npucompiler/bishengir-compile 生成 npubin 的分支入口，_compile_option_list 中仍保留 --mlir-print-ir-after-failure 与 --mlir-print-stacktrace-on-diagnostic 两项诊断选项，因此这不影响正常编译路径与产物生成，仅影响 debug 模式下的 IR 打印行为。风险为 low-risk，无功能回归可能。需要注意的是，若 CI 或部分排障脚本此前依赖 debug 模式自动产出 hivm-graph-sync-solver 阶段 IR 来做比对或回归，则该行为变化需要外部显式传入对应选项，建议在文档或开发机上做一次确认。",
+      "tags": [
+        "bugfix",
+        "compiler",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "删除的是 opt.debug 下强制注入的 bishengir IR 打印选项，不改变编译产物的正确性与阶段顺序，也不改变 add_stages 注册的阶段或 metadata。除非有测试断言 debug 模式下 stderr/IR dump 的具体内容，否则无需调整现有测试。若团队有基于该 IR 打印的回归比对脚本，应作为单独工作项排查而非新增单测。",
+        "suggested_test_areas": [
+          "third_party/ascend/backend/compiler.py"
+        ]
+      },
+      "message": "[compiler](fix) Remove forced bishengir-compile debug options (#2287)\n\nRemove --mlir-print-ir-after-failure and --bishengir-print-ir-after=hivm-graph-sync-solver options forcibly added to bishengir-compile in debug mode. A compiler use can add debug options he/she needs himself/herself.\n\n(cherry picked from commit 1352676856b548dac610e3d96f0a0788715f8ec5)"
+    },
+    {
+      "sha": "a610dbdd34efa473cf4055c843daea2b48b34783",
+      "message_note": "PR #2313",
+      "comment": "本 commit 为 PR #2313 的 cherry-pick（原始提交 3b3c9420），改动仅在 third_party/ascend/backend/op_dtype_config.py 这一个文件内，diff 统计为 +1411/-1448，是一处大规模的规则表重构与收窄。具体而言：把原 OP_DTYPE_RULES 中的大量算子条目（abs、add、advance、and、argmax、argmin、associative_scan、atomic_* 全系列、broadcast、broadcast_to、cast、cumsum、device_assert、device_print、div、dot、dot_scaled、eq、expand_dims、fdiv、floordiv、full、gather、ge、gt、inline_asm_elementwise、interleave、invert、join、le、load、lt、make_block_ptr、max、max_constancy、max_contiguous、maximum、min、minimum、mod、mul、multiple_of、ne、neg、not、or、permute、ravel、reduce、reshape、split、static_assert、static_print、store、sub、sum、topk、trans、view、where、xor、xor_sum、zeros 等）整段注释掉，只保留了 assume、bitonic_merge、cat、cdiv、ceil、clamp、condition、cos、cumprod、erf、exp、exp2、flip、floor、fma、histogram、load_tensor_descriptor、log、log2、logical_and、logical_or、lshift、make_tensor_descriptor、reduce_or、rshift、rsqrt、sigmoid、sin、softmax、sort、sqrt、sqrt_rn、store_tensor_descriptor、swizzle2d、umulhi、arange、range、static_range、rand、randn、zeros_like 等条目（并新增 condition、arange、range、static_range、rand、randn、umulhi、erf、exp、exp2、ceil、clamp、cos、floor、log、log2、rsqrt、sigmoid、sin、softmax、sqrt、sqrt_rn 等条目的 supported 白名单），此外还为若干条目新增了显式 supported 列表（例如 ceil/clamp/cos/erf/exp/exp2/floor/log/log2/rsqrt/sigmoid/sin/softmax/sqrt/sqrt_rn/umulhi/arange/range/static_range/rand/randn/zeros_like 等）。从 diff 形态看，这是同一 PR 族（与 e79c381 同属 dtype check 系列）在合并过程中的一次「规则收敛/二次整理」：把大量原本已声明、但可能与真实硬件支持矩阵或实际测试路径不一致的规则暂时注释掉，仅启用确定可拦截的规则集，并把「反向白名单」改为显式 supported 列表以支撑更精确的错误提示。由于变更体量大（一个文件 1400+ 行级别改动），diff 中许多算子从「非注释」变为「注释掉」，实质是扩大了禁用规则集合、缩小了被拦截算子的范围，属于校验强度的放宽。风险为 medium-risk：注释掉的规则若后续有对应代码路径依赖该拦截来防止误用（例如 dot/dot_scaled 的 fp8、atomic 系列、load/store 的 uint16/uint32/uint64），可能会出现「校验未命中 → 编译期或运行期错误」的情况，需要结合 docs/zh/python-api/_ascend_constraints.py 与 e79c381 引入的 dtype_guard 一起评估。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "dtype",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "该 commit 大幅调整了 OP_DTYPE_RULES 中启用/禁用的规则集合，进而改变 dtype_guard 在运行时的拦截行为。若已有 pytest_ut 用例依赖某些现在被注释掉的规则触发 UnsupportedDtypeError（或依赖注释前被放行的 dtype），其结果会发生变化，需要同步更新或补充用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/backend/op_dtype_config.py",
+          "third_party/ascend/backend/dtype_guard.py",
+          "third_party/ascend/unittest/pytest_ut/"
+        ]
+      },
+      "message": "[dtype](fix) add dtype check (#2313)\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>\n(cherry picked from commit 3b3c9420de10373d0ad8d46aa18ea2c2a67d4450)"
+    },
+    {
+      "sha": "e79c381bc3a4c1d1c47ca16f1998b5aa6a207b74",
+      "comment": "本 commit 为 PR #2190 的 cherry-pick，是当日最实质性的功能变更：在 Ascend 前端引入统一的、非侵入式的算子 dtype 拦截机制，并同步修订一批既有 pytest_ut 用例。改动覆盖 12 个文件，新增两个模块：third_party/ascend/backend/op_dtype_config.py（机器可读的算子 dtype 支持矩阵，源自 docs/zh/python-api/_ascend_constraints.py 的 dtype_support 表格，定义 FP8E4_DTYPES/FP8E5_DTYPES/ALL_SCALAR_DTYPES/OP_DTYPE_RULES/RULES_BY_NAME 等）与 third_party/ascend/backend/dtype_guard.py（核心拦截逻辑）。dtype_guard 采用双层 monkey-patch：（1）builtin-dunder 层，包裹 triton.language.core.tensor 的算符重载 dunder（__add__/__rshift__/__and__ 等），因为算符语法在 AST tracer 中被转为 dunder 内建调用、不经过 call_Function，这是唯一能拦截算符形式的挂载点；为避免误伤内部 lowering（如 load 内部用 and_/or_/not_ 构造 mask、sub 经 minus+add 降低、atomic_min/max 使用 not_equal/where），刻意不 patch TritonSemantic 叶子方法。（2）entry 层，包裹 CodeGenerator.call_Function，对命名内建（tl.*）、@jit 复合算子与 cann 扩展内建做校验；另见 call_JitFunction 中对 triton 内部模块（module 以 triton. 开头，例如 tl.rand/tl.randint 背后的 Philox 实现）使用 _INTERNAL_COMPOSITE_TRACE contextvar 做「内部复合调用豁免」，避免把库内部 uint32/uint64 算术当作独立用户算子拒绝。校验本身由 arch_bucket（is_compile_on_910_95 判定 a2/a5）定位规则桶，_extract_scalar_name 支持 tl.dtype/tensor/block_type/pointer（仅 pointer_args 指定位置读取 pointee）等类型解析，_align_operands 借助 inspect.signature 把 kwargs 对齐到内建签名以便 tensor_args 位置稳定，最终抛出 UnsupportedDtypeError 并在 entry 层转换为指向用户源码节点的 CompilationError（front_end_debugging 时直接抛原异常）。third_party/ascend/backend/__init__.py 的 _apply_ascend_patch 新增一段「若未安装则调用 install_dtype_guard()」的勾子（导入失败仅 warning，不阻断），与既有的 dot monkey-patch 并列。测试侧同步修改：test_annotations 对 uint16/32/64 在 A2/A3 上 skip、test_histogram_uint 整体在非 910_95 上 skip、test_hoistbroadcast 把 data_ptr 由 torch.uint64 改为 torch.int64、test_lanzcos/test_nearest 改用浮点参数的 clamp 或 tl.minimum/tl.maximum 组合以规避 uint 与 clamp 的 dtype 限制、test_logical_and/test_logical_or 关闭 float16 用例、test_not 把 not(tmp0) 改为 not(tmp0.to(tl.int1)) 并仅保留 bool、test_rand 在 store 前 .to(tl.int32)。该实现的显著优点是：把原本在 device 端或后续 IR 阶段才暴露的 dtype 不支持问题前移到前端，报错信息含算子名/操作数序号/架构名与支持 dtype 列表，并提示用户用 tl.cast 修正，体验好。潜在风险为 medium-risk：（1）builtin-dunder 层的 wrapper 依赖 tensor 的 dunder 与 TRITON_BUILTIN 标记，上游 triton 若调整 dunder 实现或移除 marker 可能失效；（2）entry 层依赖 CodeGenerator.call_Function / call_JitFunction 与 BoundJITMethod/BoundConstexprFunction 的符号位置，跨版本可能漂移（代码已做 opportunistic 解析与异常兜底）；（3）_INTERNAL_COMPOSITE_TRACE 的豁免范围以 module.startswith('triton.') 判定，若用户自定义 @jit 落在此判定范围外则不受豁免，属预期；若 triton 内部模块名变化则需同步；（4）arch_bucket 依赖 is_compile_on_910_95 的导入，异常时静默退化为 a2，可能造成 a5 用户看到 a2 的报错信息，需关注。",
+      "tags": [
+        "feature",
+        "dtype",
+        "compiler",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "该 commit 本身就是「功能+测试同步调整」的变更：新增 dtype_guard.py 与 op_dtype_config.py 两个模块，并把新约束的生效反映到 9 个 pytest_ut 用例（skip 标记、dtype 选择、kernel 内 .to(tl.int1)/.to(tl.int32)、uint64 ptr → int64、clamp 参数类型调整等）。尚未看到针对 dtype_guard 本身的单元测试（正例/负例、dunder 层与 entry 层、internal composite 豁免、a2 vs a5 分桶、supported 列表生成与错误信息格式），因此除既有用例修订外应补充专门测试。",
+        "suggested_test_areas": [
+          "third_party/ascend/backend/dtype_guard.py",
+          "third_party/ascend/backend/op_dtype_config.py",
+          "third_party/ascend/backend/__init__.py",
+          "third_party/ascend/unittest/pytest_ut/test_annotations.py",
+          "third_party/ascend/unittest/pytest_ut/test_histogram.py",
+          "third_party/ascend/unittest/pytest_ut/test_hoistbroadcast.py",
+          "third_party/ascend/unittest/pytest_ut/test_lanzcos.py",
+          "third_party/ascend/unittest/pytest_ut/test_logical_and.py",
+          "third_party/ascend/unittest/pytest_ut/test_logical_or.py",
+          "third_party/ascend/unittest/pytest_ut/test_nearest.py",
+          "third_party/ascend/unittest/pytest_ut/test_not.py",
+          "third_party/ascend/unittest/pytest_ut/test_rand.py"
+        ]
+      },
+      "message": "[dtype](fix) add dtype check (#2190)\n\nSigned-off-by: LH-123L <liuhuan261@huawei.com>\n(cherry picked from commit 5a4c4ed853d17a18d617ac838de3d24b3685bc0b)"
+    },
+    {
+      "sha": "a9cf13bf67580a5054f3fe38f6cad367e7306941",
+      "comment": "文档/构建入口一致性修订。变更覆盖 6 个文件：（1）README.md 与 README_zh.md 的源码编译示例把 python3 setup_ascend.py install 统一改为 python3 setup.py install；（2）docs/en/installation_guide.md 与 docs/zh/installation_guide.md 中的同一步骤同步修改；（3）cmake/bisheng-version.txt 将 AscendNPU-IR 制品名从 ascendnpu-ir_1.2.0_linux-{arch}-pr_2863.run 更新为 ascendnpu-ir_1.2.0-0910_linux-{arch}.run，并同步 aarch64_sha256/x86_64_sha256 两个校验值；（4）docs/zh/python-api/_ascend_constraints.py 的 dot_scaled dtype_support 表在 Ascend 950 行的 fp16/fp32/bf16 列改为 √ 并新增 fp4e2(e2m1) 列，另外把某处 A2/A3 行的 uint8/int8/int16/int32/int64 由 √ 改为 ×（可能对应某算子约束收窄）。从架构上下文看，setup_ascend.py 是 triton-ascend 构建 Ascend 后端 wheel 的入口，将文档改回 setup.py 说明构建入口已在仓库层面统一（或 setup.py 已能识别 TRITON_WHEEL_NAME=triton_ascend 并触发后端构建），这是文档与实现对齐的修正。cmake/bisheng-version.txt 更新的 sha256 直接决定 build_npuir.py 下载的 AscendNPU-IR 二进制是否通过校验，是构建可用性的关键依赖，属 medium-risk：若 sha256 与实际制品不匹配会导致构建失败，上线前应有 CI 构建验证；同时包名从 pr_2863 变为 0910 形式说明跟踪的是新的内部构建产物。docs/zh/python-api/_ascend_constraints.py 的 dtype_support 表变更需与同一批次 op_dtype_config.py（a610dbd 收窄后的规则集）保持一致，否则文档与运行时拦截行为会出现偏差。",
+      "tags": [
+        "docs",
+        "chore",
+        "build",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "README/安装指南的文档文字修改不影响测试；cmake/bisheng-version.txt 的包名与 sha256 变更属于构建依赖更新，由构建/安装 CI 验证即可（不属于单元测试范畴）；docs/zh/python-api/_ascend_constraints.py 是文档数据源文件（ASCII 表格字符串），本次仅调整表格内容，若仓库有从该文件生成文档或反向校验 op_dtype_config 一致性的机制，需要确认生成物是否同步更新，但通常不新增测试用例。",
+        "suggested_test_areas": [
+          "cmake/bisheng-version.txt",
+          "docs/zh/python-api/_ascend_constraints.py",
+          "README.md",
+          "docs/en/installation_guide.md",
+          "docs/zh/installation_guide.md"
+        ]
+      },
+      "message": "[docs](feat) change the build entry point to setup.py (#2288)\n\n* [docs](feat) change the build entry point to setup.py\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>\n\n* [npuir](fix) update npuir\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>\n\n---------\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}
