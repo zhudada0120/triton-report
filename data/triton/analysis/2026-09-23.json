@@ -1,0 +1,298 @@
+{
+  "date": "2026-09-23",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-09-24T02:03:19.891423+08:00",
+  "daily_summary": "当日变更集中在 NVIDIA/AMD 后端的健壮性与功能增强：GSan 分配器新增 CUDA fabric handle 能力探测并在不支持设备上跳过测试；修复 twoCTA tensor memory 在空 CGA layout 下的 verifier 崩溃；AMD membar 过滤器改为方向感知（仅对 RAW 方向抑制 barrier，WAR 方向保留）；修复 FP4 TMA 对齐判断使用物理存储位宽并保留 gather 行索引；NVIDIA 新增 ApproxDivFOp（tl.fdiv(approx=True)）并将常量 FP32 除法规范化到近似倒数；修复 WarpSpecialization WSDataPartition 中 scf.if thenYield 分支缺失的逻辑取反；此外将 BaseBackend.add_stages 抽象签名补齐 language 参数、回退 Hopper 使用 CUDA 13 ptxas 的改动、更新 AMD LLVM 构建 hash、调整 ConSan 微基准为仅记录不做阈值断言。整体以修复和小幅功能增强为主，无破坏性接口变更（唯一签名变更是补齐既有事实签名）。",
+  "ascend_impact_summary": "当日唯一直接命中 triton-ascend 接口面的变更是 b288fba7：BaseBackend.add_stages 抽象方法签名从 (stages, options) 补齐为 (stages, options, language)，这正是 AscendBackend 早已实现的签名，因此对 triton-ascend 是有利的对齐（消除静态类型检查告警），但需确认其 AscendBackend.add_stages 声明与之一致，无需功能改动与测试更新。a9eedb6c 在 Triton 核心 tt 方言新增了 tt.approx_divf（ApproxDivFOp）并修改了 TritonSemantic.fdiv 签名（新增 approx 参数），后者是 triton-ascend 通过 monkey-patch 覆写的 TritonSemantic.dot 之外也可能受影响的语义层路径——Ascend 的 _patched_dot 不受 fdiv 影响，但若 Ascend 侧有任何对 fdiv 语义的假设或前端子集裁剪，需评估新 op 是否要进入 TritonToLinalg 的 op 覆盖范围；由于 Ascend 走 TritonToLinalg 而非 TritonToTritonGPU/GPUToLLVM，tt.approx_divf 在 Ascend 上暂无 lowering 实现，属于潜在未支持 op（不会破坏现有编译，仅当用户使用 tl.fdiv(approx=True) 时可能失败）。其余 commit（GSan/ConSan 微基准、NVIDIA twoCTA verifier、AMD membar、FP4 TMA 对齐、WSDataPartition、ptxas 回退、AMD LLVM hash）均为 NVIDIA/AMD 专属或构建/测试路径，不影响 triton-ascend。",
+  "commits": [
+    {
+      "sha": "b7fdaf802b0455004e27ad782c5beb21c6d58660",
+      "comment": "在 GSan 分配器扩展中新增 pySupportsFabricHandles，通过 cuDeviceGetAttribute 查询 CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_FABRIC_SUPPORTED，并在 Python 侧暴露 supports_fabric_handles(device)；测试中在设备不支持 fabric handle 时（如 NVIDIA Thor）跳过 fabric export/import 测试，保留对已支持设备但无 IMEX channel 的运行时跳过。实现规范，错误处理与既有 pyXXX 一致（parseIntArg + printCUDAError + PyErr_SetString）。风险极低：仅新增能力探测与测试跳过，不改变现有分配路径。属于 GSan（Graph/Gpu Sanitizer）子系统，仅 NVIDIA CUDA 使用。",
+      "tags": [
+        "bugfix",
+        "test",
+        "low-risk",
+        "nvidia",
+        "sanitizer"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。GSan 是 NVIDIA CUDA 专属的 sanitizer/allocator 扩展（python/triton/experimental/gsan），Ascend 不使用。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[GSan] Skip fabric tests on unsupported devices (#11919)\n\n## Summary\n\n- expose the CUDA fabric-handle capability through the GSan allocator\nextension\n- skip fabric export/import tests when the device reports no\nfabric-handle support\n- preserve the existing runtime skip for supported devices without\naccess to an IMEX channel\n\n## Motivation\n\nNVIDIA Thor supports CUDA virtual memory management but reports\n`CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_FABRIC_SUPPORTED = 0`. Requesting\n`CU_MEM_HANDLE_TYPE_FABRIC` on this device causes `cuMemCreate` to\nreturn `CUDA_ERROR_INVALID_VALUE`.\n\n## Testing\n\n- targeted fabric tests: `2 skipped`\n- full GSan suite: `408 passed, 11 skipped, 2 xfailed`\n- `pre-commit run --from-ref upstream/main --to-ref HEAD`\n- incremental native build with 8 jobs\n\n# New contributor declaration\n\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n[rules](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --from-ref upstream/main --to-ref\nHEAD`.\n- [x] This PR does not need a new test case because it updates the skip\nbehavior of the existing parametrized fabric export/import tests, which\nare exercised by the validation above.\n- [x] I have not added any `lit` tests."
+    },
+    {
+      "sha": "0c1fcb37e699c587f7f3bfc93e71454d861a69d0",
+      "message": "[BUILD] Make the NVIDIA GSan device runtime optional (#11654)\n\nNVIDIA's GSan device runtime is currently built whenever the Triton\nPython module is enabled. This requires a CUDA-capable `clang++` and\nprevents reduced builds that do not include the NVPTX target.\n\nThis change adds `TRITON_BUILD_NVIDIA_GSAN_RUNTIME`, enabled by default\nto preserve existing behavior. When disabled, Triton skips GSan runtime\ngeneration and does not add the runtime target as a dependency of the\nNVIDIA plugin. The option is also forwarded from `setup.py`.\n\n## New contributor declaration\n\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [ ] I have added tests.\n- [x] This PR does not need a test because this is a build-graph option\nchange; both enabled and disabled configurations were validated with the\n    official prebuilt-LLVM build flow.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n  - [ ] The `lit` tests I have added follow these\n[best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)",
+      "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 triton-ascend。",
+      "tags": [
+        "chore"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "8c1e9b398d67f6c5f1a697de2907f9eea15c9e28",
+      "comment": "修复 TensorMemoryEncodingAttr::verify 在 twoCTAs=true 且 CGALayout 缺省/为空时崩溃的问题：在读取 cgaLL.getBasis(kBlock, 0) 之前先判断 getInDimSizeLog2(kBlock) == 0，避免读不存在的 block basis 导致编译器 abort，改为产生既有的诊断信息。同步在 test/TritonNvidiaGPU/invalid.mlir 增加三个最小回归（缺省 CGA、空 CGA、错误首 basis）。这是纯 TritonNvidiaGPU 方言 verifier 的健壮性修复，属于 NVIDIA 专属路径。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "nvidia",
+        "verifier"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Dialect/TritonNvidiaGPU（NVIDIA 专属方言：TMA/tensor memory/mbarrier），Ascend 不加载该方言。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Reject empty CGA layouts for two-CTA tensor memory (#11894)\n\nSetting `twoCTAs=true` with an omitted or empty `CGALayout` makes the\nTMEM verifier read a nonexistent block basis and abort the compiler.\nCheck for an empty basis before reading it so these layouts produce the\nexisting verifier diagnostic.\n\nAdd minimal parser regressions for omitted/empty CGA layouts and a\nnonempty layout with the wrong first basis.\n\nFixes #11815.\n\nValidation: reproduced both aborts before the fix; both now report the\nexpected diagnostic. Valid single- and two-CTA layouts still parse. `lit\n-v test/TritonNvidiaGPU`: 23 passed on a CPU build with assertions\nenabled.\n\n# New contributor declaration\n\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n[rules](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n- [x] I have added tests in `/test`.\n- [x] The lit tests follow the [testing\nguidelines](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding minimal test inputs.\n\nSigned-off-by: TANGBUDU <tangbudu@gmail.com>"
+    },
+    {
+      "sha": "a772561da4d7eceee97b737fe072be45fd08f51a",
+      "comment": "将 AMD membar 过滤函数 filterAsyncLocalLoadsDependencies 改为方向感知：membar 以 pending(较早) 访问为 op1、当前访问为 op2，因此仅在 LocalLoad-synced-by-AsyncWait 出现在 op2（RAW：async load → synced local_load，barrier 冗余）时抑制 barrier；当 synced local_load 在 op1、refill 的 async load 在 op2（WAR：读后回填同一 buffer）时必须保留 barrier，因为 AsyncWait 只覆盖读、不覆盖其后的写。头文件注释同步澄清方向语义与示例 IR。测试新增 tdm_refill_after_synced_local_load、pipelined_loop_refill_after_synced_local_load 等 CHECK 序列并修正既有用例的 CHECK 位置。逻辑正确且与 Membar 的 op1/op2 约定一致，风险中等（涉及 barrier 语义正确性，但由于方向修正使 WAR 边界更保守，应更安全）。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "amd",
+        "membar"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/amd（TritonAMDGPUToLLVM/MembarUtility），Ascend 不加载 AMDGPU 路径。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Make the membar async-load filter direction-aware (#11719)\n\nThe AMD membar filter vetoes the barrier between an async load and a\nlocal_load synced via async_wait regardless of which of the two comes\nfirst.\n\nIn the RAW direction (async load, then the synced local_load) the veto\nis safe. The load's token proves its copy was waited for, and Membar\nalready emits a barrier right after that wait, so the copy is visible\nto every thread before the read. A barrier in front of the load adds\nnothing; any copy still in flight at that point is one the kernel chose\nnot to wait for, and a barrier cannot complete it either.\n\nIn the WAR direction (synced local_load, then an async load refilling\nthe same buffer) the veto is wrong. The wait covers the read, not what\nfollows it: other threads may still be reading the buffer when the\nrefill lands, and only a barrier orders that.\n\nMembar passes the pending (earlier) access as op1 and the current access\nas op2, so veto only when the synced local_load is op2. Dropping the\nrule altogether would instead put a barrier before every synced\nlocal_load that has an unrelated copy in flight, which multi-stage\npipelines routinely do."
+    },
+    {
+      "sha": "48fd75043af6ba37c7c1e2822f70c167cfa6e9dd",
+      "message": "[AMD][CI] Add rocjitsu based integration tests for cdna5 (#11843)\n\n`[rocjitsu](https://github.com/ROCm/rocm-systems/tree/develop/emulation/rocjitsu)`\nis an emulation toolkit for running AMD GPU applications on simulated or\nreal hardware.\n\nThis PR adds a rocjitsu based simulation workflow for AMD CDNA5\nintegration tests",
+      "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 triton-ascend。",
+      "tags": [
+        "feature",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "7a047455997a5b8b6baba93c1418211c43e953c5",
+      "comment": "修复 FP4 TMA 对齐判断：is_tma_compliant 中 bitwidth 从 tensor.dtype.bitwidth（逻辑 4bit）改为 storage.data.element_size() * 8（物理 uint8 存储 8bit），因为 NVIDIA TMA 的 globalStrides 以字节计并要求 16 字节对齐，使用逻辑位宽会错误拒绝合法的 16 字节 row stride。同时 _p_matmul.py 在 X_TMA_MODE 为 None 时不再覆盖 offs_m，保留 gather 行索引，使 activation 值与其 block/tensor scale 使用相同的源行，避免 H100 gather 路径下 X[gather[i]] 与 X_scale[i] 错配导致数值错误。改动小、定位精准，风险低，但注意这是 triton_kernels 侧张量描述工具路径（Ascend 不涉及）。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "nvidia",
+        "tma"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 python/triton_kernels（triton 附带的高层 kernel/张量工具包），且为 NVIDIA TMA 对齐与 gather 语义路径，Ascend 不使用。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Fix FP4 TMA Alignment (#11914)\n\n## Summary\n\nUse physical storage width for Tensor Memory Accelerator (TMA) stride\nalignment. Packed FP4 uses `uint8` storage; using its logical 4-bit\nwidth incorrectly rejects a 16-byte row stride. Preserve gathered row\nindices for activation scales so values and scales use the same source\nrows.\n\nWithout preserving those indices, the H100 pointer-gather path pairs\n`X[gather[i]]` with `X_scale[i]`, producing numerical mismatches rather\nthan a TMA error (maximum relative error 0.9443 versus 0.02 allowed in\none case).\n\n[NVIDIA specifies `globalStrides` in bytes, with 16-byte alignment for\nordinary\nTMA.](https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__TENSOR__MEMORY.html)\n\n## Desired features\n\n- Accept packed FP4 tensors whose physical storage strides satisfy\nordinary TMA alignment.\n- Keep gathered activation values and their block/tensor scales on the\nsame source rows.\n\n## Validation\n\nTested on NVIDIA GB300 (copy below) and NVIDIA H100 (gathered-scale\npath) with Triton 3.8.0. The copy below is byte-exact and uses ordinary\nUINT8 TMA (`fp4_padded=False`). The old alignment expression returned\n`False`; the patched helper returned `True`. This copy does not validate\npadded FP4 or matmul.\n\nRun with `triton_kernels` from the checkout:\n\n```python\nimport torch\nimport triton\nimport triton.language as tl\nfrom triton_kernels.tensor import FP4, is_tma_compliant, make_tma, wrap_torch_tensor\n\n\n@triton.jit\ndef copy_packed(src, out):\n    tl.store(out + tl.arange(0, 32), src.load([0, 0]).reshape(32))\n\n\nstorage = torch.arange(32, dtype=torch.uint8, device=\"cuda\").reshape(2, 16)\npacked = wrap_torch_tensor(storage, dtype=FP4)\nout = torch.empty_like(storage)\nkernel = copy_packed[(1,)](make_tma(packed, [2, 32], \"dense\"), out)\n\n# checks\nassert torch.equal(out, storage)\nassert \"cp.async.bulk.tensor\" in kernel.asm[\"ptx\"]\nassert is_tma_compliant(packed)  # Fails before this change.\n```\n\n## Lines Changed\n\n| Type | Added | Removed | Net |\n|---|---:|---:|---:|\n| Tests | 0 | 0 | 0 |\n| Core Logic | 3 | 2 | 1 |\n| AutoGenerated | 0 | 0 | 0 |\n| Total | 3 | 2 | 1 |\n\n## Reviewers Guide\n\n- `python/triton_kernels/triton_kernels/tensor.py`: generic\nstride-alignment check only; no code movements.\n- `python/triton_kernels/triton_kernels/matmul_details/_p_matmul.py`:\npreserve gathered row indices for activation scales; no code movements.\n\n---------\n\nCo-authored-by: Joey Yu <234057141+lyu-oai@users.noreply.github.com>"
+    },
+    {
+      "sha": "cf542796f329f9c315039562ce7c7abac78c6a5d",
+      "comment": "为 TritonNvidiaGPU dialect 增加 canonicalizer（hasCanonicalizer=1 并在 initialize/ getCanonicalizationPatterns 注册 DivFByConstant），将 FP32 arith.divf(a, b)（分母为常量且量级在 [2^-126, 2^126]）改写为 a * tt.approx_divf(1.0, b)；标量与 splat 常量用一个标量倒数，dense 常量逐元素校验，超范围/零/inf/nan 不改写；通过 TargetInfoBase::isCuda() 限定仅 CUDA，并在标准 canonicalize 与 gluon-canonicalize 中同时生效。配套 lit 测试覆盖 in-range/out-of-range/张量/运行时分母/f64/precise_divf/AMD/无 target，另有 GPU 随机位级回归对比 div.full.f32。这是对 a9eedb6c 引入的 ApproxDivFOp 的后续利用，属 NVIDIA 专属优化，风险中等（改变浮点除法语义，但用位级测试锚定了与常量 div.full 行为一致性）。",
+      "tags": [
+        "feature",
+        "performance",
+        "medium-risk",
+        "nvidia",
+        "canonicalization"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Dialect/TritonNvidiaGPU（NVIDIA 专属方言 canonicalizer）与 lib/Dialect/Gluon/Transforms（Gluon 编译到 TTGIR，Ascend 不使用），并通过 TargetInfoBase::isCuda() 限定仅 CUDA 生效。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Canonicalize constant fdiv through an approximate reciprocal (#11901)\n\nCanonicalize FP32 `arith.divf(a, b)` with constant denominator\nmagnitudes in `[2^-126, 2^126]` to `a * tt.approx_divf(1.0, b)` on\nNVIDIA. Scalar and splat denominators use one scalar reciprocal; dense\nconstants are checked elementwise. Use `TargetInfoBase` to restrict the\nrewrite to CUDA and register it in both the standard and Gluon\ncanonicalizers.\n\nThe randomized regression compares raw result bits against\n`div.full.f32` with the same constant denominator. This checks\npreservation of the original constant-division behavior; PTXAS can use\ndifferent reciprocal approximations when the denominator is a runtime\nvalue.\n\n## Stack\n\nDepends on #11900. This PR targets `codex/approx-fdiv-op` so its diff\ncontains only the constant-division rewrite and its regression coverage.\n\n## Validation\n\nValidated on a Brix GB300 devbox after a native rebuild and source-hash\nverification:\n\n- All repository pre-commit checks passed.\n- 9 focused lit files passed, covering standard and Gluon\ncanonicalization, AMD exclusions, NVIDIA and AMD lowering, and FPSan.\n- 22 division GPU cases passed.\n- The randomized regression passed all 2,359,296 raw-bit comparisons:\n65,536 numerator encodings across 36 signed in-range constant\ndenominators, including both range endpoints.\n\nAMD was validated through IR tests; no AMD GPU runtime was used."
+    },
+    {
+      "sha": "458129c97d3bfaaf055e5f29077f5099d1085388",
+      "comment": "修复 third_party/nvidia/hopper 下 WSDataPartition.cpp 中 getBackwardSliceToPartition 在 thenYieldArg 分支缺失 '!' 的问题：原实现是成功返回 false（语义反转），与同函数其它所有 call site 及紧邻的 elseYieldArg 分支不一致；补上 '!' 后错误处理恢复一致。新增 test/Hopper/WarpSpecialization/ws_data_partition.mlir 用例（scf.if 结果喂给 warp_group_dot）覆盖该路径。典型单字符逻辑修复，风险低，仅影响 NVIDIA Hopper warp specialization 数据分区。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "nvidia",
+        "warp-specialization"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/nvidia/hopper/lib/Transforms/WarpSpecialization，属 NVIDIA Hopper 专属 warp specialization pass，Ascend 不加载。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "fix: add missing negation in WSDataPartition thenYieldArg check (#9800)\n\n## Summary\n\nFixes #9559\n\nThe `thenYieldArg` branch in `getBackwardSliceToPartition` (line 324)\nwas missing the `!` negation operator, causing inverted error handling\ncompared to all other call sites.\n\n## Bug\n\n```cpp\n// BEFORE (line 324) — returns false on SUCCESS (wrong)\nif (getBackwardSliceToPartition(thenYieldArg, partitionScheme, currentDim))\n    return false;\n\n// The else branch directly below already has the correct pattern:\nif (!getBackwardSliceToPartition(elseYieldArg, partitionScheme, currentDim))\n    return false;\n```\n\nAll other call sites in the same function use `if\n(!getBackwardSliceToPartition(...)) return false;` to propagate failure.\nThis was the only one without the negation, as confirmed by @htyu in the\nissue thread.\n\n## Change\n\nSingle-character fix — add `!` to match the consistent pattern across\nthe file.\nAdded a lit test with `scf.if` result feeding into a dot to cover this\npath.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n- Select one of the following.\n  - [ ] I have not added any `lit` tests.\n- [x] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\n    including the \"tests should be minimal\" section.\n\n---------\n\nCo-authored-by: peterbell10 <peterbell10@openai.com>"
+    },
+    {
+      "sha": "c0500c7b036c3092ef006def10067915eb02caf0",
+      "comment": "回退 #11854（'[BACKEND] Use CUDA 13 ptxas for Hopper'）：将 get_ptxas_for_arch(arch) 还原为 get_ptxas(arch)，即 arch >= 100 用 ptxas_blackwell，否则用 ptxas（不再是 arch >= 90 用 ptxas_blackwell 的临时策略）；get_ptxas_version_for_arch 同步更名回 get_ptxas_version，调用点（get_ptx_version_from_options、make_cubin、hash）一并更新。属于 NVIDIA 后端工具链选择策略回退，风险低，仅影响 Hopper 上 ptxas 版本选择与缓存 hash。",
+      "tags": [
+        "revert",
+        "low-risk",
+        "nvidia",
+        "toolchain"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/nvidia/backend/compiler.py（CUDABackend 的 ptxas 选择），Ascend 使用 CANN/毕昇工具链，与 ptxas 无关。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Revert \"[BACKEND] Use CUDA 13 ptxas for Hopper\" (#11915)\n\nReverts triton-lang/triton#11854"
+    },
+    {
+      "sha": "edeea66c807c821830bedf1d0854343f93c6df48",
+      "message": "[CI][AMD] Record runner environment diagnostics (#11802)\n\nGPU failures can depend on host kernel, KFD, firmware, things that are\nnot defined by the container image and are not currently captured in CI\nlogs. This adds a best-effort runner inspection step immediately after\ncheckout to record this environment at the start of AMD integration jobs\nso failures can be investigated from the original runner state instead\nof having to guess at it while trying to reproduce errors.",
+      "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 triton-ascend。",
+      "tags": [
+        "chore"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "b288fba760ff46ba266d442cce778133b0231d71",
+      "comment": "修正 BaseBackend.add_stages 抽象方法签名：从 (self, stages, options) 补齐为 (self, stages, options, language: Language)，并在 docstring 说明 language 表示产生 src 的前端（Language.TRITON/GLUON）。此前的抽象签名是过时的——所有具体后端（nvidia/amd/vulkan）与 compile() 调用点 backend.add_stages(stages, options, src.language) 都已带 language，因此该改动只是让抽象声明与既有事实一致，消除 Pyright/Pylance 报的 'incompatible with base class'。无运行时行为变更，纯类型注解修复，风险极低。",
+      "tags": [
+        "refactor",
+        "bugfix",
+        "low-risk",
+        "backend-abstraction"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "影响 python/triton/backends/compiler.py 的 BaseBackend.add_stages 抽象签名（位于『必然影响』列表）。triton-ascend 的 AscendBackend 已实现 add_stages(self, stages, options, language)（其上游快照 3.6.0 亦如此），因此该改动与 AscendBackend 的签名一致，不会破坏实例化或 compile() 调用，反而使静态类型检查不再报基类不兼容。需确认 triton-ascend 侧 AscendBackend.add_stages 的参数名/顺序（stages, options, language）与之一致；若其变体（如 dev patch 中的包装实现）存在差异，应同步。",
+        "testing": "无测试行为变更。既有 Ascend 编译流水线测试不需修改。但 triton-ascend 若依赖类型检查（pyright/pylance）作为 CI 校验，建议确认告警已消除。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Fix  abstract signature to match its overrides (#11515)\n\n`BaseBackend.add_stages` was declared as `add_stages(self, stages,\noptions)`,\nmissing the `language` parameter. Every concrete backend already\noverrides it\nwith `language` included, e.g.:\n```\n  third_party/amd/backend/compiler.py:\n      def add_stages(self, stages, options, language):\n\n  third_party/nvidia/backend/compiler.py:\n      def add_stages(self, stages, options, language):\n```\nand the call site in `python/triton/compiler/compiler.py` passes it:\n```\n  backend.add_stages(stages, options, src.language)\n```\nso the abstract method's signature was simply stale. This causes static\ntype checkers (Pyright/Pylance) to flag every backend override as\n\"incompatible with base class\" due to a positional parameter count\nmismatch. Add the missing `language: Language` parameter to the abstract\ndeclaration so it matches actual usage and all existing overrides.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [ ] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n- [x] This PR does not need a test because `it only corrects a stale\ntype\n    annotation on an abstract method to match its existing overrides\n    (amd/nvidia/vulkan backends already implement it with the extra\n    parameter); there is no runtime behavior change to test.`\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/backends/compiler.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "0e752ba9ac274e8675689c37eac6073fd0b2099d",
+      "comment": "更新 AMD CodeGen LLVM 构建信息：cmake/amd-llvm-build-info.json 中 llvm_hash 从 941a04e69ee8fe4c7a162b2f1e215aa8df867534 变更为 9e5edb7ed9446beebf545532e74fb0af29682dec，repository 从 llvm/llvm-project 改为 triton-lang/llvm-project。属于构建/依赖 pin 变更，仅影响 AMD 后端的 LLVM 依赖来源与版本，风险低。",
+      "tags": [
+        "chore",
+        "build",
+        "low-risk",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。仅 AMD 后端 LLVM 依赖 pin（cmake/amd-llvm-build-info.json），Ascend 使用自带 LLVM/毕昇工具链。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] build AMD CodeGen LLVM @ 9e5edb7ed944 (#11912)"
+    },
+    {
+      "sha": "a9eedb6c30ff9a00cf224eb6ad3ba6f0288a0185",
+      "comment": "在 Triton 核心 tt 方言新增 TT_ApproxDivFOp（tt.approx_divf），限 F32 / RankedTensorOf<[F32]>；前端 tl.fdiv 新增 approx 参数并透传到 TritonSemantic.fdiv（新增 approx 形参，校验 approx 与 ieee_rounding 互斥、approx 仅支持 f32）；TritonToTritonGPU 通过 GenericOpPattern 透传；NVIDIA 降为 llvm.nvvm.div.approx.f（div.approx.f32）、AMD 降为 llvm.amdgcn.fdiv.fast；interpreter 增加 create_approx_divf（np.divide）；FPSan 将 PreciseDivFOpPattern 泛化为 TritonDivFOpPattern 模板并同时覆盖 Precise/Approx；Gluon 前端 ttgl.fdiv(approx=True) 支持；配套 lit（PTX/AMD/FPSan/gluon frontend）与 GPU 前端测试。该 op 属核心 tt 方言（Ascend 复用的 TTIR），但 Ascend 走 TritonToLinalg 而非 TritonToTritonGPU/GPUToLLVM，故无对应 lowering。风险中等：新增 op 与语义层签名变化可能影响 triton-ascend 的前端兼容性（Ascend 若对语言前端算子做子集裁剪或自研 pass 未覆盖该 op，需补齐），但不会破坏既有编译。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "nvidia",
+        "amd",
+        "triton-ir",
+        "frontend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": true,
+        "functionality": "两个层面。(1) 核心 tt 方言新增 tt.approx_divf（include/triton/Dialect/Triton/IR/TritonOps.td，位于『必然影响』的 tt 方言定义路径），这是 Ascend AST→TTIR 前端之后 TritonToLinalg 链的输入 op 集合的新增项。Ascend 的 TritonToLinalg 未实现该 op 的转换，因此当用户书写 tl.fdiv(..., approx=True) 时 Ascend 编译会因未覆盖的 op 而失败（现有不带 approx 的除法路径不受影响）。(2) python/triton/language/semantic.py::TritonSemantic.fdiv 签名从 (input, other, ieee_rounding) 变为 (input, other, ieee_rounding, approx=False)，新增默认参数向后兼容；Ascend 通过 monkey-patch 覆写的是 TritonSemantic.dot，不涉及 fdiv，故 patch 不失效。若 Ascend 后续需支持近似除法语义，需要在 TritonToLinalg/TritonAscend 中落地 tt.approx_divf 的 lowering。",
+        "testing": "无强制测试更新：现存的 Ascend 端到端用例不使用 approx=True，不会触发新 op 路径。建议新增覆盖以明确 Ascend 对 tl.fdiv(approx=True) 的行为（要么支持该 op 的 linalg lowering，要么显式报出可读错误而非通用 op 未注册失败）。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/（新增 tl.fdiv(approx=True) 的 Ascend 行为用例：期望是明确的支持或明确的诊断错误）",
+          "third_party/ascend/lib/（TritonToLinalg / TritonAscend 转换：评估是否需要为 tt.approx_divf 增加 pattern）"
+        ]
+      },
+      "message": "[IR] Add ApproxDivFOp and an explicit approximate fdiv mode (#11900)\n\nAdd `tt.approx_divf` (`ApproxDivFOp`) and expose it through\n`tl.fdiv(..., approx=True)` for FP32 scalars and tensors. NVIDIA lowers\nit to `div.approx.f32`; AMD lowers it to `llvm.amdgcn.fdiv.fast`. The\nfrontend rejects unsupported types and combining approximate division\nwith IEEE rounding.\n\nInclude Triton-to-GPU conversion, interpreter and FPSan support, plus\nfrontend and backend regression coverage.\n\n## Stack\n\nThis PR is standalone and targets `main`. The NVIDIA constant-division\nrewrite is a separate follow-up in #11901.\n\n## Validation\n\nValidated the standalone op commit on a Brix GB300 devbox:\n\n- Native rebuild and all repository pre-commit checks passed.\n- 3 focused lit files passed: NVIDIA lowering, AMD lowering, and FPSan.\n- 9 GPU cases, 4 Gluon frontend cases, and 6 interpreter cases passed.\n\nAMD was validated through lowering tests; no AMD GPU runtime was used.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "include/triton/Dialect/Triton/",
+          "python/src/ir.cc",
+          "python/triton/language/semantic.py",
+          "python/triton/runtime/interpreter.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": true,
+        "affected_interfaces": [
+          "include/triton/Dialect/Triton/IR/TritonOps.td::ApproxDivFOp (new TTIR op) -> third_party/ascend/lib/Conversion/TritonToLinalg (Ascend TTIR lowering chain)",
+          "python/triton/language/semantic.py::TritonSemantic.fdiv (signature change: added `approx` keyword)",
+          "python/src/ir.cc::TritonOpBuilder (new `create_approx_divf`) -> third_party/ascend/ascend_ir.cc::AscendNPUIROpBuilder",
+          "python/triton/runtime/interpreter.py::InterpreterBuilder (new `create_approx_divf`) -> third_party/ascend/backend/ascend_interpreter.py::AscendInterpreterBuilder"
+        ],
+        "adaptation_effort": "low",
+        "adaptation_guide": "The commit introduces a new platform-independent TTIR op `tt.approx_divf` (`ApproxDivFOp`) emitted by the shared frontend when `tl.fdiv(x, y, approx=True)` is used. Ascend reuses this frontend, so an Ascend kernel using `approx=True` will now produce `tt.approx_divf` and must be handled by Ascend's TTIR lowering chain (third_party/ascend/lib/Conversion/TritonToLinalg and its related passes). Add a lowering/conversion for `ApproxDivFOp` alongside the existing `PreciseDivFOp`/`arith.divf` handling, mapping it to the same linalg/divf lowering (mapping approx->regular/precise fdiv is semantically safe since approximate division is a relaxation). The remaining changes are additive and require no adaptation: `TritonSemantic.fdiv` gains an `approx=False` keyword (Ascend only monkey-patches `dot`, not `fdiv`); `TritonOpBuilder.create_approx_divf` is inherited for free by `AscendNPUIROpBuilder`; `InterpreterBuilder.create_approx_divf` is inherited by `AscendInterpreterBuilder`. No action is needed for TritonToTritonGPU, FpSanitizer, or third_party/{nvidia,amd} (not on Ascend's path).",
+        "risk": "Low. All interface changes are backward-compatible additions (defaults preserved); the only functional gap is that `tl.fdiv(..., approx=True)` on Ascend would fail to compile with an 'unhandled op' error until `ApproxDivFOp` is lowered. Mapping approx_divf to existing precise/regular fdiv division is semantically safe, so there is no numerical-correctness risk."
+      }
+    },
+    {
+      "sha": "280eeb00e69d2de82eba88814af66f1b5b336d28",
+      "comment": "将 ConSan 微基准从『基线阈值断言』改为『仅记录』：删除 consan_performance.py 中 COMPILE_TOLERANCE/RUNTIME_TOLERANCE 与 consan_performance_baselines.json 读取及两处 assert，删除基线 JSON 文件；CI step 由 'Check ConSan performance' 改名为 'Log ConSan performance' 并移除 continue-on-error。目的是消除噪声导致的阈值失败，同时保留编译总时长、lowering 各阶段耗时、执行中位耗时的输出以便定位性能变化。属 CI/测试基础设施调整，风险低。",
+      "tags": [
+        "ci",
+        "test",
+        "low-risk",
+        "sanitizer"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅涉及 .github/workflows 与 python/test/microbenchmark 下的 ConSan（NVIDIA 专属 sanitizer）微基准，Ascend 不使用。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[CI] Log ConSan performance without baseline checks (#11864)\n\nRemove the compile and runtime baseline comparisons from the ConSan\nmicrobenchmark while keeping compilation totals, lowering-stage times,\nand median execution time in CI output. This avoids noisy threshold\nfailures while preserving measurements that help identify whether a\nperformance change affects compilation or execution.\n\nRemove the dedicated step's `continue-on-error` and delete the unused\nbaseline file."
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

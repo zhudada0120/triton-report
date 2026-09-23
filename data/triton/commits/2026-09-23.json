@@ -1,0 +1,574 @@
+{
+  "date": "2026-09-23",
+  "repo": "triton-lang/triton",
+  "branch": "main",
+  "commits": [
+    {
+      "sha": "b7fdaf802b0455004e27ad782c5beb21c6d58660",
+      "author": {
+        "name": "Will Feng",
+        "email": "yfeng.us@gmail.com"
+      },
+      "date": "2026-09-23T23:29:19+08:00",
+      "message": "[GSan] Skip fabric tests on unsupported devices (#11919)\n\n## Summary\n\n- expose the CUDA fabric-handle capability through the GSan allocator\nextension\n- skip fabric export/import tests when the device reports no\nfabric-handle support\n- preserve the existing runtime skip for supported devices without\naccess to an IMEX channel\n\n## Motivation\n\nNVIDIA Thor supports CUDA virtual memory management but reports\n`CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_FABRIC_SUPPORTED = 0`. Requesting\n`CU_MEM_HANDLE_TYPE_FABRIC` on this device causes `cuMemCreate` to\nreturn `CUDA_ERROR_INVALID_VALUE`.\n\n## Testing\n\n- targeted fabric tests: `2 skipped`\n- full GSan suite: `408 passed, 11 skipped, 2 xfailed`\n- `pre-commit run --from-ref upstream/main --to-ref HEAD`\n- incremental native build with 8 jobs\n\n# New contributor declaration\n\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n[rules](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --from-ref upstream/main --to-ref\nHEAD`.\n- [x] This PR does not need a new test case because it updates the skip\nbehavior of the existing parametrized fabric export/import tests, which\nare exercised by the validation above.\n- [x] I have not added any `lit` tests.",
+      "parents": [
+        "0c1fcb37e699c587f7f3bfc93e71454d861a69d0"
+      ],
+      "stats": {
+        "total_additions": 44,
+        "total_deletions": 0,
+        "files_changed": 3
+      },
+      "files": [
+        {
+          "filename": "python/test/gsan/test_allocator.py",
+          "status": "modified",
+          "additions": 3,
+          "deletions": 0,
+          "patch": "@@ -22,6 +22,7 @@ from triton.experimental.gsan._allocator import (\n     gsan_malloc,\n     import_allocation_handles,\n     import_runtime_state_handle,\n+    supports_fabric_handles,\n )\n from triton.experimental.gsan._testing_utils import (global_state, shadow_cell_from_address, shadow_tensor_for,\n                                                      store_one_i32, thread_state_from_smid)\n@@ -626,6 +627,8 @@ def test_export_import_allocation_handles_maps_real_and_shadow(_direct_allocator\n     ],\n )\n def test_export_import_fabric_handles(explicit_config, allocator_config):\n+    if not supports_fabric_handles(torch.cuda.current_device()):\n+        pytest.skip(\"CUDA device does not support fabric handles\")\n     result = run_in_process(\n         _run_export_import_fabric_handles_check,\n         args=(explicit_config, ),"
+        },
+        {
+          "filename": "python/triton/experimental/gsan/_allocator.py",
+          "status": "modified",
+          "additions": 5,
+          "deletions": 0,
+          "patch": "@@ -100,6 +100,11 @@ def has_live_allocations() -> bool:\n     return _load_gsan_module().has_live_allocations()\n \n \n+def supports_fabric_handles(device: int) -> bool:\n+    \"\"\"Return whether a CUDA device supports fabric allocation handles.\"\"\"\n+    return _load_gsan_module().supports_fabric_handles(device)\n+\n+\n def reset() -> None:\n     \"\"\"Reset GSan runtime state after all GSan allocations have been released.\n "
+        },
+        {
+          "filename": "python/triton/experimental/gsan/src/GSanAllocator.cc",
+          "status": "modified",
+          "additions": 36,
+          "deletions": 0,
+          "patch": "@@ -1317,6 +1317,39 @@ PyObject *pyHasLiveAllocations([[maybe_unused]] PyObject *self,\n   return PyBool_FromLong(hasLiveAllocations());\n }\n \n+PyObject *pySupportsFabricHandles([[maybe_unused]] PyObject *self,\n+                                  PyObject *const *args, Py_ssize_t nargs) {\n+  if (nargs != 1) {\n+    PyErr_Format(PyExc_TypeError,\n+                 \"%s.supports_fabric_handles expected 1 positional argument, \"\n+                 \"got %zd\",\n+                 kModuleName, nargs);\n+    return nullptr;\n+  }\n+\n+  int device = 0;\n+  if (!parseIntArg(args[0], \"device\", &device))\n+    return nullptr;\n+\n+  CUdevice cuDevice = 0;\n+  CUresult err = cuDeviceGet(&cuDevice, device);\n+  if (err != CUDA_SUCCESS) {\n+    printCUDAError(err);\n+    PyErr_SetString(PyExc_RuntimeError, \"cuDeviceGet failed.\");\n+    return nullptr;\n+  }\n+\n+  int supported = 0;\n+  err = cuDeviceGetAttribute(\n+      &supported, CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_FABRIC_SUPPORTED, cuDevice);\n+  if (err != CUDA_SUCCESS) {\n+    printCUDAError(err);\n+    PyErr_SetString(PyExc_RuntimeError, \"cuDeviceGetAttribute failed.\");\n+    return nullptr;\n+  }\n+  return PyBool_FromLong(supported);\n+}\n+\n PyObject *pyReset([[maybe_unused]] PyObject *self, PyObject *const *args,\n                   Py_ssize_t nargs) {\n   if (nargs != 0) {\n@@ -1690,6 +1723,9 @@ PyMethodDef kGSanAllocatorMethods[] = {\n     {\"has_live_allocations\",\n      reinterpret_cast<PyCFunction>(pyHasLiveAllocations), METH_NOARGS,\n      \"Return whether the GSan allocation reserve has live allocations.\"},\n+    {\"supports_fabric_handles\",\n+     reinterpret_cast<PyCFunction>(pySupportsFabricHandles), METH_FASTCALL,\n+     \"Return whether a CUDA device supports fabric allocation handles.\"},\n     {\"reset\", reinterpret_cast<PyCFunction>(pyReset), METH_FASTCALL,\n      \"Reset GSan runtime state when there are no live allocations.\"},\n     {\"get_reserve_pointer\", reinterpret_cast<PyCFunction>(pyGetReservePointer),\n"
+        }
+      ]
+    },
+    {
+      "sha": "0c1fcb37e699c587f7f3bfc93e71454d861a69d0",
+      "author": {
+        "name": "Jiacong Ye",
+        "email": "yejiacong@outlook.com"
+      },
+      "date": "2026-09-23T21:46:35+08:00",
+      "message": "[BUILD] Make the NVIDIA GSan device runtime optional (#11654)\n\nNVIDIA's GSan device runtime is currently built whenever the Triton\nPython module is enabled. This requires a CUDA-capable `clang++` and\nprevents reduced builds that do not include the NVPTX target.\n\nThis change adds `TRITON_BUILD_NVIDIA_GSAN_RUNTIME`, enabled by default\nto preserve existing behavior. When disabled, Triton skips GSan runtime\ngeneration and does not add the runtime target as a dependency of the\nNVIDIA plugin. The option is also forwarded from `setup.py`.\n\n## New contributor declaration\n\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [ ] I have added tests.\n- [x] This PR does not need a test because this is a build-graph option\nchange; both enabled and disabled configurations were validated with the\n    official prebuilt-LLVM build flow.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n  - [ ] The `lit` tests I have added follow these\n[best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)",
+      "parents": [
+        "8c1e9b398d67f6c5f1a697de2907f9eea15c9e28"
+      ],
+      "stats": {
+        "total_additions": 48,
+        "total_deletions": 41,
+        "files_changed": 3
+      },
+      "files": [
+        {
+          "filename": "CMakeLists.txt",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 0,
+          "patch": "@@ -19,6 +19,8 @@ list(APPEND CMAKE_MODULE_PATH \"${CMAKE_CURRENT_SOURCE_DIR}/cmake\")\n \n option(TRITON_BUILD_PYTHON_MODULE \"Build Python Triton bindings\" OFF)\n option(TRITON_BUILD_PROTON \"Build the Triton Proton profiler\" ON)\n+option(TRITON_BUILD_NVIDIA_GSAN_RUNTIME\n+       \"Build the CUDA/NVPTX GSan device runtime for the NVIDIA backend\" ON)\n option(TRITON_STABLE_ABI \"Build with Python Stable ABI (abi3) for Python 3.12+\" OFF)\n option(TRITON_BUILD_UT \"Build C++ Triton Unit Tests\" ON)\n option(TRITON_BUILD_WITH_CCACHE \"Build with ccache (if available)\" ON)"
+        },
+        {
+          "filename": "setup.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 0,
+          "patch": "@@ -349,6 +349,7 @@ class CMakeBuild(build_ext):\n         # environment variables we will pass through to cmake\n         passthrough_args = [\n             \"TRITON_BUILD_PROTON\",\n+            \"TRITON_BUILD_NVIDIA_GSAN_RUNTIME\",\n             \"TRITON_BUILD_WITH_CCACHE\",\n             \"TRITON_PARALLEL_LINK_JOBS\",\n             \"TRITON_OFFLINE_BUILD\","
+        },
+        {
+          "filename": "third_party/nvidia/CMakeLists.txt",
+          "status": "modified",
+          "additions": 45,
+          "deletions": 41,
+          "patch": "@@ -3,53 +3,57 @@ include_directories(${CMAKE_CURRENT_BINARY_DIR}/include)\n add_subdirectory(include)\n add_subdirectory(lib)\n if(TRITON_BUILD_PYTHON_MODULE)\n-  set(GSAN_RUNTIME_SRC \"${triton_SOURCE_DIR}/python/triton/experimental/gsan/src/GSanLibrary.cu\")\n-  set(GSAN_RUNTIME_HDRS\n-    \"${triton_SOURCE_DIR}/python/triton/experimental/gsan/src/GSan.h\"\n-    \"${triton_SOURCE_DIR}/python/triton/experimental/gsan/src/Hash.cuh\")\n-  set(GSAN_RUNTIME_IR \"${CMAKE_CURRENT_SOURCE_DIR}/backend/lib/gsan.ll\")\n+  if(TRITON_BUILD_NVIDIA_GSAN_RUNTIME)\n+    set(GSAN_RUNTIME_SRC \"${triton_SOURCE_DIR}/python/triton/experimental/gsan/src/GSanLibrary.cu\")\n+    set(GSAN_RUNTIME_HDRS\n+      \"${triton_SOURCE_DIR}/python/triton/experimental/gsan/src/GSan.h\"\n+      \"${triton_SOURCE_DIR}/python/triton/experimental/gsan/src/Hash.cuh\")\n+    set(GSAN_RUNTIME_IR \"${CMAKE_CURRENT_SOURCE_DIR}/backend/lib/gsan.ll\")\n \n-  find_program(TRITON_GSAN_CLANGXX NAMES clang++\n-               PATHS \"${LLVM_SYSPATH}/bin\"\n-               REQUIRED NO_DEFAULT_PATH)\n-  if(NOT TRITON_GSAN_CLANGXX)\n-    message(FATAL_ERROR \"clang++ is required to build gsan.ll\")\n-  endif()\n-\n-  set(TRITON_GSAN_INCLUDE_FLAGS \"\")\n-  foreach(include_path IN ITEMS \"${TRITON_CUDACRT_PATH}\" \"${TRITON_CUDART_PATH}\")\n-    if(NOT \"${include_path}\" STREQUAL \"\")\n-      list(APPEND TRITON_GSAN_INCLUDE_FLAGS \"-I${include_path}\")\n+    find_program(TRITON_GSAN_CLANGXX NAMES clang++\n+                 PATHS \"${LLVM_SYSPATH}/bin\"\n+                 REQUIRED NO_DEFAULT_PATH)\n+    if(NOT TRITON_GSAN_CLANGXX)\n+      message(FATAL_ERROR \"clang++ is required to build gsan.ll\")\n     endif()\n-  endforeach()\n \n-  # Keep the device runtime freestanding: do not pull in Clang's CUDA wrapper,\n-  # vendored CUDA headers, host SDK headers, or the host C++ standard library.\n-  add_custom_command(\n-      OUTPUT \"${GSAN_RUNTIME_IR}\"\n-      COMMAND \"${CMAKE_COMMAND}\" -E make_directory\n-              \"${PROJECT_SOURCE_DIR}/third_party/nvidia/backend/lib\"\n-      COMMAND \"${TRITON_GSAN_CLANGXX}\"\n-              -x cuda\n-              -std=c++17 -O3 -S -emit-llvm\n-              --cuda-device-only\n-              -nocudainc\n-              -nocudalib\n-              -nostdinc\n-              -fno-exceptions\n-              -fcuda-flush-denormals-to-zero\n-              --cuda-gpu-arch=sm_80\n-              --cuda-feature=+ptx70\n-              ${TRITON_GSAN_INCLUDE_FLAGS}\n-              \"${GSAN_RUNTIME_SRC}\" -o \"${GSAN_RUNTIME_IR}\"\n-      DEPENDS \"${GSAN_RUNTIME_SRC}\" ${GSAN_RUNTIME_HDRS}\n-      COMMENT \"Building GSan runtime\"\n-      VERBATIM)\n-  add_custom_target(TritonNVIDIAGSanRuntime ALL DEPENDS \"${GSAN_RUNTIME_IR}\")\n+    set(TRITON_GSAN_INCLUDE_FLAGS \"\")\n+    foreach(include_path IN ITEMS \"${TRITON_CUDACRT_PATH}\" \"${TRITON_CUDART_PATH}\")\n+      if(NOT \"${include_path}\" STREQUAL \"\")\n+        list(APPEND TRITON_GSAN_INCLUDE_FLAGS \"-I${include_path}\")\n+      endif()\n+    endforeach()\n+\n+    # Keep the device runtime freestanding: do not pull in Clang's CUDA wrapper,\n+    # vendored CUDA headers, host SDK headers, or the host C++ standard library.\n+    add_custom_command(\n+        OUTPUT \"${GSAN_RUNTIME_IR}\"\n+        COMMAND \"${CMAKE_COMMAND}\" -E make_directory\n+                \"${PROJECT_SOURCE_DIR}/third_party/nvidia/backend/lib\"\n+        COMMAND \"${TRITON_GSAN_CLANGXX}\"\n+                -x cuda\n+                -std=c++17 -O3 -S -emit-llvm\n+                --cuda-device-only\n+                -nocudainc\n+                -nocudalib\n+                -nostdinc\n+                -fno-exceptions\n+                -fcuda-flush-denormals-to-zero\n+                --cuda-gpu-arch=sm_80\n+                --cuda-feature=+ptx70\n+                ${TRITON_GSAN_INCLUDE_FLAGS}\n+                \"${GSAN_RUNTIME_SRC}\" -o \"${GSAN_RUNTIME_IR}\"\n+        DEPENDS \"${GSAN_RUNTIME_SRC}\" ${GSAN_RUNTIME_HDRS}\n+        COMMENT \"Building GSan runtime\"\n+        VERBATIM)\n+    add_custom_target(TritonNVIDIAGSanRuntime ALL DEPENDS \"${GSAN_RUNTIME_IR}\")\n+  endif()\n \n   add_triton_plugin(TritonNVIDIA ${CMAKE_CURRENT_SOURCE_DIR}/triton_nvidia.cc LINK_LIBS TritonNVIDIAGPUToLLVM NVGPUToLLVM)\n   target_link_libraries(TritonNVIDIA PRIVATE Python3::Module nanobind-static)\n-  add_dependencies(TritonNVIDIA TritonNVIDIAGSanRuntime)\n+  if(TRITON_BUILD_NVIDIA_GSAN_RUNTIME)\n+    add_dependencies(TritonNVIDIA TritonNVIDIAGSanRuntime)\n+  endif()\n endif()\n if(TRITON_BUILD_UT)\n   add_subdirectory(unittest)\n"
+        }
+      ]
+    },
+    {
+      "sha": "8c1e9b398d67f6c5f1a697de2907f9eea15c9e28",
+      "author": {
+        "name": "TANGBUDU",
+        "email": "79953480+TANGBUDU@users.noreply.github.com"
+      },
+      "date": "2026-09-23T20:36:29+08:00",
+      "message": "[NVIDIA] Reject empty CGA layouts for two-CTA tensor memory (#11894)\n\nSetting `twoCTAs=true` with an omitted or empty `CGALayout` makes the\nTMEM verifier read a nonexistent block basis and abort the compiler.\nCheck for an empty basis before reading it so these layouts produce the\nexisting verifier diagnostic.\n\nAdd minimal parser regressions for omitted/empty CGA layouts and a\nnonempty layout with the wrong first basis.\n\nFixes #11815.\n\nValidation: reproduced both aborts before the fix; both now report the\nexpected diagnostic. Valid single- and two-CTA layouts still parse. `lit\n-v test/TritonNvidiaGPU`: 23 passed on a CPU build with assertions\nenabled.\n\n# New contributor declaration\n\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n[rules](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n- [x] I have added tests in `/test`.\n- [x] The lit tests follow the [testing\nguidelines](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding minimal test inputs.\n\nSigned-off-by: TANGBUDU <tangbudu@gmail.com>",
+      "parents": [
+        "a772561da4d7eceee97b737fe072be45fd08f51a"
+      ],
+      "stats": {
+        "total_additions": 17,
+        "total_deletions": 1,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "lib/Dialect/TritonNvidiaGPU/IR/Dialect.cpp",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 1,
+          "patch": "@@ -484,7 +484,8 @@ LogicalResult TensorMemoryEncodingAttr::verify(\n   if (twoCTAs) {\n     auto kBlock = StringAttr::get(cgaLayout.getContext(), \"block\");\n     auto cgaLL = cgaLayout.getLinearLayout();\n-    if (cgaLL.getBasis(kBlock, 0) != ArrayRef{1, 0}) {\n+    if (cgaLL.getInDimSizeLog2(kBlock) == 0 ||\n+        cgaLL.getBasis(kBlock, 0) != ArrayRef{1, 0}) {\n       return emitError()\n              << \"twoCTAs layout requires the first CGALayout block basis to \"\n                 \"be [1, 0]\";"
+        },
+        {
+          "filename": "test/TritonNvidiaGPU/invalid.mlir",
+          "status": "modified",
+          "additions": 15,
+          "deletions": 0,
+          "patch": "@@ -1,5 +1,20 @@\n // RUN: triton-opt --split-input-file %s --verify-diagnostics\n \n+// expected-error @below {{twoCTAs layout requires the first CGALayout block basis to be [1, 0]}}\n+#tmem = #ttng.tensor_memory_encoding<blockM = 64, blockN = 32, colStride = 1, twoCTAs = true>\n+\n+// -----\n+\n+// expected-error @below {{twoCTAs layout requires the first CGALayout block basis to be [1, 0]}}\n+#tmem = #ttng.tensor_memory_encoding<blockM = 64, blockN = 32, colStride = 1, CGALayout = [], twoCTAs = true>\n+\n+// -----\n+\n+// expected-error @below {{twoCTAs layout requires the first CGALayout block basis to be [1, 0]}}\n+#tmem = #ttng.tensor_memory_encoding<blockM = 64, blockN = 32, colStride = 1, CGALayout = [[0, 1]], twoCTAs = true>\n+\n+// -----\n+\n // A descriptor's logical K must cover complete MMA instructions, even if its\n // backing allocation is larger.\n #shared_a = #ttg.nvmma_shared<{swizzlingByteWidth = 0, transposed = false, elementBitWidth = 8}>\n"
+        }
+      ]
+    },
+    {
+      "sha": "a772561da4d7eceee97b737fe072be45fd08f51a",
+      "author": {
+        "name": "Lixun Zhang",
+        "email": "Lixun.Zhang@amd.com"
+      },
+      "date": "2026-09-23T12:08:27+08:00",
+      "message": "[AMD] Make the membar async-load filter direction-aware (#11719)\n\nThe AMD membar filter vetoes the barrier between an async load and a\nlocal_load synced via async_wait regardless of which of the two comes\nfirst.\n\nIn the RAW direction (async load, then the synced local_load) the veto\nis safe. The load's token proves its copy was waited for, and Membar\nalready emits a barrier right after that wait, so the copy is visible\nto every thread before the read. A barrier in front of the load adds\nnothing; any copy still in flight at that point is one the kernel chose\nnot to wait for, and a barrier cannot complete it either.\n\nIn the WAR direction (synced local_load, then an async load refilling\nthe same buffer) the veto is wrong. The wait covers the read, not what\nfollows it: other threads may still be reading the buffer when the\nrefill lands, and only a barrier orders that.\n\nMembar passes the pending (earlier) access as op1 and the current access\nas op2, so veto only when the synced local_load is op2. Dropping the\nrule altogether would instead put a barrier before every synced\nlocal_load that has an unrelated copy in flight, which multi-stage\npipelines routinely do.",
+      "parents": [
+        "48fd75043af6ba37c7c1e2822f70c167cfa6e9dd"
+      ],
+      "stats": {
+        "total_additions": 124,
+        "total_deletions": 19,
+        "files_changed": 3
+      },
+      "files": [
+        {
+          "filename": "test/Conversion/amd/amdgpu_membar.mlir",
+          "status": "modified",
+          "additions": 104,
+          "deletions": 5,
+          "patch": "@@ -94,7 +94,8 @@ tt.func @pipelined_async_copy_local_to_global_3(%A: !tt.ptr<f16>, %B: !tt.ptr<f1\n   tt.return\n }\n \n-// Check that we do not get a barrier for LocalLoad if the token comes from a previous loop iteration\n+// Check that we do not get a barrier for LocalLoad if the token comes from a previous loop iteration.\n+// The refill of the same buffer that follows the LocalLoad still needs one.\n // CHECK-LABEL: async_wait_in_previous_loop_iteration\n tt.func @async_wait_in_previous_loop_iteration(%a_ptr: tensor<16x16x!tt.ptr<f16>, #AL>, %loopIterCount: i32) {\n   %c0_i32 = arith.constant 0 : i32\n@@ -106,6 +107,10 @@ tt.func @async_wait_in_previous_loop_iteration(%a_ptr: tensor<16x16x!tt.ptr<f16>\n \n   // CHECK: cf.br\n   %loop_result:1 = scf.for %arg14 = %c0_i32 to %loopIterCount step %c1_i32 iter_args(%arg10 = %2) -> (!ttg.async.token)  : i32 {\n+    // CHECK-NOT: ttg.barrier local\n+    // CHECK: ttg.local_load\n+    // CHECK-NEXT: ttg.barrier local\n+    // CHECK-NEXT: ttg.async_copy_global_to_local\n     %6 = ttg.local_load %alloc token %arg10 : !ttg.memdesc<16x16xf16, #A_SHARED, #ttg.shared_memory, mutable> -> tensor<16x16xf16, #AL>\n     %7 = ttg.async_copy_global_to_local %a_ptr, %alloc : tensor<16x16x!tt.ptr<f16>, #AL> -> !ttg.memdesc<16x16xf16, #A_SHARED, #ttg.shared_memory, mutable>\n \n@@ -163,7 +168,8 @@ tt.func @loop_carried_token_not_from_async_wait(%a_ptr: tensor<16x16x!tt.ptr<f16\n }\n \n \n-// Check that we do not get a barrier for an if where both branches yield an AsyncToken from AsyncWait\n+// Check that we do not get a barrier for an if where both branches yield an AsyncToken from AsyncWait.\n+// The refill of the same buffer that follows the LocalLoad still needs one.\n // CHECK-LABEL: async_wait_inside_if\n tt.func @async_wait_inside_if(%cond: i1, %a_ptr: tensor<16x16x!tt.ptr<f16>, #AL>, %loopIterCount: i32) {\n   %c0_i32 = arith.constant 0 : i32\n@@ -173,11 +179,13 @@ tt.func @async_wait_inside_if(%cond: i1, %a_ptr: tensor<16x16x!tt.ptr<f16>, #AL>\n   %1 = ttg.async_copy_global_to_local %a_ptr, %alloc: tensor<16x16x!tt.ptr<f16>, #AL> -> !ttg.memdesc<16x16xf16, #A_SHARED, #ttg.shared_memory, mutable>\n   %2 = ttg.async_wait %1 {num = 4 : i32}\n \n+  // CHECK: cf.br\n   %loop_result:1 = scf.for %arg14 = %c0_i32 to %loopIterCount step %c1_i32 iter_args(%arg10 = %2) -> (!ttg.async.token)  : i32 {\n-    %6 = ttg.local_load %alloc token %arg10 : !ttg.memdesc<16x16xf16, #A_SHARED, #ttg.shared_memory, mutable> -> tensor<16x16xf16, #AL>\n-    // CHECK: ttg.local_load\n     // CHECK-NOT: ttg.barrier local\n-    // CHECK: ttg.async_copy_global_to_local\n+    // CHECK: ttg.local_load\n+    // CHECK-NEXT: ttg.barrier local\n+    // CHECK-NEXT: ttg.async_copy_global_to_local\n+    %6 = ttg.local_load %alloc token %arg10 : !ttg.memdesc<16x16xf16, #A_SHARED, #ttg.shared_memory, mutable> -> tensor<16x16xf16, #AL>\n     %7 = ttg.async_copy_global_to_local %a_ptr, %alloc : tensor<16x16x!tt.ptr<f16>, #AL> -> !ttg.memdesc<16x16xf16, #A_SHARED, #ttg.shared_memory, mutable>\n     %103 = scf.if %cond -> (!ttg.async.token) {\n       %8 = ttg.async_wait %7 {num = 4 : i32}\n@@ -536,3 +544,94 @@ tt.func @no_barrier_between_async_loads_in_pipelined_loop(%A: !tt.ptr<f16>, %ub:\n   tt.return\n }\n }\n+\n+// -----\n+#AL = #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>\n+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>\n+#smem = #ttg.shared_memory\n+\n+module attributes {\"ttg.num-warps\" = 4 : i32, \"ttg.num-ctas\" = 1 : i32} {\n+// CHECK-LABEL: tdm_refill_after_synced_local_load\n+tt.func @tdm_refill_after_synced_local_load(%desc: !tt.tensordesc<128x128xf16, #shared>, %i: i32, %j: i32) {\n+  %c0_i32 = arith.constant 0 : i32\n+  %c_pred = arith.constant 1 : i32\n+  %alloc = ttg.local_alloc : () -> !ttg.memdesc<2x128x128xf16, #shared, #smem, mutable>\n+  %r = ttg.memdesc_index %alloc[%i] : !ttg.memdesc<2x128x128xf16, #shared, #smem, mutable> -> !ttg.memdesc<128x128xf16, #shared, #smem, mutable>\n+  %w = ttg.memdesc_index %alloc[%j] : !ttg.memdesc<2x128x128xf16, #shared, #smem, mutable> -> !ttg.memdesc<128x128xf16, #shared, #smem, mutable>\n+  %d = amdg.update_tensor_descriptor %desc add_offsets = [%c0_i32, %c0_i32] pred = %c_pred {clamp_bounds} : !tt.tensordesc<128x128xf16, #shared>\n+  // CHECK: amdg.async_tdm_copy_global_to_local\n+  %tok0 = amdg.async_tdm_copy_global_to_local %d into %r : !tt.tensordesc<128x128xf16, #shared> -> !ttg.memdesc<128x128xf16, #shared, #smem, mutable>\n+  // CHECK: amdg.async_wait\n+  // CHECK-NEXT: ttg.barrier local\n+  // CHECK-NOT: ttg.barrier local\n+  %wait = amdg.async_wait %tok0 {num_inst = 0 : i32}\n+  // CHECK: ttg.local_load\n+  // CHECK-NEXT: ttg.barrier local\n+  // CHECK-NEXT: amdg.async_tdm_copy_global_to_local\n+  %v = ttg.local_load %r token %wait : !ttg.memdesc<128x128xf16, #shared, #smem, mutable> -> tensor<128x128xf16, #AL>\n+  %tok1 = amdg.async_tdm_copy_global_to_local %d into %w : !tt.tensordesc<128x128xf16, #shared> -> !ttg.memdesc<128x128xf16, #shared, #smem, mutable>\n+  tt.return\n+}\n+}\n+\n+// -----\n+#AL = #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>\n+#shared = #ttg.swizzled_shared<{vec = 2, perPhase = 2, maxPhase = 4, order = [1, 0]}>\n+#smem = #ttg.shared_memory\n+\n+module attributes {\"ttg.num-warps\" = 4 : i32, \"ttg.num-ctas\" = 1 : i32} {\n+// Same three-buffer loop as no_barrier_between_async_loads_in_pipelined_loop,\n+// except the local_load is synced through async_wait, as a pipelined kernel's\n+// is. The sync covers the read, not the refill of the same buffer that follows\n+// it, so the barrier before the refill must stay.\n+// CHECK-LABEL: pipelined_loop_refill_after_synced_local_load\n+tt.func @pipelined_loop_refill_after_synced_local_load(%A: !tt.ptr<f16>, %ub: i32) {\n+  %c0_i32 = arith.constant 0 : i32\n+  %c1_i32 = arith.constant 1 : i32\n+  %c2_i32 = arith.constant 2 : i32\n+  %c3_i32 = arith.constant 3 : i32\n+  %offset = arith.constant dense<0> : tensor<128x32xi32, #AL>\n+  %alloc = ttg.local_alloc : () -> !ttg.memdesc<3x128x32xf16, #shared, #smem, mutable>\n+\n+  %s0 = ttg.memdesc_index %alloc[%c0_i32] : !ttg.memdesc<3x128x32xf16, #shared, #smem, mutable> -> !ttg.memdesc<128x32xf16, #shared, #smem, mutable>\n+  // CHECK: amdg.buffer_load_to_local\n+  // CHECK-NOT: ttg.barrier local\n+  %ld0 = amdg.buffer_load_to_local %A[%offset] into %s0 : !tt.ptr<f16>[tensor<128x32xi32, #AL>] -> <128x32xf16, #shared, #smem, mutable>\n+  %cg0 = ttg.async_commit_group tokens %ld0\n+\n+  %s1 = ttg.memdesc_index %alloc[%c1_i32] : !ttg.memdesc<3x128x32xf16, #shared, #smem, mutable> -> !ttg.memdesc<128x32xf16, #shared, #smem, mutable>\n+  // CHECK: amdg.buffer_load_to_local\n+  // CHECK-NOT: ttg.barrier local\n+  %ld1 = amdg.buffer_load_to_local %A[%offset] into %s1 : !tt.ptr<f16>[tensor<128x32xi32, #AL>] -> <128x32xf16, #shared, #smem, mutable>\n+  %cg1 = ttg.async_commit_group tokens %ld1\n+\n+  // CHECK: cf.br\n+  %res = scf.for %iv = %c0_i32 to %ub step %c1_i32 iter_args(%i = %c2_i32) -> (i32) : i32 {\n+    %si = ttg.memdesc_index %alloc[%i] : !ttg.memdesc<3x128x32xf16, #shared, #smem, mutable> -> !ttg.memdesc<128x32xf16, #shared, #smem, mutable>\n+    // CHECK-NOT: ttg.barrier local\n+    // CHECK: amdg.buffer_load_to_local\n+    %ldi = amdg.buffer_load_to_local %A[%offset] into %si : !tt.ptr<f16>[tensor<128x32xi32, #AL>] -> <128x32xf16, #shared, #smem, mutable>\n+    %cgi = ttg.async_commit_group tokens %ldi\n+\n+    // CHECK: ttg.async_wait\n+    // CHECK-NEXT: ttg.barrier local\n+    // CHECK-NOT: ttg.barrier local\n+    %w = ttg.async_wait %cgi {num = 2 : i32}\n+\n+    %ip1 = arith.addi %i, %c1_i32 : i32\n+    %j = arith.remsi %ip1, %c3_i32 : i32\n+    %sj = ttg.memdesc_index %alloc[%j] : !ttg.memdesc<3x128x32xf16, #shared, #smem, mutable> -> !ttg.memdesc<128x32xf16, #shared, #smem, mutable>\n+    // CHECK: ttg.local_load\n+    // CHECK-NEXT: ttg.barrier local\n+    // CHECK-NEXT: amdg.buffer_load_to_local\n+    %v = ttg.local_load %sj token %w : !ttg.memdesc<128x32xf16, #shared, #smem, mutable> -> tensor<128x32xf16, #AL>\n+    %ldj = amdg.buffer_load_to_local %A[%offset] into %sj : !tt.ptr<f16>[tensor<128x32xi32, #AL>] -> <128x32xf16, #shared, #smem, mutable>\n+    %cgj = ttg.async_commit_group tokens %ldj\n+\n+    // CHECK-NOT: ttg.barrier local\n+    // CHECK: cf.br\n+    scf.yield %j : i32\n+  }\n+  tt.return\n+}\n+}"
+        },
+        {
+          "filename": "third_party/amd/include/TritonAMDGPUToLLVM/MembarUtility.h",
+          "status": "modified",
+          "additions": 15,
+          "deletions": 11,
+          "patch": "@@ -7,23 +7,27 @@\n namespace mlir::triton::AMD {\n \n // Filter function used in the AMDGPU backend to filter unnecessary barriers\n-// during Membar Analysis. Filters applied by this function:\n-// 1) Do not create barriers between AsyncCopyGlobalToLocal and LocalLoad if the\n-// LocalLoad is synced by AsyncWait. This prevents a redundant barrier between\n-// LocalLoad and prefetches because membar cannot see that subviews from the\n-// same shared allocation do not alias when pipelining loads. See\n-// amdgpu_membar.mlir for examples. This filter can produce wrong IR/assembly if\n-// we pipeline with a single buffer in lds because it filters out a required\n-// ttg.barrier between the LocalLoad and the prefetches. However the pipeliner\n-// will always use at least 2 buffers so this IR cannot be produced. Example\n-// membar input IR to produce incorrect results:\n+// during Membar Analysis. Membar calls the filter with the pending (earlier)\n+// access as op1 and the current access as op2; the filters below rely on that\n+// ordering to tell RAW from WAR. Filters applied by this function:\n+// 1) Do not create a barrier between an AsyncCopyGlobalToLocal and a LocalLoad\n+// that follows it into the same buffer, if the LocalLoad is synced by\n+// AsyncWait. Such a LocalLoad is ordered after the AsyncLoads its token waits\n+// for, so the barrier membar would add is redundant: membar cannot see that\n+// subviews from the same shared allocation do not alias when pipelining loads.\n+// See amdgpu_membar.mlir for examples.\n+// This filter is direction-aware and applies to the RAW direction only. The\n+// wait says nothing about what follows the read, so an AsyncCopyGlobalToLocal\n+// that refills the same buffer after a synced LocalLoad must still wait for\n+// every thread to finish reading it (WAR), and only a barrier orders that.\n+// Example membar input IR, where both barriers below are required and emitted:\n //   %tile_a = ttg.memdesc_index\n //   %1 = AsyncCopyGlobalToLocal %ptr %tile_a\n //   scf.for\n //     %2 = AsyncWait %1\n //      # Membar will add a required ttg.barrier here\n //     %3 = LocalLoad %tile_a\n-//      # Requires ttg.barrier but filter will prevent it\n+//      # WAR: membar will add the required ttg.barrier here\n //     %4 = AsyncCopyGlobalToLocal %ptr_2 %tile_a\n //     scf.yield\n // 2) Do not create barriers between two async loads. The synchronization"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUToLLVM/MembarUtility.cpp",
+          "status": "modified",
+          "additions": 5,
+          "deletions": 3,
+          "patch": "@@ -8,7 +8,8 @@\n namespace mlir::triton::AMD {\n namespace {\n // Returns true if\n-// 1) one is LocalLoad synced via AsyncWait.\n+// 1) op2 is a LocalLoad synced via AsyncWait and op1 is an AsyncLoad into the\n+//    same buffer (RAW).\n // 2) both are AsyncLoad\n bool filterAsyncLocalLoadsDependencies(Operation *op1, Operation *op2,\n                                        Allocation *allocation) {\n@@ -71,8 +72,9 @@ bool filterAsyncLocalLoadsDependencies(Operation *op1, Operation *op2,\n   if (!sameBuffer)\n     return false;\n \n-  return isLocalLoadWithAsyncWaitToken(op1) ||\n-         isLocalLoadWithAsyncWaitToken(op2);\n+  // Filter only the RAW direction: the AsyncWait orders the synced LocalLoad\n+  // after the AsyncLoad, but not a later refill of the same buffer (WAR).\n+  return isLocalLoadWithAsyncWaitToken(op2);\n }\n \n bool filterLDSMemoryBarriersDependencies(Operation *op1, Operation *op2) {\n"
+        }
+      ]
+    },
+    {
+      "sha": "48fd75043af6ba37c7c1e2822f70c167cfa6e9dd",
+      "author": {
+        "name": "Sriram Aananthakrishnan",
+        "email": "1824943+sriakrish@users.noreply.github.com"
+      },
+      "date": "2026-09-23T11:42:01+08:00",
+      "message": "[AMD][CI] Add rocjitsu based integration tests for cdna5 (#11843)\n\n`[rocjitsu](https://github.com/ROCm/rocm-systems/tree/develop/emulation/rocjitsu)`\nis an emulation toolkit for running AMD GPU applications on simulated or\nreal hardware.\n\nThis PR adds a rocjitsu based simulation workflow for AMD CDNA5\nintegration tests",
+      "parents": [
+        "7a047455997a5b8b6baba93c1418211c43e953c5"
+      ],
+      "stats": {
+        "total_additions": 134,
+        "total_deletions": 0,
+        "files_changed": 1
+      },
+      "files": [
+        {
+          "filename": ".github/workflows/integration-tests-amd.yml",
+          "status": "modified",
+          "additions": 134,
+          "deletions": 0,
+          "patch": "@@ -263,3 +263,137 @@ jobs:\n         run: |\n           rm -rf ~/.triton/cache\n           rm -rf ~/.ccache\n+\n+  integration-tests-amd-rocjitsu:\n+    name: integration-tests-amd (gfx1250-rocjitsu)\n+    if: github.repository == 'triton-lang/triton'\n+    runs-on: amd-gfx942\n+    timeout-minutes: 60\n+    env:\n+      TRITON_BUILD_WITH_CCACHE: \"true\"\n+      TRITON_BUILD_WITH_CLANG_LLD: \"TRUE\"\n+      TRITON_USE_ASSERT_ENABLED_LLVM: \"TRUE\"\n+      TRITON_DISABLE_LINE_INFO: 1\n+      PYTHON: \"python3\"\n+      PYTEST_ADDOPTS: \"-p triton._compile_warmup\"\n+      CCACHE_COMPRESS: \"true\"\n+      PIP_BREAK_SYSTEM_PACKAGES: 1\n+      ROCM_NIGHTLY_INDEX_URL: https://nightly.repo.amd.com/rocm/whl-next/\n+      ROCM_VERSION: \"10.2.0a20260921\"\n+      TORCH_VERSION: \"2.15.0a0+rocm10.2.0a20260921\"\n+    container:\n+      image: tritonci/triton-amd-ci:rocm10.1.0a20260820-pytorch2.15.0a0-gfx942-gfx950-gfx1250-r1\n+      options: >-\n+        --security-opt seccomp=unconfined --user root\n+        --volume /home/runner/.triton:/github/home/.triton\n+    steps:\n+      - name: Checkout\n+        uses: actions/checkout@v6\n+        with:\n+          submodules: 'true'\n+      - name: Setup gfx1250 emulation\n+        shell: bash\n+        run: |\n+          set -xeo pipefail\n+          unset HIP_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES CUDA_VISIBLE_DEVICES\n+          python3 -m pip uninstall -y \\\n+            triton triton-rocm pytorch-triton torch amd-torch-device-gfx1250 \\\n+            rocm rocm-sdk-core rocm-sdk-devel rocm-sdk-libraries rocm-sdk-device-gfx1250 \\\n+            2>/dev/null || true\n+          python3 -m pip install --pre --force-reinstall \\\n+            --index-url \"${ROCM_NIGHTLY_INDEX_URL}\" \\\n+            --extra-index-url https://pypi.org/simple \\\n+            \"rocm[libraries,devel,device-gfx1250]==${ROCM_VERSION}\" \\\n+            \"torch[device-gfx1250]==${TORCH_VERSION}\"\n+          rocm-sdk init\n+          ROCM_ROOT=\"$(rocm-sdk path --root)\"\n+          echo \"ROCM_ROOT=${ROCM_ROOT}\" >> \"$GITHUB_ENV\"\n+          echo \"LD_LIBRARY_PATH=${ROCM_ROOT}/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\" >> \"$GITHUB_ENV\"\n+          echo \"${ROCM_ROOT}/bin\" >> \"$GITHUB_PATH\"\n+          test -f \"${ROCM_ROOT}/lib/libamdhip64.so\"\n+          test -x \"${ROCM_ROOT}/bin/mirage\"\n+          config=\"${ROCM_ROOT}/share/rocjitsu/configs/gfx1250_mi455x.json\"\n+          if [ ! -f \"${config}\" ]; then\n+            config=\"${ROCM_ROOT}/share/rocjitsu/configs/gfx1250.json\"\n+          fi\n+          test -f \"${config}\"\n+          echo \"ROCJITSU_CONFIG=${config}\" >> \"$GITHUB_ENV\"\n+          echo \"ROCJITSU=${ROCM_ROOT}/bin/mirage run --in-process --config ${config} --\" >> \"$GITHUB_ENV\"\n+      - name: Install Triton\n+        shell: bash\n+        run: |\n+          pip uninstall -y triton pytorch-triton-rocm\n+          ccache --zero-stats\n+          pip install -r python/requirements.txt\n+          pip install -r python/test-requirements.txt pytest-timeout\n+          make dev-install\n+          pip install -e python/triton_kernels\n+      - name: Print ccache stats\n+        run: ccache --print-stats\n+      - name: Check active target is gfx1250\n+        shell: bash\n+        run: $ROCJITSU python3 -c \"import triton; print(triton.runtime.driver.active.get_current_target())\"\n+      - name: Run Gluon tests on gfx1250-rocjitsu\n+        shell: bash\n+        run: |\n+          set -euo pipefail\n+          $ROCJITSU pytest --capture=tee-sys -rfs -n 64 --durations=20 \\\n+            third_party/amd/python/test/test_gluon_cdna5.py\n+          $ROCJITSU pytest --capture=tee-sys -rfs -n 16 --durations=20 \\\n+            third_party/amd/python/test/test_tdm_copy.py\n+          $ROCJITSU pytest --capture=tee-sys -rfs -n 64 --durations=20 \\\n+            python/test/gluon/test_frontend.py\n+          $ROCJITSU pytest --capture=tee-sys -rfs -n 64 --durations=20 \\\n+            python/test/gluon/test_fpsan.py\n+          $ROCJITSU pytest --capture=tee-sys -rfs -n 64 --durations=20 \\\n+            third_party/amd/python/examples/gluon/f16_gemm_cdna5.py\n+          $ROCJITSU pytest --capture=tee-sys -rfs -n 16 --durations=20 \\\n+            third_party/amd/python/examples/gluon/f16_gemm_streamk_cdna5.py\n+          $ROCJITSU pytest --capture=tee-sys -rfs -n 16 --durations=20 \\\n+            third_party/amd/python/examples/gluon/f16_fa_cdna5.py\n+          TRITON_DISABLE_LINE_INFO=0 $ROCJITSU pytest --capture=tee-sys -rfs -n 16 --durations=20 \\\n+            third_party/amd/python/examples/gluon/mxfp_fa_cdna5.py\n+      - name: Run Triton tests on gfx1250-rocjitsu\n+        shell: bash\n+        run: |\n+          set -euo pipefail\n+          k_runtime=\"not (test_device_assert or test_expect_zero_device_assert or test_sanitize_int or test_replenishing_process_pool_reuses_clean_processes or test_run_in_process_handles_large_exceptions)\"\n+          k_core=\"not (test_load_store_same_ptr or test_atomic_cas or (test_scan2d and shape365) or (test_scan2d and shape869) or (test_umulhi and int64) or (test_umulhi and uint64) or (test_scaled_dot and e2m1-e4m3))\"\n+          k_matmul=\"not (test_preshuffle_scale_mxfp_cdna4 or test_batched_mxfp or test_mxfp8_mxfp4_matmul or test_block_scale_fp4 or (test_simple_matmul and float64-float64))\"\n+          k_tdesc=\"not (tensor_descriptor_reduce or test_tensor_descriptor_padding or test_host_tensor_descriptor_round_f32_to_tf32)\"\n+\n+          k_all=\"$k_runtime and $k_core and $k_matmul and $k_tdesc\"\n+\n+          $ROCJITSU pytest --capture=tee-sys -rfs -n 64 --durations=20 -k \"$k_all\" -p no:forked \\\n+            --timeout=600 --timeout-method=thread \\\n+            python/test/unit/test_debug.py \\\n+            python/test/unit/runtime \\\n+            python/test/unit/language/test_core.py \\\n+            python/test/unit/language/test_matmul.py \\\n+            python/test/unit/language/test_tensor_descriptor.py \\\n+            python/triton_kernels/tests/test_topk.py::test_topk\n+          $ROCJITSU pytest --capture=tee-sys -rfs -n 64 --durations=20 \\\n+            third_party/amd/python/test/ \\\n+            --ignore=third_party/amd/python/test/test_address_sanitizer.py \\\n+            --ignore=third_party/amd/python/test/test_gluon_cdna5_consan.py \\\n+            --ignore=third_party/amd/python/test/test_pointer_optimization.py \\\n+            --ignore=third_party/amd/python/test/test_gluon_cdna5.py \\\n+            --ignore=third_party/amd/python/test/test_tdm_copy.py \\\n+            --ignore=third_party/amd/python/test/test_int8_dot_small_block_k.py\n+          $ROCJITSU pytest --capture=tee-sys -rfs -n 1 --durations=20 -p no:forked \\\n+            --timeout=300 --timeout-method=thread \\\n+            python/test/unit/language/test_pipeliner.py::test_scatter_pipeline\n+          moe_tests=(\n+            \"test_op[None-False-False-True-True-None-128-768-512-1024-batched-float16-float16-None-10-1-False-False-False-False-None-False-False-False-True-None]\"\n+            \"test_op[None-False-True-False-True-None-128-16-256-256-ragged-float8_e5m2-mxfloat4_e2m1-None-10-1-False-True-False-False-None-False-False-False-True-None]\"\n+            \"test_op[None-False-True-False-True-None-128-300-400-832-ragged-float8_e5m2-mxfloat4_e2m1-None-10-1-False-False-False-False-None-False-False-False-True-None]\"\n+            \"test_op[None-False-False-False-False-None-16-727-577-859-ragged-float16-float16-None-10-1-False-False-False-False-None-False-False-False-True-None]\"\n+          )\n+          moe_k_expr=\"$(printf '%s or ' \"${moe_tests[@]}\" | sed 's/ or $//')\"\n+          HSA_ENABLE_SDMA=0 $ROCJITSU pytest --capture=tee-sys -rfs -n 4 --durations=20 \\\n+            -k \"$moe_k_expr\" python/triton_kernels/tests/test_matmul.py\n+      - name: Clean up caches\n+        if: always()\n+        run: |\n+          rm -rf ~/.triton/cache\n+          rm -rf ~/.ccache\n"
+        }
+      ]
+    },
+    {
+      "sha": "7a047455997a5b8b6baba93c1418211c43e953c5",
+      "author": {
+        "name": "Joey Yu",
+        "email": "lyu@openai.com"
+      },
+      "date": "2026-09-23T07:46:46+08:00",
+      "message": "Fix FP4 TMA Alignment (#11914)\n\n## Summary\n\nUse physical storage width for Tensor Memory Accelerator (TMA) stride\nalignment. Packed FP4 uses `uint8` storage; using its logical 4-bit\nwidth incorrectly rejects a 16-byte row stride. Preserve gathered row\nindices for activation scales so values and scales use the same source\nrows.\n\nWithout preserving those indices, the H100 pointer-gather path pairs\n`X[gather[i]]` with `X_scale[i]`, producing numerical mismatches rather\nthan a TMA error (maximum relative error 0.9443 versus 0.02 allowed in\none case).\n\n[NVIDIA specifies `globalStrides` in bytes, with 16-byte alignment for\nordinary\nTMA.](https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__TENSOR__MEMORY.html)\n\n## Desired features\n\n- Accept packed FP4 tensors whose physical storage strides satisfy\nordinary TMA alignment.\n- Keep gathered activation values and their block/tensor scales on the\nsame source rows.\n\n## Validation\n\nTested on NVIDIA GB300 (copy below) and NVIDIA H100 (gathered-scale\npath) with Triton 3.8.0. The copy below is byte-exact and uses ordinary\nUINT8 TMA (`fp4_padded=False`). The old alignment expression returned\n`False`; the patched helper returned `True`. This copy does not validate\npadded FP4 or matmul.\n\nRun with `triton_kernels` from the checkout:\n\n```python\nimport torch\nimport triton\nimport triton.language as tl\nfrom triton_kernels.tensor import FP4, is_tma_compliant, make_tma, wrap_torch_tensor\n\n\n@triton.jit\ndef copy_packed(src, out):\n    tl.store(out + tl.arange(0, 32), src.load([0, 0]).reshape(32))\n\n\nstorage = torch.arange(32, dtype=torch.uint8, device=\"cuda\").reshape(2, 16)\npacked = wrap_torch_tensor(storage, dtype=FP4)\nout = torch.empty_like(storage)\nkernel = copy_packed[(1,)](make_tma(packed, [2, 32], \"dense\"), out)\n\n# checks\nassert torch.equal(out, storage)\nassert \"cp.async.bulk.tensor\" in kernel.asm[\"ptx\"]\nassert is_tma_compliant(packed)  # Fails before this change.\n```\n\n## Lines Changed\n\n| Type | Added | Removed | Net |\n|---|---:|---:|---:|\n| Tests | 0 | 0 | 0 |\n| Core Logic | 3 | 2 | 1 |\n| AutoGenerated | 0 | 0 | 0 |\n| Total | 3 | 2 | 1 |\n\n## Reviewers Guide\n\n- `python/triton_kernels/triton_kernels/tensor.py`: generic\nstride-alignment check only; no code movements.\n- `python/triton_kernels/triton_kernels/matmul_details/_p_matmul.py`:\npreserve gathered row indices for activation scales; no code movements.\n\n---------\n\nCo-authored-by: Joey Yu <234057141+lyu-oai@users.noreply.github.com>",
+      "parents": [
+        "cf542796f329f9c315039562ce7c7abac78c6a5d"
+      ],
+      "stats": {
+        "total_additions": 3,
+        "total_deletions": 2,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "python/triton_kernels/triton_kernels/matmul_details/_p_matmul.py",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 1,
+          "patch": "@@ -317,7 +317,8 @@ def _p_matmul(\n \n         XMxScalePtrs = None\n         if is_x_microscaled and stride_x_mx_z is not None: # x is mx but not using TMA\n-            offs_m = off_m + tl.arange(0, BLOCK_M)\n+            if X_TMA_MODE is not None:\n+                offs_m = off_m + tl.arange(0, BLOCK_M)\n             XMxScalePtrs = XMxScale + off_x_z.to(index_type) * stride_x_mx_z\n             if GatherIndx is None:\n                 XMxScalePtrs += slice_off_m * stride_x_mx_m"
+        },
+        {
+          "filename": "python/triton_kernels/triton_kernels/tensor.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -115,7 +115,7 @@ def is_tma_compliant(tensor):\n     except ValueError:\n         major_dim = -1\n     ndim = storage.data.ndim\n-    bitwidth = tensor.dtype.bitwidth\n+    bitwidth = storage.data.element_size() * 8\n     compliant = [strides[i] * bitwidth % 128 == 0 for i in range(ndim) if i != major_dim]\n     return all(compliant)\n \n"
+        }
+      ]
+    },
+    {
+      "sha": "cf542796f329f9c315039562ce7c7abac78c6a5d",
+      "author": {
+        "name": "peterbell10",
+        "email": "peterbell10@openai.com"
+      },
+      "date": "2026-09-23T07:13:33+08:00",
+      "message": "[NVIDIA] Canonicalize constant fdiv through an approximate reciprocal (#11901)\n\nCanonicalize FP32 `arith.divf(a, b)` with constant denominator\nmagnitudes in `[2^-126, 2^126]` to `a * tt.approx_divf(1.0, b)` on\nNVIDIA. Scalar and splat denominators use one scalar reciprocal; dense\nconstants are checked elementwise. Use `TargetInfoBase` to restrict the\nrewrite to CUDA and register it in both the standard and Gluon\ncanonicalizers.\n\nThe randomized regression compares raw result bits against\n`div.full.f32` with the same constant denominator. This checks\npreservation of the original constant-division behavior; PTXAS can use\ndifferent reciprocal approximations when the denominator is a runtime\nvalue.\n\n## Stack\n\nDepends on #11900. This PR targets `codex/approx-fdiv-op` so its diff\ncontains only the constant-division rewrite and its regression coverage.\n\n## Validation\n\nValidated on a Brix GB300 devbox after a native rebuild and source-hash\nverification:\n\n- All repository pre-commit checks passed.\n- 9 focused lit files passed, covering standard and Gluon\ncanonicalization, AMD exclusions, NVIDIA and AMD lowering, and FPSan.\n- 22 division GPU cases passed.\n- The randomized regression passed all 2,359,296 raw-bit comparisons:\n65,536 numerator encodings across 36 signed in-range constant\ndenominators, including both range endpoints.\n\nAMD was validated through IR tests; no AMD GPU runtime was used.",
+      "parents": [
+        "458129c97d3bfaaf055e5f29077f5099d1085388"
+      ],
+      "stats": {
+        "total_additions": 286,
+        "total_deletions": 2,
+        "files_changed": 5
+      },
+      "files": [
+        {
+          "filename": "include/triton/Dialect/TritonNvidiaGPU/IR/TritonNvidiaGPUDialect.td",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 0,
+          "patch": "@@ -30,6 +30,7 @@ def TritonNvidiaGPU_Dialect : Dialect {\n   let cppNamespace = \"::mlir::triton::nvidia_gpu\";\n \n   let hasOperationAttrVerify = 1;\n+  let hasCanonicalizer = 1;\n \n   let description = [{\n     Triton Nvidia GPU Dialect."
+        },
+        {
+          "filename": "lib/Dialect/Gluon/Transforms/Canonicalize.cpp",
+          "status": "modified",
+          "additions": 4,
+          "deletions": 0,
+          "patch": "@@ -50,6 +50,10 @@ void Canonicalize::runOnOperation() {\n            cf::ControlFlowDialect::getDialectNamespace()))\n     op.getCanonicalizationPatterns(patterns, ctx);\n \n+  // Include target-specific arithmetic canonicalizations.\n+  if (auto *dialect = ctx->getLoadedDialect<ttng::TritonNvidiaGPUDialect>())\n+    dialect->getCanonicalizationPatterns(patterns);\n+\n   // Populate select Triton canonicalization patterns. The important patterns to\n   // EXCLUDE are those that modify layouts, especially `ConvertLayoutOp`\n   // patterns."
+        },
+        {
+          "filename": "lib/Dialect/TritonNvidiaGPU/IR/Dialect.cpp",
+          "status": "modified",
+          "additions": 56,
+          "deletions": 0,
+          "patch": "@@ -29,8 +29,12 @@\n #include <numeric>\n \n #include \"mlir/IR/DialectImplementation.h\"\n+#include \"mlir/IR/Matchers.h\"\n #include \"mlir/IR/OpImplementation.h\"\n+#include \"mlir/IR/PatternMatch.h\"\n+#include \"mlir/IR/TypeUtilities.h\"\n #include \"triton/Analysis/Utility.h\"\n+#include \"triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h\"\n #include \"triton/Dialect/Triton/IR/Interfaces.h\"\n #include \"triton/Dialect/TritonGPU/IR/Dialect.h\"\n #include \"triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h\"\n@@ -681,6 +685,53 @@ public:\n     return OpAsmDialectInterface::getAlias(attr, os);\n   }\n };\n+\n+struct DivFByConstant : public OpRewritePattern<arith::DivFOp> {\n+  using OpRewritePattern::OpRewritePattern;\n+\n+  LogicalResult matchAndRewrite(arith::DivFOp op,\n+                                PatternRewriter &rewriter) const override {\n+    if (!isa<Float32Type, RankedTensorType>(op.getType()) ||\n+        !getElementTypeOrSelf(op.getType()).isF32())\n+      return failure();\n+\n+    auto targetInfo =\n+        triton::TargetInfoBase::fromModuleOp(op->getParentOfType<ModuleOp>());\n+    if (!targetInfo || !targetInfo->isCuda())\n+      return failure();\n+\n+    // This range keeps both the denominator and its reciprocal normal.\n+    auto inRange = [](APFloat value) {\n+      value.clearSign();\n+      return value >= APFloat(0x1p-126f) && value <= APFloat(0x1p126f);\n+    };\n+    APFloat denominator(0.0f);\n+    DenseFPElementsAttr denominators;\n+    Value divisor = op.getRhs();\n+    if (matchPattern(op.getRhs(), m_ConstantFloat(&denominator))) {\n+      if (!inRange(denominator))\n+        return failure();\n+      if (isa<RankedTensorType>(op.getType()))\n+        divisor = arith::ConstantOp::create(\n+            rewriter, op.getLoc(),\n+            rewriter.getFloatAttr(rewriter.getF32Type(), denominator));\n+    } else if (!matchPattern(op.getRhs(), m_Constant(&denominators)) ||\n+               !llvm::all_of(denominators.getValues<APFloat>(), inRange)) {\n+      return failure();\n+    }\n+\n+    auto one = arith::ConstantOp::create(\n+        rewriter, op.getLoc(), rewriter.getOneAttr(divisor.getType()));\n+    Value reciprocal = triton::ApproxDivFOp::create(\n+        rewriter, op.getLoc(), divisor.getType(), one, divisor);\n+    if (reciprocal.getType() != op.getType())\n+      reciprocal = triton::SplatOp::create(rewriter, op.getLoc(), op.getType(),\n+                                           reciprocal);\n+    rewriter.replaceOpWithNewOp<arith::MulFOp>(op, op.getLhs(), reciprocal);\n+    return success();\n+  }\n+};\n+\n } // namespace\n \n //===----------------------------------------------------------------------===//\n@@ -704,6 +755,11 @@ void TritonNvidiaGPUDialect::initialize() {\n   addInterfaces<TritonInlinerInterface>();\n }\n \n+void TritonNvidiaGPUDialect::getCanonicalizationPatterns(\n+    RewritePatternSet &patterns) const {\n+  patterns.add<DivFByConstant>(getContext());\n+}\n+\n // verify TritonNvidiaGPU ops\n LogicalResult\n TritonNvidiaGPUDialect::verifyOperationAttribute(Operation *op,"
+        },
+        {
+          "filename": "python/test/unit/language/test_core.py",
+          "status": "modified",
+          "additions": 98,
+          "deletions": 0,
+          "patch": "@@ -1283,6 +1283,104 @@ def test_fdiv_approx(approx, reciprocal, device):\n         assert \"llvm.amdgcn.fdiv.fast\" in compiled.asm[\"llir\"]\n \n \n+@pytest.mark.interpreter\n+@pytest.mark.parametrize(\"denominator\", [3.0, -3.0, 2.0**-126, -(2.0**-126), 2.0**126, -(2.0**126)])\n+@pytest.mark.parametrize(\"ieee_rounding\", [False, True])\n+def test_fdiv_constant_in_range(denominator, ieee_rounding, device):\n+\n+    @triton.jit\n+    def kernel(X, Y, DENOMINATOR: tl.constexpr, IEEE: tl.constexpr, BLOCK: tl.constexpr):\n+        offsets = tl.arange(0, BLOCK)\n+        x = tl.load(X + offsets)\n+        if IEEE:\n+            y = tl.fdiv(x, DENOMINATOR, ieee_rounding=True)\n+        else:\n+            y = x / DENOMINATOR\n+        tl.store(Y + offsets, y)\n+\n+    x = RandomState(0).uniform(-2, 2, 1024).astype(np.float32)\n+    x[:8] = [\n+        0.0, -0.0, np.inf, -np.inf, np.nan,\n+        np.finfo(np.float32).tiny, -np.finfo(np.float32).tiny,\n+        np.nextafter(np.float32(0), np.float32(1))\n+    ]\n+    x_tri = to_triton(x, device=device)\n+    y_tri = to_triton(np.empty_like(x), device=device)\n+    compiled = kernel[(1, )](x_tri, y_tri, denominator, ieee_rounding, x.size)\n+    expected = x / np.float32(denominator)\n+    maxulp = 0 if ieee_rounding else 2\n+    np.testing.assert_array_max_ulp(to_numpy(y_tri), expected, maxulp=maxulp)\n+    if not is_interpreter():\n+        if is_cuda():\n+            assert (\"div.rn.f32\" if ieee_rounding else \"div.approx.f32\") in compiled.asm[\"ptx\"]\n+            if not ieee_rounding:\n+                assert re.search(r\"tt\\.approx_divf [^\\n]* : f32\", compiled.asm[\"ttgir\"])\n+                assert compiled.asm[\"ptx\"].count(\"div.approx.f32\") == 1\n+        elif not ieee_rounding:\n+            assert \"arith.divf\" in compiled.asm[\"ttgir\"]\n+\n+\n+@pytest.mark.skipif(not is_cuda(), reason=\"Requires NVIDIA division lowering\")\n+def test_fdiv_constant_matches_div_full(device):\n+\n+    @triton.jit\n+    def kernel(X, Z, DENOMINATOR: tl.constexpr, REFERENCE: tl.constexpr, BLOCK: tl.constexpr):\n+        offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)\n+        x = tl.load(X + offsets).to(tl.float32, bitcast=True)\n+        y = tl.full((), DENOMINATOR, tl.float32)\n+        if REFERENCE:\n+            result = tl.inline_asm_elementwise(\"div.full.f32 $0, $1, $2;\", \"=f,f,f\", [x, y], dtype=tl.float32,\n+                                               is_pure=True, pack=1)\n+        else:\n+            result = x / y\n+        tl.store(Z + offsets, result.to(tl.uint32, bitcast=True))\n+\n+    rng = RandomState(0)\n+    # Sample the full FP32 encoding range, including subnormals and NaN payloads.\n+    x_bits = rng.randint(0, 2**32, size=2**16, dtype=np.uint32)\n+    x_bits[:16] = [\n+        0x00000000,\n+        0x80000000,\n+        0x00000001,\n+        0x80000001,\n+        0x007FFFFF,\n+        0x807FFFFF,\n+        0x00800000,\n+        0x80800000,\n+        0x7F7FFFFF,\n+        0xFF7FFFFF,\n+        0x7F800000,\n+        0xFF800000,\n+        0x7FC00000,\n+        0xFFC00000,\n+        0x7F800001,\n+        0xFF800001,\n+    ]\n+    # Positive FP32 encodings are ordered by value. Sample the rewrite's\n+    # denominator range [2**-126, 2**126], including both endpoints and signs.\n+    magnitudes = np.concatenate((\n+        rng.randint(0x00800000, 0x7E800001, size=16, dtype=np.uint32),\n+        np.array([0x00800000, 0x7E800000], dtype=np.uint32),\n+    ))\n+    denominators = np.concatenate((magnitudes, magnitudes | np.uint32(0x80000000)))\n+    x_tri = to_triton(x_bits, device=device)\n+    constant_bits = to_triton(np.empty_like(x_bits), device=device)\n+    reference_bits = to_triton(np.empty_like(x_bits), device=device)\n+    grid = (triton.cdiv(x_bits.size, 1024), )\n+    for denominator_bits in denominators.tolist():\n+        y_bits = np.array([denominator_bits], dtype=np.uint32)\n+        denominator = y_bits.view(np.float32).item()\n+        # Compare separate specializations against the original constant\n+        # div.full: PTXAS can use different reciprocals for runtime denominators.\n+        constant = kernel[grid](x_tri, constant_bits, denominator, False, BLOCK=1024)\n+        reference = kernel[grid](x_tri, reference_bits, denominator, True, BLOCK=1024)\n+        assert re.search(r\"tt\\.approx_divf [^\\n]* : f32\", constant.asm[\"ttgir\"])\n+        assert \"div.approx.f32\" in constant.asm[\"ptx\"]\n+        assert \"div.full.f32\" in reference.asm[\"ptx\"]\n+        np.testing.assert_array_equal(to_numpy(constant_bits), to_numpy(reference_bits),\n+                                      err_msg=f\"denominator bits: 0x{denominator_bits:08x}\")\n+\n+\n @pytest.mark.interpreter\n @pytest.mark.parametrize(\"dtype, ieee_rounding, error\", [\n     (\"float32\", True, \"approx and ieee_rounding cannot both be True\"),"
+        },
+        {
+          "filename": "test/TritonNvidiaGPU/canonicalize.mlir",
+          "status": "modified",
+          "additions": 127,
+          "deletions": 2,
+          "patch": "@@ -1,5 +1,5 @@\n-// RUN: triton-opt %s -canonicalize | FileCheck %s --check-prefixes=CHECK,BARRIER\n-// RUN: triton-opt %s -gluon-canonicalize | FileCheck %s --check-prefix=BARRIER\n+// RUN: triton-opt %s -canonicalize | FileCheck %s --check-prefixes=CHECK,BARRIER,COMMON\n+// RUN: triton-opt %s -gluon-canonicalize | FileCheck %s --check-prefixes=BARRIER,COMMON\n \n #linear = #ttg.linear<{register = [[0, 1], [0, 2], [32, 0]], lane = [[1, 0], [2, 0], [4, 0], [8, 0], [16, 0]], warp = [[0, 0], [0, 0], [64, 0]], block = []}>\n #tmem_scales = #ttng.tensor_memory_scales_encoding<>\n@@ -115,3 +115,128 @@ tt.func @false_tmem_store_keeps_token(%value: tensor<128x128xf32, #data>, %mem:\n   tt.return %token : !ttg.async.token\n }\n }\n+\n+#div_layout = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>\n+module attributes {\"ttg.target\" = \"cuda:80\", \"ttg.num-warps\" = 4 : i32} {\n+// COMMON-LABEL: @fdiv_constant_in_range\n+// COMMON: %[[ONE:.*]] = arith.constant 1.000000e+00 : f32\n+// COMMON: %[[RECIP_MIN:.*]] = tt.approx_divf %[[ONE]], %{{.*}} : f32\n+// COMMON-NEXT: arith.mulf %arg0, %[[RECIP_MIN]] : f32\n+// COMMON: %[[RECIP_MAX:.*]] = tt.approx_divf %[[ONE]], %{{.*}} : f32\n+// COMMON-NEXT: arith.mulf %arg0, %[[RECIP_MAX]] : f32\n+// COMMON: %[[RECIP_NEG_MIN:.*]] = tt.approx_divf %[[ONE]], %{{.*}} : f32\n+// COMMON-NEXT: arith.mulf %arg0, %[[RECIP_NEG_MIN]] : f32\n+// COMMON: %[[RECIP_NEG_MAX:.*]] = tt.approx_divf %[[ONE]], %{{.*}} : f32\n+// COMMON-NEXT: arith.mulf %arg0, %[[RECIP_NEG_MAX]] : f32\n+// COMMON: %[[RECIP_THREE:.*]] = tt.approx_divf %[[ONE]], %{{.*}} : f32\n+// COMMON-NEXT: arith.mulf %arg0, %[[RECIP_THREE]] : f32\n+// COMMON: %[[RECIP_NEG_THREE:.*]] = tt.approx_divf %[[ONE]], %{{.*}} : f32\n+// COMMON-NEXT: arith.mulf %arg0, %[[RECIP_NEG_THREE]] : f32\n+// COMMON-NEXT: tt.return\n+tt.func @fdiv_constant_in_range(%x: f32) -> (f32, f32, f32, f32, f32, f32) {\n+  %min = arith.constant 0x00800000 : f32\n+  %max = arith.constant 0x7E800000 : f32\n+  %neg_min = arith.constant 0x80800000 : f32\n+  %neg_max = arith.constant 0xFE800000 : f32\n+  %three = arith.constant 3.0 : f32\n+  %neg_three = arith.constant -3.0 : f32\n+  %a = arith.divf %x, %min : f32\n+  %b = arith.divf %x, %max : f32\n+  %c = arith.divf %x, %neg_min : f32\n+  %d = arith.divf %x, %neg_max : f32\n+  %e = arith.divf %x, %three : f32\n+  %f = arith.divf %x, %neg_three : f32\n+  tt.return %a, %b, %c, %d, %e, %f : f32, f32, f32, f32, f32, f32\n+}\n+\n+// COMMON-LABEL: @fdiv_constant_out_of_range\n+// COMMON-COUNT-9: arith.divf\n+// COMMON-NEXT: tt.return\n+tt.func @fdiv_constant_out_of_range(%x: f32) -> (f32, f32, f32, f32, f32, f32, f32, f32, f32) {\n+  %below_min = arith.constant 0x007FFFFF : f32\n+  %above_max = arith.constant 0x7E800001 : f32\n+  %neg_below_min = arith.constant 0x807FFFFF : f32\n+  %neg_above_max = arith.constant 0xFE800001 : f32\n+  %zero = arith.constant 0.0 : f32\n+  %neg_zero = arith.constant -0.0 : f32\n+  %inf = arith.constant 0x7F800000 : f32\n+  %neg_inf = arith.constant 0xFF800000 : f32\n+  %nan = arith.constant 0x7FC00000 : f32\n+  %a = arith.divf %x, %below_min : f32\n+  %b = arith.divf %x, %above_max : f32\n+  %c = arith.divf %x, %neg_below_min : f32\n+  %d = arith.divf %x, %neg_above_max : f32\n+  %e = arith.divf %x, %zero : f32\n+  %f = arith.divf %x, %neg_zero : f32\n+  %g = arith.divf %x, %inf : f32\n+  %h = arith.divf %x, %neg_inf : f32\n+  %i = arith.divf %x, %nan : f32\n+  tt.return %a, %b, %c, %d, %e, %f, %g, %h, %i : f32, f32, f32, f32, f32, f32, f32, f32, f32\n+}\n+\n+// COMMON-LABEL: @fdiv_constant_tensor\n+// COMMON-DAG: %[[ONE:.*]] = arith.constant 1.000000e+00 : f32\n+// COMMON-DAG: %[[THREE:.*]] = arith.constant 3.000000e+00 : f32\n+// COMMON-DAG: %[[ONES:.*]] = arith.constant dense<1.000000e+00> : tensor<4xf32,\n+// COMMON: %[[SCALAR_RECIP:.*]] = tt.approx_divf %[[ONE]], %[[THREE]] : f32\n+// COMMON-NEXT: %[[SPLAT:.*]] = tt.splat %[[SCALAR_RECIP]] : f32 -> tensor<4xf32,\n+// COMMON-NEXT: %[[A:.*]] = arith.mulf %arg0, %[[SPLAT]] : tensor<4xf32,\n+// COMMON-NEXT: %[[TENSOR_RECIP:.*]] = tt.approx_divf %[[ONES]], %{{.*}} : tensor<4xf32,\n+// COMMON-NEXT: %[[B:.*]] = arith.mulf %arg0, %[[TENSOR_RECIP]] : tensor<4xf32,\n+// COMMON-NEXT: %[[C:.*]] = arith.divf\n+// COMMON-NEXT: tt.return %[[A]], %[[B]], %[[C]]\n+tt.func @fdiv_constant_tensor(%x: tensor<4xf32, #div_layout>) -> (tensor<4xf32, #div_layout>, tensor<4xf32, #div_layout>, tensor<4xf32, #div_layout>) {\n+  %splat = arith.constant dense<3.0> : tensor<4xf32, #div_layout>\n+  %in_range = arith.constant dense<[0x00800000, 0x7E800000, 0x80800000, 0xFE800000]> : tensor<4xf32, #div_layout>\n+  %out_of_range = arith.constant dense<[3.0, -3.0, 0.0, 4.0]> : tensor<4xf32, #div_layout>\n+  %a = arith.divf %x, %splat : tensor<4xf32, #div_layout>\n+  %b = arith.divf %x, %in_range : tensor<4xf32, #div_layout>\n+  %c = arith.divf %x, %out_of_range : tensor<4xf32, #div_layout>\n+  tt.return %a, %b, %c : tensor<4xf32, #div_layout>, tensor<4xf32, #div_layout>, tensor<4xf32, #div_layout>\n+}\n+\n+// COMMON-LABEL: @fdiv_runtime_denominator\n+// COMMON: arith.divf\n+tt.func @fdiv_runtime_denominator(%x: f32, %y: f32) -> f32 {\n+  %a = arith.divf %x, %y : f32\n+  tt.return %a : f32\n+}\n+\n+// COMMON-LABEL: @fdiv_constant_f64\n+// COMMON: arith.divf\n+tt.func @fdiv_constant_f64(%x: f64) -> f64 {\n+  %three = arith.constant 3.0 : f64\n+  %a = arith.divf %x, %three : f64\n+  tt.return %a : f64\n+}\n+\n+// COMMON-LABEL: @fdiv_constant_precise\n+// COMMON: tt.precise_divf\n+tt.func @fdiv_constant_precise(%x: f32) -> f32 {\n+  %three = arith.constant 3.0 : f32\n+  %a = tt.precise_divf %x, %three : f32\n+  tt.return %a : f32\n+}\n+}\n+\n+module attributes {\"ttg.target\" = \"hip:gfx942\"} {\n+// COMMON-LABEL: @fdiv_constant_amd\n+// COMMON: arith.divf\n+// COMMON-NEXT: tt.return\n+tt.func @fdiv_constant_amd(%x: f32) -> f32 {\n+  %three = arith.constant 3.0 : f32\n+  %a = arith.divf %x, %three : f32\n+  tt.return %a : f32\n+}\n+}\n+\n+module {\n+// COMMON-LABEL: @fdiv_constant_no_target\n+// COMMON: arith.divf\n+// COMMON-NEXT: tt.return\n+tt.func @fdiv_constant_no_target(%x: f32) -> f32 {\n+  %three = arith.constant 3.0 : f32\n+  %a = arith.divf %x, %three : f32\n+  tt.return %a : f32\n+}\n+}\n"
+        }
+      ]
+    },
+    {
+      "sha": "458129c97d3bfaaf055e5f29077f5099d1085388",
+      "author": {
+        "name": "Seungkyun Dan",
+        "email": "ekstmdrbs@gmail.com"
+      },
+      "date": "2026-09-23T07:09:09+08:00",
+      "message": "fix: add missing negation in WSDataPartition thenYieldArg check (#9800)\n\n## Summary\n\nFixes #9559\n\nThe `thenYieldArg` branch in `getBackwardSliceToPartition` (line 324)\nwas missing the `!` negation operator, causing inverted error handling\ncompared to all other call sites.\n\n## Bug\n\n```cpp\n// BEFORE (line 324) — returns false on SUCCESS (wrong)\nif (getBackwardSliceToPartition(thenYieldArg, partitionScheme, currentDim))\n    return false;\n\n// The else branch directly below already has the correct pattern:\nif (!getBackwardSliceToPartition(elseYieldArg, partitionScheme, currentDim))\n    return false;\n```\n\nAll other call sites in the same function use `if\n(!getBackwardSliceToPartition(...)) return false;` to propagate failure.\nThis was the only one without the negation, as confirmed by @htyu in the\nissue thread.\n\n## Change\n\nSingle-character fix — add `!` to match the consistent pattern across\nthe file.\nAdded a lit test with `scf.if` result feeding into a dot to cover this\npath.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n- Select one of the following.\n  - [ ] I have not added any `lit` tests.\n- [x] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\n    including the \"tests should be minimal\" section.\n\n---------\n\nCo-authored-by: peterbell10 <peterbell10@openai.com>",
+      "parents": [
+        "c0500c7b036c3092ef006def10067915eb02caf0"
+      ],
+      "stats": {
+        "total_additions": 54,
+        "total_deletions": 2,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "test/Hopper/WarpSpecialization/ws_data_partition.mlir",
+          "status": "modified",
+          "additions": 52,
+          "deletions": 0,
+          "patch": "@@ -154,3 +154,55 @@ module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32, ttg.targ\n     tt.return\n   }\n }\n+\n+// -----\n+\n+// Test that scf.if results are correctly partitioned when fed into a dot.\n+// This exercises the thenYieldArg/elseYieldArg paths in getBackwardSliceToPartition.\n+// CHECK-LABEL: @if_result_partition\n+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>\n+#blocked1 = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [1, 4], order = [1, 0]}>\n+#mma = #ttg.nvidia_mma<{versionMajor = 3, versionMinor = 0, warpsPerCTA = [4, 1], instrShape = [16, 256, 16]}>\n+#shared = #ttg.nvmma_shared<{swizzlingByteWidth = 128, transposed = false, elementBitWidth = 16}>\n+#smem = #ttg.shared_memory\n+module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32, ttg.target = \"cuda:90\", \"ttg.threads-per-warp\" = 32 : i32} {\n+  tt.func public @if_result_partition(%arg0: !tt.ptr<f16>, %arg1: !tt.ptr<f16>, %arg2: !tt.ptr<f16>, %cond: i1) {\n+    %cst = arith.constant {async_task_id = array<i32: 1, 2>} dense<0.000000e+00> : tensor<128x256xf32, #mma>\n+    %0 = tt.splat %arg0 {async_task_id = array<i32: 0>} : !tt.ptr<f16> -> tensor<128x64x!tt.ptr<f16>, #blocked>\n+    %1 = tt.splat %arg1 {async_task_id = array<i32: 0>} : !tt.ptr<f16> -> tensor<128x64x!tt.ptr<f16>, #blocked>\n+    // Each branch loads from a different pointer, preventing fold to select.\n+    // CHECK: scf.if {{.*}} -> (tensor<64x64xf16, #blocked>, tensor<64x64xf16, #blocked>)\n+    // CHECK:   tt.load {{.*}} : tensor<64x64x!tt.ptr<f16>, #blocked>\n+    // CHECK:   tt.load {{.*}} : tensor<64x64x!tt.ptr<f16>, #blocked>\n+    // CHECK:   scf.yield {{.*}} : tensor<64x64xf16, #blocked>, tensor<64x64xf16, #blocked>\n+    // CHECK: } else {\n+    // CHECK:   tt.load {{.*}} : tensor<64x64x!tt.ptr<f16>, #blocked>\n+    // CHECK:   tt.load {{.*}} : tensor<64x64x!tt.ptr<f16>, #blocked>\n+    // CHECK:   scf.yield {{.*}} : tensor<64x64xf16, #blocked>, tensor<64x64xf16, #blocked>\n+    %sel = scf.if %cond -> (tensor<128x64xf16, #blocked>) {\n+      %a = tt.load %0 {async_task_id = array<i32: 0>} : tensor<128x64x!tt.ptr<f16>, #blocked>\n+      scf.yield {async_task_id = array<i32: 0>} %a : tensor<128x64xf16, #blocked>\n+    } else {\n+      %b = tt.load %1 {async_task_id = array<i32: 0>} : tensor<128x64x!tt.ptr<f16>, #blocked>\n+      scf.yield {async_task_id = array<i32: 0>} %b : tensor<128x64xf16, #blocked>\n+    } {async_task_id = array<i32: 0>}\n+    // CHECK: ttg.local_alloc {{.*}} : (tensor<64x64xf16, #blocked>) -> !ttg.memdesc<64x64xf16, #shared, #smem>\n+    // CHECK: ttg.local_alloc {{.*}} : (tensor<64x64xf16, #blocked>) -> !ttg.memdesc<64x64xf16, #shared, #smem>\n+    %lhs = ttg.local_alloc %sel {async_task_id = array<i32: 1, 2>} : (tensor<128x64xf16, #blocked>) -> !ttg.memdesc<128x64xf16, #shared, #smem>\n+    // CHECK: tt.load {{.*}} : tensor<64x256x!tt.ptr<f16>, #blocked1>\n+    %2 = tt.splat %arg2 {async_task_id = array<i32: 0>} : !tt.ptr<f16> -> tensor<64x256x!tt.ptr<f16>, #blocked1>\n+    %rhs_val = tt.load %2 {async_task_id = array<i32: 0>} : tensor<64x256x!tt.ptr<f16>, #blocked1>\n+    // CHECK: ttg.local_alloc {{.*}} : (tensor<64x256xf16, #blocked1>) -> !ttg.memdesc<64x256xf16, #shared, #smem>\n+    %rhs = ttg.local_alloc %rhs_val {async_task_id = array<i32: 1, 2>} : (tensor<64x256xf16, #blocked1>) -> !ttg.memdesc<64x256xf16, #shared, #smem>\n+    // CHECK: ttng.warp_group_dot {{.*}} : !ttg.memdesc<64x64xf16, #shared, #smem> * !ttg.memdesc<64x256xf16, #shared, #smem> -> tensor<64x256xf32, #mma>\n+    // CHECK: ttng.warp_group_dot {{.*}} : !ttg.memdesc<64x64xf16, #shared, #smem> * !ttg.memdesc<64x256xf16, #shared, #smem> -> tensor<64x256xf32, #mma>\n+    %dot = ttng.warp_group_dot %lhs, %rhs, %cst {async_task_id = array<i32: 1, 2>, inputPrecision = 0 : i32} : !ttg.memdesc<128x64xf16, #shared, #smem> * !ttg.memdesc<64x256xf16, #shared, #smem> -> tensor<128x256xf32, #mma>\n+    %trunc = arith.truncf %dot {async_task_id = array<i32: 1, 2>} : tensor<128x256xf32, #mma> to tensor<128x256xf16, #mma>\n+    %cvt = ttg.convert_layout %trunc {async_task_id = array<i32: 1, 2>} : tensor<128x256xf16, #mma> -> tensor<128x256xf16, #blocked1>\n+    // CHECK: tt.store {{.*}} : tensor<64x256x!tt.ptr<f16>, #blocked1>\n+    // CHECK: tt.store {{.*}} : tensor<64x256x!tt.ptr<f16>, #blocked1>\n+    %3 = tt.splat %arg2 {async_task_id = array<i32: 1, 2>} : !tt.ptr<f16> -> tensor<128x256x!tt.ptr<f16>, #blocked1>\n+    tt.store %3, %cvt {async_task_id = array<i32: 1, 2>} : tensor<128x256x!tt.ptr<f16>, #blocked1>\n+    tt.return\n+  }\n+}"
+        },
+        {
+          "filename": "third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.cpp",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 2,
+          "patch": "@@ -320,8 +320,8 @@ static bool getBackwardSliceToPartition(Value v,\n       partitionScheme.opPartitionDims[ifOp.elseYield()] = currentDim;\n       auto thenYieldArg = ifOp.thenYield().getOperand(resultIndex);\n       auto elseYieldArg = ifOp.elseYield().getOperand(resultIndex);\n-      if (getBackwardSliceToPartition(thenYieldArg, partitionScheme,\n-                                      currentDim))\n+      if (!getBackwardSliceToPartition(thenYieldArg, partitionScheme,\n+                                       currentDim))\n         return false;\n       if (!getBackwardSliceToPartition(elseYieldArg, partitionScheme,\n                                        currentDim))\n"
+        }
+      ]
+    },
+    {
+      "sha": "c0500c7b036c3092ef006def10067915eb02caf0",
+      "author": {
+        "name": "peterbell10",
+        "email": "peterbell10@openai.com"
+      },
+      "date": "2026-09-23T06:12:32+08:00",
+      "message": "Revert \"[BACKEND] Use CUDA 13 ptxas for Hopper\" (#11915)\n\nReverts triton-lang/triton#11854",
+      "parents": [
+        "edeea66c807c821830bedf1d0854343f93c6df48"
+      ],
+      "stats": {
+        "total_additions": 7,
+        "total_deletions": 10,
+        "files_changed": 1
+      },
+      "files": [
+        {
+          "filename": "third_party/nvidia/backend/compiler.py",
+          "status": "modified",
+          "additions": 7,
+          "deletions": 10,
+          "patch": "@@ -38,19 +38,16 @@ def min_dot_size(target: GPUTarget):\n     return check_dot_compatibility\n \n \n-def get_ptxas_for_arch(arch: int) -> knobs.NvidiaTool:\n-    if arch < 90:\n-        return knobs.nvidia.ptxas\n-    # The ptxas-blackwell name is misleading; keep it until legacy ptxas is removed.\n-    return knobs.nvidia.ptxas_blackwell\n+def get_ptxas(arch: int) -> knobs.NvidiaTool:\n+    return knobs.nvidia.ptxas_blackwell if arch >= 100 else knobs.nvidia.ptxas\n \n \n @functools.lru_cache()\n-def get_ptxas_version_for_arch(arch: int = 80):\n+def get_ptxas_version(arch: int = 80):\n     mock_ver = knobs.nvidia.mock_ptx_version\n     if mock_ver is not None:\n         return mock_ver  # This is not really a version of ptxas, but it is good enough for testing\n-    version = subprocess.check_output([get_ptxas_for_arch(arch).path, \"--version\"]).decode(\"utf-8\")\n+    version = subprocess.check_output([get_ptxas(arch).path, \"--version\"]).decode(\"utf-8\")\n     return version\n \n \n@@ -80,7 +77,7 @@ def ptx_get_version(cuda_version: str) -> int:\n def get_ptx_version_from_options(options, arch: int):\n     ptx_version = options.ptx_version\n     if ptx_version is None:\n-        cuda_version = get_ptxas_for_arch(arch).version\n+        cuda_version = get_ptxas(arch).version\n         ptx_version = ptx_get_version(cuda_version)\n     return ptx_version\n \n@@ -576,7 +573,7 @@ class CUDABackend(BaseBackend):\n         return ret\n \n     def make_cubin(self, src, metadata, opt, capability):\n-        ptxas = get_ptxas_for_arch(self.target.arch).path\n+        ptxas = get_ptxas(self.target.arch).path\n         with tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.ptx') as fsrc, \\\n             tempfile.NamedTemporaryFile(delete=False, mode='r', suffix='.log') as flog:\n             fsrc.write(src)\n@@ -675,5 +672,5 @@ please share the reproducer above with Triton project.\n \n     @functools.lru_cache()\n     def hash(self):\n-        version = get_ptxas_version_for_arch(self.target.arch)\n+        version = get_ptxas_version(self.target.arch)\n         return f'{version}-{self.target.arch}'\n"
+        }
+      ]
+    },
+    {
+      "sha": "edeea66c807c821830bedf1d0854343f93c6df48",
+      "author": {
+        "name": "William G Hatch",
+        "email": "william@hatch.uno"
+      },
+      "date": "2026-09-23T04:57:14+08:00",
+      "message": "[CI][AMD] Record runner environment diagnostics (#11802)\n\nGPU failures can depend on host kernel, KFD, firmware, things that are\nnot defined by the container image and are not currently captured in CI\nlogs. This adds a best-effort runner inspection step immediately after\ncheckout to record this environment at the start of AMD integration jobs\nso failures can be investigated from the original runner state instead\nof having to guess at it while trying to reproduce errors.",
+      "parents": [
+        "b288fba760ff46ba266d442cce778133b0231d71"
+      ],
+      "stats": {
+        "total_additions": 59,
+        "total_deletions": 0,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": ".github/amd-ci/runner-diagnostics.sh",
+          "status": "added",
+          "additions": 53,
+          "deletions": 0,
+          "patch": "new file mode 100755\n@@ -0,0 +1,53 @@\n+#!/usr/bin/env bash\n+\n+set +e\n+shopt -s nullglob\n+\n+run() {\n+  echo \"+ $*\"\n+  \"$@\" 2>&1 || true\n+}\n+\n+echo \"CI_CONTAINER_IMAGE=$CI_CONTAINER_IMAGE\"\n+echo \"CI_RUNNER_LABELS=$CI_RUNNER_LABELS\"\n+for name in HIP_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES HSA_OVERRIDE_GFX_VERSION; do\n+  echo \"$name=${!name-<unset>}\"\n+done\n+run uname -a\n+run cat /proc/cmdline\n+run id\n+run ls -ldn /dev/kfd /dev/dri\n+render_nodes=(/dev/dri/renderD*)\n+echo \"DRM render nodes: ${#render_nodes[@]}\"\n+stat -c 'render node permissions: mode=%a uid=%u gid=%g' \"${render_nodes[@]}\" 2>/dev/null | sort -u\n+run cat /sys/module/amdgpu/version\n+for parameter in sched_policy lockup_timeout debug_mask ip_block_mask; do\n+  run cat \"/sys/module/amdgpu/parameters/$parameter\"\n+done\n+\n+for attribute in product_name product_number vbios_version; do\n+  echo \"$attribute:\"\n+  grep -h . /sys/class/drm/card*/device/\"$attribute\" 2>/dev/null | sort -u\n+done\n+echo \"KFD topology:\"\n+for node in /sys/class/kfd/kfd/topology/nodes/*; do\n+  [[ -r \"$node/gpu_id\" && \"$(<\"$node/gpu_id\")\" != 0 ]] || continue\n+  grep -E '^(vendor_id|device_id|simd_count|max_waves_per_simd|fw_version) ' \"$node/properties\"\n+done | sort -u\n+\n+if command -v rocprofv3-avail >/dev/null 2>&1; then\n+  pc_sampling_output=$(ROCPROFILER_LOG_LEVEL=info rocprofv3-avail info --pc-sampling 2>&1)\n+  status=$?\n+  echo \"rocprofv3-avail exit status: $status\"\n+  if ((status == 0)); then\n+    echo \"PC-sampling agents: $(grep -c '^GPU' <<<\"$pc_sampling_output\")\"\n+    grep -Ei 'PC sampling unavailable|failed|incompatible|not support|Method|Unit|Min_Interval|Max_Interval|Flags' \\\n+      <<<\"$pc_sampling_output\" | sort -u\n+  else\n+    echo \"$pc_sampling_output\"\n+  fi\n+else\n+  echo \"rocprofv3-avail: unavailable\"\n+fi\n+\n+exit 0"
+        },
+        {
+          "filename": ".github/workflows/integration-tests-amd.yml",
+          "status": "modified",
+          "additions": 6,
+          "deletions": 0,
+          "patch": "@@ -70,6 +70,12 @@ jobs:\n         uses: actions/checkout@v6\n         with:\n           submodules: 'true'\n+      - name: Inspect AMD runner\n+        env:\n+          CI_CONTAINER_IMAGE: ${{ matrix.image }}\n+          CI_RUNNER_LABELS: ${{ join(matrix.runner, ', ') }}\n+        run: bash .github/amd-ci/runner-diagnostics.sh\n+        shell: bash\n       - name: Compute cache keys\n         id: cache-key\n         run: |\n"
+        }
+      ]
+    },
+    {
+      "sha": "b288fba760ff46ba266d442cce778133b0231d71",
+      "author": {
+        "name": "Harrison Hao",
+        "email": "57025411+harrisonGPU@users.noreply.github.com"
+      },
+      "date": "2026-09-23T04:51:48+08:00",
+      "message": "[BACKEND] Fix  abstract signature to match its overrides (#11515)\n\n`BaseBackend.add_stages` was declared as `add_stages(self, stages,\noptions)`,\nmissing the `language` parameter. Every concrete backend already\noverrides it\nwith `language` included, e.g.:\n```\n  third_party/amd/backend/compiler.py:\n      def add_stages(self, stages, options, language):\n\n  third_party/nvidia/backend/compiler.py:\n      def add_stages(self, stages, options, language):\n```\nand the call site in `python/triton/compiler/compiler.py` passes it:\n```\n  backend.add_stages(stages, options, src.language)\n```\nso the abstract method's signature was simply stale. This causes static\ntype checkers (Pyright/Pylance) to flag every backend override as\n\"incompatible with base class\" due to a positional parameter count\nmismatch. Add the missing `language: Language` parameter to the abstract\ndeclaration so it matches actual usage and all existing overrides.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [ ] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n- [x] This PR does not need a test because `it only corrects a stale\ntype\n    annotation on an abstract method to match its existing overrides\n    (amd/nvidia/vulkan backends already implement it with the extra\n    parameter); there is no runtime behavior change to test.`\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)",
+      "parents": [
+        "0e752ba9ac274e8675689c37eac6073fd0b2099d"
+      ],
+      "stats": {
+        "total_additions": 2,
+        "total_deletions": 1,
+        "files_changed": 1
+      },
+      "files": [
+        {
+          "filename": "python/triton/backends/compiler.py",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 1,
+          "patch": "@@ -46,7 +46,7 @@ class BaseBackend(metaclass=ABCMeta):\n         raise NotImplementedError\n \n     @abstractmethod\n-    def add_stages(self, stages: dict, options: object) -> None:\n+    def add_stages(self, stages: dict, options: object, language: Language) -> None:\n         \"\"\"\n         Populates `stages` dictionary with entries of the form:\n         ir_name [str] => Function[(src: str, metadata: dict) -> str|bytes]\n@@ -54,6 +54,7 @@ class BaseBackend(metaclass=ABCMeta):\n         Stages will be run sequentially (in inseriton order) and can communicate using `metadata`.\n         All stages are expected to return a `str` object, except for the last stage which returns\n         a `bytes` object for execution by the launcher.\n+        `language` is the frontend that produced `src` (e.g. `Language.TRITON` or `Language.GLUON`).\n         \"\"\"\n         raise NotImplementedError\n \n"
+        }
+      ]
+    },
+    {
+      "sha": "0e752ba9ac274e8675689c37eac6073fd0b2099d",
+      "author": {
+        "name": "Lei Zhang",
+        "email": "antiagainst@gmail.com"
+      },
+      "date": "2026-09-23T04:35:40+08:00",
+      "message": "[AMD] build AMD CodeGen LLVM @ 9e5edb7ed944 (#11912)",
+      "parents": [
+        "a9eedb6c30ff9a00cf224eb6ad3ba6f0288a0185"
+      ],
+      "stats": {
+        "total_additions": 2,
+        "total_deletions": 2,
+        "files_changed": 1
+      },
+      "files": [
+        {
+          "filename": "cmake/amd-llvm-build-info.json",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 2,
+          "patch": "@@ -1,5 +1,5 @@\n {\n-  \"llvm_hash\": \"941a04e69ee8fe4c7a162b2f1e215aa8df867534\",\n-  \"repository\": \"llvm/llvm-project\",\n+  \"llvm_hash\": \"9e5edb7ed9446beebf545532e74fb0af29682dec\",\n+  \"repository\": \"triton-lang/llvm-project\",\n   \"build_number\": 1\n }\n"
+        }
+      ]
+    },
+    {
+      "sha": "a9eedb6c30ff9a00cf224eb6ad3ba6f0288a0185",
+      "author": {
+        "name": "peterbell10",
+        "email": "peterbell10@openai.com"
+      },
+      "date": "2026-09-23T03:15:12+08:00",
+      "message": "[IR] Add ApproxDivFOp and an explicit approximate fdiv mode (#11900)\n\nAdd `tt.approx_divf` (`ApproxDivFOp`) and expose it through\n`tl.fdiv(..., approx=True)` for FP32 scalars and tensors. NVIDIA lowers\nit to `div.approx.f32`; AMD lowers it to `llvm.amdgcn.fdiv.fast`. The\nfrontend rejects unsupported types and combining approximate division\nwith IEEE rounding.\n\nInclude Triton-to-GPU conversion, interpreter and FPSan support, plus\nfrontend and backend regression coverage.\n\n## Stack\n\nThis PR is standalone and targets `main`. The NVIDIA constant-division\nrewrite is a separate follow-up in #11901.\n\n## Validation\n\nValidated the standalone op commit on a Brix GB300 devbox:\n\n- Native rebuild and all repository pre-commit checks passed.\n- 3 focused lit files passed: NVIDIA lowering, AMD lowering, and FPSan.\n- 9 GPU cases, 4 Gluon frontend cases, and 6 interpreter cases passed.\n\nAMD was validated through lowering tests; no AMD GPU runtime was used.",
+      "parents": [
+        "280eeb00e69d2de82eba88814af66f1b5b336d28"
+      ],
+      "stats": {
+        "total_additions": 237,
+        "total_deletions": 21,
+        "files_changed": 14
+      },
+      "files": [
+        {
+          "filename": "include/triton/Dialect/Triton/IR/TritonOps.td",
+          "status": "modified",
+          "additions": 21,
+          "deletions": 0,
+          "patch": "@@ -174,6 +174,27 @@ def TT_PreciseDivFOp : TT_Op<\"precise_divf\", [Elementwise,\n     let assemblyFormat = \"$x `,` $y attr-dict `:` type($x)\";\n }\n \n+def TT_ApproxDivFOp\n+    : TT_Op<\"approx_divf\", [Elementwise, SameOperandsAndResultType, Pure]> {\n+  let summary = \"Approximate division for 32-bit floating point types\";\n+\n+  let description = [{\n+        Divides x by y with approximate accuracy. On NVIDIA, this lowers to\n+        div.approx.f32, with a maximum error of 2 ULP for denominators whose\n+        magnitude is in [2^-126, 2^126]. Results outside this range may differ\n+        from full-range division. On AMD, this lowers to llvm.amdgcn.fdiv.fast,\n+        with a maximum error of 2.5 ULP and no support for denormal inputs or\n+        results.\n+    }];\n+\n+  let arguments = (ins AnyTypeOf<[F32, RankedTensorOf<[F32]>]>:$x,\n+      AnyTypeOf<[F32, RankedTensorOf<[F32]>]>:$y);\n+\n+  let results = (outs AnyTypeOf<[F32, RankedTensorOf<[F32]>]>:$result);\n+\n+  let assemblyFormat = \"$x `,` $y attr-dict `:` type($x)\";\n+}\n+\n def TT_MulhiUIOp : TT_Op<\"mulhiui\", [Elementwise,\n                                      SameOperandsAndResultType,\n                                      Pure]> {"
+        },
+        {
+          "filename": "lib/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.cpp",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 0,
+          "patch": "@@ -457,6 +457,7 @@ void populateTritonPatterns(TritonGPUTypeConverter &typeConverter,\n       GenericOpPattern<triton::ClampFOp>,\n       GenericOpPattern<triton::PreciseSqrtOp>,\n       GenericOpPattern<triton::PreciseDivFOp>,\n+      GenericOpPattern<triton::ApproxDivFOp>,\n       GenericOpPattern<triton::MulhiUIOp>,\n       GenericOpPattern<triton::ElementwiseInlineAsmOp>,\n       TritonReducePattern,"
+        },
+        {
+          "filename": "lib/Dialect/TritonInstrument/Transforms/FpSanitizer.cpp",
+          "status": "modified",
+          "additions": 18,
+          "deletions": 16,
+          "patch": "@@ -1960,9 +1960,10 @@ struct DivFOpPattern : public OpRewritePattern<arith::DivFOp> {\n   }\n };\n \n-struct PreciseDivFOpPattern : public OpRewritePattern<tt::PreciseDivFOp> {\n-  using OpRewritePattern::OpRewritePattern;\n-  LogicalResult matchAndRewrite(tt::PreciseDivFOp op,\n+template <typename OpTy>\n+struct TritonDivFOpPattern : public OpRewritePattern<OpTy> {\n+  using OpRewritePattern<OpTy>::OpRewritePattern;\n+  LogicalResult matchAndRewrite(OpTy op,\n                                 PatternRewriter &rewriter) const override {\n     if (!isFloatLike(op.getType()))\n       return failure();\n@@ -3379,19 +3380,20 @@ public:\n     bool sharedClusterState = ttg::lookupNumCTAs(getOperation()) > 1;\n     TmemScratchManager scratch(sharedClusterState);\n     RewritePatternSet patterns(&getContext());\n-    patterns.add<BinaryFloatToIntPattern<arith::AddFOp, arith::AddIOp>,\n-                 BinaryFloatToIntPattern<arith::SubFOp, arith::SubIOp>,\n-                 BinaryFloatToIntPattern<arith::MulFOp, arith::MulIOp>,\n-                 BinaryFloatToIntPattern<arith::MinimumFOp, arith::MinSIOp>,\n-                 BinaryFloatToIntPattern<arith::MaximumFOp, arith::MaxSIOp>,\n-                 BinaryFloatToIntPattern<arith::MinNumFOp, arith::MinSIOp>,\n-                 BinaryFloatToIntPattern<arith::MaxNumFOp, arith::MaxSIOp>,\n-                 ClampFOpPattern, NegFOpPattern, DivFOpPattern,\n-                 PreciseDivFOpPattern, RemFOpPattern, FmaPattern, ExpOpPattern,\n-                 Exp2OpPattern, CosOpPattern, SinOpPattern, ExtFOpPattern,\n-                 TruncFOpPattern, FpToFpPattern, Fp4ToFpPattern,\n-                 PackedArithPattern, DotPattern, DotScaledPattern>(\n-        &getContext());\n+    patterns\n+        .add<BinaryFloatToIntPattern<arith::AddFOp, arith::AddIOp>,\n+             BinaryFloatToIntPattern<arith::SubFOp, arith::SubIOp>,\n+             BinaryFloatToIntPattern<arith::MulFOp, arith::MulIOp>,\n+             BinaryFloatToIntPattern<arith::MinimumFOp, arith::MinSIOp>,\n+             BinaryFloatToIntPattern<arith::MaximumFOp, arith::MaxSIOp>,\n+             BinaryFloatToIntPattern<arith::MinNumFOp, arith::MinSIOp>,\n+             BinaryFloatToIntPattern<arith::MaxNumFOp, arith::MaxSIOp>,\n+             ClampFOpPattern, NegFOpPattern, DivFOpPattern,\n+             TritonDivFOpPattern<tt::PreciseDivFOp>,\n+             TritonDivFOpPattern<tt::ApproxDivFOp>, RemFOpPattern, FmaPattern,\n+             ExpOpPattern, Exp2OpPattern, CosOpPattern, SinOpPattern,\n+             ExtFOpPattern, TruncFOpPattern, FpToFpPattern, Fp4ToFpPattern,\n+             PackedArithPattern, DotPattern, DotScaledPattern>(&getContext());\n     patterns.add<UnaryPattern<math::LogOp>>(&getContext(), UnaryOpId::Log);\n     patterns.add<UnaryPattern<math::Log2Op>>(&getContext(), UnaryOpId::Log2);\n     patterns.add<UnaryPattern<math::SqrtOp>>(&getContext(), UnaryOpId::Sqrt);"
+        },
+        {
+          "filename": "python/src/ir.cc",
+          "status": "modified",
+          "additions": 4,
+          "deletions": 0,
+          "patch": "@@ -1315,6 +1315,10 @@ void init_triton_ir(py::module_ &m) {\n            [](TritonOpBuilder &self, Value &lhs, Value &rhs) -> Value {\n              return self.create<arith::DivFOp>(lhs, rhs);\n            })\n+      .def(\"create_approx_divf\",\n+           [](TritonOpBuilder &self, Value &lhs, Value &rhs) -> Value {\n+             return self.create<ApproxDivFOp>(lhs, rhs);\n+           })\n       .def(\"create_frem\",\n            [](TritonOpBuilder &self, Value &lhs, Value &rhs) -> Value {\n              return self.create<arith::RemFOp>(lhs, rhs);"
+        },
+        {
+          "filename": "python/test/gluon/test_frontend.py",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 0,
+          "patch": "@@ -2138,6 +2138,7 @@ def math_kernel():\n     ttgl.floor(a)\n     ttgl.ceil(a)\n     ttgl.fma(a, b, c)\n+    ttgl.fdiv(a, b, approx=True)\n \n \n @pytest.mark.parametrize(\"target\", ALL_TARGETS)\n@@ -2175,6 +2176,7 @@ module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32, ttg.targ\n     %14 = math.floor %cst_0 : tensor<16x16xf32, #blocked>\n     %15 = math.ceil %cst_0 : tensor<16x16xf32, #blocked>\n     %16 = math.fma %cst_0, %cst_2, %cst_4 : tensor<16x16xf32, #blocked>\n+    %17 = tt.approx_divf %cst_0, %cst_2 : tensor<16x16xf32, #blocked>\n     tt.return\n   }\n }"
+        },
+        {
+          "filename": "python/test/unit/language/test_core.py",
+          "status": "modified",
+          "additions": 52,
+          "deletions": 0,
+          "patch": "@@ -1248,6 +1248,58 @@ def test_math_divide_op(expr, num_ctas, device):\n     _test_binary(dtype, dtype, expr, numpy_expr, device=device, num_ctas=num_ctas)\n \n \n+@pytest.mark.interpreter\n+@pytest.mark.parametrize(\"approx\", [False, True])\n+@pytest.mark.parametrize(\"reciprocal\", [False, True])\n+def test_fdiv_approx(approx, reciprocal, device):\n+\n+    @triton.jit\n+    def kernel(X, Y, Z, APPROX: tl.constexpr, RECIPROCAL: tl.constexpr, BLOCK: tl.constexpr):\n+        offsets = tl.arange(0, BLOCK)\n+        x = 1.0 if RECIPROCAL else tl.load(X + offsets)\n+        y = tl.load(Y + offsets)\n+        tl.store(Z + offsets, tl.fdiv(x, y, approx=APPROX))\n+\n+    rng = RandomState(0)\n+    # Keep inputs and results normal for both approximate backends.\n+    x = rng.uniform(0.5, 2, 128).astype(np.float32)\n+    x[::2] *= -1\n+    y = rng.uniform(0.5, 2, 128).astype(np.float32)\n+    y = np.ldexp(y, np.linspace(-125, 124, y.size).astype(np.int32))\n+    y[0], y[-1] = 2.0**-126, 2.0**126\n+    x[-1] = 1.0\n+    y[::2] *= -1\n+    x_tri = to_triton(x, device=device)\n+    y_tri = to_triton(y, device=device)\n+    z_tri = to_triton(np.empty_like(x), device=device)\n+    compiled = kernel[(1, )](x_tri, y_tri, z_tri, approx, reciprocal, x.size)\n+    expected = (np.float32(1.0) if reciprocal else x) / y\n+    # AMD's 2.5 ULP bound allows 3 ULP against a rounded reference.\n+    maxulp = 3 if approx and is_hip() else 2\n+    np.testing.assert_array_max_ulp(to_numpy(z_tri), expected, maxulp=maxulp)\n+    if is_cuda() and not is_interpreter():\n+        assert (\"div.approx.f32\" if approx else \"div.full.f32\") in compiled.asm[\"ptx\"]\n+    if approx and is_hip() and not is_interpreter():\n+        assert \"llvm.amdgcn.fdiv.fast\" in compiled.asm[\"llir\"]\n+\n+\n+@pytest.mark.interpreter\n+@pytest.mark.parametrize(\"dtype, ieee_rounding, error\", [\n+    (\"float32\", True, \"approx and ieee_rounding cannot both be True\"),\n+    (\"float64\", False, \"approx division requires float32 operands\"),\n+])\n+def test_fdiv_approx_invalid_mode(dtype, ieee_rounding, error, device):\n+\n+    @triton.jit\n+    def kernel(X, IEEE: tl.constexpr):\n+        x = tl.load(X)\n+        tl.store(X, tl.fdiv(x, x, ieee_rounding=IEEE, approx=True))\n+\n+    x = to_triton(np.ones(1, dtype=dtype), device=device)\n+    with pytest.raises((triton.CompilationError, InterpreterError), match=error):\n+        kernel[(1, )](x, ieee_rounding)\n+\n+\n # -------------\n # test precise math\n # -------------"
+        },
+        {
+          "filename": "python/triton/language/math.py",
+          "status": "modified",
+          "additions": 17,
+          "deletions": 3,
+          "patch": "@@ -192,12 +192,26 @@ def abs(x, _semantic=None):\n \n \n @core.builtin\n-@_add_math_2arg_docstr(\"fast division\")\n-def fdiv(x, y, ieee_rounding=False, _semantic=None):\n+def fdiv(x, y, ieee_rounding=False, approx=False, _semantic=None):\n+    \"\"\"\n+    Computes the element-wise division of :code:`x` by :code:`y`.\n+\n+    :param x: the numerator\n+    :param y: the denominator\n+    :param ieee_rounding: if True, use IEEE round-to-nearest division.\n+    :param approx: if True, allow approximate division for float32 operands.\n+        On NVIDIA, this uses ``div.approx.f32``, with a maximum error of 2 ULP\n+        for denominator magnitudes in [2**-126, 2**126]. Results outside this\n+        range may differ from full-range division. On AMD, this uses\n+        ``llvm.amdgcn.fdiv.fast``, with a maximum error of 2.5 ULP and no support\n+        for denormal inputs or results. Cannot be combined with\n+        ``ieee_rounding=True``.\n+    \"\"\"\n     ieee_rounding = core._unwrap_if_constexpr(ieee_rounding)\n+    approx = core._unwrap_if_constexpr(approx)\n     x = _semantic.to_tensor(x)\n     y = _semantic.to_tensor(y)\n-    return _semantic.fdiv(x, y, ieee_rounding)\n+    return _semantic.fdiv(x, y, ieee_rounding, approx)\n \n \n @core.builtin"
+        },
+        {
+          "filename": "python/triton/language/semantic.py",
+          "status": "modified",
+          "additions": 9,
+          "deletions": 2,
+          "patch": "@@ -326,13 +326,20 @@ class TritonSemantic(Generic[TensorTy]):\n                 return self.tensor(self.builder.create_udiv(input.handle, other.handle), input.type)\n         raise TypeError(f\"unexpected type {input_scalar_ty}\")\n \n-    def fdiv(self, input: TensorTy | numbers.Number, other: TensorTy | numbers.Number, ieee_rounding: bool) -> TensorTy:\n+    def fdiv(self, input: TensorTy | numbers.Number, other: TensorTy | numbers.Number, ieee_rounding: bool,\n+             approx: bool = False) -> TensorTy:\n+        if ieee_rounding and approx:\n+            raise ValueError(\"approx and ieee_rounding cannot both be True\")\n         input_scalar_ty = input.type.scalar\n         other_scalar_ty = other.type.scalar\n         if not input_scalar_ty.is_floating() or not other_scalar_ty.is_floating():\n             raise TypeError(\"both operands of fdiv must have floating scalar type\")\n         input, other = self.binary_op_type_checking_impl(input, other, False, False, False, True)\n-        if ieee_rounding:\n+        if approx:\n+            if not input.type.scalar.is_fp32():\n+                raise ValueError(\"approx division requires float32 operands\")\n+            ret = self.builder.create_approx_divf(input.handle, other.handle)\n+        elif ieee_rounding:\n             ret = self.builder.create_precise_divf(input.handle, other.handle)\n         else:\n             ret = self.builder.create_fdiv(input.handle, other.handle)"
+        },
+        {
+          "filename": "python/triton/runtime/interpreter.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 0,
+          "patch": "@@ -611,6 +611,7 @@ class InterpreterBuilder:\n     create_fneg = lambda self, input: self.unary_op(input, np.negative)\n     create_mul = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.multiply)\n     create_precise_divf = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.divide)\n+    create_approx_divf = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.divide)\n     create_sdiv = lambda self, lhs, rhs: self.create_idiv(lhs, rhs)\n     create_udiv = lambda self, lhs, rhs: self.create_idiv(lhs, rhs)\n     # LLVM has 'numpy.fmod', not 'numpy.remainder', semantics on integer remainders."
+        },
+        {
+          "filename": "test/Conversion/amd/math-denorm-handling.mlir",
+          "status": "modified",
+          "additions": 31,
+          "deletions": 0,
+          "patch": "@@ -94,3 +94,34 @@ module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 1 : i32, ttg.targ\n     tt.return\n   }\n }\n+\n+// -----\n+\n+module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 1 : i32, ttg.target = \"hip:gfx942\", \"ttg.threads-per-warp\" = 64 : i32} {\n+  tt.func public @test_divf_f32(%arg0: f32, %arg1: f32) {\n+    // COMMON-LABEL: test_divf_f32\n+    // COMMON: llvm.fdiv\n+    %0 = arith.divf %arg0, %arg1 : f32\n+    tt.return\n+  }\n+\n+  tt.func public @test_divf_approx_f32(%arg0: f32, %arg1: f32) {\n+    // COMMON-LABEL: test_divf_approx_f32\n+    // COMMON: llvm.call_intrinsic \"llvm.amdgcn.fdiv.fast\"\n+    %0 = tt.approx_divf %arg0, %arg1 : f32\n+    tt.return\n+  }\n+}\n+\n+// -----\n+\n+#blocked = #ttg.blocked<{sizePerThread = [2], threadsPerWarp = [64], warpsPerCTA = [1], order = [0]}>\n+module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 1 : i32, ttg.target = \"hip:gfx942\", \"ttg.threads-per-warp\" = 64 : i32} {\n+  tt.func public @test_rcp_approx_f32(%arg0: tensor<128xf32, #blocked>) {\n+    // COMMON-LABEL: test_rcp_approx_f32\n+    // COMMON-COUNT-2: llvm.call_intrinsic \"llvm.amdgcn.fdiv.fast\"\n+    %one = arith.constant dense<1.0> : tensor<128xf32, #blocked>\n+    %0 = tt.approx_divf %one, %arg0 : tensor<128xf32, #blocked>\n+    tt.return\n+  }\n+}"
+        },
+        {
+          "filename": "test/Conversion/tritongpu_to_ptx.mlir",
+          "status": "modified",
+          "additions": 61,
+          "deletions": 0,
+          "patch": "@@ -9,6 +9,67 @@\n #blocked = #ttg.blocked<{sizePerThread = [8], threadsPerWarp = [32], warpsPerCTA = [2], order = [0]}>\n #blocked_reduce = #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [1, 32], warpsPerCTA = [1, 2], order = [1, 0]}>\n module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 2 : i32, \"ttg.threads-per-warp\" = 32 : i32} {\n+  tt.func public @reciprocal_f32(%ptr: !tt.ptr<f32>, %arg: f32) {\n+    // CHECK-LABEL: reciprocal_f32(\n+    // CHECK: div.full.f32\n+    %one = arith.constant 1.0 : f32\n+    %result = arith.divf %one, %arg : f32\n+    tt.store %ptr, %result : !tt.ptr<f32>\n+    tt.return\n+  }\n+\n+  tt.func public @approx_reciprocal_tensor_f32(%ptr: tensor<256x!tt.ptr<f32>, #blocked>, %arg: tensor<256xf32, #blocked>) {\n+    // CHECK-LABEL: approx_reciprocal_tensor_f32(\n+    // CHECK-COUNT-8: div.approx.f32\n+    %one = arith.constant dense<1.0> : tensor<256xf32, #blocked>\n+    %result = tt.approx_divf %one, %arg : tensor<256xf32, #blocked>\n+    tt.store %ptr, %result : tensor<256x!tt.ptr<f32>, #blocked>\n+    tt.return\n+  }\n+\n+  tt.func public @divide_f32(%ptr: !tt.ptr<f32>, %lhs: f32, %rhs: f32) {\n+    // CHECK-LABEL: divide_f32(\n+    // CHECK: div.full.f32\n+    %result = arith.divf %lhs, %rhs : f32\n+    tt.store %ptr, %result : !tt.ptr<f32>\n+    tt.return\n+  }\n+\n+  tt.func public @approx_divide_f32(%ptr: !tt.ptr<f32>, %lhs: f32, %rhs: f32) {\n+    // CHECK-LABEL: approx_divide_f32(\n+    // CHECK: div.approx.f32\n+    %result = tt.approx_divf %lhs, %rhs : f32\n+    tt.store %ptr, %result : !tt.ptr<f32>\n+    tt.return\n+  }\n+\n+  tt.func public @approx_reciprocal_f32(%ptr: !tt.ptr<f32>, %arg: f32) {\n+    // CHECK-LABEL: approx_reciprocal_f32(\n+    // CHECK: div.approx.f32\n+    %one = arith.constant 1.0 : f32\n+    %result = tt.approx_divf %one, %arg : f32\n+    tt.store %ptr, %result : !tt.ptr<f32>\n+    tt.return\n+  }\n+\n+  tt.func public @reciprocal_f64(%ptr: !tt.ptr<f64>, %arg: f64) {\n+    // CHECK-LABEL: reciprocal_f64(\n+    // CHECK: div.rn.f64\n+    %one = arith.constant 1.0 : f64\n+    %result = arith.divf %one, %arg : f64\n+    tt.store %ptr, %result : !tt.ptr<f64>\n+    tt.return\n+  }\n+\n+  tt.func public @precise_reciprocal_f32(%ptr: !tt.ptr<f32>, %arg: f32) {\n+    // CHECK-LABEL: precise_reciprocal_f32(\n+    // CHECK: div.rn.f32\n+    %one = arith.constant 1.0 : f32\n+    %result = tt.precise_divf %one, %arg : f32\n+    tt.store %ptr, %result : !tt.ptr<f32>\n+    tt.return\n+  }\n+\n   tt.func public @add_bf16(%ptr: !tt.ptr<bf16> {tt.divisibility = 16 : i32}, %arg0: tensor<256xbf16, #blocked>, %arg1: tensor<256xbf16, #blocked>) {\n     // CHECK-LABEL: add_bf16\n     // SM80-COUNT-8: fma.rn.bf16"
+        },
+        {
+          "filename": "test/TritonGPU/fpsan.mlir",
+          "status": "modified",
+          "additions": 15,
+          "deletions": 0,
+          "patch": "@@ -595,6 +595,21 @@ module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32} {\n \n // -----\n \n+module {\n+  // CHECK-LABEL: @approx_div\n+  tt.func public @approx_div(%a: tensor<4xf32>, %b: tensor<4xf32>) -> tensor<4xf32> {\n+    // CHECK: tti.experimental_fpsan_embed\n+    // CHECK: arith.muli\n+    // CHECK: tti.experimental_fpsan_unembed\n+    // CHECK-NOT: tt.approx_divf\n+    // CHECK: tt.return\n+    %result = tt.approx_divf %a, %b : tensor<4xf32>\n+    tt.return %result : tensor<4xf32>\n+  }\n+}\n+\n+// -----\n+\n module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32} {\n   // CHECK-LABEL: @fma_op\n   tt.func public @fma_op(%a: tensor<4xf32>, %b: tensor<4xf32>, %c: tensor<4xf32>) -> tensor<4xf32> {"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUToLLVM/ElementwiseOpToLLVM.cpp",
+          "status": "modified",
+          "additions": 3,
+          "deletions": 0,
+          "patch": "@@ -19,6 +19,7 @@ using mlir::getElementTypeOrSelf;\n using mlir::triton::gpu::appendOrGetExternFuncOp;\n using mlir::triton::gpu::ElementwiseOpConversion;\n using mlir::triton::gpu::ElementwiseOpConversionBase;\n+using mlir::triton::gpu::ElementwiseToIntrinsicOpConversion;\n using mlir::triton::gpu::getFunctionType;\n using mlir::triton::gpu::MultipleOperandsRange;\n using triton::amdgpu::ISAFamily;\n@@ -486,6 +487,8 @@ void populateElementwiseOpToLLVMPatterns(\n       typeConverter, axisInfoAnalysis, benefit);\n   patterns.add<ElementwiseOpConversion<triton::PreciseDivFOp, LLVM::FDivOp>>(\n       typeConverter, axisInfoAnalysis, benefit);\n+  patterns.add<ElementwiseToIntrinsicOpConversion<triton::ApproxDivFOp>>(\n+      typeConverter, axisInfoAnalysis, \"llvm.amdgcn.fdiv.fast\", benefit);\n   patterns.add<ElementwiseOpConversion<triton::PreciseSqrtOp, LLVM::SqrtOp>>(\n       typeConverter, axisInfoAnalysis, benefit);\n "
+        },
+        {
+          "filename": "third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/ElementwiseOpToLLVM.cpp",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 0,
+          "patch": "@@ -937,6 +937,8 @@ void mlir::triton::NVIDIA::populateElementwiseOpToLLVMPatterns(\n       typeConverter, axisInfoAnalysis, \"llvm.nvvm.sqrt.rn.f\", benefit);\n   patterns.add<ElementwiseToIntrinsicOpConversion<triton::PreciseDivFOp>>(\n       typeConverter, axisInfoAnalysis, \"llvm.nvvm.div.rn.f\", benefit);\n+  patterns.add<ElementwiseToIntrinsicOpConversion<triton::ApproxDivFOp>>(\n+      typeConverter, axisInfoAnalysis, \"llvm.nvvm.div.approx.f\", benefit);\n \n   mlir::triton::populateElementwiseOpToLLVMPatterns(typeConverter, patterns,\n                                                     axisInfoAnalysis, benefit);\n"
+        }
+      ]
+    },
+    {
+      "sha": "280eeb00e69d2de82eba88814af66f1b5b336d28",
+      "author": {
+        "name": "pawelszczerbuk",
+        "email": "153013546+pawelszczerbuk@users.noreply.github.com"
+      },
+      "date": "2026-09-23T03:12:50+08:00",
+      "message": "[CI] Log ConSan performance without baseline checks (#11864)\n\nRemove the compile and runtime baseline comparisons from the ConSan\nmicrobenchmark while keeping compilation totals, lowering-stage times,\nand median execution time in CI output. This avoids noisy threshold\nfailures while preserving measurements that help identify whether a\nperformance change affects compilation or execution.\n\nRemove the dedicated step's `continue-on-error` and delete the unused\nbaseline file.",
+      "parents": [
+        "ee07f7ff302740dbb858b84c7c1ea9f1d1ffc782"
+      ],
+      "stats": {
+        "total_additions": 1,
+        "total_deletions": 32,
+        "files_changed": 3
+      },
+      "files": [
+        {
+          "filename": ".github/workflows/integration-tests-nvidia.yml",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 2,
+          "patch": "@@ -94,9 +94,8 @@ jobs:\n         run: ccache --print-stats\n       - name: Run lit tests\n         run: make test-lit\n-      - name: Check ConSan performance\n+      - name: Log ConSan performance\n         if: ${{ matrix.config.runner_type == 'nvidia-gb200' }}\n-        continue-on-error: true\n         timeout-minutes: 8\n         env:\n           PYTEST_ADDOPTS: \"\""
+        },
+        {
+          "filename": "python/test/microbenchmark/consan_performance.py",
+          "status": "modified",
+          "additions": 0,
+          "deletions": 20,
+          "patch": "@@ -1,6 +1,3 @@\n-import json\n-from pathlib import Path\n-\n import pytest\n import torch\n import triton\n@@ -10,9 +7,6 @@ from triton.experimental.gluon import language as gl\n from triton.experimental.gluon.language.nvidia import blackwell\n from triton.experimental.gluon.language.nvidia.blackwell import mbarrier, tma\n \n-COMPILE_TOLERANCE = 1.5\n-RUNTIME_TOLERANCE = 1.25\n-\n \n @gluon.jit\n def _tma_tcgen05_mma_multicast_loop(a_desc, b_desc):\n@@ -61,10 +55,6 @@ def _tma_tcgen05_mma_multicast_loop(a_desc, b_desc):\n def test_consan_multicast_performance(with_allocator):\n     target = triton.runtime.driver.active.get_current_target()\n     platform = f\"{target.backend}:sm{target.arch}\"\n-    baselines_path = Path(__file__).with_name(\"consan_performance_baselines.json\")\n-    baselines = json.loads(baselines_path.read_text())\n-    assert platform in baselines, f\"Missing ConSan multicast performance baseline for {platform}\"\n-    baseline = baselines[platform]\n \n     torch.manual_seed(42)\n     a = torch.randn((256, 512), device=\"cuda\", dtype=torch.float16)\n@@ -106,18 +96,8 @@ def test_consan_multicast_performance(with_allocator):\n         torch.cuda.synchronize()\n \n         runtime_ms = triton.testing.do_bench(launch, warmup=50, rep=200, return_mode=\"median\")\n-        runtime_limit_ms = baseline[\"runtime_ms\"] * RUNTIME_TOLERANCE\n-        if runtime_ms > runtime_limit_ms:\n-            runtime_ms = min(runtime_ms, triton.testing.do_bench(launch, warmup=50, rep=200, return_mode=\"median\"))\n \n     compile_seconds = compilation_times.total / 1_000_000\n     stage_seconds = {stage: duration / 1_000_000 for stage, duration in compilation_times.lowering_stages}\n     print(f\"ConSan TMA multicast/TCGEN05 platform={platform} compile={compile_seconds:.3f}s \"\n           f\"runtime={runtime_ms:.3f}ms stages={stage_seconds}\")\n-\n-    compile_limit_seconds = baseline[\"compile_seconds\"] * COMPILE_TOLERANCE\n-    assert compile_seconds <= compile_limit_seconds, (\n-        f\"ConSan multicast compilation took {compile_seconds:.3f}s on {platform}; \"\n-        f\"baseline={baseline['compile_seconds']:.3f}s, limit={compile_limit_seconds:.3f}s, stages={stage_seconds}\")\n-    assert runtime_ms <= runtime_limit_ms, (f\"ConSan multicast runtime was {runtime_ms:.3f}ms on {platform}; \"\n-                                            f\"baseline={baseline['runtime_ms']:.3f}ms, limit={runtime_limit_ms:.3f}ms\")"
+        },
+        {
+          "filename": "python/test/microbenchmark/consan_performance_baselines.json",
+          "status": "removed",
+          "additions": 0,
+          "deletions": 10,
+          "patch": "deleted file mode 100644\n@@ -1,10 +0,0 @@\n-{\n-  \"cuda:sm100\": {\n-    \"compile_seconds\": 2.5,\n-    \"runtime_ms\": 0.4\n-  },\n-  \"cuda:sm103\": {\n-    \"compile_seconds\": 2.0,\n-    \"runtime_ms\": 0.35\n-  }\n-}\n"
+        }
+      ]
+    }
+  ]
+}

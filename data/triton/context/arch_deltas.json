@@ -535,6 +535,36 @@
       "interface_changes": "修复 tl.store 在向布尔（int1）指针写入整数时的截断错误：原实现先把 val 直接 cast 到 int8 存储类型，导致 256 变成 0/false。新实现先 self.cast(val, elt_ty)（elt_ty 为 int1）得到布尔语义，再在 int1 分支中把 ptr 视为 int8 指针并二次 cast val 到 int8。这样 256 会先经 int1 转换为 true，再存储。新增前端 FileCheck 测试断言出现 arith.cmpi ne。这是 TritonSemantic.store 的行为变更，属于 triton-ascend '必然影响'路径（semantic.py）。风险中等：改变了 store 的 cast 顺序，可能影响其他依赖旧截断行为的 kernel（虽然旧行为是 bug）。",
       "change_summary": "[Frontend] Fix integer-to-bool stores (#11853)",
       "ascend_impact": false
+    },
+    "b288fba760ff46ba266d442cce778133b0231d71": {
+      "date": "2026-09-23",
+      "affected_modules": [
+        "python/triton/backends/compiler.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/backends/compiler.py"
+      ],
+      "interface_changes": "修正 BaseBackend.add_stages 抽象方法签名：从 (self, stages, options) 补齐为 (self, stages, options, language: Language)，并在 docstring 说明 language 表示产生 src 的前端（Language.TRITON/GLUON）。此前的抽象签名是过时的——所有具体后端（nvidia/amd/vulkan）与 compile() 调用点 backend.add_stages(stages, options, src.language) 都已带 language，因此该改动只是让抽象声明与既有事实一致，消除 Pyright/Pylance 报的 'incompatible with base class'。无运行时行为变更，纯类型注解修复，风险极低。",
+      "change_summary": "[BACKEND] Fix  abstract signature to match its overrides (#11515)",
+      "ascend_impact": false
+    },
+    "a9eedb6c30ff9a00cf224eb6ad3ba6f0288a0185": {
+      "date": "2026-09-23",
+      "affected_modules": [
+        "include/triton/Dialect/Triton/",
+        "python/src/ir.cc",
+        "python/triton/language/semantic.py",
+        "python/triton/runtime/interpreter.py"
+      ],
+      "affected_interfaces": [
+        "include/triton/Dialect/Triton/",
+        "python/src/ir.cc",
+        "python/triton/language/semantic.py",
+        "python/triton/runtime/interpreter.py"
+      ],
+      "interface_changes": "在 Triton 核心 tt 方言新增 TT_ApproxDivFOp（tt.approx_divf），限 F32 / RankedTensorOf<[F32]>；前端 tl.fdiv 新增 approx 参数并透传到 TritonSemantic.fdiv（新增 approx 形参，校验 approx 与 ieee_rounding 互斥、approx 仅支持 f32）；TritonToTritonGPU 通过 GenericOpPattern 透传；NVIDIA 降为 llvm.nvvm.div.approx.f（div.approx.f32）、AMD 降为 llvm.amdgcn.fdiv.fast；interpreter 增加 create_approx_divf（np.divide）；FPSan 将 PreciseDivFOpPattern 泛化为 TritonDivFOpPattern 模板并同时覆盖 Precise/Approx；Gluon 前端 ttgl.fdiv(approx=True) 支持；配套 lit（PTX/AMD/FPSan/gluon frontend）与",
+      "change_summary": "[IR] Add ApproxDivFOp and an explicit approximate fdiv mode (#11900)",
+      "ascend_impact": true
     }
   }
 }

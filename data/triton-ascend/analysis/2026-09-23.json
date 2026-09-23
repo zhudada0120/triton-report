@@ -1,0 +1,169 @@
+{
+  "date": "2026-09-23",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-09-24T02:05:08.518933+08:00",
+  "daily_summary": "当日变更以 Ascend 后端 DynamicCVPipeline（ssbuffer 动态 CV 流水）相关的修复与测试补充为主，包含：移除 Linalg-to-NPUbin 路径中冗余的 --enable-lib-call-no-inline=false 选项及其对应的目标探测逻辑（reapply #1923）、DynamicCVPipeline 数据流分析中 isCubeOrVectorOp 重命名为 isCubeAndVectorOp 并修复 fill-init 场景的迭代参数依赖处理、intercept 函数名/禁用算子名单的增删调整、CopyOp forWriteTPipe 修正为 PIPE_MTE1、以及为 launcher 编译增加 fcntl 文件锁避免并发竞争。此外还有大量文档产品名规范化（A2/A3/950 系列 → Atlas A2/A3 产品、Ascend 950PR&950DT 产品）、MAINTAINERS 活跃维护者排序调整和 CI A5 runner 切换。整体是后端编译链清理、流水分析修复与文档/ CI 维护的混合型日常。",
+  "test_impact_summary": "当日变更对测试看护的影响集中在 DynamicCVPipeline 的 SplitDataflow 数据流分析：commit 83a9e06 与 9f4a2f4 均新增了 SplitDataflow 的 lit 测试（test_fill_init.mlir、test_bidirectional_transfer.mlir），直接覆盖 fill-init 迭代参数依赖与双向搬运 PIPE_MTE1 修正这两处行为，属于必要的回归看护点；其余涉及 intercept 函数名单增删的 commit（c11af5d、ce7a4ec）依赖既有 ssbuffer lit 测试集，需确认新加入的 parallel_nsa_fwd_kernel 和移除的 flex_attention_backward_dkdv_kernel 等名单变化是否与现有 FileCheck 期望一致。launcher 文件锁（e1b01f2）与 NPUbin 选项移除（87e8e52）属于运行时/编译选项行为变更，现有测试覆盖有限，建议补充并发编译与 910-95/A2/A3 双路径的编译冒烟验证。文档类变更（12c9cad、5115e9c）与 CI runner 切换（a706695）对测试逻辑无影响。总体来看，当日新增了两个 lit 测试用例作为核心看护，但编译选项与 launcher 并发路径缺少针对性测试。",
+  "commits": [
+    {
+      "sha": "87e8e5281674487a2abc345ee255d5086774efcb",
+      "comment": "重新应用 #1923 的变更：移除 linalg_to_bin_enable_npu_compile_910_95 与 linalg_to_bin_enable_npu_compile_A2_A3 两条 NPUbin 生成路径中为 Ascend950 添加的 --enable-lib-call-no-inline=false 编译选项，同时删除辅助函数 _needs_lib_call_no_inline（按 arch 前缀判定 Ascend950）与 _npu_compiler_supports_option（通过 subprocess 调 --help 探测编译器是否支持某选项）。这是对 CANN 9.1 hacc.noinline workaround 的退场清理：原先该 workaround 依赖运行时探测工具链能力，现判断为不再需要，直接删除以简化编译选项构造逻辑。影响范围限定在 third_party/ascend/backend/compiler.py 的编译选项拼接，不改变阶段划分或 metadata 契约。风险：若目标 CANN 版本仍存在 lib-call 内联引起的正确性问题，会静默回退到工具链默认行为；移除 subprocess 探测也消除了潜在的编译期开销与超时风险。",
+      "tags": [
+        "refactor",
+        "bugfix",
+        "low-risk",
+        "backend-compiler"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "删除的是编译选项拼装与工具链能力探测辅助函数，不改变编译阶段、IR 或 kernel 语义。现有 lit 测试与端到端算子测试不会因此失效，但若需看护 910-95/A2/A3 上的 lib-call 内联行为，建议补充对应编译冒烟测试。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut",
+          "third_party/ascend/unittest/Conversion"
+        ]
+      },
+      "message": "[backend](fix) remove lib-call no-inline option (#2382)\n\nReapply the removal from #1923 on current main. Stop adding --enable-lib-call-no-inline=false in both Linalg-to-NPUbin paths and remove its dedicated target check and compiler capability probe."
+    },
+    {
+      "sha": "c11af5d8be93233d9821a07a87d5513d8fbc5cb7",
+      "comment": "在 DynamicCVPipeline 的 AnalyzeName.cpp 中，为 interceptrFunc 白名单（由 verifyFuncNames 用于判定哪些函数需要走拦截/走 ssbuffer 路径）新增 parallel_nsa_fwd_kernel，并顺手把原四个函数名的排版对齐为每行两个。该名单直接决定 DynamicCVPipeline 预检阶段哪些 kernel 函数名被识别并放行到后续流水分析，属于误报修复/覆盖扩展：parallel_nsa_fwd_kernel 之前可能未被正确拦截或未被识别。影响仅限名字白名单，不涉及分析算法本身。风险：新增名字意味着该 kernel 会进入 DynamicCVPipeline 分析路径，若其 IR 形态不在分析预期内可能触发 pass 断言失败。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "dynamic-cv-pipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "interceptrFunc 白名单的变化直接决定哪些 kernel 名会被 DynamicCVPipeline 的分析 pass 识别，属于行为开关；现有测试若未覆盖 parallel_nsa_fwd_kernel 的拦截判定，需补充验证该名能被正确识别（或确认既有 lit 测试的期望名单同步）。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut"
+        ]
+      },
+      "message": "[ssbuffer](fix) fix bug of data analyze"
+    },
+    {
+      "sha": "83a9e06db0cacfd3717578f3c73ad76e4b657f63",
+      "comment": "修复 DynamicCVPipeline SplitDataflow 在 fill 初始化场景下的迭代参数依赖处理。三处改动：1) DataDependencyAnalysis 将 isCubeOrVectorOp 重命名为 isCubeAndVectorOp（语义更准确地表达“既可被 CUBE 也可被 VECTOR 处理”的算子，如 tensor.empty/linalg.fill）；2) Utils.cpp 的 regionalDisabledOps 从 4 项缩为 2 项，移除 chunk_ttt_linear_fwd_kernel_h 与 chunk_ttt_linear_bwd_kernel_h，保留 chunk_gated_delta_rule_bwd_kernel_dhu_blockdim64 与 chunk_gated_delta_rule_fwd_kernel_h_blockdim64；3) 核心逻辑改动：processIterArgDependencies 中对 initDefOp 为 isCubeAndVectorOp 的情况单独分支，当 yieldCoreType 为 VECTOR 时收集 diff-core 用户并插入 producer 依赖，当 yieldCoreType 为 CUBE 时同时收集 vector/cube 用户并插入 consumer+producer 依赖，替代原先简单的 initCoreType==yieldCoreType 合并判断。配合新增 test_fill_init.mlir lit 测试，验证 fill 初始化跨核迭代参数（cube 初始化 → vector 消费 → cube matmul → yield CUBE）能被正确插入 sync_block 与 fixpipe。属于 DynamicCVPipeline 核心数据依赖分析的行为修正。风险：分支逻辑变复杂，若 iterArg 的 cube/vector 用户集合判定不准确可能引入多余或缺失的同步。",
+      "tags": [
+        "bugfix",
+        "high-risk",
+        "dynamic-cv-pipeline",
+        "dataflow-analysis"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "行为修正在数据依赖分析的核心分支，且作者已新增 test_fill_init.mlir 专门看护 fill 初始化跨核迭代参数的依赖插入。现有 test_fill_init.mlir 期望的 sync_block_wait/set 与 fixpipe 序列是新看护点。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow/test_fill_init.mlir"
+        ]
+      },
+      "message": "[ssbuffer](fix) fill init process#2318"
+    },
+    {
+      "sha": "e1b01f2b1d00f4520560c261d4351395b19ceab8",
+      "comment": "为 make_npu_launcher_stub 增加跨进程文件锁。此前函数在编译 NPU launcher 扩展 .so 时先查缓存再编译，但多进程/多进程并发首次编译同一 kernel 时存在竞态（多个进程同时编译并写缓存）。改动引入 fcntl.flock 排他锁：在 TRITON_CACHE_DIR/lock 目录下以 so_cache_key 为名创建 .lock 文件，加 LOCK_EX 后再二次查缓存（double-check），命中则返回，否则编译并写缓存，finally 解锁。这是对编译产物缓存的并发安全加固，属于 runtime 层（NPUDriver 所在文件）。风险：依赖 fcntl（仅 Linux/Unix）；锁目录创建时机与清理策略未处理；持锁期间编译可能阻塞其他进程。另缓存读取从 so_cache_manager.get_file 替代原有的 put 返回值，需确认 CacheManager 提供 get_file 接口。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "runtime-driver",
+        "concurrency"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "并发编译路径属此前无覆盖的边界，建议补充多进程/多线程同时首次编译同一 kernel 的测试以验证不产生损坏的 .so，并验证缓存命中路径。另需确认 CacheManager.get_file 行为被既有测试覆盖。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/device_ut",
+          "third_party/ascend/unittest/pytest_ut"
+        ]
+      },
+      "message": "[launcher](fix) add file lock when compiling launch (#2325)\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>"
+    },
+    {
+      "sha": "9f4a2f45515db7ac383de344098862209b27a728",
+      "comment": "DynamicCVPipeline 两处修复：1) InterCoreTransferAndSync.cpp 的 getTransferPipeConfig 中，hivm::CopyOp 的 forWriteTPipe 从 PIPE_M 改为 PIPE_MTE1（并删除不再使用的 pipeMAttr），修正跨核 CopyOp 的写 pipe 分配——按 HIVM pipe 语义，Mem→L1 的搬运应由 MTE1 而非矩阵 pipe 承担，原先 PIPE_M 会导致同步事件序列错误；2) AnalyzeName.cpp 的 interceptrFunc 白名单移除 flex_attention_backward_dkdv_kernel 与 flex_attention_backward_dkdv_kernel_tasklist，缩小 DynamicCVPipeline 拦截范围；3) 新增 test_bidirectional_transfer.mlir 验证 CUBE↔VECTOR 双向搬运在修正后产生正确的 sync_block_wait/set（固定期望 [PIPE_FIX,PIPE_V] 与 [PIPE_MTE1,PIPE_MTE3] 组合）。属核心流水同步语义修正。风险：pipe 配置变更影响所有走 CopyOp 的跨核搬运，若其它路径隐式依赖 PIPE_M 需一并核查。",
+      "tags": [
+        "bugfix",
+        "high-risk",
+        "dynamic-cv-pipeline",
+        "sync-pipe"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "forWriteTPipe 的 pipe 语义修正会改变生成的 sync_block_wait/set 属性，新增 test_bidirectional_transfer.mlir 是必须的回归看护点（期望 [VECTOR, PIPE_MTE1, PIPE_MTE3] 等组合）。同时 interceptrFunc 名单移除需确认现有 ssbuffer 测试期望同步更新。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow/test_bidirectional_transfer.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline"
+        ]
+      },
+      "message": "[ssbuffer](fix) set CopyOp's forWriteTPipe PIPE_MTE1 (#2224)\n\n* [ssbuffer](fix) set CopyOp's forWriteTPipe PIPE_MTE1\n\n* [ssbuffer](fix) delete kernel_name\n\n* [ssbuffer](fix) add ut"
+    },
+    {
+      "sha": "ce7a4ec33a9c8e01453e7e1d132ad66b9b3f3d79",
+      "comment": "DynamicCVPipeline 三处名单清理：1) AnalyzeName.cpp 的 interceptrFunc 移除 flash_varlen_fwd_kernel 与 parallel_nsa_fwd_kernel；2) SplitIfByBlockId.cpp 的 kSkippedKernels 从 parallel_deltaformer_fwd_kernel 改为空字符串，即不再跳过任何 kernel（注意：用单个空字符串初始化数组是占位技巧，语义上等价于无跳过项）；3) PreCheckDisablePreload.cpp 的 kBlacklistFuncNames 移除 _mqa_logits_kernel。整体是收窄 DynamicCVPipeline 对特定算子的特殊处理面，让 preload/disable-preload 与 SplitIfByBlockId 的默认行为覆盖更多 kernel。风险：移除跳过/黑名单后，原被特殊对待的 kernel 将走通用路径，若其 IR 不满足 pass 假设可能引发编译失败；kSkippedKernels[1] = {\"\"} 的空串占位虽语义无害但形式不优雅，后续若无跳过需求建议改为空数组。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "dynamic-cv-pipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "三处名单（interceptrFunc/kSkippedKernels/kBlacklistFuncNames）的移除会改变 DynamicCVPipeline 对相关 kernel 的处理路径，需确认既有 lit 测试中针对 flash_varlen_fwd_kernel、parallel_nsa_fwd_kernel、parallel_deltaformer_fwd_kernel、_mqa_logits_kernel 的期望是否同步调整；若这些 kernel 有专门测试用例需更新或删除。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut",
+          "third_party/ascend/unittest/autotune_ut"
+        ]
+      },
+      "message": "[ssbuffer](fix) remove enabled func names (#2315)"
+    },
+    {
+      "sha": "12c9cad81553ebb3e0a13a7be309bdb3206126a5",
+      "comment": "纯文档规范化：将散落于 README、quick_start、installation_guide、architecture_design_and_core_features、performance_guidelines、programming_guide、FAQ、release_note、triton_launch_kernel 等 19 个中英文文档中的产品名统一为官方表述——'Atlas A2/A3/950 系列' → 'Atlas A2 产品/Atlas A3 产品/Ascend 950PR&950DT 产品'，'A5' → 'Ascend 950PR&950DT 产品'，'A2 系列' → 'Atlas A2 产品'。中英文对应同步更新。注意 docs/zh/installation_guide.md 出现了一次整行重复插入（同一句话被写入两遍），属于编辑合并时的笔误，建议后续清理。不涉及任何代码逻辑，对编译/运行时零影响。",
+      "tags": [
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯文档文字替换，不涉及代码路径、IR 或运行时行为变化，无需测试更新。但中文安装指南中重复句可能被文档 lint 检出。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](fix) fix document formatting issues (#2324)\n\n* update product name\n\n* update product name\n\n* update product name\n\n* update product name\n\n* update README\n\n* update installation guide\n\n* update product name\n\n---------\n\nCo-authored-by: liujiaxin02 <liujiaxin108@h-partners.com>"
+    },
+    {
+      "sha": "5115e9c754586ab27443927ab44d9ab4cdeb8684",
+      "comment": "MAINTAINERS.md 调整：将近期加入（2026-09-17）的四位维护者 Zhao Jingkai、Liu Huan、Wei Zhan、Yichen Liu 从文件底部上移到名单前部（活跃维护者置前），并保持其入职日期不变。纯治理性元数据调整，无代码影响。",
+      "tags": [
+        "chore",
+        "low-risk",
+        "maintainers"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "维护者名单排序调整，不涉及任何代码或测试。",
+        "suggested_test_areas": []
+      },
+      "message": "[docs](fix) move active maintainers to the front (#2348)"
+    },
+    {
+      "sha": "a7066950f388c151fcb91c428ef16b0e90721133",
+      "comment": "CI 配置调整：runner-preparation.yml 中 950（A5）平台对应的 runs_on 标签从 linux-amd64-a5-4 改为 linux-amd64-a5-2，即切换 A5 测试机。仅影响 CI 任务调度到哪台自建 runner，chip_type=950、cann 9.1.0、ubuntu22.04 等参数保持不变。风险：若新 runner 环境（CANN/驱动版本、NPU 拓扑）与旧 runner 不一致，A5 相关测试可能出现环境性失败。",
+      "tags": [
+        "ci",
+        "low-risk",
+        "ci-runner"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅是 CI runner 标签切换，不改变测试用例内容。但需观察切换后 A5 相关测试在新 runner 上是否稳定通过。",
+        "suggested_test_areas": [
+          ".github/workflows/runner-preparation.yml"
+        ]
+      },
+      "message": "change a5 runner (#2351)"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

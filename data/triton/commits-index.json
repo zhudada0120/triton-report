@@ -1,4 +1,60 @@
 {
+  "b7fdaf802b0455004e27ad782c5beb21c6d58660": {
+    "date": "2026-09-23",
+    "msg": "[GSan] Skip fabric tests on unsupported devices (#11919)"
+  },
+  "0c1fcb37e699c587f7f3bfc93e71454d861a69d0": {
+    "date": "2026-09-23",
+    "msg": "[BUILD] Make the NVIDIA GSan device runtime optional (#11654)"
+  },
+  "8c1e9b398d67f6c5f1a697de2907f9eea15c9e28": {
+    "date": "2026-09-23",
+    "msg": "[NVIDIA] Reject empty CGA layouts for two-CTA tensor memory (#11894)"
+  },
+  "a772561da4d7eceee97b737fe072be45fd08f51a": {
+    "date": "2026-09-23",
+    "msg": "[AMD] Make the membar async-load filter direction-aware (#11719)"
+  },
+  "48fd75043af6ba37c7c1e2822f70c167cfa6e9dd": {
+    "date": "2026-09-23",
+    "msg": "[AMD][CI] Add rocjitsu based integration tests for cdna5 (#11843)"
+  },
+  "7a047455997a5b8b6baba93c1418211c43e953c5": {
+    "date": "2026-09-23",
+    "msg": "Fix FP4 TMA Alignment (#11914)"
+  },
+  "cf542796f329f9c315039562ce7c7abac78c6a5d": {
+    "date": "2026-09-23",
+    "msg": "[NVIDIA] Canonicalize constant fdiv through an approximate reciprocal (#11901)"
+  },
+  "458129c97d3bfaaf055e5f29077f5099d1085388": {
+    "date": "2026-09-23",
+    "msg": "fix: add missing negation in WSDataPartition thenYieldArg check (#9800)"
+  },
+  "c0500c7b036c3092ef006def10067915eb02caf0": {
+    "date": "2026-09-23",
+    "msg": "Revert \"[BACKEND] Use CUDA 13 ptxas for Hopper\" (#11915)"
+  },
+  "edeea66c807c821830bedf1d0854343f93c6df48": {
+    "date": "2026-09-23",
+    "msg": "[CI][AMD] Record runner environment diagnostics (#11802)"
+  },
+  "b288fba760ff46ba266d442cce778133b0231d71": {
+    "date": "2026-09-23",
+    "msg": "[BACKEND] Fix  abstract signature to match its overrides (#11515)"
+  },
+  "0e752ba9ac274e8675689c37eac6073fd0b2099d": {
+    "date": "2026-09-23",
+    "msg": "[AMD] build AMD CodeGen LLVM @ 9e5edb7ed944 (#11912)"
+  },
+  "a9eedb6c30ff9a00cf224eb6ad3ba6f0288a0185": {
+    "date": "2026-09-23",
+    "msg": "[IR] Add ApproxDivFOp and an explicit approximate fdiv mode (#11900)"
+  },
+  "280eeb00e69d2de82eba88814af66f1b5b336d28": {
+    "date": "2026-09-23",
+    "msg": "[CI] Log ConSan performance without baseline checks (#11864)"
+  },
   "ee07f7ff302740dbb858b84c7c1ea9f1d1ffc782": {
     "date": "2026-09-22",
     "msg": "[ConSan] Restore scratch checks with masked-store workaround (#11857)"

@@ -1,4 +1,40 @@
 {
+  "87e8e5281674487a2abc345ee255d5086774efcb": {
+    "date": "2026-09-23",
+    "msg": "[backend](fix) remove lib-call no-inline option (#2382)"
+  },
+  "c11af5d8be93233d9821a07a87d5513d8fbc5cb7": {
+    "date": "2026-09-23",
+    "msg": "[ssbuffer](fix) fix bug of data analyze"
+  },
+  "83a9e06db0cacfd3717578f3c73ad76e4b657f63": {
+    "date": "2026-09-23",
+    "msg": "[ssbuffer](fix) fill init process#2318"
+  },
+  "e1b01f2b1d00f4520560c261d4351395b19ceab8": {
+    "date": "2026-09-23",
+    "msg": "[launcher](fix) add file lock when compiling launch (#2325)"
+  },
+  "9f4a2f45515db7ac383de344098862209b27a728": {
+    "date": "2026-09-23",
+    "msg": "[ssbuffer](fix) set CopyOp's forWriteTPipe PIPE_MTE1 (#2224)"
+  },
+  "ce7a4ec33a9c8e01453e7e1d132ad66b9b3f3d79": {
+    "date": "2026-09-23",
+    "msg": "[ssbuffer](fix) remove enabled func names (#2315)"
+  },
+  "12c9cad81553ebb3e0a13a7be309bdb3206126a5": {
+    "date": "2026-09-23",
+    "msg": "[Docs](fix) fix document formatting issues (#2324)"
+  },
+  "5115e9c754586ab27443927ab44d9ab4cdeb8684": {
+    "date": "2026-09-23",
+    "msg": "[docs](fix) move active maintainers to the front (#2348)"
+  },
+  "a7066950f388c151fcb91c428ef16b0e90721133": {
+    "date": "2026-09-23",
+    "msg": "change a5 runner (#2351)"
+  },
   "d1c8b179ed86d19243b7445777805fa8bbd6e198": {
     "date": "2026-09-22",
     "msg": "[Docs](fix) resolve AIDD scan issues (#2274)"

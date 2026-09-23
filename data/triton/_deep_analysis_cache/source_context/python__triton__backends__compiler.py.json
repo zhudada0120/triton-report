@@ -1,0 +1,17 @@
+{
+  "content_hash": "c5d3403b88b5bb72",
+  "analysis": {
+    "interface_summary": "定义 3 个类；定义 10 个函数",
+    "key_interfaces": [
+      "GPUTarget",
+      "Language",
+      "BaseBackend",
+      "BaseBackend.__init__",
+      "BaseBackend.supports_target",
+      "BaseBackend.hash",
+      "BaseBackend.parse_options",
+      "BaseBackend.add_stages"
+    ]
+  },
+  "cached_at": "2026-09-24T02:03:20.127614+08:00"
+}

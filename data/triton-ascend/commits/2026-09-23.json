@@ -1,0 +1,416 @@
+{
+  "date": "2026-09-23",
+  "repo": "triton-lang/triton-ascend",
+  "branch": "main",
+  "commits": [
+    {
+      "sha": "87e8e5281674487a2abc345ee255d5086774efcb",
+      "author": {
+        "name": "zhan wei",
+        "email": "493694187@qq.com"
+      },
+      "date": "2026-09-23T22:46:57+08:00",
+      "message": "[backend](fix) remove lib-call no-inline option (#2382)\n\nReapply the removal from #1923 on current main. Stop adding --enable-lib-call-no-inline=false in both Linalg-to-NPUbin paths and remove its dedicated target check and compiler capability probe.",
+      "parents": [
+        "c11af5d8be93233d9821a07a87d5513d8fbc5cb7"
+      ],
+      "stats": {
+        "total_additions": 0,
+        "total_deletions": 23,
+        "files_changed": 1
+      },
+      "files": [
+        {
+          "filename": "third_party/ascend/backend/compiler.py",
+          "status": "modified",
+          "additions": 0,
+          "deletions": 23,
+          "patch": "@@ -634,23 +634,6 @@ def get_common_bishengir_compile_options(metadata):\n     return [bishengir_target_opt]\n \n \n-def _needs_lib_call_no_inline(metadata):\n-    \"\"\"Return whether the target needs the CANN 9.1 hacc.noinline workaround.\"\"\"\n-    arch = metadata['target'].arch\n-    return arch.startswith(\"Ascend950\")\n-\n-\n-@functools.lru_cache()\n-def _npu_compiler_supports_option(compiler_path: str, option: str) -> bool:\n-    \"\"\"Check an optional BiShengIR flag instead of assuming toolchain parity.\"\"\"\n-    try:\n-        result = subprocess.run([compiler_path, \"--help\"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,\n-                                timeout=10, check=False)\n-    except (OSError, subprocess.SubprocessError):\n-        return False\n-    return option in result.stdout\n-\n-\n def get_auto_bind_sub_block_option(metadata):\n     # auto_tile_and_bind_subblock is read from the module.\n     # enable_auto_bind_sub_block is set by the user and has a higher priority.\n@@ -867,9 +850,6 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):\n             # Temporary until the NPU compiler enables batch matmul by default in Q4.\n             if metadata.get(\"enable_hivm_batch_matmul\"):\n                 _compile_option_list += [\"--enable-hivm-batch-matmul\"]\n-            if (_needs_lib_call_no_inline(metadata)\n-                    and _npu_compiler_supports_option(npu_compiler_path, \"--enable-lib-call-no-inline\")):\n-                _compile_option_list += [\"--enable-lib-call-no-inline=false\"]\n             if metadata.get(\"enable_vf_stack_limit\"):\n                 _compile_option_list += [\"--enable-vf-stack-limit\"]\n         bisheng_options = metadata[\"bisheng_options\"]\n@@ -1087,9 +1067,6 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):\n                 bishengir_hivm_opt,\n                 \"--enable-triton-kernel-compile=true\",\n             ]\n-            if (_needs_lib_call_no_inline(metadata)\n-                    and _npu_compiler_supports_option(npu_compiler_path, \"--enable-lib-call-no-inline\")):\n-                _compile_option_list += [\"--enable-lib-call-no-inline=false\"]\n \n         _compile_option_list += [\"--mlir-print-ir-after-failure\"]\n         _compile_option_list += [\"--mlir-print-stacktrace-on-diagnostic\"]\n"
+        }
+      ]
+    },
+    {
+      "sha": "c11af5d8be93233d9821a07a87d5513d8fbc5cb7",
+      "author": {
+        "name": "Four1er",
+        "email": "245516766@qq.com"
+      },
+      "date": "2026-09-23T10:11:22+08:00",
+      "message": "[ssbuffer](fix) fix bug of data analyze",
+      "parents": [
+        "83a9e06db0cacfd3717578f3c73ad76e4b657f63"
+      ],
+      "stats": {
+        "total_additions": 3,
+        "total_deletions": 4,
+        "files_changed": 1
+      },
+      "files": [
+        {
+          "filename": "third_party/ascend/lib/DynamicCVPipeline/AnalyzeDataFlow/AnalyzeName.cpp",
+          "status": "modified",
+          "additions": 3,
+          "deletions": 4,
+          "patch": "@@ -41,10 +41,9 @@ using namespace triton;\n namespace {\n \n static constexpr llvm::StringLiteral interceptrFunc[]{\n-    \"kernel_sdpa_bwd_kv\",\n-    \"_sparse_decode_kernel\",\n-    \"_sparse_decode_model1_kernel\",\n-    \"sparse_flash_attention_grad_kernel\",\n+    \"kernel_sdpa_bwd_kv\",           \"_sparse_decode_kernel\",\n+    \"_sparse_decode_model1_kernel\", \"sparse_flash_attention_grad_kernel\",\n+    \"parallel_nsa_fwd_kernel\",\n };\n \n static LogicalResult verifyFuncNames(ModuleOp module) {\n"
+        }
+      ]
+    },
+    {
+      "sha": "83a9e06db0cacfd3717578f3c73ad76e4b657f63",
+      "author": {
+        "name": "lrf22",
+        "email": "112365706+lrf22@users.noreply.github.com"
+      },
+      "date": "2026-09-22T21:37:51+08:00",
+      "message": "[ssbuffer](fix) fill init process#2318",
+      "parents": [
+        "e1b01f2b1d00f4520560c261d4351395b19ceab8"
+      ],
+      "stats": {
+        "total_additions": 72,
+        "total_deletions": 8,
+        "files_changed": 4
+      },
+      "files": [
+        {
+          "filename": "third_party/ascend/include/DynamicCVPipeline/SplitDataflow/DataDependencyAnalysis.h",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -166,7 +166,7 @@ private:\n                                               int consumerBlockId);\n \n   bool isControlFlowOp(mlir::Operation *op);\n-  bool isCubeOrVectorOp(mlir::Operation *op);\n+  bool isCubeAndVectorOp(mlir::Operation *op);\n   bool isValidShapeForDependency(mlir::Value value);\n   bool isValidValueForDependency(mlir::Value value);\n   bool isValidScalarDependency(mlir::Value value);"
+        },
+        {
+          "filename": "third_party/ascend/lib/DynamicCVPipeline/Common/Utils.cpp",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 3,
+          "patch": "@@ -219,10 +219,9 @@ CoreType getCoreTypeOfSimpleOpOrCf(Operation *op) {\n   }\n   auto funcOp = op->getParentOfType<func::FuncOp>();\n   if (funcOp) {\n-    constexpr llvm::StringLiteral regionalDisabledOps[4]{\n+    constexpr llvm::StringLiteral regionalDisabledOps[2]{\n         \"chunk_gated_delta_rule_bwd_kernel_dhu_blockdim64\",\n-        \"chunk_gated_delta_rule_fwd_kernel_h_blockdim64\",\n-        \"chunk_ttt_linear_fwd_kernel_h\", \"chunk_ttt_linear_bwd_kernel_h\"};\n+        \"chunk_gated_delta_rule_fwd_kernel_h_blockdim64\"};\n     if (llvm::is_contained(regionalDisabledOps, funcOp.getSymName())) {\n       return CoreType::UNDETERMINED;\n     }"
+        },
+        {
+          "filename": "third_party/ascend/lib/DynamicCVPipeline/SplitDataflow/DataDependencyAnalysis.cpp",
+          "status": "modified",
+          "additions": 26,
+          "deletions": 4,
+          "patch": "@@ -131,7 +131,7 @@ bool DataDependencyAnalysisPass::isControlFlowOp(mlir::Operation *op) {\n          isa<scf::YieldOp, scf::ConditionOp>(op);\n }\n \n-bool DataDependencyAnalysisPass::isCubeOrVectorOp(mlir::Operation *op) {\n+bool DataDependencyAnalysisPass::isCubeAndVectorOp(mlir::Operation *op) {\n   if (isa<tensor::EmptyOp, linalg::FillOp>(op)) {\n     return true;\n   }\n@@ -212,7 +212,7 @@ bool DataDependencyAnalysisPass::isValidValueForDependency(mlir::Value value) {\n   Operation *defOp = value.getDefiningOp();\n   // Op that can be processed both by CUBE and VECTOR should not be data\n   // dependency\n-  if (defOp && isCubeOrVectorOp(defOp)) {\n+  if (defOp && isCubeAndVectorOp(defOp)) {\n     return false;\n   }\n \n@@ -644,7 +644,7 @@ void DataDependencyAnalysisPass::processIterArgDependencies() {\n         auto realInitValue = resolveNestedIterArgInitValue(initValue);\n         auto realInitDefOp = realInitValue.getDefiningOp();\n         auto realInitDefReuslt = dyn_cast<mlir::OpResult>(realInitValue);\n-        if (!realInitDefOp || isCubeOrVectorOp(realInitDefOp)) {\n+        if (!realInitDefOp || isCubeAndVectorOp(realInitDefOp)) {\n           continue;\n         }\n         if (getCoreTypeWithIndex(realInitDefOp,\n@@ -663,7 +663,29 @@ void DataDependencyAnalysisPass::processIterArgDependencies() {\n           initDefOp, initDefReuslt ? initDefReuslt.getResultNumber() : 0);\n \n       LOG_DEBUG(\"[initDefOp]: \" << *initDefOp << \"\\n\");\n-      if (initCoreType == yieldCoreType || isCubeOrVectorOp(initDefOp)) {\n+      if (isCubeAndVectorOp(initDefOp)) {\n+        if (yieldCoreType == CVPipeline::kCoreTypeVector) {\n+          auto diffUsers = collectDiffCoreTypeUsers(iterArg, yieldCoreType);\n+          if (!diffUsers.empty()) {\n+            insertProducerAndRecordDeps(loopOp, iterArg, yieldCoreType,\n+                                        diffUsers, info);\n+          }\n+        } else if (yieldCoreType == CVPipeline::kCoreTypeCube) {\n+          auto vectorUsers =\n+              collectDiffCoreTypeUsers(iterArg, CVPipeline::kCoreTypeCube);\n+          auto cubeUsers =\n+              collectDiffCoreTypeUsers(iterArg, CVPipeline::kCoreTypeVector);\n+          if (!vectorUsers.empty()) {\n+            insertConsumerAndRecordDeps(loopOp, yieldedValue, iterArgIndex,\n+                                        CVPipeline::kCoreTypeVector, info);\n+            if (!cubeUsers.empty()) {\n+              insertProducerAndRecordDeps(loopOp, iterArg,\n+                                          CVPipeline::kCoreTypeVector,\n+                                          cubeUsers, info);\n+            }\n+          }\n+        }\n+      } else if (initCoreType == yieldCoreType) {\n         auto diffUsers = collectDiffCoreTypeUsers(iterArg, yieldCoreType);\n         if (!diffUsers.empty()) {\n           insertProducerAndRecordDeps(loopOp, iterArg, yieldCoreType, diffUsers,"
+        },
+        {
+          "filename": "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow/test_fill_init.mlir",
+          "status": "added",
+          "additions": 43,
+          "deletions": 0,
+          "patch": "new file mode 100644\n@@ -0,0 +1,43 @@\n+// RUN: triton-opt --add-block-id-for-control-ops --data-dependency-analysis --inter-core-transfer-and-sync --mark-main-loop %s | FileCheck %s\n+\n+module attributes {hacc.target = #hacc.target<\"Ascend950PR_9579\">} {\n+    func.func @test_fill_init(%arg4: memref<?xf32> {tt.divisibility = 16 : i32, tt.tensor_kind = 0 : i32}){\n+    %c1_i32 = arith.constant {ssbuffer.block_id = 1 : i32, ssbuffer.core_type = \"VECTOR\"} 1 : i32\n+    %c128_i32 = arith.constant {ssbuffer.block_id = 1 : i32, ssbuffer.core_type = \"VECTOR\"} 128 : i32\n+    %c0_i32 = arith.constant {ssbuffer.block_id = 1 : i32, ssbuffer.core_type = \"VECTOR\"} 0 : i32\n+    %cst_0 = arith.constant {ssbuffer.block_id = 1 : i32, ssbuffer.core_type = \"VECTOR\"} 0.000000e+00 : f32\n+\n+    %0 = tensor.empty() {ssbuffer.block_id = 2 : i32, ssbuffer.core_type = \"CUBE\"} : tensor<32x32xf32>\n+    %1 = linalg.fill {ssbuffer.block_id = 2 : i32, ssbuffer.core_type = \"CUBE\"} ins(%cst_0 : f32) outs(%0 : tensor<32x32xf32>) -> tensor<32x32xf32>\n+    %91 = scf.for %arg20 = %c0_i32 to %c128_i32 step %c1_i32 iter_args(%arg21 = %1) -> (tensor<32x32xf32>)  : i32 {\n+\n+        %60 = math.exp %arg21 {ssbuffer.block_id = 3 : i32, ssbuffer.core_type = \"VECTOR\"} : tensor<32x32xf32>\n+\n+        %182 = linalg.matmul {input_precision = \"ieee\", ssbuffer.block_id = 4 : i32, ssbuffer.core_type = \"CUBE\"} ins(%0, %0 : tensor<32x32xf32>, tensor<32x32xf32>) outs(%1 : tensor<32x32xf32>) -> tensor<32x32xf32>\n+\n+        scf.yield {ssbuffer.core_type = \"CUBE\"} %182 : tensor<32x32xf32>\n+    } {ssbuffer.core_type = \"CUBE\"}\n+    return\n+}}\n+\n+\n+// CHECK-LABEL: func.func @test_fill_init\n+// CHECK: %[[FILL_1:[a-z0-9_]+]] = linalg.fill\n+\n+// CHECK: scf.for {{.*}} iter_args(%[[ARG_2:[a-z0-9_]+]] = %[[FILL_1]])\n+\n+// CHECK: math.exp %[[ARG_2:[a-z0-9_]+]]\n+// CHECK: %[[MATMUL_4:[a-z0-9_]+]] = linalg.matmul\n+\n+// CHECK: hivm.hir.sync_block_wait\n+// CHECK: hivm.hir.fixpipe {{.*}} ins(%[[MATMUL_4]] : tensor<32x32xf32>)\n+// CHECK: hivm.hir.sync_block_set\n+\n+// CHECK: hivm.hir.sync_block_wait\n+// CHECK: memref.memory_space_cast\n+// CHECK: %[[TENSOR_5:[a-z0-9_]+]] = bufferization.to_tensor\n+// CHECK: arith.constant\n+// CHECK: hivm.hir.sync_block_set\n+\n+// CHECK: scf.yield {ssbuffer.core_type = \"VECTOR\"} %[[TENSOR_5]] : tensor<32x32xf32>\n+// CHECK: } {{{.*}}ssbuffer.core_type = \"VECTOR\"{{.*}}}\n"
+        }
+      ]
+    },
+    {
+      "sha": "e1b01f2b1d00f4520560c261d4351395b19ceab8",
+      "author": {
+        "name": "LH-123L",
+        "email": "liuhuan261@huawei.com"
+      },
+      "date": "2026-09-22T21:34:28+08:00",
+      "message": "[launcher](fix) add file lock when compiling launch (#2325)\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>",
+      "parents": [
+        "9f4a2f45515db7ac383de344098862209b27a728"
+      ],
+      "stats": {
+        "total_additions": 24,
+        "total_deletions": 12,
+        "files_changed": 1
+      },
+      "files": [
+        {
+          "filename": "third_party/ascend/backend/driver.py",
+          "status": "modified",
+          "additions": 24,
+          "deletions": 12,
+          "patch": "@@ -348,18 +348,30 @@ def make_npu_launcher_stub(header_src, wrapper_src, debug=False):\n         return cache_path\n \n     kernel_launcher_type = \"torch\"\n-\n-    with tempfile.TemporaryDirectory() as tmpdir:\n-        src_path = os.path.join(tmpdir, f\"{name}.cxx\")\n-        with open(src_path, \"w\") as f:\n-            f.write(wrapper_src)\n-        so_path = _build_npu_ext(name, src_path, kernel_launcher=kernel_launcher_type)\n-        if debug:\n-            with open(so_path, \"rb\") as f:\n-                dump_manager.put(f.read(), so_name, binary=True)\n-        with open(so_path, \"rb\") as f:\n-            so_cache_path = so_cache_manager.put(f.read(), so_name, binary=True)\n-    return so_cache_path\n+    import fcntl\n+    cache_dir = os.getenv(\"TRITON_CACHE_DIR\", os.path.join(os.path.expanduser(\"~/.triton\"), \"cache\"))\n+    lock_dir = os.path.join(cache_dir, \"lock\")\n+    if not (os.path.exists(lock_dir)):\n+        os.makedirs(lock_dir, exist_ok=True)\n+    with open(os.path.join(lock_dir, f\"{so_cache_key}.lock\"), \"w\") as lock_file:\n+        try:\n+            fcntl.flock(lock_file, fcntl.LOCK_EX)\n+            cache_path = so_cache_manager.get_file(so_name)\n+            if cache_path is not None:\n+                return cache_path\n+            with tempfile.TemporaryDirectory() as tmpdir:\n+                src_path = os.path.join(tmpdir, f\"{name}.cxx\")\n+                with open(src_path, \"w\") as f:\n+                    f.write(wrapper_src)\n+                so_path = _build_npu_ext(name, src_path, kernel_launcher=kernel_launcher_type)\n+                if debug:\n+                    with open(so_path, \"rb\") as f:\n+                        dump_manager.put(f.read(), so_name, binary=True)\n+                with open(so_path, \"rb\") as f:\n+                    so_cache_path = so_cache_manager.put(f.read(), so_name, binary=True)\n+            return so_cache_path\n+        finally:\n+            fcntl.flock(lock_file, fcntl.LOCK_UN)\n \n \n def extract_device_print_code_from_cann():\n"
+        }
+      ]
+    },
+    {
+      "sha": "9f4a2f45515db7ac383de344098862209b27a728",
+      "author": {
+        "name": "licf497",
+        "email": "1309837013@qq.com"
+      },
+      "date": "2026-09-21T20:07:42+08:00",
+      "message": "[ssbuffer](fix) set CopyOp's forWriteTPipe PIPE_MTE1 (#2224)\n\n* [ssbuffer](fix) set CopyOp's forWriteTPipe PIPE_MTE1\n\n* [ssbuffer](fix) delete kernel_name\n\n* [ssbuffer](fix) add ut",
+      "parents": [
+        "ce7a4ec33a9c8e01453e7e1d132ad66b9b3f3d79"
+      ],
+      "stats": {
+        "total_additions": 45,
+        "total_deletions": 4,
+        "files_changed": 3
+      },
+      "files": [
+        {
+          "filename": "third_party/ascend/lib/DynamicCVPipeline/AnalyzeDataFlow/AnalyzeName.cpp",
+          "status": "modified",
+          "additions": 0,
+          "deletions": 2,
+          "patch": "@@ -45,8 +45,6 @@ static constexpr llvm::StringLiteral interceptrFunc[]{\n     \"_sparse_decode_kernel\",\n     \"_sparse_decode_model1_kernel\",\n     \"sparse_flash_attention_grad_kernel\",\n-    \"flex_attention_backward_dkdv_kernel\",\n-    \"flex_attention_backward_dkdv_kernel_tasklist\",\n };\n \n static LogicalResult verifyFuncNames(ModuleOp module) {"
+        },
+        {
+          "filename": "third_party/ascend/lib/DynamicCVPipeline/SplitDataflow/InterCoreTransferAndSync.cpp",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 2,
+          "patch": "@@ -937,7 +937,6 @@ InterCoreTransferAndSyncPass::getTransferPipeConfig(Operation *transferOp,\n   auto pipeVAttr = PipeAttr::get(module.getContext(), hivm::PIPE::PIPE_V);\n   auto pipeMte3Attr = PipeAttr::get(module.getContext(), hivm::PIPE::PIPE_MTE3);\n   auto pipeMte1Attr = PipeAttr::get(module.getContext(), hivm::PIPE::PIPE_MTE1);\n-  auto pipeMAttr = PipeAttr::get(module.getContext(), hivm::PIPE::PIPE_M);\n   auto pipeSAttr = PipeAttr::get(module.getContext(), hivm::PIPE::PIPE_S);\n   TransferPipeConfig config;\n   if (isa<hivm::FixpipeOp>(transferOp)) {\n@@ -963,7 +962,7 @@ InterCoreTransferAndSyncPass::getTransferPipeConfig(Operation *transferOp,\n   } else if (isa<hivm::CopyOp>(transferOp)) {\n     config.forReadTPipe = pipeMte3Attr;\n     config.forReadPipe = pipeMte1Attr;\n-    config.forWriteTPipe = pipeMAttr;\n+    config.forWriteTPipe = pipeMte1Attr;\n     config.forWritePipe = pipeMte3Attr;\n     config.srcCoreAttr = vecCoreAttr;\n     config.dstCoreAttr = cubeCoreAttr;"
+        },
+        {
+          "filename": "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow/test_bidirectional_transfer.mlir",
+          "status": "added",
+          "additions": 44,
+          "deletions": 0,
+          "patch": "new file mode 100644\n@@ -0,0 +1,44 @@\n+// RUN: triton-opt --add-block-id-for-control-ops --data-dependency-analysis --inter-core-transfer-and-sync --mark-main-loop %s | FileCheck %s\n+\n+module attributes {hacc.target = #hacc.target<\"Ascend950PR_9579\">} {\n+  func.func @test_bidirectional_transfer(%arg0: memref<256x256xf16>) {\n+    %c0_i32 = arith.constant {ssbuffer.block_id = 5 : i32, ssbuffer.core_type = \"CUBE\"} 0 : index\n+    %c1_i32 = arith.constant {ssbuffer.block_id = 5 : i32, ssbuffer.core_type = \"CUBE\"} 1 : index\n+    %c4_i32 = arith.constant {ssbuffer.block_id = 5 : i32, ssbuffer.core_type = \"CUBE\"} 4 : index\n+    scf.for %iv = %c0_i32 to %c4_i32 step %c1_i32 {\n+      %empty = tensor.empty() {ssbuffer.block_id = 1 : i32, ssbuffer.core_type = \"CUBE\"} : tensor<256x256xf32>\n+      %alloc = memref.alloc() {ssbuffer.block_id = 1 : i32, ssbuffer.core_type = \"CUBE\"} : memref<256x256xf16>\n+      %t0 = bufferization.to_tensor %alloc {ssbuffer.block_id = 1 : i32, ssbuffer.core_type = \"CUBE\"} : memref<256x256xf16> to tensor<256x256xf16>\n+      %cst = arith.constant {ssbuffer.block_id = 1 : i32, ssbuffer.core_type = \"CUBE\"} 0.0 : f16\n+      %init = linalg.fill {ssbuffer.block_id = 1 : i32, ssbuffer.core_type = \"CUBE\"} ins(%cst : f16) outs(%empty : tensor<256x256xf32>) -> tensor<256x256xf32>\n+      %mat1 = linalg.matmul {input_precision = \"ieee\", ssbuffer.block_id = 1 : i32, ssbuffer.core_type = \"CUBE\"} ins(%t0, %t0 : tensor<256x256xf16>, tensor<256x256xf16>) outs(%init : tensor<256x256xf32>) -> tensor<256x256xf32>\n+\n+      %exp = math.exp %mat1 {ssbuffer.block_id = 2 : i32, ssbuffer.core_type = \"VECTOR\"} : tensor<256x256xf32>\n+      %exp1 = math.exp %exp {ssbuffer.block_id = 2 : i32, ssbuffer.core_type = \"VECTOR\"} : tensor<256x256xf32>\n+\n+      %alloc2 = memref.alloc() {ssbuffer.block_id = 3 : i32, ssbuffer.core_type = \"CUBE\"} : memref<256x256xf32>\n+      %t3 = bufferization.to_tensor %alloc2 {ssbuffer.block_id = 3 : i32, ssbuffer.core_type = \"CUBE\"} : memref<256x256xf32> to tensor<256x256xf32>\n+      %mat2 = linalg.matmul {input_precision = \"ieee\", ssbuffer.block_id = 3 : i32, ssbuffer.core_type = \"CUBE\"} ins(%t3, %exp1 : tensor<256x256xf32>, tensor<256x256xf32>) outs(%empty : tensor<256x256xf32>) -> tensor<256x256xf32>\n+    }\n+    return\n+  }\n+}\n+\n+// CHECK-LABEL: func.func @test_bidirectional_transfer\n+// CHECK: hivm.hir.sync_block_wait {{.*}}[<CUBE>, <PIPE_V>, <PIPE_FIX>] flag = [[FLAG_1:[0-9]+]]\n+// CHECK: hivm.hir.fixpipe\n+// CHECK: hivm.hir.sync_block_set {{.*}}[<CUBE>, <PIPE_FIX>, <PIPE_V>] flag = [[FLAG_1]]\n+// CHECK: hivm.hir.sync_block_wait {{.*}}[<VECTOR>, <PIPE_FIX>, <PIPE_V>] flag = [[FLAG_1]]\n+// CHECK: memref.memory_space_cast\n+// CHECK: bufferization.to_tensor\n+\n+// CHECK: hivm.hir.sync_block_wait {{.*}}[<VECTOR>, <PIPE_MTE1>, <PIPE_MTE3>] flag = [[FLAG_2:[0-9]+]]\n+// CHECK: hivm.hir.copy\n+// CHECK: hivm.hir.sync_block_set {{.*}}[<VECTOR>, <PIPE_MTE3>, <PIPE_MTE1>] flag = [[FLAG_2]]\n+// CHECK: hivm.hir.sync_block_set {{.*}}[<VECTOR>, <PIPE_V>, <PIPE_FIX>] flag = [[FLAG_1:[0-9]+]]\n+\n+// CHECK: hivm.hir.sync_block_wait {{.*}}[<CUBE>, <PIPE_MTE3>, <PIPE_MTE1>] flag = [[FLAG_2]]\n+// CHECK: hivm.hir.convert_layout\n+// CHECK: memref.memory_space_cast\n+// CHECK: bufferization.to_tensor\n+// CHECK: hivm.hir.sync_block_set {{.*}}[<CUBE>, <PIPE_MTE1>, <PIPE_MTE3>] flag = [[FLAG_2]]\n"
+        }
+      ]
+    },
+    {
+      "sha": "ce7a4ec33a9c8e01453e7e1d132ad66b9b3f3d79",
+      "author": {
+        "name": "kcanamgal",
+        "email": "49777780+kcanamgal@users.noreply.github.com"
+      },
+      "date": "2026-09-21T18:53:48+08:00",
+      "message": "[ssbuffer](fix) remove enabled func names (#2315)",
+      "parents": [
+        "12c9cad81553ebb3e0a13a7be309bdb3206126a5"
+      ],
+      "stats": {
+        "total_additions": 2,
+        "total_deletions": 5,
+        "files_changed": 3
+      },
+      "files": [
+        {
+          "filename": "third_party/ascend/lib/DynamicCVPipeline/AnalyzeDataFlow/AnalyzeName.cpp",
+          "status": "modified",
+          "additions": 0,
+          "deletions": 2,
+          "patch": "@@ -42,13 +42,11 @@ namespace {\n \n static constexpr llvm::StringLiteral interceptrFunc[]{\n     \"kernel_sdpa_bwd_kv\",\n-    \"flash_varlen_fwd_kernel\",\n     \"_sparse_decode_kernel\",\n     \"_sparse_decode_model1_kernel\",\n     \"sparse_flash_attention_grad_kernel\",\n     \"flex_attention_backward_dkdv_kernel\",\n     \"flex_attention_backward_dkdv_kernel_tasklist\",\n-    \"parallel_nsa_fwd_kernel\",\n };\n \n static LogicalResult verifyFuncNames(ModuleOp module) {"
+        },
+        {
+          "filename": "third_party/ascend/lib/DynamicCVPipeline/ComputeBlockOpt/SplitIfByBlockId/SplitIfByBlockId.cpp",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 2,
+          "patch": "@@ -66,8 +66,7 @@\n #include \"bishengir/Dialect/HIVM/IR/HIVMImpl.h\"\n \n static constexpr const char *DEBUG_TYPE = \"SplitIfByBlockId\";\n-static constexpr llvm::StringLiteral kSkippedKernels[1] = {\n-    \"parallel_deltaformer_fwd_kernel\"};\n+static constexpr llvm::StringLiteral kSkippedKernels[1] = {\"\"};\n #define DBGS() (llvm::dbgs() << '[' << DEBUG_TYPE << \"] \")\n #define LDBG(...)                                                              \\\n   LLVM_DEBUG({                                                                 \\"
+        },
+        {
+          "filename": "third_party/ascend/lib/DynamicCVPipeline/PreCheckAvailable/PreCheckDisablePreload.cpp",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -38,7 +38,7 @@ using namespace triton;\n // Functions that should use at most double buffering.\n static const llvm::SmallVector<llvm::StringRef> kBlacklistFuncNames = {\n     \"_attn_bwd\", \"kernel_sdpa_fwd\", \"_swa_paged_decode_kernel\",\n-    \"_mqa_logits_kernel\", \"paged_decode_fd_kernel\"};\n+    \"paged_decode_fd_kernel\"};\n \n static constexpr const char *DEBUG_TYPE = \"pre-check-disable-preload\";\n #define DBGS() (llvm::dbgs() << '[' << DEBUG_TYPE << \"] \")\n"
+        }
+      ]
+    },
+    {
+      "sha": "12c9cad81553ebb3e0a13a7be309bdb3206126a5",
+      "author": {
+        "name": "Ascend1122",
+        "email": "2912471984@qq.com"
+      },
+      "date": "2026-09-23T16:27:33+08:00",
+      "message": "[Docs](fix) fix document formatting issues (#2324)\n\n* update product name\n\n* update product name\n\n* update product name\n\n* update product name\n\n* update README\n\n* update installation guide\n\n* update product name\n\n---------\n\nCo-authored-by: liujiaxin02 <liujiaxin108@h-partners.com>",
+      "parents": [
+        "5115e9c754586ab27443927ab44d9ab4cdeb8684"
+      ],
+      "stats": {
+        "total_additions": 54,
+        "total_deletions": 53,
+        "files_changed": 19
+      },
+      "files": [
+        {
+          "filename": "README.md",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -50,7 +50,7 @@ Triton-Ascend\n \n Supported operating systems: linux (aarch64/x86_64)\n \n-Supported Ascend products: Atlas A2/A3/950 series\n+Supported Ascend products: Atlas A2 products\\Atlas A3 products\\Ascend 950PR&950DT products\n \n Minimum hardware configuration: single card with 32GB memory (recommended)\n "
+        },
+        {
+          "filename": "README_zh.md",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -50,7 +50,7 @@ Triton-Ascend\n \n 支持的操作系统：Linux(aarch64/x86_64)\n \n-支持的Ascend产品：Atlas A2/A3/950系列\n+支持的Ascend产品：Atlas A2系列产品、Atlas A3系列产品、Ascend 950PR&950DT系列产品\n \n 最小硬件配置：单卡32GB显存（推荐）\n "
+        },
+        {
+          "filename": "docs/en/FAQ.md",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -77,7 +77,7 @@ A: There is an integrated performance analysis tool (profiler). For details, see\n \n A: UB Overflow is a common issue in Triton-Ascend development. For details, see [UB Overflow Troubleshooting Guide](./debug_guide/ub_overflow.md) to troubleshoot the issue. If you're unsure how to reduce tiling to lower UB usage, you can use Autotune to automatically select the optimal configuration. For details, see [Triton-Ascend Autotune Guide](./autotune_guide.md).\n \n-When migrating operators from A5 to A2/A3, UB size differences may cause UB Overflow. If manual troubleshooting doesn't resolve the issue, Autotune can also be used to automatically select the optimal configuration.\n+When migrating operators from Ascend 950PR&950DT products to Atlas A2 products/Atlas A3 products, UB size differences may cause UB Overflow. If manual troubleshooting doesn't resolve the issue, Autotune can also be used to automatically select the optimal configuration.\n \n ## 8. Triton Usage Constraints\n "
+        },
+        {
+          "filename": "docs/en/architecture_design_and_core_features.md",
+          "status": "modified",
+          "additions": 7,
+          "deletions": 7,
+          "patch": "@@ -94,7 +94,7 @@ This project extends the support for Huawei Ascend NPU (using the CANN software\n | 19  | buf_slot_num_of_veccore                       | NPU        | Configures the number of vector-core-local buffer slots.|\n | 20  | buf_slot_num_of_crosscore                     | NPU        | Configures the number of cross-core buffer slots.|\n | 21  | buf_slot_num_of_gm                            | NPU        | Configures the number of GM load buffer slots.|\n-| 22  | compile_mode                                  | NPU        | Compilation mode: `\"simd_simt_template\"` (default) / `\"simd\"` / `\"simt_only\"`; `\"simt_only\"` is supported only on Ascend 950.|\n+| 22  | compile_mode                                  | NPU        | Compilation mode: `\"simd_simt_template\"` (default) / `\"simd\"` / `\"simt_only\"`; `\"simt_only\"` is supported only on Ascend 950PR&950DT products.|\n \n See {ref}`Compiler Option Cleanup and Compatibility <compiler-option-cleanup-and-compatibility>` for deprecated-option compatibility and rename mappings.\n \n@@ -215,9 +215,9 @@ TritonToLinalg converts ttir to linalg ir.\n | triton-to-hivm | Processes the block synchronization operations (`tl.sync_block_all`, `tl.sync_block_set`, and `tl.sync_block_wait`) of Triton and converts them into the cross-core synchronization instruction in the `HIVM` dialect of Ascend NPU. These instructions are used to manage synchronization and data dependencies in the multi-core pipeline, which is the key to pipeline optimization.| TritonCustomOpToHIVMSyncOpConversion | Converts Triton synchronization instructions to HIVM synchronization instructions.<br>• `sync_block_all`: synchronizes blocks globally.<br>• `sync_block_set`: sets a synchronization point.<br>• `sync_block_wait`: waits for a synchronization point.|\n | triton-to-llvm | Converts the inline assembly operation (`tl.inline_assembly`) in Triton to the inline assembly in the LLVM dialect, and finally maps it to a CCE hardware intrinsic function of Ascend NPU.| ElementwiseInlineAsmOpConversion | Converts `triton::ElementwiseInlineAsmOp` to `LLVM::InlineAsmOp`.|\n \n-#### 3.2.3 SIMT Compiler (Ascend 950)\n+#### 3.2.3 SIMT Compiler (Ascend 950PR&950DT products)\n \n-Ascend 950 adds SIMT support alongside the SIMD path to accelerate **unstructured / discrete** memory access (for example, indirect-index load/store).\n+Ascend 950PR&950DT products adds SIMT support alongside the SIMD path to accelerate **unstructured / discrete** memory access (for example, indirect-index load/store).\n Developers choose the compilation path via `compile_mode`.\n \n ##### 3.2.3.1 `compile_mode` Overview\n@@ -234,7 +234,7 @@ Usage examples:\n # Pure SIMD\n kernel[grid](..., compile_mode=\"simd\")\n \n-# Hybrid (default; discrete access on 950 prefers SIMT)\n+# Hybrid (default; discrete access on Ascend 950PR&950DT products  prefers SIMT)\n kernel[grid](..., compile_mode=\"simd_simt_template\")\n \n # Pure SIMT\n@@ -284,7 +284,7 @@ flowchart TD\n \n | Stage | `\"simd\"` | `\"simd_simt_template\"` | `\"simt_only\"` |\n |------|----------|--------------------------|---------------|\n-| Discrete mask handling | Split into contiguous/discrete bounds and handle with load + select / store | On Ascend 950 with tensor rank ≤ 5: mark and defer to downstream; otherwise same as left | Not run |\n+| Discrete mask handling | Split into contiguous/discrete bounds and handle with load + select / store | On Ascend 950PR&950DT products with tensor rank ≤ 5: mark and defer to downstream; otherwise same as left | Not run |\n | Unstructured access | Expand to scalar loops | Prefer SIMT indirect access (rank ≤ 5); fall back to scalar loops on failure | Not run |\n | TritonToLinalg | Standard Linalg IR lowering | Standard Linalg IR lowering | Not run |\n \n@@ -293,11 +293,11 @@ flowchart TD\n Hybrid mode does **not** move the entire kernel to SIMT. Only discrete / unstructured access points use SIMT; the rest stays on SIMD:\n \n 1. **Discrete mask handling**\n-   - If the mask is non-contiguous and Ascend 950, hybrid mode, and rank ≤ 5 are all satisfied: do not rewrite IR; only mark for downstream SIMT handling.\n+   - If the mask is non-contiguous and Ascend 950PR&950DT products, hybrid mode, and rank ≤ 5 are all satisfied: do not rewrite IR; only mark for downstream SIMT handling.\n    - Otherwise (pure SIMD or conditions not met): split the mask into contiguous / discrete parts, bound global memory access with contiguous bounds, and merge results via select.\n \n 2. **Unstructured access handling**\n-   - In Ascend 950 hybrid mode, unstructured access or marked discrete access uses the SIMT fast path:\n+   - In Ascend 950PR&950DT products hybrid mode, unstructured access or marked discrete access uses the SIMT fast path:\n      - `load` / `store` → `indirect_load` / `indirect_store` (rank ≤ 5)\n      - `atomic` operations → `hivm.custom(symbol=\"__builtin_indirect_atomic\")`\n    - If conditions are not met, fall back to scalar loops (same as `\"simd\"`)."
+        },
+        {
+          "filename": "docs/en/installation_guide.md",
+          "status": "modified",
+          "additions": 3,
+          "deletions": 3,
+          "patch": "@@ -1,6 +1,6 @@\n # Installation Guide\n \n-**Triton-Ascend** is an optimized version of Triton adapted for Huawei Ascend processors. It provides automatic kernel tuning, operator compilation and deployment capabilities. It supports Ascend Atlas A2/A3/950 series products, is compatible with core Triton syntax, and has been deeply optimized for Ascend NPU features, including automatic parsing of kernel parameters, optimized memory access logic, and improved secure deployment mechanisms.\n+**Triton-Ascend** is an optimized version of Triton adapted for Huawei Ascend processors. It provides automatic kernel tuning, operator compilation and deployment capabilities. It supports Ascend Atlas A2 products/Atlas A3 products/Ascend 950PR&950DT products, is compatible with core Triton syntax, and has been deeply optimized for Ascend NPU features, including automatic parsing of kernel parameters, optimized memory access logic, and improved secure deployment mechanisms.\n \n This guide instructs developers to install **Triton-Ascend** on **Ubuntu**, covering three installation methods: quick installation, source installation and container image installation. It also includes environment validation and common issue troubleshooting.\n \n@@ -8,7 +8,7 @@ This guide instructs developers to install **Triton-Ascend** on **Ubuntu**, cove\n \n **Hardware Requirements**\n \n-- Ascend products: Atlas A2/A3/950 series are supported.\n+- Ascend products: Atlas A2 products/Atlas A3 products\\Ascend 950PR&950DT products.\n \n - NPU configuration: at least 32 GB of memory per card is recommended.\n \n@@ -291,7 +291,7 @@ Answer: X86 and Arm use different versions of community Triton installation pack\n \n **Question 6: How to confirm the chip type**\n \n-You can use the npu-smi command to view the NPU model on the system. For example, in the output of the npu-smi info command, \"910B4\" corresponds to chip type A2 (Ascend 910b series):\n+You can use the npu-smi command to view the NPU model on the system. For example, in the output of the npu-smi info command, \"910B4\" corresponds to chip type Atlas A2 products:\n \n ```text\n root@localhost:/# npu-smi  info"
+        },
+        {
+          "filename": "docs/en/migration_guide/architecture_difference.md",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -58,7 +58,7 @@ By manually selecting the optimal tiling configurations based on your actual sce\n \n Taking the GELU operator as an example, adjusting the tiling parameters helps effectively adapt to the on-chip cache capacity limit, thereby improving execution efficiency.\n \n-Note: Atlas 800T/I A2 has an on-chip memory capacity of 192 KB. When designing the tiling strategy, ensure that the data volume of each computation cycle does not exceed this capacity.\n+Note: Atlas 800T A2/Atlas 800I A2 has an on-chip memory capacity of 192 KB. When designing the tiling strategy, ensure that the data volume of each computation cycle does not exceed this capacity.\n \n #### Example GELU Operator\n "
+        },
+        {
+          "filename": "docs/en/migration_guide/performance_guidelines.md",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -132,7 +132,7 @@ When executing Triton operators, NPUs leverage parallel mechanisms such as multi\n \n ### I. Core Principles of Data Type Optimization\n \n-Some operations of the A2/A3 vector units do not support certain data types. In this case, the corresponding vector operations will degrade to scalar operations, affecting performance. If the overall operator accuracy is not affected, it is advisable to use supported data types to improve performance.\n+Some operations of the Atlas A2 products/Atlas A3 products vector units do not support certain data types. In this case, the corresponding vector operations will degrade to scalar operations, affecting performance. If the overall operator accuracy is not affected, it is advisable to use supported data types to improve performance.\n The following operations are involved.\n \n |  **Operator Name** |  **Unsupported Data Type** |"
+        },
+        {
+          "filename": "docs/en/programming_guide/index.md",
+          "status": "modified",
+          "additions": 8,
+          "deletions": 8,
+          "patch": "@@ -201,7 +201,7 @@ The key to implementing parallel storage and computation is to properly design t\n \n ### Tiling Optimization\n \n-Before the AI Core performs computation, data needs to be transferred to the on-chip memory. The on-chip memory space is usually much smaller than the total data volume to be processed by the AI Core. For example, the on-chip memory capacity of Atlas 800T/I A2 is 192 KB. After doublebuffer is enabled by default, the capacity is reduced to half of the original capacity. Therefore, data needs to be tiled during operator computation, and only a small part of the data is loaded and processed each time.\n+Before the AI Core performs computation, data needs to be transferred to the on-chip memory. The on-chip memory space is usually much smaller than the total data volume to be processed by the AI Core. For example, the on-chip memory capacity of Atlas 800T A2/Atlas 800I A2 is 192 KB. After doublebuffer is enabled by default, the capacity is reduced to half of the original capacity. Therefore, data needs to be tiled during operator computation, and only a small part of the data is loaded and processed each time.\n \n - Example\n \n@@ -338,7 +338,7 @@ large or block number is more than what user expect due to multi-buffer feature\n \n 1. **Trigger phase:** This error occurs during kernel compilation — the Ascend backend fails when converting MLIR to binary, not during program runtime; compilation failure means no executable binary was generated for the kernel.\n \n-2. **Direct cause:** The compiler estimated that a single tile requires 3,072,256 bits of UB, while the hardware UB upper limit is 1,572,864 bits (A2 series, i.e., 192 KB), exceeding the limit by 1,499,392 bits (3,072,256 − 1,572,864 = 1,499,392), approximately 1.95 times the available capacity, resulting in a ub overflow.\n+2. **Direct cause:** The compiler estimated that a single tile requires 3,072,256 bits of UB, while the hardware UB upper limit is 1,572,864 bits (Atlas A2 products, i.e., 192 KB), exceeding the limit by 1,499,392 bits (3,072,256 − 1,572,864 = 1,499,392), approximately 1.95 times the available capacity, resulting in a ub overflow.\n \n 3. **Root cause:** ① The block size parameter (such as BLOCK_SIZE) is too large, resulting in too many elements in a single tile; ② Multi-buffer parallel storage and computation is enabled by default (the compiler-side configuration is `multiBuffer=True`, controlled by the user via the `multibuffer` parameter in `triton.Config` or kernel launch, enabled by default), creating multiple tensor copies for pipeline overlap between data transfer and computation, with some operators requiring additional local buffers, multiplying UB usage; ③ Too many intermediate tensors in the kernel, with cumulative usage exceeding the limit.\n \n@@ -350,7 +350,7 @@ The key log fields are interpreted as follows:\n | `[ConvertLinalgRToBinary] encounters error`, `Failed to run BishengHIR pipeline` | The Ascend backend failed during the MLIR-to-binary conversion phase |\n | `ub overflow` | UB (Unified Buffer) overflow: the estimated on-chip buffer requirement during compilation exceeds the hardware capacity limit |\n | `requires 3072256 bits` | UB bits required for a single tile in this compilation: 3,072,256 bits (approximately 375 KB) |\n-| `1572864 bits available` | Current hardware available UB upper limit: 1,572,864 bits, i.e., 192 KB (A2 series) |\n+| `1572864 bits available` | Current hardware available UB upper limit: 1,572,864 bits, i.e., 192 KB (Atlas A2 products) |\n | `multi-buffer feature is enabled and some ops need extra local buffer` | Compiler hint: multi-buffer (parallel storage and computation with multiple buffers) is enabled, and some operators require additional local buffer copies, which amplifies UB usage |\n \n #### Resolution Steps\n@@ -434,15 +434,15 @@ Process in the following order; recompile and verify after each step; stop once\n | Pay attention to multi-buffer impact | The compiler enables parallel storage and computation by default (`multiBuffer=True`), and multi-buffering increases UB usage proportionally with the number of buffer copies; when UB is tight, set `multibuffer=False` in Config (see the \"Parallel Storage and Computation\" section of this document) |\n | Batch processing for long sequences | When the sequence length causes the estimated usage of a single tile to approach or exceed the UB limit, use a for loop within the kernel to load/compute/store in blocks along the sequence dimension, avoiding transferring the entire segment at once |\n \n-UB usage estimation example: With 65,536 float32 elements (4 bytes) and double buffering (2 copies), a single tensor requires 65,536 × 4 × 2 × 8 = 4,194,304 bits, which already exceeds the A2 series available 1,572,864 bits; based on the A2 series 1,572,864 bits limit, the theoretical upper limit for a single float16 tensor with double buffering is approximately 49,152 elements (1,572,864 ÷ 8 ÷ 2 ÷ 2 = 49,152).\n+UB usage estimation example: With 65,536 float32 elements (4 bytes) and double buffering (2 copies), a single tensor requires 65,536 × 4 × 2 × 8 = 4,194,304 bits, which already exceeds the Atlas A2 products available 1,572,864 bits; based on the Atlas A2 products 1,572,864 bits limit, the theoretical upper limit for a single float16 tensor with double buffering is approximately 49,152 elements (1,572,864 ÷ 8 ÷ 2 ÷ 2 = 49,152).\n \n-[Note] The UB size of the A2 series products is 192KB (i.e., 1,572,864 bits). The on-chip memory specifications of each product series are as follows:\n+[Note] The UB size of the Atlas A2 products is 192KB (i.e., 1,572,864 bits). The on-chip memory specifications of each product series are as follows:\n \n | Product Series | UB Capacity | L1 Capacity |\n | --- | --- | --- |\n-| A2 series | 192K B | 512 KB |\n-| A3 series | 192K B | 512 KB |\n-| A5 series | 248K B | 512 KB |\n+| Atlas A2 products | 192KB | 512KB |\n+| Atlas A3 products | 192KB | 512KB |\n+| Ascend 950PR&950DT products | 248KB | 512KB |\n \n ## Common Single-Core Data Computation\n "
+        },
+        {
+          "filename": "docs/en/quick_start.md",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -12,7 +12,7 @@ This document uses the online installation and running of the vector addition ex\n \n Supported operating systems: Linux (aarch64/x86_64)\n \n-Supported Ascend products: Atlas A2/A3/950 series\n+Supported Ascend products: Atlas A2 products/Atlas A3 products/Ascend 950PR&950DT products\n \n Minimum hardware configuration: 32 GB memory per card (recommended)\n "
+        },
+        {
+          "filename": "docs/en/release_note.md",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -8,7 +8,7 @@ The following is the release compatibility matrix for Triton-Ascend versions:\n \n | Triton-Ascend Version | Python Version | Manylinux Version | Hardware Platform | Hardware Product |\n | --- | --- | --- | --- | --- |\n-| 3.2.0 | >=3.9, <=3.11 | glibc 2.27+, x86-64, aarch64  | Ascend NPU | Atlas A2/A3|\n+| 3.2.0 | >=3.9, <=3.11 | glibc 2.27+, x86-64, aarch64  | Ascend NPU | Atlas A2 products/Atlas A3 products|\n \n ## Release Schedule\n "
+        },
+        {
+          "filename": "docs/en/triton_api_extension/bl/triton_launch_kernel.md",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -297,7 +297,7 @@ The following environment variables affect the runtime behavior of `triton_launc\n \n ### Platform\n \n-- Ascend NPU only (Atlas A2/A3 series). GPU is not supported.\n+- Ascend NPU only (Atlas A2 products/Atlas A3 products). GPU is not supported.\n \n ### Return Value and Error Handling\n "
+        },
+        {
+          "filename": "docs/zh/FAQ.md",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -74,7 +74,7 @@ A: 有集成性能分析工具（profiler），请参考 [算子性能调优方\n **Q: 编译时报 \"UB Overflow\" 错误，如何解决？**\n \n A: UB Overflow 是 Triton-Ascend 开发中常见的问题，请参考 [UB Overflow 问题排查指南](./debug_guide/ub_overflow.md) 排查问题。如果不知道如何减小tiling来减少UB占用，可以使用Autotune来自动选择最优配置，Autotune的使用请参考[Triton-Ascend autotune 使用指南](./autotune_guide.md)。\n-A5上可运行的算子迁移到A2/A3由于UB大小的差异可能导致UB Overflow，如果手动排查不出问题，也可采用Autotune自动选择最优配置。\n+Ascend 950PR&950DT系列产品上可运行的算子迁移到Atlas A2系列产品、Atlas A3系列产品由于UB大小的差异可能导致UB Overflow，如果手动排查不出问题，也可采用Autotune自动选择最优配置。\n \n ## 8. Triton 使用限制\n "
+        },
+        {
+          "filename": "docs/zh/architecture_design_and_core_features.md",
+          "status": "modified",
+          "additions": 7,
+          "deletions": 7,
+          "patch": "@@ -94,7 +94,7 @@\n | 19  | buf_slot_num_of_veccore                       | NPU        | 配置 veccore 内部 buffer slot 数量。 |\n | 20  | buf_slot_num_of_crosscore                     | NPU        | 配置跨 core buffer slot 数量。 |\n | 21  | buf_slot_num_of_gm                            | NPU        | 配置 GM load buffer slot 数量。 |\n-| 22  | compile_mode                                  | NPU        | 编译模式：`\"simd_simt_template\"`（默认）/ `\"simd\"` / `\"simt_only\"`；`\"simt_only\"` 仅支持 Ascend 950。 |\n+| 22  | compile_mode                                  | NPU        | 编译模式：`\"simd_simt_template\"`（默认）/ `\"simd\"` / `\"simt_only\"`；`\"simt_only\"` 仅支持 Ascend 950PR&950DT系列产品。 |\n \n 已废弃选项的兼容行为和更名映射见 {ref}`编译选项清理与兼容性 <compiler-option-cleanup-and-compatibility>`。\n \n@@ -215,9 +215,9 @@ TritonToLinalg converts ttir to linalg ir.\n | triton-to-hivm | 处理Triton的块同步操作 (`tl.sync_block_all`, `tl.sync_block_set`, `tl.sync_block_wait`)，将其转换为Ascend NPU的`HIVM`方言中的跨核心同步指令。这些指令用于管理多核流水线中的同步与数据依赖，是流水优化的关键。 | TritonCustomOpToHIVMSyncOpConversion | 实现Triton同步指令到HIVM同步指令的转换：<br>• `sync_block_all`：全局块同步<br>• `sync_block_set`：设置同步点<br>• `sync_block_wait`：等待同步点 |\n | triton-to-llvm | 将Triton中的内联汇编操作 (`tl.inline_assembly`) 转换为LLVM方言的内联汇编，并最终映射为Ascend NPU的CCE硬件固有函数（Intrinsics） | ElementwiseInlineAsmOpConversion | 将 `triton::ElementwiseInlineAsmOp` 转换为 `LLVM::InlineAsmOp` 。|\n \n-#### 3.2.3 SIMT Compiler（Ascend 950）\n+#### 3.2.3 SIMT Compiler（Ascend 950PR&950DT系列产品）\n \n-昇腾 950 在 SIMD 路径之外增加 SIMT 能力，用于加速**非结构化 / 离散**访存（如间接索引的 load/store）。\n+Ascend 950PR&950DT系列产品 在 SIMD 路径之外增加 SIMT 能力，用于加速**非结构化 / 离散**访存（如间接索引的 load/store）。\n 开发者通过 `compile_mode` 选择编译路径。\n \n ##### 3.2.3.1 `compile_mode` 说明\n@@ -234,7 +234,7 @@ TritonToLinalg converts ttir to linalg ir.\n # 纯 SIMD\n kernel[grid](..., compile_mode=\"simd\")\n \n-# 混合（默认；950 上离散访存优先走 SIMT）\n+# 混合（默认；Ascend 950PR&950DT系列产品 上离散访存优先走 SIMT）\n kernel[grid](..., compile_mode=\"simd_simt_template\")\n \n # 纯 SIMT\n@@ -284,7 +284,7 @@ flowchart TD\n \n | 阶段 | `\"simd\"` | `\"simd_simt_template\"` | `\"simt_only\"` |\n |------|----------|--------------------------|---------------|\n-| 离散 mask 处理 | 拆成连续/离散边界，用 load + select / store 处理 | Ascend 950 且张量维数 ≤ 5：标记后交给下游；否则同左 | 不运行 |\n+| 离散 mask 处理 | 拆成连续/离散边界，用 load + select / store 处理 | Ascend 950PR&950DT系列产品 且张量维数 ≤ 5：标记后交给下游；否则同左 | 不运行 |\n | 非结构化访存 | 展开为标量循环 | 尽量转为 SIMT 间接访存（维数 ≤ 5）；失败则回退标量循环 | 不运行 |\n | TritonToLinalg | 常规 Linalg IR 降级 | 常规 Linalg IR 降级 | 不运行 |\n \n@@ -293,11 +293,11 @@ flowchart TD\n 混合模式**不会**把整个 kernel 切到 SIMT，只对离散 / 非结构化访存点走 SIMT，其余仍走 SIMD：\n \n 1. **离散 mask 处理**\n-   - 若判定为非连续 mask，且满足 Ascend 950、混合模式、维数 ≤ 5：不改写 IR，只标记「下游走 SIMT」。\n+   - 若判定为非连续 mask，且满足 Ascend 950PR&950DT系列产品、混合模式、维数 ≤ 5：不改写 IR，只标记「下游走 SIMT」。\n    - 否则（纯 SIMD 或不满足条件）：将 mask 拆成连续 / 离散部分，用连续边界限定全局内存访问，再通过 select 合并结果。\n \n 2. **非结构化访存处理**\n-   - 在 Ascend 950 混合模式下，对非结构化访存或已标记的离散访存走 SIMT 快速通道：\n+   - 在 Ascend 950PR&950DT系列产品 混合模式下，对非结构化访存或已标记的离散访存走 SIMT 快速通道：\n      - `load` / `store` → `indirect_load` / `indirect_store`（维数 ≤ 5）\n      - `atomic` 操作 → `hivm.custom(symbol=\"__builtin_indirect_atomic\")`\n    - 不满足条件则回退为标量循环（与 `\"simd\"` 一致）。"
+        },
+        {
+          "filename": "docs/zh/installation_guide.md",
+          "status": "modified",
+          "additions": 4,
+          "deletions": 3,
+          "patch": "@@ -1,6 +1,7 @@\n # 安装指南\n \n-**Triton-Ascend**是适配华为Ascend处理器的Triton优化版本，提供核函数自动调优、算子编译及部署能力。支持Ascend Atlas A2/A3/950系列产品，兼容Triton核心语法，并针对昇腾NPU特性进行了深度优化，包括自动解析核函数参数、优化内存访问逻辑、完善安全部署机制等。\n+**Triton-Ascend**是适配华为Ascend处理器的Triton优化版本，提供核函数自动调优、算子编译及部署能力。支持Atlas A2系列产品、Atlas A3系列产品、Ascend 950PR&950DT系列产品，兼容Triton核心语法，并针对昇腾NPU特性进行了深度优化，包括自动解析核函数参数、优化内存访问逻辑、完善安全部署机制等。\n+**Triton-Ascend**是适配华为Ascend处理器的Triton优化版本，提供核函数自动调优、算子编译及部署能力。支持Atlas A2系列产品、Atlas A3系列产品、Ascend 950PR&950DT系列产品，兼容Triton核心语法，并针对昇腾NPU特性进行了深度优化，包括自动解析核函数参数、优化内存访问逻辑、完善安全部署机制等。\n \n 本指南指导开发者在**Ubuntu**环境下安装**Triton-Ascend**，涵盖快速安装、源码安装及镜像安装三种方式，并包含环境验证与常见问题排查。\n \n@@ -8,7 +9,7 @@\n \n **硬件要求**\n \n-- Ascend产品：支持Atlas A2/A3/950系列。\n+- Ascend产品：支持Atlas A2系列产品、Atlas A3系列产品、Ascend 950PR&950DT系列产品。\n \n - NPU配置：建议单卡32GB及以上内存。\n \n@@ -286,7 +287,7 @@ triton-ascend 3.2.1 requires triton==3.5.0, but you have triton 3.5.1 which is i\n \n **问题六：如何确认芯片类型？**\n \n-可以使用npu-smi命令查看系统上的NPU型号。例如，在npu-smi info命令的输出中，“910B4”对应芯片类型A2（昇腾910b系列）：\n+可以使用npu-smi命令查看系统上的NPU型号。例如，在npu-smi info命令的输出中，“910B4”对应芯片类型Atlas A2系列产品：\n \n ```text\n root@localhost:/# npu-smi  info"
+        },
+        {
+          "filename": "docs/zh/migration_guide/architecture_difference.md",
+          "status": "modified",
+          "additions": 5,
+          "deletions": 5,
+          "patch": "@@ -59,7 +59,7 @@ xblock_sub：核内切分粒度（核内细粒度划分）\n \n 以GELU算子为例，通过调整切分参数，可以有效适配片上缓存容量限制，从而提升执行效率。\n \n-注：Atlas 800T/I A2产品的片上内存容量为192KB，因此在设计切分策略时需考虑该限制，确保每轮计算的数据量不超过片上内存容量。\n+注：Atlas 800T A2训练服务器、Atlas 800I A2推理服务器的片上内存容量为192KB，因此在设计切分策略时需考虑该限制，确保每轮计算的数据量不超过片上内存容量。\n \n #### GELU算子示例\n \n@@ -184,12 +184,12 @@ tl.load() 和 tl.store()\n \n | 选项      | 能力       | 是否开启 |\n | ----------------- | ------------ | ----------------- |\n-| multibuffer                                   | 开启流水并行数据搬运  | 默认true； true , false。 autotune中可配置                     |\n-| unit_flag                                     | cube搬出的一个优化项                                         | 默认None；true , false。  autotune中可配置                     |\n-| limit_auto_multi_buffer_only_for_local_buffer | CV算子一个优化项，cube搬出的一个优化项                         | 默认None；true , false。 autotune中可配置 |\n+| multibuffer                                   | 开启流水并行数据搬运  | 默认true；true , false。autotune中可配置                     |\n+| unit_flag                                     | cube搬出的一个优化项                                         | 默认None；true , false。autotune中可配置                     |\n+| limit_auto_multi_buffer_only_for_local_buffer | CV算子一个优化项，cube搬出的一个优化项                         | 默认None；true , false。autotune中可配置 |\n | limit_auto_multi_buffer_of_local_buffer       | cube算子开启double buffer具体的scope                         | 默认None；可取值 \"no-limit\" 或 \"no-l0c\"，autotune中可配置           |\n | set_workspace_multibuffer                     | 配置 workspace multi-buffer 档位，用于为 workspace 相关数据搬运启用多缓冲。 | 默认None；可取单个值，如 2 或 4；autotune中可配置候选值                            |\n-| enable_hivm_auto_cv_balance                   | 启用或禁用自动 CV balance，用于在 CV 融合场景下平衡 Cube 与 Vector 执行。 | 默认None；true , false。 autotune中可配置 |\n+| enable_hivm_auto_cv_balance                   | 启用或禁用自动 CV balance，用于在 CV 融合场景下平衡 Cube 与 Vector 执行。 | 默认None；true , false。autotune中可配置 |\n | tile_mix_vector_loop                          | CV算子的一个优化项，当前vector可以切几份                        | 默认None；可取单个值，如 2、4 或 8；autotune中可配置候选值                       |\n | tile_mix_cube_loop                            | CV算子一个优化项，当前cube可以切几份      | 默认None；可取单个值，如 2、4 或 8；autotune中可配置候选值                      |\n "
+        },
+        {
+          "filename": "docs/zh/migration_guide/performance_guidelines.md",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -131,7 +131,7 @@ Triton算子在NPU上执行时，为了提升性能，NPU底层提供multi buffe\n \n ### 一、数据类型优化核心原则\n \n-A2/A3 向量运算单元的部分运算操作不支持某些数据类型，这种场景下，对应的向量运算会退化为标量运算，影响性能。在确定不影响整体算子精度的情况下，建议使用支持的数据类型，提升性能。\n+Atlas A2系列产品、Atlas A3系列产品 向量运算单元的部分运算操作不支持某些数据类型，这种场景下，对应的向量运算会退化为标量运算，影响性能。在确定不影响整体算子精度的情况下，建议使用支持的数据类型，提升性能。\n 主要涉及以下操作\n \n |  **OP名称**  |  **不支持的数据类型**  |"
+        },
+        {
+          "filename": "docs/zh/programming_guide/index.md",
+          "status": "modified",
+          "additions": 8,
+          "deletions": 8,
+          "patch": "@@ -200,7 +200,7 @@ Triton-Ascend支持两种数据处理模式：存算串行和存算并行。\n \n ### Tiling优化\n \n-AI Core进行计算的时候要先将数据搬运至片上内存，而片上内存的空间通常远小于AI Core要处理的总数据量，以Atlas 800T/I A2产品为例，片上内存容量为192KB，默认开启doublebuffer特性后容量还会减至原来的一半。因此算子计算时需要对数据进行分块操作，每次只加载处理其中的一小部分数据。\n+AI Core进行计算的时候要先将数据搬运至片上内存，而片上内存的空间通常远小于AI Core要处理的总数据量，以Atlas 800T A2训练服务器、Atlas 800I A2推理服务器产品为例，片上内存容量为192KB，默认开启doublebuffer特性后容量还会减至原来的一半。因此算子计算时需要对数据进行分块操作，每次只加载处理其中的一小部分数据。\n \n - 示例\n \n@@ -337,7 +337,7 @@ large or block number is more than what user expect due to multi-buffer feature\n \n 1. **触发阶段：** 该错误发生在核函数编译期——昇腾后端在将MLIR转换为二进制阶段失败，而非程序运行期；编译失败意味着核函数未生成可执行二进制。\n \n-2. **直接原因：** 编译器估算单个tile所需UB为3072256 bit，而硬件可用UB上限为1572864 bit（A2系列，即192 KB），需求量超出上限1499392 bit（3072256 − 1572864 = 1499392），约为可用容量的1.95倍，因此判定ub overflow。\n+2. **直接原因：** 编译器估算单个tile所需UB为3072256 bit，而硬件可用UB上限为1572864 bit（Atlas A2系列产品，即192 KB），需求量超出上限1499392 bit（3072256 − 1572864 = 1499392），约为可用容量的1.95倍，因此判定ub overflow。\n \n 3. **根本原因：** ①块大小参数（如BLOCK_SIZE）过大，单个tile元素数过多；②编译器默认开启multi-buffer存算并行（编译器侧配置项为`multiBuffer=True`，用户在`triton.Config`或kernel launch中通过`multibuffer`参数控制，默认开启），为搬运与计算的流水重叠创建多份张量副本，部分算子需要额外local buffer，使UB占用成倍放大；③核函数内中间张量过多，累积占用超过上限。\n \n@@ -349,7 +349,7 @@ large or block number is more than what user expect due to multi-buffer feature\n | `[ConvertLinalgRToBinary] encounters error`、`Failed to run BishengHIR pipeline` | 昇腾后端在MLIR到二进制的转换阶段失败 |\n | `ub overflow` | UB（统一缓冲区）溢出：编译期估算的片上缓冲区需求量超过硬件容量上限 |\n | `requires 3072256 bits` | 本次编译中单个tile所需的UB位数：3072256 bit（约375 KB） |\n-| `1572864 bits available` | 当前硬件可用UB上限：1572864 bit，即192 KB（A2系列） |\n+| `1572864 bits available` | 当前硬件可用UB上限：1572864 bit，即192 KB（Atlas A2系列产品） |\n | `multi-buffer feature is enabled and some ops need extra local buffer` | 编译器提示：multi-buffer（存算并行多缓冲）已开启，部分算子需要额外local buffer副本，会放大UB占用 |\n \n #### 解决步骤\n@@ -433,15 +433,15 @@ large or block number is more than what user expect due to multi-buffer feature\n | 关注multi-buffer影响 | 编译器默认开启存算并行（`multiBuffer=True`），多缓冲使UB占用按buffer份数成倍增加；UB紧张时在Config中设置`multibuffer=False`（参见本文档「存算并行」章节） |\n | 长序列分批处理 | 当序列长度导致单tile估算占用接近或超过UB上限时，在核函数内用for循环按序列维度分块load/计算/store，避免单次整段搬运 |\n \n-UB占用估算示例：65536个float32元素（4字节）、双缓冲（2份）时，仅该张量即需65536×4×2×8 = 4194304 bit，已超过A2系列可用的1572864 bit；按A2系列1572864 bit上限反推，单张量float16、双缓冲下的理论上限约49152个元素（1572864÷8÷2÷2 = 49152）。\n+UB占用估算示例：65536个float32元素（4字节）、双缓冲（2份）时，仅该张量即需65536×4×2×8 = 4194304 bit，已超过Atlas A2系列产品可用的1572864 bit；按Atlas A2系列产品1572864 bit上限反推，单张量float16、双缓冲下的理论上限约49152个元素（1572864÷8÷2÷2 = 49152）。\n \n-【注意】A2系列产品UB大小为192 KB（即1572864 bit）。各产品系列片上内存规格如下：\n+【注意】Atlas A2系列产品UB大小为192KB（即1572864bit）。各产品系列片上内存规格如下：\n \n | 产品系列 | UB容量 | L1容量 |\n | --- | --- | --- |\n-| A2系列 | 192 KB | 512 KB |\n-| A3系列 | 192 KB | 512 KB |\n-| A5系列 | 248 KB | 512 KB |\n+| Atlas A2系列产品 | 192KB | 512KB |\n+| Atlas A3系列产品 | 192KB | 512KB |\n+| Ascend 950PR&950DT系列产品 | 248KB | 512KB |\n \n ## 通用单核数据运算\n "
+        },
+        {
+          "filename": "docs/zh/quick_start.md",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -12,7 +12,7 @@\n \n 支持的操作系统：Linux（aarch64/x86_64）\n \n-支持的Ascend产品：Atlas A2/A3/950系列\n+支持的Ascend产品：Atlas A2系列产品、Atlas A3系列产品、Ascend 950PR&950DT系列产品\n \n 最小硬件配置：单卡32GB内存（推荐）\n "
+        },
+        {
+          "filename": "docs/zh/release_note.md",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -8,7 +8,7 @@ Triton-Ascend 版本提供了一个稳定的代码基础快照，封装成可以\n \n | Triton-Ascend 版本 | Python 版本 | Manylinux 版本 | 硬件平台 | 硬件产品 |\n | --- | --- | --- | --- | --- |\n-| 3.2.0 | >=3.9, <=3.11 | glibc 2.27+, x86-64, aarch64  | Ascend NPU | Atlas A2/A3|\n+| 3.2.0 | >=3.9, <=3.11 | glibc 2.27+, x86-64, aarch64  | Ascend NPU | Atlas A2系列产品、Atlas A3系列产品|\n \n ## 发布计划\n \n"
+        }
+      ]
+    },
+    {
+      "sha": "5115e9c754586ab27443927ab44d9ab4cdeb8684",
+      "author": {
+        "name": "hongziqi",
+        "email": "1102229410@qq.com"
+      },
+      "date": "2026-09-23T16:17:00+08:00",
+      "message": "[docs](fix) move active maintainers to the front (#2348)",
+      "parents": [
+        "a7066950f388c151fcb91c428ef16b0e90721133"
+      ],
+      "stats": {
+        "total_additions": 4,
+        "total_deletions": 4,
+        "files_changed": 1
+      },
+      "files": [
+        {
+          "filename": "MAINTAINERS.md",
+          "status": "modified",
+          "additions": 4,
+          "deletions": 4,
+          "patch": "@@ -3,11 +3,14 @@\n | Name | ID | Join Date |\n |---|---|---|\n | Kaixin Yang | kaixin1976 | 2025-09-27 |\n-| Yichen Liu | Skyminers | 2026-09-17 |\n | Ziqi Hong | hongziqi | 2026-03-26 |\n | Tianyao Wu | WuTYSFG | 2026-05-11 |\n | Yihan Zhou | KanuaK | 2026-05-11 |\n | Zhijie Zhao | insanecoder-zzj | 2025-09-27 |\n+| Zhao Jingkai | elstainniles | 2026-09-17 |\n+| Liu Huan  | LH-123L | 2026-09-17 |\n+| Wei Zhan | zhanwei33 | 2026-09-17 |\n+| Yichen Liu | Skyminers | 2026-09-17 |\n | Chunli Zhang | HEX1A0A | 2025-09-27 |\n | Ce Zhu | Cadenza4287 | 2025-12-23 |\n | Xuan Peng | HinPeng | 2025-12-23 |\n@@ -20,6 +23,3 @@\n | Kaipeng Xing | kpxing | 2025-09-27 |\n | Peiji Chen | zackc6 | 2026-05-07 |\n | Ingu Kung | kig9981 | 2026-05-08 |\n-| Liu Huan  | LH-123L | 2026-09-17 |\n-| Wei Zhan | zhanwei33 | 2026-09-17 |\n-| Zhao Jingkai | elstainniles | 2026-09-17 |\n"
+        }
+      ]
+    },
+    {
+      "sha": "a7066950f388c151fcb91c428ef16b0e90721133",
+      "author": {
+        "name": "jiahao su",
+        "email": "damow890@gmail.com"
+      },
+      "date": "2026-09-23T10:38:44+08:00",
+      "message": "change a5 runner (#2351)",
+      "parents": [
+        "d1c8b179ed86d19243b7445777805fa8bbd6e198"
+      ],
+      "stats": {
+        "total_additions": 1,
+        "total_deletions": 1,
+        "files_changed": 1
+      },
+      "files": [
+        {
+          "filename": ".github/workflows/runner-preparation.yml",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -117,7 +117,7 @@ jobs:\n                 \"python_version\": \"3.11\"\n               },\n               {\n-                \"runs_on\": [\"linux-amd64-a5-4\"],\n+                \"runs_on\": [\"linux-amd64-a5-2\"],\n                 \"chip_type\": \"950\",\n                 \"cann_version\": \"9.1.0\",\n                 \"os\": \"ubuntu22.04\",\n"
+        }
+      ]
+    }
+  ]
+}
