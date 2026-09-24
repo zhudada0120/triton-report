@@ -1,0 +1,12 @@
+{
+  "content_hash": "60513f9c1b56c7f5",
+  "analysis": {
+    "interface_summary": "定义 1 个类；定义 7 个函数",
+    "key_interfaces": [
+      "TopK",
+      "TopK.forward",
+      "TopK.backward"
+    ]
+  },
+  "cached_at": "2026-09-25T02:03:18.681030+08:00"
+}

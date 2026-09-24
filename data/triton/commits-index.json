@@ -1,4 +1,48 @@
 {
+  "654b1d1499569f6f66ad4db13f6478305874f8f4": {
+    "date": "2026-09-24",
+    "msg": "[BAKCEND] Fix FP4 TMA descriptor selection for small block K (#11935)"
+  },
+  "6264aa33593b2ff792762fe79bbcdf1e103c2b62": {
+    "date": "2026-09-24",
+    "msg": "[AMD] Update CodeGen to triton-lang/llvm-project@d26ff26e (#11916)"
+  },
+  "bcc4d534df85cb78dec44b27189b8b5564ba69e2": {
+    "date": "2026-09-24",
+    "msg": "[triton_kernels] Fix gathered activation scale indexing (#11928)"
+  },
+  "2cfa16702a3ad04e3f4d4f34f4791c4ecfcde7e5": {
+    "date": "2026-09-24",
+    "msg": "[GSan] Add write_once allocations (#11774)"
+  },
+  "66b547ac673076e02d8d7848dfb2b6749dbd8847": {
+    "date": "2026-09-24",
+    "msg": "[Backend] Fix FP8 conversion rounding (#11924)"
+  },
+  "1f60228a59fb5f6a9085f0ad19965f38b1dc3729": {
+    "date": "2026-09-24",
+    "msg": "[AMD][gfx1250] Fix unit tests for multiplication and TDM descriptors (#11921)"
+  },
+  "140c33fc3cc15593a408b740cc3ce042cc1544d8": {
+    "date": "2026-09-24",
+    "msg": "Disable floating-point fusion by default (#11270)"
+  },
+  "d816107c1f2e9fc79f45a1a3562203551a8f95e9": {
+    "date": "2026-09-24",
+    "msg": "[PIPELINE] Keep dependent loads after GDC waits (#11906)"
+  },
+  "2a4c9f1cd3302c5c15590ea305d5ad44a03b2746": {
+    "date": "2026-09-24",
+    "msg": "[Frontend] Fix constexprs being prematurely to_tensor'd (#11913)"
+  },
+  "872babdc16f00d6f170c9dcd92e2323d4b044442": {
+    "date": "2026-09-24",
+    "msg": "[Build][NFC] Upgrade to C++20 & use some new features (#11920)"
+  },
+  "9e10042dac1594088df1d320d2c9bf94dc6fb9ca": {
+    "date": "2026-09-24",
+    "msg": "[AMD] Build AMD CodeGen LLVM at d26ff26ef4e9 (#11925)"
+  },
   "b7fdaf802b0455004e27ad782c5beb21c6d58660": {
     "date": "2026-09-23",
     "msg": "[GSan] Skip fabric tests on unsupported devices (#11919)"

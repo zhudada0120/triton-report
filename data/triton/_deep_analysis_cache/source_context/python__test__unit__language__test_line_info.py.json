@@ -1,0 +1,10 @@
+{
+  "content_hash": "669095e11a8dc0ad",
+  "analysis": {
+    "interface_summary": "定义 1 个类；定义 36 个函数",
+    "key_interfaces": [
+      "Point"
+    ]
+  },
+  "cached_at": "2026-09-25T02:05:14.493371+08:00"
+}

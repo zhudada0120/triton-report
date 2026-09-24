@@ -1,0 +1,157 @@
+{
+  "date": "2026-09-24",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-09-25T02:08:47.894824+08:00",
+  "daily_summary": "当日变更集中在 TritonToLinalg 转换链的重构与修复上：最重要的一项 (#2380) 彻底移除了 UseAnalysis 数据流分析及其 MetaUse/MixUse 标记机制，把 TritonToLinalg 从「单次混合转换 + 使用分析」改为「内存/指针阶段 + 数值阶段」的分阶段 lowering（引入 MemoryTypeConverter、addMemoryConversionLegalities、finishMemoryConversion/verifyNoTritonPointers 等），配合 MaskAnalysis 对 i1 splat 掩码的保守处理、BlockPtrAnalysis 的结构化指针解析，整体是较大的架构性重构；其余为配套小修复：#2375 恢复 CustomOp/CustomMacroOp 的 cube 判定（保证 mix_mode 标注正确）、#2366 让 lib-call 函数名在创建前唯一化以修复同名 kernel 断言崩溃、#2361/#2362 修正 dtype 错误信息与 atan2 精度/-0.0 符号处理、#2349 修 clear_l2_cache 基准路径、#2343 在 TRITON_DEBUG 下 dump kernel 二进制。",
+  "test_impact_summary": "当日测试影响较大且方向明确。#2380 引入/重写了多个 lit 测试（remove_use_analysis.mlir、block_pointer_memory_legality.mlir、mixed_use_splat_mask.mlir）、修改了 test_while_loop_index_tensor.mlir 与 atomic_rmw_block.mlir 的 CHECK，并将两个 pytest 文件名从 use_analysis 语义改为 memory_dependency/dead_control_flow 语义，说明 UseAnalysis 移除后依赖 MetaUse 标记的回归看护点需要重新定位到「分阶段 lowering 正确性」上，原有纯粹针对 UseAnalysis 的断言不再适用。#2375、#2366、#2362 都直接新增/放宽了 lit 或 pytest 断言（cube mix_mode、lib-call 唯一名、atan2 -0.0 符号位），#2349、#2361 则是元数据/消息层面变更，对既有测试影响有限但建议校验错误信息文案与 benchmark 采集正确性。整体看，现有测试已覆盖大部分变更点，但分阶段 lowering 的中间边界（pointer-free 验证、descriptor handoff attr 清理时机、共享 i1 splat 掩码多用户场景）值得补充更细粒度的 FileCheck 断言以避免回归。",
+  "commits": [
+    {
+      "sha": "e3707df24371d123e9c3e265794c68c778ca26fd",
+      "comment": "本次核心重构：从 TritonToLinalg 中移除 UseAnalysis（删除 UseAnalysis.h/.cpp 共约 780 行，删除 MetaUseEraser、runUseAnalysis、isMetaUse/isMixUse/getIndirectLoadInterfaceOpType 等工具，并去掉 CMakeLists 中的 UseAnalysis.cpp），把原先「使用分析打 MetaUse/MixUse 标记 → 单次 applyPartialConversion → MetaUseEraser 擦除」的单趟流程，改为显式的两阶段 lowering：阶段一 MemoryTypeConverter 只转换含指针的类型（tensor<ptr>→memref、ptr<i1>→memref<?xi8>），通过 addMemoryConversionLegalities 仅标记 triton/ascend 指针相关内存 op（tt.load/store、AtomicRMW/CAS、IndirectLoad/Store、StrideLoad/Store、GatherOutToUb/ScatterUbToOut、IndexSelect/IndexPut 等）为 illegal，随后 finishMemoryConversion 先移除 pointer descriptor handoff 属性再做 CSE/Canonicalize，并用 verifyNoTritonPointers 校验操作数/结果/签名/region 参数均无 tt.ptr；阶段二 convertRemainingComputations 沿用 TritonTypeConverter + 数值合法性规则完成剩余 Triton 计算 op 的转换。为避免删除 UseAnalysis 后共享值被错误擦除或过度保守，MaskAnalysis::parseSplat 改为：i1 splat 一律视为统一掩码、不再依赖用户白名单（修复「同一 i1 splat 同时被 mask 与数值消费者使用」时丢失 active extent 的问题，并覆盖 Marlin atomic 路径）；BlockPtrAnalysis::parse 把 AddPtr/Bitcast 视为结构性地址表达式直接从原始操作数解析，parseBitcast 也不再按 MetaUse/BlockArgument 决定「解析 vs remap」而统一保留 source/offset/stride 只改元素类型；MemoryPointerConverter 扩展支持标量与张量指针表达式，并保留标量 ptr<i1>→ptr<i8> 的转发身份；同时删除了 preservePointerDescriptorComputations、appendProducerOperands、hasPointerDescriptorRebuildProvenance、isDeadRangeUpdate/eraseDeadRangeCarriers 等为 UseAnalysis 服务的保护性代码。风险点：分阶段 lowering 的执行顺序与合法性规则是隐式契约（stage1 只处理指针、stage2 依赖 stage1 的 pointer-free 不变量），MemoryTypeConverter 对 non-pointer tensor 保持 tensor 类型意味着若有 op 被 stage1 标记为 illegal 但缺少对应 pattern 会直接失败；把 isArithOrMathOpLegal 中的 MetaUse 分支删除后，原先靠 MetaUse 抑制的算子在 stage2 才转换，需要确认不会有迭代顺序依赖；mask 语义放宽（i1 splat 不再检查用户）若未来出现「同一 splat 一半做数值、一半做 mask 且语义要求不同 extent」的边界场景需回归验证。总体上该重构方向正确（去掉脆弱的启发式标记、让 DCE 自然回收死地址链），但属于 high-risk 变更。",
+      "tags": [
+        "refactor",
+        "high-risk",
+        "bugfix",
+        "third_party/ascend",
+        "TritonToLinalg"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "重构删除了 UseAnalysis/MetaUse 标记机制并改变了 TritonToLinalg 的转换语义与阶段划分，原有针对 UseAnalysis/MetaUse 的 lit 断言与 pytest 需要重写或重命名，同时新增了大量针对分阶段 lowering、block pointer 合法性、共享 i1 splat 掩码的回归用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/remove_use_analysis.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/block_pointer_memory_legality.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/mixed_use_splat_mask.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/test_while_loop_index_tensor.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/atomic_rmw_block.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_atomic_rmw_memory_dependency.py",
+          "third_party/ascend/unittest/pytest_ut/test_dead_control_flow_cleanup.py"
+        ]
+      },
+      "message": "[TritonToLinalg](feat) remove UseAnalysis with staged lowering (#2380)\n\n* [UseAnalysis](feat) remove UseAnalysis\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* [TritonToLinalg](refactor) simplify staged conversion\n\nRemove redundant numerical-stage pointer legality and manual dead-range\ncleanup after memory conversion, and simplify descriptor slot validation.\n\nExtract target detection, preparation, memory/numerical conversion and\nfinalization from runOnOperation. The extraction preserves cleanup order,\nmarker lifetimes and existing failure behavior, and makes the pointer-free\nstage boundary explicit.\n\nValidation: source comparison, clang-format 19.1.6 on changed lines, and\ngit diff --check. Builds, lit and NPU tests were not run for the extraction.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* [TritonMemoryAccess](fix) preserve shared boolean mask extents\n\nInterpret an i1 splat as a uniform mask independently of its other users.\nAfter removing UseAnalysis cloning, numerical and indirect-memory users can\nshare that value with a regular load, store or atomic. The old user whitelist\nlost the active extent and could reject a conjunction with a per-lane bound.\n\nCover mixed numerical/memory uses, uniform masks on multi-element blocks,\nmask intersections, and the Marlin atomic path after unstructured lowering.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n---------\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n(cherry picked from commit 4d8d7dd83d0125bf41240c027a7bd9052b600026)"
+    },
+    {
+      "sha": "123e83d6aebd1235c5022db0b7c2da72d02d2f09",
+      "message": "[TritonToLinalg](fix) check custom op for mix_mode (#2375)",
+      "comment": "在 TritonToLinalgPass::runOnOperation 中检测 existDot 的逻辑里补回 hivm::CustomOp 与 hivm::CustomMacroOp 的 CUBE/CUBE_AND_VECTOR 判定。此前该判定仅检查 tt.dot/tt.dot_scaled/al.dot/conv1d/conv2d，而由 cube 单元执行的 library call（hivm.custom/custom_macro，tilelang/CANN 库生成的算子）不会被识别为 cube，导致 kernel 被误标为纯 AIV（simd），未按 mix_mode 处理，进而 cube tile-and-slice 因 cbuf 溢出而失败。修复后 mix_mode 属性与后续 costmodel/UB 预算基于正确的 existDot 计算。这是对 e3707df2 重构后 runOnOperation 顺序变化的配套修复（该逻辑在新代码中被抽出为 collectCubeRequirements，本次为 cherry-pick 版本）。属于低风险、面窄但语义重要的正确性修复。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "third_party/ascend",
+        "TritonToLinalg"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "该修复改变 mix_mode/parallel_mode 的判定结果，会影响含 hivm.custom/custom_macro cube 库调用的 kernel 的标注与运行时行为，建议新增/复用涵盖此类算子的端到端或 IR 级测试验证 existDot/mix_mode 正确。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/",
+          "third_party/ascend/unittest/pytest_ut/",
+          "third_party/ascend/backend/runtime/costmodel/"
+        ]
+      }
+    },
+    {
+      "sha": "223136d33c625523791590f2a2d9d6ef4be30295",
+      "message": "[testing](fix) fix the bug when open clear_l2_cache (#2349)",
+      "comment": "修复 do_bench_npu_mspti 中 clear_l2_cache 路径：原来使用 buffer.zero_()，MSProvider/mstx 采集时 zero_ 会作为独立 kernel 被记录且被过滤规则（按 'zero'/'zeroslike' 名称匹配）误判，导致缓存清理操作与目标 kernel 混淆或漏掉。改为使用 buffer.sum() 作为一次真实访存（并依赖最新的 'reducesum' 名称过滤），同时在 buffer 创建时插入了 buffer.float()（避免类型转换引入额外 kernel/类型问题）、buffer.sum() 与 torch.npu.synchronize() 以「抖出」潜在 NPU 错误，并在每次 fn() 调用后显式 torch.npu.synchronize() 以获得更干净的计时。属于基准测试基础设施修复，不影响编译链，风险低；但改动过滤关键词（从 zero 改为 reducesum）意味着如果未来 clear 操作改成别的算子名会再次失配，建议保持与实现一致的命名约定。",
+      "tags": [
+        "bugfix",
+        "test",
+        "low-risk",
+        "third_party/ascend",
+        "benchmark"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "该变更只影响 do_bench_npu_mspti 的 L2 cache 清理/事件过滤逻辑，属于测试基础设施内部的时序与过滤修复，不改变被测 kernel 的语义与接口；现有 benchmark 相关测试即可覆盖，无需新增用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/backend/testing.py"
+        ]
+      }
+    },
+    {
+      "sha": "122de7a62488d512996bff811ab81375f9cfd350",
+      "message": "[dtype](fix) The chip name in the error message in modified (#2361)",
+      "comment": "三处小改动：(1) dtype_guard.py 的 validate 中把 arch_name 从 'Ascend 910_95/950' / 'Ascend A2/A3' 改为官方产品名 'Ascend 950PR&950DT' / 'Atlas A2 products/Atlas A3 products'，并去掉报错消息里多余的 '[Ascend]' 前缀（因为异常本身已带上下文）；(2) op_dtype_config.py 的某条 `exp` 相关规则 supported 列表在 a2 与 a5 都补入 'fp16'，使运行时黑名单与 patch 中的 `_check_dtype` 声明保持一致；(3) patch 文件 triton-ascend-3.6.0.patch 中同步把 exp 的 `_check_dtype(dtypes=[\"fp16\",\"fp32\",\"fp64\"])` 改为 `[\"fp16\",\"fp32\"]`，即让 exp 在 Ascend 上支持 fp16/fp32 而非 fp64。变更本身是文案 + dtype 白名单的一致性修正，风险低，但需注意 patch 文件与运行时代码的一致性（.patch 是构建时实际生效的源，若 op_dtype_config 与 patch 不同步会导致运行时校验与编译期校验出现差异）。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "docs",
+        "third_party/ascend",
+        "dtype"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "修改了 exp 等算子的支持 dtype 集合与报错文案，既有断言具体错误字符串或 dtype 支持列表的测试可能失败，需要对错误信息与 dtype 支持相关的测试用例做相应校验/放宽。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/",
+          "third_party/ascend/backend/dtype_guard.py",
+          "third_party/ascend/backend/op_dtype_config.py",
+          "third_party/ascend/patch/triton-ascend-3.6.0.patch"
+        ]
+      }
+    },
+    {
+      "sha": "088ff7913ab62636e03e9db96d9e9774ac49de46",
+      "message": "[TritonToLinalg](fix) unique lib-call names before creating the func op (#2366)",
+      "comment": "修复一个编译器崩溃：当用户 kernel 名称等于 TritonToLinalg 生成的库调用基础名（triton_cumsum/triton_cumprod/triton_cummax/triton_cummin/triton_print/triton_assert）时，ScanConverter、DevicePrintConverter、DeviceAssertConverter 先以硬编码基名创建 func::FuncOp，再构造 SymbolTable 调 renameToUnique，此时模块内已存在同名符号，SymbolTable 构造函数触发 `inserted.second` 断言失败（mlir/lib/IR/SymbolTable.cpp:136），用户看到的是 '[ConvertTritonIRToLinalgIR] encounters error: PassManager::run failed'。改为在创建 op 前调用 generateUniqueFuncName()（与文件中其他十个 converter 一致），并删除 SymbolTable 及失败分支；副作用是首个声明现在为 triton_cumsum 而非 triton_cumsum_0（generateUniqueFuncName 仅在冲突时加后缀），因此 lit 期望被放宽为 triton_print{{[_0-9]*}} / triton_cumsum[_0-9]*。逻辑清晰、与既有做法统一，风险低；需确认 generateUniqueFuncName 的可见性与 moduleOp 上下文在所有调用点可用（已由修改本身验证），并留意 ScanConverter 中 printFuncNameBase vs funcName 的传递已由现有变量携带。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "third_party/ascend",
+        "TritonToLinalg"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "库调用函数名不再恒定带 _0 后缀，既有断言 @triton_print_0 / @triton_cumsum_[0-9]+ 等需要放宽；同时该修复针对「kernel 名与库调用基名同名」的崩溃场景建议补一条直接回归用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/test_device_print_offset_rewrite.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/dot_int4.mlir",
+          "third_party/ascend/unittest/Conversion/950PR/TritonToLinalg/strided_axis_coalescing.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/ (新增同名 kernel 回归)"
+        ]
+      }
+    },
+    {
+      "sha": "ec9b9b8dfc6af979fab19187904a9bcc4d60badb",
+      "message": "[libdevice](fix) Fix atan2 precision issue (#2362)",
+      "comment": "重写 Cann libdevice 的 atan2（第三部分：精度修复）。原实现用 where(arg1==0,...) 处理 x==0 象限，无法区分 ±0.0（比较运算无法分辨 -0.0/+0.0），且 y/x 在 x==0 附近不有限，导致象限选择错误（例如 atan2(-0.0,-1.0) 应为 -pi）。新实现：先把输入转 fp32 做 atan(y/x)，用 signbit 判定 y 的符号；单独处理 x_is_zero 分支——当 y 非零取 ±half_pi，当 y 也是零时根据 x 是否为负零取 ±pi / ±0.0，再用 y_negative 翻转符号；最后对 x<0 用 y 的符号决定 ±pi 旋转。所有 where 逻辑改在 fp32 上算完再 cast 回原 dtype，避免半精度中间量引入误差。测试用例新增 (-1.0,-0.0) 与 (1.0,-0.0)，并额外断言结果的 signbit 与参考实现一致（因为 -0.0 与 +0.0 数值比较相等，必须单独校验符号位）。属于数学库精度修复，逻辑正确、测试覆盖到位，风险低；需注意依赖 signbit 在上游 language/cann 扩展中可用，以及所有 where 分支在 x==0 同时 y==0 时结果的符号语义是否与 IEEE atan2 完全一致。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "third_party/ascend",
+        "libdevice",
+        "math"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "atan2 象限与 ±0.0 符号语义被修正，并已新增特殊输入 (-1.0,-0.0)/(1.0,-0.0) 与 signbit 断言；建议同时确保其它 dtype（fp16/bf16）下精度与符号的回归覆盖。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_atan2.py",
+          "third_party/ascend/language/cann/libdevice.py"
+        ]
+      }
+    },
+    {
+      "sha": "fd02e857d64074cb6143d9591a15dfc23b342022",
+      "message": "[Backend](fix) dump kernel binary under TRITON_DEBUG (#2343)",
+      "comment": "在 opt.debug（TRITON_DEBUG）开启时把编译出的 kernel 二进制拷贝进 TRITON_DEBUG dump 目录：新增 _dump_kernel_binary(metadata_hash, bin_path) 通过 get_dump_manager + put(binary=True) 落盘，并在 linalg_to_bin_enable_npu_compile_910_95 与 linalg_to_bin_enable_npu_compile_A2_A3 两条分支的 npucompile 成功后调用。顺带把两条分支 DEBUG 打印里原先变量名 bin_file 误用改为 bin_path（修正了打印的路径与实际 dump 文件不一致的问题）。改动仅作用于调试输出路径，不影响正常编译产物与元数据，风险低；但需确保 get_dump_manager 在 debug 关闭时不被意外触发（目前由 opt.debug 守卫），以及 bin_path 指向的中间文件在该时间点仍然存在（在成功分支内调用，符合预期）。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "third_party/ascend",
+        "compiler",
+        "debug"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅影响 TRITON_DEBUG 下的调试产物落盘与调试日志路径显示，不改变编译产物、元数据或公开接口；现有测试无需更新，可选地增加断言 debug dump 文件存在性的轻量测试。",
+        "suggested_test_areas": [
+          "third_party/ascend/backend/compiler.py"
+        ]
+      }
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

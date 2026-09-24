@@ -1,4 +1,32 @@
 {
+  "e3707df24371d123e9c3e265794c68c778ca26fd": {
+    "date": "2026-09-24",
+    "msg": "[TritonToLinalg](feat) remove UseAnalysis with staged lowering (#2380)"
+  },
+  "123e83d6aebd1235c5022db0b7c2da72d02d2f09": {
+    "date": "2026-09-24",
+    "msg": "[TritonToLinalg](fix) check custom op for mix_mode (#2375)"
+  },
+  "223136d33c625523791590f2a2d9d6ef4be30295": {
+    "date": "2026-09-24",
+    "msg": "[testing](fix) fix the bug when open clear_l2_cache (#2349)"
+  },
+  "122de7a62488d512996bff811ab81375f9cfd350": {
+    "date": "2026-09-24",
+    "msg": "[dtype](fix) The chip name in the error message in modified (#2361)"
+  },
+  "088ff7913ab62636e03e9db96d9e9774ac49de46": {
+    "date": "2026-09-24",
+    "msg": "[TritonToLinalg](fix) unique lib-call names before creating the func op (#2366)"
+  },
+  "ec9b9b8dfc6af979fab19187904a9bcc4d60badb": {
+    "date": "2026-09-24",
+    "msg": "[libdevice](fix) Fix atan2 precision issue (#2362)"
+  },
+  "fd02e857d64074cb6143d9591a15dfc23b342022": {
+    "date": "2026-09-24",
+    "msg": "[Backend](fix) dump kernel binary under TRITON_DEBUG (#2343)"
+  },
   "87e8e5281674487a2abc345ee255d5086774efcb": {
     "date": "2026-09-23",
     "msg": "[backend](fix) remove lib-call no-inline option (#2382)"

@@ -1,0 +1,250 @@
+{
+  "date": "2026-09-24",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-09-25T02:03:18.165752+08:00",
+  "daily_summary": "当日变更以缺陷修复与质量加固为主：(1) NVIDIA TMA 描述符布局选择修复，拒绝 FP4 padded 小 BLOCK_K 的不兼容 swizzle；(2) AMD codegen 更新到 triton-lang/llvm-project@d26ff26e，并引入 FP contraction 的新表达方式与 named barrier 地址空间升级；(3) triton_kernels ragged matmul 的 activation scale 索引修复；(4) GSan 引入 write-once 分配（更小 shadow、byte 粒度、无锁），涉及 allocator/IR lowering/测试大范围改动；(5) FP8 conversion RTNE 舍入正确性修复（重写 E5M2 转换 inline asm）；(6) 默认关闭隐式 FP fusion，新增 TRITON_FORCE_DISABLE_FP_FUSION；(7) 流水线调度把 GDC wait 视同 barrier 禁止 pipelining；(8) 前端 constexpr 不再被过早 to_tensor，修正类型提升规则（ternary/clamp/fma/fdiv 语义层重构）；(9) C++20 升级与 codebase 现代化（contains/bit_cast）。其中前端类型提升重构、GSan、FP fusion 默认值变更、C++20 升级对下游后端影响最大。",
+  "ascend_impact_summary": "当日对 triton-ascend 影响集中在 Python 前端与编译器核心：commit 2a4c9f1c（constexpr 不再提前 to_tensor）修改了 python/triton/language/semantic.py 的 binary_op_type_checking_impl 并新增 ternary_op_type_checking_impl、_cast_to_computation_type、clamp/fdiv 签名与语义发生变化，属于 Ascend monkey-patch 命中路径（TritonSemantic.dot 覆写与 semantic 语义约定），且 changing clamp/fdiv/fma 的语义与 Ascend 的 _patched_dot 逻辑存在潜在交互；commit 140c33fc（默认关闭 FP fusion）修改了 language_knobs 与 CUDABackend/HIPBackend 的 parse_options 逻辑，AscendBackend.parse_options 必须同步采用 knobs.language.fp_fusion_enabled 以保持一致，同时新增的 TRITON_FORCE_DISABLE_FP_FUSION 会影响 Ascend 编译缓存键；commit 872babdc（C++20 升级）影响 include/triton/Dialect/Triton/ 与 lib/Dialect/Triton/ 的公共实现以及 python/src/*.cc 绑定，Ascend 的 C++ pass 与 AscendNPUIROpBuilder 需同步以 gnu++20 构建；commit d816107c（GDC wait 作为 barrier 处理）修改 lib/Dialect/TritonGPU/Transforms，Ascend 不走 TTGIR，影响有限。GSan、TMA 描述符、AMD codegen、FP8 rounding、triton_kernels 的变更属于 NVIDIA/AMD 专属路径，对 Ascend 无影响。",
+  "commits": [
+    {
+      "sha": "654b1d1499569f6f66ad4db13f6478305874f8f4",
+      "comment": "修复 OptimizeDescriptorEncoding 中对 FP4 padded NVMMASharedEncoding 的误选：当 BLOCK_K=32/64 时，MMA 可用的 padded layout（swizzle 32/64）不能直接作为 TMA descriptor layout，之前 isCompatibleSharedEncoding 只检查 !transposed 就放行，导致 TMA 加载时使用非法 swizzle。改动在 isCompatibleSharedEncoding 中追加 fp4Padded 时 swizzlingByteWidth 必须为 128 的约束，并在 preferred/shared_linear 两条候选路径上都用 isCompatibleSharedEncoding 与 isEquivalent 联合判定，使不兼容的 padded layout 被拒绝、回退到 packed 布局，再通过 local_alloc 转成 padded MMA layout。新增了 K=32/K=64 的 lit 测试覆盖直接消费者和 shared_linear 消费者。风险低：仅收紧了原本就应被拒绝的路径，且保留 fp4Padded + swizzle 128 的合法情形。",
+      "tags": [
+        "bugfix",
+        "nvidia",
+        "tma",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BAKCEND] Fix FP4 TMA descriptor selection for small block K (#11935)\n\nMixed FP8/FP4 matmuls with BLOCK_K=32 or 64 can propagate an MMA-only\npadded shared-memory layout into a TMA descriptor. Reject unsupported\npadded layouts during descriptor selection, including shared_linear\ncandidate matching, so these cases load packed bytes with a valid TMA\nlayout and convert to the existing MMA layout.\n\nAdd small-BLOCK_K coverage to the FP8/FP4 TMA matmul test and compiler\nregressions for direct and shared_linear consumers. Validated on GB300:\nall 36 TMA matmul cases pass, and the descriptor-encoding lit test\npasses.\n\nRelated to #11930."
+    },
+    {
+      "sha": "6264aa33593b2ff792762fe79bbcdf1e103c2b62",
+      "comment": "为配合 AMD CodeGen LLVM 更新到 triton-lang/llvm-project@d26ff26e，做了三类适配：(1) cmake/amd-llvm-info.json 更新 hash 与各平台 sha256；(2) python/src/llvm.cc 的 to_bitcode 新增 enable_fp_fusion 参数，通过遍历 module 对 FAdd/FSub/FMul 逐个 setHasAllowContract(true) 来替代已不被新版 LLVM 支持的 TargetOptions::AllowFPOpFusion；amdgpu_codegen.cc 也采用同样的 enableFPContraction 方式。(3) 新增 _upgrade_legacy_named_barrier_address_spaces，将 addrspace(3) global target(\"amdgcn.named.barrier\") 与 5 个 named barrier intrinsic 的操作数从 addrspace(3) 升级到 addrspace(15)，因为新 LLVM 的 bitcode reader 会在 codegen 前拒绝旧签名，故此时改传文本 IR 而非 bitcode。新增 third_party/amd/python/test/test_amd_codegen.py 覆盖 fp fusion 与 legacy named barrier。ceiling 风险：修改了 python/src/llvm.cc 的 to_bitcode 公有签名（新增可选参数），Ascend 也复用 llvm.cc/libtriton.llvm，若 Ascend 代码直接调用 to_bitcode(src)，默认 enable_fp_fusion=False，需注意其语义默认值；HIPBackend 之外的路径不受影响。",
+      "tags": [
+        "chore",
+        "amd",
+        "build",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（to_bitcode 新增可选参数 enable_fp_fusion 默认 False 保持向后兼容；named barrier 与 FP contraction 均为 AMD 专属 codegen 路径）",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Update CodeGen to triton-lang/llvm-project@d26ff26e (#11916)"
+    },
+    {
+      "sha": "bcc4d534df85cb78dec44b27189b8b5564ba69e2",
+      "comment": "修复 triton_kernels ragged matmul 中 activation scale 索引错误：当 a 是 gathered 输入且使用 dense TMA descriptor 时，scale 存储于 per-slice padded blocks，之前 _p_matmul.py 按 X_TMA_MODE==\"dense\" 用 off_x_z * cdiv(M,128) + off_m//128 计算 scale 行偏移，对 ragged 输入使用了未定义的 dense 行数导致编译失败。改为在 RAGGED_DIMENSION==\"M\" 时直接用 slice_block_off_m + off_m//128，并新增断言要求 scale layout 的 ragged_metadata 与 matmul 的 a_ragged_metadata 是同一实例（避免在设备上比较 metadata tensor）。新增四个参数化测试（shared/different-block-offsets/different-slice-offsets/equal-copy）验证。属于 triton_kernels 专属路径，不属于核心编译器接口。",
+      "tags": [
+        "bugfix",
+        "triton_kernels",
+        "nvidia",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（triton_kernels 是 NVIDIA 导向 kernel 库，Ascend 不使用）",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[triton_kernels] Fix gathered activation scale indexing (#11928)\n\nWhen a ragged matmul gathers activation rows, the values can use a dense\nTMA descriptor while their scales are stored in padded, per-slice\nblocks.\nSelecting scale offsets from the values' descriptor mode uses a dense\nrow\ncount that is undefined for ragged inputs, causing compilation to fail.\n\nSelect scale offsets using the matmul's ragged dimension. Require the\nscale layout and matmul to share the same `RaggedTensorMetadata`\ninstance\nso their row boundaries and padding agree, without synchronizing device\ndata on each call. Document this contract and the required scale row\norder\nfor gathered inputs.\n\n## Validation\n\n- Added four cases to `test_gathered_ragged_act_scale_indexing` in\n`python/triton_kernels/tests/test_matmul.py`: shared metadata, different\n  block offsets, different row boundaries with identical block offsets,\n  and separately created metadata with equal contents.\n- Reproduced the original compilation failure and the missing metadata\n  validation before the fixes. All four cases pass with the fixes on\n  NVIDIA GB200.\n- 56 additional GB200 checks passed, covering gathered inputs, uneven\nand\n  empty slices, strided scales, and dense, batched, and ragged layouts.\n- `pre-commit run --from-ref origin/main --to-ref HEAD` passed.\n\n## New contributor declaration\n\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n- [x] I have added tests in\n`python/triton_kernels/tests/test_matmul.py`.\n- [x] I have not added any `lit` tests."
+    },
+    {
+      "sha": "2cfa16702a3ad04e3f4d4f34f4791c4ecfcde7e5",
+      "comment": "为 GSan 增加 write-once 分配模式：将原来的单一 reserved 区域拆成两个 1 TiB arena（由地址位 kArenaSize 区分 normal/write-once），write-once shadow cell 简化为单个 ScalarClock（4 字节，为普通 ShadowCell 的 1/6），granularity 从 4 字节降到 1 字节（byte-granularity），因此 shadow 内存占用反而更小，且访问无需 rwLock，完全 wait-free。GSan.h 增加 getShadowGranularity/getShadowCellSize/getRealCapacity、isWriteOnceAddress、categorize(AddressCategory)，GSanLibrary.cu 增加 doWrite/doRead/checkAtomicAddress(禁止 write-once 上的 atomic)、以及 roundRange 支持可配置 granularity；违反 write-once 规则（二次写、首次写前读、跨界访问、atomic 访问）会触发 assert。GSanAllocator.cc 把 treeRoot 改为 treeRoots[2]，gsanMalloc/export/import 增加 write_once 参数，新增 is_write_once_allocation API。python/triton/experimental/gsan/_allocator.py 与 symmetric_memory.py 增加 write_once 参数与校验，_testing_utils 用 shadow_granularity/shadow_cell_size 动态查询替换常量。新增 test_write_once.py 与 test_write_once_failures.py 大量测试。风险点：GSanAllocator 的 pyMalloc/export/import 的 Python 参数个数放宽（2-4/2-3/5-6），新增 is_write_once_allocation METH_O，这些是 GSan 内部接口，不涉及 Ascend。",
+      "tags": [
+        "feature",
+        "gsan",
+        "nvidia",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（GSan 属于 TritonInstrument/GSan 路径，是 NVIDIA Blackwell/Hopper 上的 sanitizer，Ascend 不使用）",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[GSan] Add write_once allocations (#11774)\n\nThis adds a special \"write-once\" gsan allocation. The rules here are\nthat they can be written exactly once, and read many times after being\nwritten.\n\nThis means we only need to track for read-after-write violations, so we\ncan simplify the shadow cell to a single scalar write clock which is\n1/6th of the size of a normal shadow cell. This allows us to track\nbyte-granularity while actually using less shadow memory than 4-byte\ngranularity normal allocations.\n\nAlso, this allows for a completely wait-free shadow memory access\npattern. This means we don't serialize accesses to those address."
+    },
+    {
+      "sha": "66b547ac673076e02d8d7848dfb2b6749dbd8847",
+      "comment": "修复 FP8 转换舍入错误（#11753）：把 fp16/bf16/fp32 → E5M2 的 RTNE 转换从依赖 cvt.rn.satfinite.e5m2x2（在部分 SM 上舍入不正确）改为纯 inline PTX 软件实现，用 min.f16x2 饱和、set.nan 恢复 NaN、按低位 LSB 做 ties-to-even 的进位。fp32 源先做“保留 E5M2 舍入方向”的截断到 fp16 再套用同一 f16x2 路径，通过 add 0xffff + lop3 把低位信息 jam 进 bit16；bf16 源则直接 fpext 到 fp32 再 cvt.rn.satfinite.e5m2x2.f32（bf16 在 E5M2 范围内 fp16 精确）。新增 test_typeconvert_fp8_rounding_edges 覆盖全部 16 位源比特排列与所有 E5M2 中点的邻居，更新了多个测试的 skip 条件（E4M3 从 SM90 放宽到 SM89，去除旧的 float8 A100 skip）。风险：第三个参数表的键从 Fp16_to_Fp8E5M2_RTNE(hasNativeFP) 改为 Fp_to_Fp8E5M2_RTNE(computeCapability, fromFp32)，并更新了 useFP16IntermediateSrc 的判断逻辑；纯 NVIDIA TargetInfo 路径，Ascend 不使用。",
+      "tags": [
+        "bugfix",
+        "nvidia",
+        "performance",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/ElementwiseOpToLLVM.cpp 是 NVIDIA 专属 lowering，Ascend 不走 TritonGPUToLLVM）",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Backend] Fix FP8 conversion rounding (#11924)\n\nCloses #11753\n\nI got codex to port the llvm back into inline asm which reverted some of\nthe slow down. It also found a more efficient mechanism for fp32 to fp8\nconversion which reduces the perf drop.\n\nIt's still a slowdown compared to the incorrect rounding, but is not\nquite as bad. BF16 actually improved vs main.\n\nConversion | Elements | Roman’s PR | This PR\n-- | -- | -- | --\nFP16 → E5M2 | 16K | +7.8% | +1.8%\n  | 1M | +37.6% | +4.9%\n  | 16M | +7.7% | +1.8%\n  | 64M | +8.6% | +2.3%\nBF16 → E5M2 | 16K | +5.4% | −0.7%\n  | 1M | +20.5% | −5.5%\n  | 16M | +3.3% | −1.8%\n  | 64M | +3.1% | −1.9%\nFP32 → E5M2 | 16K | +9.7% | +2.7%\n  | 1M | +35.1% | +6.5%\n  | 16M | +6.4% | +2.0%\n  | 64M | +5.8% | +1.7%\n\n---------\n\nCo-authored-by: Roman Novak <roman@openai.com>"
+    },
+    {
+      "sha": "1f60228a59fb5f6a9085f0ad19965f38b1dc3729",
+      "comment": "gfx1250 上的两个单测修复：(1) test_umulhi 对 64 位无符号乘法在 gfx1250 上不再分解成 v_mul_hi_u32，而是使用原生 v_mad_nc_u64_u32，测试改为按 is_hip_gfx1250() 分支断言；(2) test_tensor_descriptor 增加 gfx1250 的 skip：padding!=zero 的 TDM load 不支持非零 padding、TDM descriptor load 不应用 tf32 rounding。纯测试适配，无编译器实现变更。",
+      "tags": [
+        "test",
+        "amd",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][gfx1250] Fix unit tests for multiplication and TDM descriptors (#11921)"
+    },
+    {
+      "sha": "140c33fc3cc15593a408b740cc3ce042cc1544d8",
+      "comment": "默认关闭隐式浮点融合（mul+add→fma）：language_knobs.default_fp_fusion 从 True 改为 False，新增 force_disable_fp_fusion（TRITON_FORCE_DISABLE_FP_FUSION）与 language_knobs.fp_fusion_enabled(requested) 辅助方法；CUDABackend.parse_options 与 HIPBackend.parse_options 都改为 args[\"enable_fp_fusion\"] = knobs.language.fp_fusion_enabled(args.get(\"enable_fp_fusion\"))，HIPOptions.enable_fp_fusion 默认改为 False。为保持精度敏感 kernel 的行为，手动在 matmul.py/reduce.py/topk.py 和 mxfp 测试里加 enable_fp_fusion=True；文档 README.md 更新。测试增加 test_force_disable_fp_fusion 与 test_enable_fp_fusion 的 force_disable 参数，并修正 add.f32 计数正则以匹配 add.rn.f32。风险：这一默认值变更影响所有后端（包括 Ascend）的数值行为，AscendBackend.parse_options 需自行采用 knobs.language.fp_fusion_enabled 才能与上游一致；且 force_disable_fp_fusion 加入了 CACHE_INVALIDATING_ENV_VARS，会影响 Ascend 编译缓存键。",
+      "tags": [
+        "feature",
+        "frontend",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "python/triton/knobs.py 的 language_knobs 新增 force_disable_fp_fusion 并把 default_fp_fusion 默认从 True 改为 False，新增 fp_fusion_enabled(requested)；AscendBackend.parse_options 需要调用 knobs.language.fp_fusion_enabled 才能与上游 CUDA/HIP 一致，否则 Ascend kernel 在默认情况下仍会隐式融合，与其它后端行为不一致；include/triton/Tools/Sys/GetEnv.h 把 TRITON_FORCE_DISABLE_FP_FUSION 加入 CACHE_INVALIDATING_ENV_VARS，会影响 Ascend 编译缓存键计算。",
+        "testing": "Ascend 需要更新其 fp fusion 相关测试期望（默认不融合、显式 enable_fp_fusion=True 才融合），并核对 AscendBackend.parse_options 的默认行为。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/backend/compiler.py (parse_options)",
+          "third_party/ascend/backend/__init__.py (_apply_ascend_patch)",
+          "third_party/ascend/unittest/pytest_ut/ (fp fusion 相关用例)"
+        ]
+      },
+      "message": "Disable floating-point fusion by default (#11270)\n\nDisable implicit floating-point fusion by default. Kernels can opt in\nwith\nenable_fp_fusion=True, or applications can restore the previous default\nwith TRITON_DEFAULT_FP_FUSION=1.\n\nSet TRITON_FORCE_DISABLE_FP_FUSION=1 before starting the process to\noverride both settings. Explicit tl.fma operations remain fused.\n\nPreserve fusion-dependent arithmetic with explicit FMAs and targeted\nkernel opt-ins. Enable fusion for the Hopper MXFP4 test because a ptxas\nbug causes it to fail with fusion disabled.",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "d816107c1f2e9fc79f45a1a3562203551a8f95e9",
+      "comment": "【意图】修复 loop scheduler 把 load 放到循环内 `gdc_wait()` 之前的错误，使 PDL 消费者可能在生产者写完数据前读取数据（issue #11905）。【实现】在 lib/Dialect/TritonGPU/Transforms/Pipeliner/ScheduleLoops.cpp 的 `isSafeToPipeline(scf::ForOp)` 中，将 `tt::GridDependencyWaitOp` 加入 `containsAny` 检查，与 `ttg::BarrierOp`、`tt::AssertOp`、`tt::PrintOp` 一样被视作阻断流水化的 op；含 gdc_wait 的循环保持非流水化状态，而 wait 发生在循环之前则不影响循环本身的流水化。实现方式沿用了已有的 containsAny 模板检测，改动仅两行，属同一机制的语义扩展。【风险】低。语义上收紧了可流水化的循环集合（可能牺牲部分含 GDC wait 循环的性能），但正确性优先；对不含 GDC 的循环无行为变化。测试覆盖了三种典型场景（循环内 wait、循环内 if 内 wait、循环前 wait），并明确断言前两者不出现 `loop.stage` 属性、后者正常流水化。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "pipeliner",
+        "TritonGPU-transforms"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。该变更只修改 lib/Dialect/TritonGPU/Transforms/Pipeliner/ScheduleLoops.cpp 的循环流水化安全判定；triton-ascend 走 TritonToLinalg 转换链，不使用 TritonGPU Pipeliner 与 loop.stage 调度属性，因此不影响 AscendBackend 的 add_stages、Ascend 的 lowering 或 NPUDriver 行为。",
+        "testing": "无影响。triton-ascend 无对应的 TritonGPU pipeline 调度测试；本次新增的 test/TritonGPU/pipeline-schedule-loop.mlir 用例属上游 lit 测试，不参与 Ascend 构建与运行。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[PIPELINE] Keep dependent loads after GDC waits (#11906)\n\nThe loop scheduler can place a load before an in-loop `gdc_wait()`,\nallowing a PDL consumer to read data before its producer has finished\nwriting it.\n\nTreat GDC waits like CTA barriers when deciding whether to pipeline a\nloop. Loops containing a wait remain unpipelined; waiting before the\nloop still allows pipelining.\n\nFixes #11905.\n\nImplemented with Codex assistance.\n\n# New contributor declaration\n\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following the [commit message\nguidelines](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n- [x] I have added regression tests in `test`.\n- [x] The lit tests follow the [FileCheck best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the minimal-test guidance.\n\n---------\n\nSigned-off-by: TANGBUDU <tangbudu@gmail.com>"
+    },
+    {
+      "sha": "2a4c9f1cd3302c5c15590ea305d5ad44a03b2746",
+      "comment": "修复前端 constexpr 被过早 to_tensor 导致类型提升过度的问题：core.py 中 tensor 的所有比较运算符（__gt__/__rgt__/__ge__/__rge__/__lt__/__rlt__/__le__/__rle__/__eq__/__req__/__ne__/__rne__）与 clamp 从 _semantic.to_tensor(other) 改为 _unwrap_if_constexpr(other)；math.py 的 umulhi/fdiv/div_rn/fma 同样改为 _unwrap_if_constexpr；semantic.py 重构了 binary_op_type_checking_impl（不再对 scalar 提前 to_tensor，而是用 to_tensor_type 取类型，再用新增的 _cast_to_computation_type 只在确定最终类型后物化标量），新增 ternary_op_type_checking_impl 统一处理 a/b/c 三操作数类型提升（tensor 与 scalar 分别合并后再合流，避免按操作数顺序错误提升），clamp/fdiv 改为调用它；fdiv 改为先走 binary_op_type_checking_impl(div_or_mod=True) 再做浮点检查（错误信息改为 “fdiv requires floating-point operands after type promotion”）。gluon blackwell 的 _packed_arith 也相应改为按 operand_types 求 computation_type 并对 scalar 调用 semantic.scalar_constant。新增 test_comparison_scalar_promotion/test_comparison_scalar_out_of_range/test_binary_math_scalar_promotion/test_fdiv_type_promotion/test_ternary_math_scalar_promotion/test_ternary_math_scalar_precision 等大量前端测试，并更新 test_line_info/test_frontend 的 IR CHECK。风险中等：这是 semantic 层核心 API（binary_op_type_checking_impl/ternary_op_type_checking_impl/_cast_to_computation_type/clamp/fdiv/fma）的行为变更，且 Ascend 通过 monkey-patch 覆写 TritonSemantic.dot 与 CodeGenerator.__init__，dot 本身未变但 clamp/fdiv/fma 语义与类型提升规则变化会影响 Ascend kernel 的 IR 形态。",
+      "tags": [
+        "bugfix",
+        "frontend",
+        "semantic",
+        "high-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "python/triton/language/semantic.py 的 TritonSemantic 被 Ascend 通过 _apply_ascend_patch monkey-patch 覆写（_patched_dot），本次变更重构了 binary_op_type_checking_impl 的 scalar 处理路径（新增 _cast_to_computation_type）、新增 ternary_op_type_checking_impl、把 clamp/fdiv 改为走新路径、并修改 fdiv 的错误语义（错误消息从 “both operands of fdiv must have floating scalar type” 改为 “fdiv requires floating-point operands after type promotion”）。CodeGenerator 经由 semantic 调用这些方法，因此 Ascend kernel 中所有涉及 tensor-scalar 比较、clamp、fdiv、fma、ternary 类型提升的 AST 会生成与之前不同的 TTIR（标量不再被过早提升为 tensor，标量在最终类型上物化），Ascend 的 TritonToLinalg 转换链将接收到形态不同的 TTIR。python/triton/language/core.py 中 tensor 比较运算符与 clamp 改为 _unwrap_if_constexpr，也直接影响 Ascend 前端生成的 IR。",
+        "testing": "Ascend 需要跑通全部前端算子测试（尤其是含 constexpr 标量的比较/算术/fdiv/fma/clamp），确认生成的 TTIR 与 TritonToLinalg 转换无回归；由于错误消息变化，依赖旧错误文本的测试需更新。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/ (标量与 tensor 混合运算用例)",
+          "third_party/ascend/unittest/Conversion/ (TritonToLinalg 转换用例)",
+          "python/test/unit/language/test_frontend.py (上游新测试可作为 Ascend 回归基线)"
+        ]
+      },
+      "message": "[Frontend] Fix constexprs being prematurely to_tensor'd (#11913)\n\nOur promotion rules state that a runtime value with an existing dtype\nshould take precedence over a constexpr value's inferred dtype. However,\nby calling to_tensor before we pass the constexpr to semantic, this\ncontext is lost and we may over-promote.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/language/semantic.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "872babdc16f00d6f170c9dcd92e2323d4b044442",
+      "comment": "构建升级到 C++20（Closes #11505）：CMakeLists.txt 设 CMAKE_CXX_STANDARD 20 + REQUIRED，移除 -std=gnu++17，并把 MLIR/LLVM include 改为 SYSTEM（解决 -Wambiguous-reversed-operator）；third_party/amd/backend/codegen/CMakeLists.txt 的 target_compile_features 改为 cxx_std_20。代码层面做了大量 C++20 现代化：把 DenseMap/SetVector/std::map/std::set 的 .count(x) 判定改为 .contains(x)（覆盖 include/triton/Analysis、include/triton/Dialect/TritonGPU/Transforms、lib/Analysis、lib/Dialect/TritonGPU/Transforms、lib/Dialect/TritonNvidiaGPU/Transforms、lib/Tools、third_party/amd、third_party/nvidia、third_party/proton），把 memcpy 位转换改成 std::bit_cast（python/src/interpreter.cc 的 BitCast 被删除改用 std::bit_cast；third_party/proton 的 Metric.cpp/Graph.cpp/MsgPackWriter.cpp；third_party/nvidia 的 MMAHelpers.h/MMAv5.cpp 把 union 改为命名 reserved 字段的 struct + bit_cast，避免读取 padding）。风险：构建工具链要求变化（需 C++20 编译器），且 bit_cast 要求 trivially copyable；SMEMDescriptor/TCGen5InstructionDescriptor 从 union 改为 struct 时字段顺序和位宽必须精确一致，否则会破坏 MMA 描述符编码。涉及大量公共头文件（include/triton/Analysis、include/triton/Dialect/TritonGPU/Transforms/Schedule.h 把 count 改名为 contains），下游依赖这些头文件的代码需同步。",
+      "tags": [
+        "refactor",
+        "build",
+        "cxx20",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": true,
+        "functionality": "include/triton/Analysis/Allocation.h、include/triton/Analysis/CallGraph.h、include/triton/Dialect/TritonGPU/Transforms/Schedule.h 的 CoarseSchedule::count(Operation*) 被改名为 contains(Operation*) 并返回 bool，lib/Dialect/TritonGPU/Transforms 的实现同步修改——Ascend 若在自研 pass 中调用 schedule.count(op) 需改名为 contains；include/triton/Tools/Sys/GetEnv.h 的 assertIsRecognized 内部改用 contains（接口不变）；python/src/interpreter.cc 删除 BitCast 改用 std::bit_cast（AscendInterpreterBuilder 不受影响）；python/src/llvm.cc 仅改用 contains。构建层面 CMAKE_CXX_STANDARD 20 + REQUIRED 与移除 -std=gnu++17，Ascend 的 C++ pass（third_party/ascend/lib、ascend_ir.cc）必须能以 C++20 编译；third_party/amd/backend/codegen/CMakeLists.txt 的 cxx_std_20 是 AMD 专属。",
+        "testing": "Ascend 需在 C++20 工具链下重新构建全部 C++ pass 与 pybind 绑定，跑通 pytest_ut 与 Conversion 测试；若存在 .count(x) 形式的调用需同步改造。",
+        "needs_test_update": false,
+        "suggested_test_areas": [
+          "third_party/ascend/lib/ (C++ pass 编译)",
+          "third_party/ascend/ascend_ir.cc (pybind 绑定编译)",
+          "third_party/ascend/unittest/Conversion/"
+        ]
+      },
+      "message": "[Build][NFC] Upgrade to C++20 & use some new features (#11920)\n\nCloses #11505",
+      "deep_analysis": {
+        "ascend_affected_confirmed": true,
+        "affected_interfaces": [
+          "CMakeLists.txt (CMAKE_CXX_STANDARD 17→20, removal of -std=gnu++17 flag, MLIR/LLVM include dirs changed to SYSTEM)",
+          "triton-ascend C++ backend sources (third_party/ascend/lib/, third_party/ascend/ascend_ir.cc, triton_ascend.cc, etc.) — now compiled under C++20"
+        ],
+        "adaptation_effort": "low",
+        "adaptation_guide": "This is an NFC build/toolchain commit with no changes to any of the interface_surface seams (BaseBackend/DriverBase/TritonSemantic/CodeGenerator/compiler.parse/TritonOpBuilder/InterpreterBuilder are all untouched). The C++20 migration is mechanical: `.count()`/`.find()==end()` → `.contains()`, and a custom `BitCast` → `std::bit_cast`, all in files that triton-ascend's release patch does NOT modify (except CMakeLists.txt). Adaptation is limited to: (1) resolving the merge conflict in CMakeLists.txt when cherry-picking — triton-ascend's patch adds ~55 lines to CMakeLists.txt and the commit modifies the same regions (`set(CMAKE_CXX_STANDARD 17)`, the `-std=gnu++17` flag line, and the `include_directories(${MLIR_INCLUDE_DIRS}/${LLVM_INCLUDE_DIRS})` block); ensure triton-ascend's added CMake content (e.g. third_party/ascend subdirectory registration, any added compiler flags) is reconciled with `CMAKE_CXX_STANDARD 20`/`CMAKE_CXX_STANDARD_REQUIRED ON` and does not re-add a hardcoded `-std=gnu++17`. (2) Rebuild and verify triton-ascend's own C++ code compiles under C++20 — most C++17 code is C++20-compatible, but check for `-Wambiguous-reversed-operator` warnings in triton-ascend's own headers (LLVM/MLIR headers are now SYSTEM includes, but triton-ascend headers are not) and for any use of removed/deprecated C++17 features. No source-level interface changes are required.",
+        "risk": "low"
+      }
+    },
+    {
+      "sha": "9e10042dac1594088df1d320d2c9bf94dc6fb9ca",
+      "comment": "把 AMD CodeGen 的 LLVM 构建版本从 9e5edb7ed944 更新到 d26ff26ef4e9（与前一 commit 的 amd-llvm-info.json 对齐），仅修改 cmake/amd-llvm-build-info.json 的 llvm_hash。纯构建配置变更，无代码逻辑。",
+      "tags": [
+        "chore",
+        "amd",
+        "build",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Build AMD CodeGen LLVM at d26ff26ef4e9 (#11925)"
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

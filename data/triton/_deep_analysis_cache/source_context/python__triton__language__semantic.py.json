@@ -1,5 +1,5 @@
 {
-  "content_hash": "5981cbfa59868b27",
+  "content_hash": "b4521204c8f182d0",
   "analysis": {
     "interface_summary": "定义 2 个类；定义 124 个函数",
     "key_interfaces": [
@@ -13,5 +13,5 @@
       "TritonSemantic.integer_promote_impl"
     ]
   },
-  "cached_at": "2026-09-24T02:03:41.608740+08:00"
+  "cached_at": "2026-09-25T02:05:14.581123+08:00"
 }

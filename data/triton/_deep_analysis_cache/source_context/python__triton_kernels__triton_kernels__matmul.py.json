@@ -1,0 +1,16 @@
+{
+  "content_hash": "c065d5350fa20564",
+  "analysis": {
+    "interface_summary": "定义 7 个类；定义 15 个函数",
+    "key_interfaces": [
+      "FusedActivation",
+      "Epilogue",
+      "FnName",
+      "FusedComm",
+      "FlexCtx",
+      "PrecisionConfig",
+      "MatmulAllocation"
+    ]
+  },
+  "cached_at": "2026-09-25T02:03:18.662482+08:00"
+}
