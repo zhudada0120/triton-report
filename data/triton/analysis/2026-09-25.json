@@ -1,0 +1,142 @@
+{
+  "date": "2026-09-25",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-09-26T02:03:08.122220+08:00",
+  "daily_summary": "当日变更覆盖前端语义层、AMD 后端流水线调度与 Gluon 扩展、前端切片索引校验以及教程性能修复。主要方向包括：(1) 在 TritonSemantic 中新增 make_tensor 钩子并把内部所有 self.tensor(...) 调用替换为 self.make_tensor(...)，为 out-of-tree 后端提供值构造扩展点（NFC）；(2) 为 AMD GFX1250 的流式流水线新增 TDM copy 重排调度变体，把 async_tdm_copy 提前、单一 async_tdm_wait 后置，以改善延迟隐藏；(3) 在 Gluon 中暴露 ttgl.amd.hint.sched_barrier 控制 LLVM 指令调度；(4) 收紧 tensor 索引语义，拒绝消费完所有源维度后多余的完整切片、并把 None/newaxis 视为纯新增输出维度，同时为 expand_dims 增加越界轴校验（BC-Breaking）；(5) 修复 fused-softmax 教程中每次 benchmark 创建新 stream 导致缓存分配器内存膨胀的问题。",
+  "ascend_impact_summary": "当日对 triton-ascend 最关键的变更是 commit 0d697815（TritonSemantic.make_tensor）：它直接落在 triton-ascend 必然影响路径 python/triton/language/semantic.py 上，该文件正是 triton-ascend 通过 _apply_ascend_patch 运行时 monkey-patch 覆写 TritonSemantic.dot 的挂载点。虽然本次是重构（NFC，行为等价），但 make_tensor 是一个新的子类扩展钩子，若 triton-ascend 覆写 self.tensor 或依赖 self.tensor 调用点来附加布局，需要同步评估 make_tensor 是否被其 patch 覆盖。commit f394c9bb 修改了 tensor.__getitem__ 的切片索引语义并给 semantic.expand_dims 增加了轴越界校验（BC-Breaking），会改变 Ascend 前端 AST→TTIR 的输入行为，可能导致既有 kernel 编译报错，需要同步验证。其余变更（AMD 流水线调度、Gluon sched_barrier、fused-softmax 教程）属于 AMD/NVIDIA 专属路径或文档教程，对 Ascend 无影响。",
+  "commits": [
+    {
+      "sha": "0d697815f7f8ff215ccd03e86c5c3febdd9c85f7",
+      "comment": "在 TritonSemantic 中新增 make_tensor(self, handle, type) -> TensorTy 辅助方法，仅委托给 self.tensor(handle, type)；随后把 semantic.py 中所有直接调用 self.tensor(...) 的地方（共约 70 处：program_id/num_programs、算术/位运算/比较、scalar_constant、splat/unsplat/reshape/expand_dims/join/split/permute/broadcast、cast/bitcast、load/store、descriptor_* 系列、atomic_* 系列、dot/dot_scaled、reduce/histogram/select、printf/assert/assume 等）统一替换为 self.make_tensor(...)。意图是给 out-of-tree 扩展（如为值附加 layout 的后端）提供一个稳定的覆写钩子，而不必逐一覆盖所有算子。属于 NFC 重构：make_tensor 默认实现与 self.tensor 完全等价，行为不变。实现方式干净，风险低；唯一需要注意的是它新增了一个半公开的扩展点，后续若改变其语义会牵动所有后端。位于 python/triton/language/semantic.py，是 triton-ascend 必然影响路径（该文件被 _apply_ascend_patch monkey-patch 覆写 dot）。",
+      "tags": [
+        "refactor",
+        "low-risk",
+        "semantic",
+        "language-frontend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "该 commit 修改的 python/triton/language/semantic.py 是 triton-ascend 必然影响路径，triton-ascend 通过 third_party/ascend/backend/__init__.py::_apply_ascend_patch 在运行时 monkey-patch 覆写 TritonSemantic.dot。本次新增的 TritonSemantic.make_tensor(self, handle, type) 默认实现仅转发到 self.tensor(handle, type)，并把类内所有 self.tensor(...) 调用点替换为 self.make_tensor(...)。由于 triton-ascend 的 _patched_dot 仍然以 self.tensor(...)（或依赖的父类方法）构造结果，若 Ascend 侧覆写/拦截的是 self.tensor 而非 self.make_tensor，则 make_tensor 转发路径不会命中覆写点，但行为仍等价，因此当前不产生功能破坏。需要关注的是：make_tensor 成为新的扩展钩子后，Ascend 若想给值附加 layout 应改为覆写 make_tensor；同时 TritonSemantic.dot 的签名/内部实现对 make_tensor 的调用点变化需与 _patched_dot 保持对齐",
+        "testing": "现有 triton-ascend 测试（third_party/ascend/unittest/pytest_ut/ 下的算子端到端测试）应当继续通过，因为 make_tensor 语义等价。但需要回归验证 _patched_dot 覆写后 dot 路径仍走预期的 make_tensor/tensor 构造逻辑",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/ (dot/矩阵乘相关算子测试)",
+          "third_party/ascend/backend/__init__.py::_apply_ascend_patch 覆写逻辑回归"
+        ]
+      },
+      "message": "[FRONTEND][NFC] Add TritonSemantic.make_tensor helper function (#11941)\n\nEase of life change to allow out of tree extensions to make use of the\ntensor builder, TritonSemantic, class as a 'hook' for out of tree\nextensions that attach layouts to values.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/language/semantic.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "561af66a819fbb9cb3a54ddbd0d1ebb999ba195f",
+      "comment": "为 AMD GFX1250（gfx1250）的 AMD stream pipeliner 增加一个 TDM copy 重排调度变体。在 third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp 的 initSchedule 中，当 hasTDMLoad && hasScaledDot && !waitAtTail 时，把 globalLoadCluster 设为 0（所有 TDM copy 最前）、asyncWaitCluster 设为 1（copy 后单个等待）、localLoadCluster 设为 2、computeCluster 设为 3、localStoreCluster 设为 4，从而让所有 async_tdm_copy_global_to_local 先发射、随后一个 amdg.async_tdm_wait、再是 local_load 和 dot_scaled，改善异步重叠。默认开启，通过 TRITON_HIP_DISABLE_TDM_REORDER=1 关闭；该环境变量加入 CACHE_INVALIDATING_ENV_VARS 以保证缓存失效正确。测试侧在 test/TritonGPU/amd/amd-pipeline-tdm.mlir 新增了 mxfp4 x mxfp4 的 tt.dot_scaled TDM 流水线用例校验默认重排顺序。属于 AMD 专属调度优化，文件落在 third_party/amd/ 与 test/TritonGPU/amd/，为 Ascend 绝不影响路径。",
+      "tags": [
+        "performance",
+        "low-risk",
+        "amd",
+        "scheduler",
+        "pipeliner"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅涉及 third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp（AMD 专属 TritonAMDGPUTransforms 的 TDM 流水线调度）与 AMD 的 lit 测试，属于 triton-ascend 绝不使用路径（Ascend 走 TritonToLinalg，不使用 AMD HIP/TDM 流水线；third_party/amd 为纯 ROCm 专属）。",
+        "testing": "无影响。新增用例在 test/TritonGPU/amd/amd-pipeline-tdm.mlir，为 AMD 专属 lit 测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][GFX1250] TDM copy reordering in the pipeliner (#11929)\n\nAdds a scheduling variant to the AMD stream pipeliner that reorders TDM-fed loop bodies for better async overlap. The new schedule issues all async_tdm_copy_global_to_local operations first, followed by an async_tdm_wait, then the local loads and dot -- improving latency hiding."
+    },
+    {
+      "sha": "53a6d74758a38367c1e47735ab6484dfec9dba90",
+      "comment": "在 Gluon（实验性语言前端）中暴露 AMD 的调度屏障：新增 python/triton/experimental/gluon/language/amd/hint.py 提供 ttgl.amd.hint.sched_barrier(allow=None)，并在 amd/__init__.py 导出 hint；在 python/src/gluon_ir.cc 的 GluonOpBuilder 上新增 create_amd_sched_barrier(mask)，通过 ROCDL::symbolizeSchedGroupMask 校验掩码并创建 ROCDL::SchedBarrier。当前只允许 allow=None（掩码 0），其它指令类别会抛 Unsupported instruction class。附带在 python/test/gluon/test_frontend.py 增加了 CDNA3/CDNA4/CDNA5 目标下的解析与放置验证用例。该变更给 Gluon 用户提供控制 LLVM 指令调度（阻止指令跨越屏障）的能力，属 AMD 专属能力扩展；文件位于 python/src/gluon_ir.cc、python/triton/experimental/gluon/language/amd/ 与 gluon 前端测试，均属 Ascend 不使用路径（Ascend 默认不使用 Gluon，且 amd 子模块为纯 AMD 专属）。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "gluon",
+        "amd",
+        "frontend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更涉及 python/src/gluon_ir.cc 的 GluonOpBuilder（新增 AMD 专属 create_amd_sched_barrier 绑定）以及 python/triton/experimental/gluon/language/amd/（Gluon AMD 前端），均为 Ascend 不使用路径——Ascend 不实现 Gluon 后端、不使用 gluon/amd 子模块，且该 op 为 ROCDL 专属。TritonOpBuilder 基类接口未被修改，AscendNPUIROpBuilder 不受影响。",
+        "testing": "无影响。新增/修改测试在 python/test/gluon/test_frontend.py 的 AMD Gluon 部分。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][GLUON] Expose sched barrier (#11932)\n\nExpose `ttgl.amd.hint.sched_barrier` in Gluon to control LLVM scheduling\nbehavior for AMD. `sched_barrier` prevents LLVM's instruction scheduler\nfrom moving instructions across this point.\n\n---------\n\nSigned-off-by: Pengzhan Zhao <borontion@gmail.com>"
+    },
+    {
+      "sha": "f394c9bb86b2eaca08b0e11c4cd397d19a56c693",
+      "comment": "BC-Breaking：收紧 tensor 完整切片索引语义。在 python/triton/language/core.py 的 tensor.__getitem__ 中，引入 src_rank = len(self.shape) 与 indexed_dims 计数器：遇到 None（newaxis）仍调用 _semantic.expand_dims（视为新增输出维度、不消耗源维度），遇到全 None 的完整切片时 indexed_dims += 1 并在超过 src_rank 时抛出 'too many indices for tensor of rank {src_rank}'；同时把测试中原本靠多余全切片做 unsqueeze 的写法（z_ptr[None, None, :] / [None, None, None, :]）改为去掉末尾多余切片。并在 python/triton/language/semantic.py 的 expand_dims 中加入 axis < 0 or axis > len(dst_shape) 的越界校验，避免静默 append。新增/更新了 python/test/unit/language/test_core.py 中 scalar[:, None]、scalar[None, :]、vector[:, :] 的报错回归。修复 #6122。该变更改变前端索引行为，会拒绝此前被接受（但语义可疑）的写法，属 BC-Breaking；涉及 python/triton/language/core.py 与 semantic.py——semantic.py 是 triton-ascend 必然影响路径，core.py 为可能影响路径。",
+      "tags": [
+        "bugfix",
+        "high-risk",
+        "semantic",
+        "language-frontend",
+        "bc-breaking"
+      ],
+      "ascend_impact": {
+        "ascend_affected": true,
+        "functionality": "该 commit 修改了 python/triton/language/semantic.py（triton-ascend 必然影响路径，TritonSemantic 被 _apply_ascend_patch monkey-patch 覆写 dot）与 python/triton/language/core.py（tensor.__getitem__，前端类型/算子系统）。TritonSemantic.expand_dims 新增 axis < 0 or axis > len(dst_shape) 的 ValueError 校验，若 triton-ascend 的 monkey-patch 链或 Ascend 侧调用 expand_dims 时传入越界轴（例如某些 layout/reshape 适配路径）将直接抛错。tensor.__getitem__ 现在对多余的全 None 切片报 'too many indices for tensor of rank N'，Ascend 用户 kernel 中若有 scalar[None, :]、vector[:, :] 等此前可编译的写法将变为编译错误，需要在 Ascend 前端/样例侧同步修正。这是前端行为变更，会改变 AST→TTIR 的输入形态，进而传导到 Ascend 的 TritonToLinalg 转换链。",
+        "testing": "需要在 triton-ascend 侧回归验证：使用 expand_dims 或 newaxis 索引的 Ascend kernel 是否仍能正确编译；确认 _apply_ascend_patch 未在 expand_dims 覆写或调用路径上依赖被移除的静默越界 append 行为。上游新增的 test_core.py 索引回归用例可作为参照。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/ (含 newaxis/reshape/expand_dims 的算子测试)",
+          "third_party/ascend/backend/__init__.py::_apply_ascend_patch 覆写回归",
+          "前端索引语义相关的 Ascend kernel 编译测试"
+        ]
+      },
+      "message": "[BC-Breaking] Reject too many tensor slice indices (#10429)\n\n## Summary\n\n- Reject full-slice indexing after all dimensions of the source tensor\nhave been consumed.\n- Treat None/newaxis as adding an output dimension without adding a\nsource dimension that a later full slice can consume.\n- Guard semantic.expand_dims against out-of-range axes instead of\nsilently appending.\n- Add regressions for valid scalar newaxis-only indexing and for too\nmany full slices before or after newaxis.\n\nFixes #6122.\n\n## Validation\n\n- Compared the supported indexing subset against NumPy: scalar[None] and\nscalar[None, None] are valid, while scalar[None, :] and scalar[:, None]\nboth raise too-many-indices errors; vector[None, :] and vector[:, None]\nremain valid.\n- Executed a dependency-free model of the source-dimension accounting\nfor those cases.\n- python3 -m py_compile passed for all three changed files.\n- git diff --check passed.\n- The GPU-backed pytest target cannot run on this macOS host because\ntriton._C.libtriton is not built; CI remains the authoritative\nintegration run.\n\nI used AI assistance for repository inspection and validation, then\nreviewed the focused production and test changes and confirmed the\nindexing semantics before submission.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/language/semantic.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": true,
+        "affected_interfaces": [
+          "tensor.__getitem__ (python/triton/language/core.py)",
+          "TritonSemantic.expand_dims (python/triton/language/semantic.py)"
+        ],
+        "adaptation_effort": "low",
+        "adaptation_guide": "This BC-breaking change is confined to the shared Triton frontend that triton-ascend reuses, but triton-ascend must incorporate it when syncing to this upstream commit. (1) Sync python/triton/language/core.py `tensor.__getitem__` (line ~1088) to add the src_rank/indexed_dims accounting that raises 'too many indices for tensor of rank N' when full slices outnumber the source rank, and update the test expectation in python/test/unit/language/test_core.py (test_reduce now uses `z_ptr[None, None]` / `z_ptr[None, None, None]` instead of trailing `:`, and test_invalid_slice gains scalar/vector too-many-slice regressions). (2) Sync python/triton/language/semantic.py `TritonSemantic.expand_dims` (line ~678) to add the `axis < 0 or axis > len(dst_shape)` guard. (3) Rebase third_party/ascend/patch/triton-ascend-3.6.0.patch: the patch edits python/triton/language/semantic.py (logical_and/logical_or/mod/exp/device_assert hunks) but not expand_dims and does not touch core.py, so there is no functional overlap — only line-offset drift when regenerating the patch against the new upstream. (4) Verify no triton-ascend kernels/tests use now-invalid patterns: the common `x[:, None]`, `x[None, :]`, `x[None, None, :]` on rank-1 arange tensors remain valid (full slices only consume source dims; None/newaxis does not), and `tl.expand_dims(arange, -1)` remains valid because the public expand_dims builtin normalizes negative axes via _wrap_axis before calling semantic.expand_dims. No rank-0 scalar-with-slice or excess-full-slice patterns were found in triton-ascend's language/, third_party/ascend/ or triton_kernels/.",
+        "risk": "Low. The change is frontend-only and does not alter the backend ABI (BaseBackend/DriverBase/AscendBackend/NPUDriver unaffected). The ascend patch does not touch expand_dims or __getitem__, so the only patch conflict risk is line-offset drift in semantic.py. The BC-breaking behavior is aligned with NumPy and unlikely to affect triton-ascend's own kernels/tests (no invalid indexing patterns found), but CI should be run to confirm no latent scalar-slice or excess-slice usage in third_party/ascend tests after syncing."
+      }
+    },
+    {
+      "sha": "f1d8a285813c1de43aeb122adc6ae89df246e768",
+      "comment": "修复 fused-softmax 教程（python/tutorials/02-fused-softmax.py）中 benchmark(M, N, provider) 每次调用都新建并 set 一个新 torch Stream 的问题（getattr(torch, DEVICE.type).Stream() + set_stream），改为使用当前 stream，避免每个 case 使用不同 stream 而 caching allocator 保留早期 case 内存导致 reserved memory 随 sweep 增长（issue #11661）。属于教程/文档层面的性能修复，不涉及编译器与后端接口，位于 python/tutorials/（NVIDIA 导向示例，不参与后端编译），对 triton-ascend 无影响。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "docs",
+        "tutorials"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅涉及 python/tutorials/02-fused-softmax.py（NVIDIA 导向教程示例，不参与后端编译，属 Ascend 绝不影响路径）。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TUTORIALS] Avoid per-case streams in fused-softmax benchmark (#11720)\n\nFixes #11661\n\nThe fused-softmax tutorial created and selected a new PyTorch device\nstream in every `benchmark()` call. This made each case use a different\nstream while the caching allocator retained memory from earlier cases,\ncausing reserved memory to grow through the sweep.\n\nRemove the two per-case stream calls so the benchmark uses the current\nstream. On an 8 GiB RTX 2000 Ada running Windows, the full 294-case\nsweep completed with this change alone. Reserved memory still grew (to\n23,016 MiB under WDDM), so this does not establish that the original 6\nGiB OOM is fixed on that card.\n\n---------\n\nSigned-off-by: Srijan Keshri <srijankeshri007@gmail.com>"
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

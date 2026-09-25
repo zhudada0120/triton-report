@@ -601,6 +601,30 @@
       "interface_changes": "构建升级到 C++20（Closes #11505）：CMakeLists.txt 设 CMAKE_CXX_STANDARD 20 + REQUIRED，移除 -std=gnu++17，并把 MLIR/LLVM include 改为 SYSTEM（解决 -Wambiguous-reversed-operator）；third_party/amd/backend/codegen/CMakeLists.txt 的 target_compile_features 改为 cxx_std_20。代码层面做了大量 C++20 现代化：把 DenseMap/SetVector/std::map/std::set 的 .count(x) 判定改为 .contains(x)（覆盖 include/triton/Analysis、include/triton/Dialect/TritonGPU/Transforms、lib/Analysis、lib/Dialect/TritonGPU/Transforms、lib/Dialect/TritonNvidiaGPU/Transforms、lib/Tools、t",
       "change_summary": "[Build][NFC] Upgrade to C++20 & use some new features (#11920)",
       "ascend_impact": true
+    },
+    "0d697815f7f8ff215ccd03e86c5c3febdd9c85f7": {
+      "date": "2026-09-25",
+      "affected_modules": [
+        "python/triton/language/semantic.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/language/semantic.py"
+      ],
+      "interface_changes": "在 TritonSemantic 中新增 make_tensor(self, handle, type) -> TensorTy 辅助方法，仅委托给 self.tensor(handle, type)；随后把 semantic.py 中所有直接调用 self.tensor(...) 的地方（共约 70 处：program_id/num_programs、算术/位运算/比较、scalar_constant、splat/unsplat/reshape/expand_dims/join/split/permute/broadcast、cast/bitcast、load/store、descriptor_* 系列、atomic_* 系列、dot/dot_scaled、reduce/histogram/select、printf/assert/assume 等）统一替换为 self.make_tensor(...)。意图是给 out-of-tree 扩展（如为值附加 layout 的后端）提供一个稳定的覆写钩子，而不必逐一覆盖所有算子。属于 NFC 重构：make_tensor 默认实现与 se",
+      "change_summary": "[FRONTEND][NFC] Add TritonSemantic.make_tensor helper function (#11941)",
+      "ascend_impact": false
+    },
+    "f394c9bb86b2eaca08b0e11c4cd397d19a56c693": {
+      "date": "2026-09-25",
+      "affected_modules": [
+        "python/triton/language/semantic.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/language/semantic.py"
+      ],
+      "interface_changes": "BC-Breaking：收紧 tensor 完整切片索引语义。在 python/triton/language/core.py 的 tensor.__getitem__ 中，引入 src_rank = len(self.shape) 与 indexed_dims 计数器：遇到 None（newaxis）仍调用 _semantic.expand_dims（视为新增输出维度、不消耗源维度），遇到全 None 的完整切片时 indexed_dims += 1 并在超过 src_rank 时抛出 'too many indices for tensor of rank {src_rank}'；同时把测试中原本靠多余全切片做 unsqueeze 的写法（z_ptr[None, None, :] / [None, None, None, :]）改为去掉末尾多余切片。并在 python/triton/language/semantic.py 的 expand_dims 中加入 axis < 0 or axis > len(dst_shape) 的越界校验，避免静默 append。新增/更新了 pyt",
+      "change_summary": "[BC-Breaking] Reject too many tensor slice indices (#10429)",
+      "ascend_impact": true
     }
   }
 }

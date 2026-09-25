@@ -1,4 +1,24 @@
 {
+  "0d697815f7f8ff215ccd03e86c5c3febdd9c85f7": {
+    "date": "2026-09-25",
+    "msg": "[FRONTEND][NFC] Add TritonSemantic.make_tensor helper function (#11941)"
+  },
+  "561af66a819fbb9cb3a54ddbd0d1ebb999ba195f": {
+    "date": "2026-09-25",
+    "msg": "[AMD][GFX1250] TDM copy reordering in the pipeliner (#11929)"
+  },
+  "53a6d74758a38367c1e47735ab6484dfec9dba90": {
+    "date": "2026-09-25",
+    "msg": "[AMD][GLUON] Expose sched barrier (#11932)"
+  },
+  "f394c9bb86b2eaca08b0e11c4cd397d19a56c693": {
+    "date": "2026-09-25",
+    "msg": "[BC-Breaking] Reject too many tensor slice indices (#10429)"
+  },
+  "f1d8a285813c1de43aeb122adc6ae89df246e768": {
+    "date": "2026-09-25",
+    "msg": "[TUTORIALS] Avoid per-case streams in fused-softmax benchmark (#11720)"
+  },
   "654b1d1499569f6f66ad4db13f6478305874f8f4": {
     "date": "2026-09-24",
     "msg": "[BAKCEND] Fix FP4 TMA descriptor selection for small block K (#11935)"
