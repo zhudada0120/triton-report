@@ -1,4 +1,12 @@
 {
+  "072983377d8cdcec4b1e0add05a9875bb618e1f7": {
+    "date": "2026-09-26",
+    "msg": "[FPSan] Avoid redundant per-thread work in vectorized scratch layouts (#11974)"
+  },
+  "69f74bf35ce97a30bc54d6b0bcf19cc0a5b651d9": {
+    "date": "2026-09-26",
+    "msg": "[BAKCEND] Preserve floating-point syntax for cache-policy fractions (#11948)"
+  },
   "0d697815f7f8ff215ccd03e86c5c3febdd9c85f7": {
     "date": "2026-09-25",
     "msg": "[FRONTEND][NFC] Add TritonSemantic.make_tensor helper function (#11941)"
