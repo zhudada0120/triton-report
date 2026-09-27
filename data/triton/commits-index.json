@@ -1,4 +1,12 @@
 {
+  "4fd7cc5cfd0a84acfeb5dadb1578dffa409903fc": {
+    "date": "2026-09-27",
+    "msg": "[LLVM] Always set the target machine when arch is specified (#10849)"
+  },
+  "eb93a9a97e5dfc6a20c29da0096c047dbabd514c": {
+    "date": "2026-09-27",
+    "msg": "[AMD][gfx1250] Enable VA_VDST anti-hints for expert scheduling (#11976)"
+  },
   "072983377d8cdcec4b1e0add05a9875bb618e1f7": {
     "date": "2026-09-26",
     "msg": "[FPSan] Avoid redundant per-thread work in vectorized scratch layouts (#11974)"

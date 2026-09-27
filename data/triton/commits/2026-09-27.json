@@ -1,0 +1,66 @@
+{
+  "date": "2026-09-27",
+  "repo": "triton-lang/triton",
+  "branch": "main",
+  "commits": [
+    {
+      "sha": "4fd7cc5cfd0a84acfeb5dadb1578dffa409903fc",
+      "author": {
+        "name": "Lixun Zhang",
+        "email": "Lixun.Zhang@amd.com"
+      },
+      "date": "2026-09-27T11:02:57+08:00",
+      "message": "[LLVM] Always set the target machine when arch is specified (#10849)\n\n`optimize_module` drops the target machine whenever an LLVM-IR pass\nplugin is loaded (`LLVM_PASS_PLUGIN_PATH`). That guard was added in\n#4669 for instrumentation plugins that splice in externally\n(Clang-)compiled code. This PR creates the target machine whenever\n`arch` is known, whether or not a plugin is loaded.\n\n## Why\n\nLoading a plugin currently changes how the kernel itself is optimized,\nnot only what the plugin adds. Without a target machine, the O3 pipeline\nruns without the AMDGPU target passes (for example `AMDGPUAttributor`)\nand without target cost models. Measured on gfx950 with a vector-add\nkernel:\n\n| | no plugin | in-tree `GPUHello` plugin loaded |\n|---|---:|---:|\n| `amdgpu-no-*` attributes in LLIR, `main` | 21 | 0 |\n| `amdgpu-no-*` attributes in LLIR, this PR | 21 | 21 |\n\n`GPUHello` only prints, yet loading it removes every attribute the\nattributor infers for this kernel. How much that matters depends on the\nkernel; for a plain matmul the generated code is nearly identical, while\nscheduler-style plugins, such as the out-of-tree LLIR scheduler used by\nthe gfx950 Gluon tutorials, lose performance without the target cost\nmodels. With this PR the optimized IR no longer depends on whether a\nplugin is loaded.\n\n## What #4669 was working around\n\nWith a target machine, the AMDGPU attributor runs at `OptimizerLastEP`\nbefore any plugin pass, because the target machine registers its\ncallbacks in the `PassBuilder` constructor. It marks kernels\n`amdgpu-no-*` for implicit inputs they do not use. An instrumentation\nplugin that then injects calls reading those inputs (workgroup id y/z,\nthe implicit-argument pointer, ...) leaves the kernel with attributes\nthat no longer hold, and the backend does not set those inputs up.\nDropping the target machine avoided this by never running the\nattributor, at the cost of disabling every target pass for all plugins.\n\nThe correct fix is in the plugin, which should remove `amdgpu-no-*` from\nthe functions it instruments. For Omniprobe, the instrumentation tool\nthis guard was written for, that fix is AMDResearch/omniprobe#44\n(reproduction and details in AMDResearch/omniprobe#43). I verified on\ngfx950 that with this PR and that fix, Omniprobe's instrumented kernels\nget the same implicit-input setup as today.\n\n## Scope\n\nToday this only affects AMD. The NVIDIA backend calls `optimize_module`\nwithout `arch`, so it never creates a target machine, with or without a\nplugin. If #11156 lands and passes `arch` for NVIDIA, NVIDIA plugin\nusers get the target machine as well.\n\n## Testing\n\n- Merged current `main`;\n`python/test/unit/instrumentation/test_gpuhello.py` passes on gfx950\nwith `LLVM_PASS_PLUGIN_PATH` set, as in the AMD CI job.\n- The table above, before and after this change.\n- Omniprobe's Triton plugin with and without AMDResearch/omniprobe#44,\nas described above.",
+      "parents": [
+        "eb93a9a97e5dfc6a20c29da0096c047dbabd514c"
+      ],
+      "stats": {
+        "total_additions": 4,
+        "total_deletions": 11,
+        "files_changed": 1
+      },
+      "files": [
+        {
+          "filename": "python/src/llvm.cc",
+          "status": "modified",
+          "additions": 4,
+          "deletions": 11,
+          "patch": "@@ -789,18 +789,11 @@ void init_triton_llvm(py::module_ &m) {\n         std::string pluginFile =\n             mlir::triton::tools::getStrEnv(\"LLVM_PASS_PLUGIN_PATH\");\n \n-        // We don't pass the targetMachine to the LLVM-IR pass builder, unless\n-        // `arch` is specified.\n-        //\n-        // Don't set target machine in LLVM pass builder when using LLVM IR\n-        // level plugins. LLVM IR level plugin passes typically want to insert\n-        // calls to externally generated code (i.e. precompile a Cuda/Hip kernel\n-        // with Clang and then insert a call to it within an instrumentation\n-        // pass) setting the targetMachine value here can can cause a mismatch\n-        // in the target machine between the MLIR and Clang generated kernels\n-        // and break the lowering of some target specific intrinsics.\n+        // Pass the target machine whenever `arch` is known, also when an\n+        // LLVM-IR pass plugin is loaded, so that loading a plugin does not\n+        // change which target passes and cost models the pipeline uses.\n         std::unique_ptr<TargetMachine> targetMachine = nullptr;\n-        if (!arch.empty() && pluginFile.empty())\n+        if (!arch.empty())\n           targetMachine =\n               createTargetMachine(mod, arch, enable_fp_fusion, features);\n         PassBuilder pb(/*targetMachine=*/targetMachine.get(), tuningOptions,\n"
+        }
+      ]
+    },
+    {
+      "sha": "eb93a9a97e5dfc6a20c29da0096c047dbabd514c",
+      "author": {
+        "name": "Lixun Zhang",
+        "email": "Lixun.Zhang@amd.com"
+      },
+      "date": "2026-09-27T04:36:54+08:00",
+      "message": "[AMD][gfx1250] Enable VA_VDST anti-hints for expert scheduling (#11976)",
+      "parents": [
+        "072983377d8cdcec4b1e0add05a9875bb618e1f7"
+      ],
+      "stats": {
+        "total_additions": 5,
+        "total_deletions": 1,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "python/test/unit/test_knobs.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -237,7 +237,7 @@ def test_amd_llvm_options_concurrent():\n     (\"gfx90a\", True, None, [], False),\n     (\"gfx942\", False, \"1\", [\"amdgpu-use-amdgpu-trackers\"], True),\n     (\"gfx950\", True, \"disable-lsr\", [\"amdgpu-use-amdgpu-trackers\"], False),\n-    (\"gfx1250\", True, \"0\", [], False),\n+    (\"gfx1250\", True, \"0\", [\"amdgpu-anti-hints-for-va-vdst\"], False),\n ])\n def test_amd_codegen_options(arch, enable_fp_fusion, disable_opt, expected_flags, disable_optimization, fresh_knobs,\n                              monkeypatch):"
+        },
+        {
+          "filename": "third_party/amd/backend/compiler.py",
+          "status": "modified",
+          "additions": 4,
+          "deletions": 0,
+          "patch": "@@ -219,6 +219,10 @@ def get_llvm_flags(arch):\n     # trackers yet.\n     if arch in [\"gfx942\", \"gfx950\"]:\n         flags.append(\"amdgpu-use-amdgpu-trackers\")\n+    # Discourage VGPR reuse that creates VALU-to-DS WAR hazards and requires\n+    # s_wait_alu va_vdst waits in expert scheduling mode.\n+    if arch == \"gfx1250\" and is_expert_scheduling_enabled(arch):\n+        flags.append(\"amdgpu-anti-hints-for-va-vdst\")\n     return flags\n \n \n"
+        }
+      ]
+    }
+  ]
+}

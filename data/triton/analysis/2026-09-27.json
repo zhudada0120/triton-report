@@ -1,0 +1,49 @@
+{
+  "date": "2026-09-27",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-09-28T02:02:47.999582+08:00",
+  "daily_summary": "当日共两个 commit，分别位于 LLVM 编译基础设施和 AMD 后端代码生成层。第一个 commit（4fd7cc5c）修复了 python/src/llvm.cc 中 optimize_module 的行为：只要 arch 已知就创建 TargetMachine，而不再因为加载了 LLVM_PASS_PLUGIN_PATH 插件而丢弃 target machine，从而保证加载插件不会改变内核自身的优化管线（如 AMDGPUAttributor 与目标代价模型）。第二个 commit（eb93a9a9）为 AMD gfx1250 在 expert scheduling 模式下启用 amdgpu-anti-hints-for-va-vdst 标志，以抑制导致 VALU→DS WAR 冒险的 VGPR 复用。整体方向是修复 LLVM 插件场景下的优化一致性与 AMD 架构特定代码生成调优，均为测试保障型/后端调优型小改动。",
+  "ascend_impact_summary": "两个 commit 对 triton-ascend 均无影响。第一个 commit 仅修改 python/src/llvm.cc 中 init_triton_llvm 的 optimize_module 逻辑，虽然 python/src/ 属于通用 C++ 绑定层，但该改动只作用于 LLVM 中间层优化阶段的 target machine 创建条件，不改变任何被 Ascend 继承/复用的接口签名（TritonOpBuilder、pass manager 绑定等均未变），且 Ascend 走 TritonToLinalg→毕昇工具链而非 llvm.cc 描述的目标后端优化路径，其 arch 在既有实现中亦不参与该分支。第二个 commit 纯属 third_party/amd 后端与 AMD 专属测试，属于架构上下文中明确的'绝不影哬'路径。因此 triton-ascend 无需任何代码或测试适配。",
+  "commits": [
+    {
+      "sha": "4fd7cc5cfd0a84acfeb5dadb1578dffa409903fc",
+      "comment": "变更意图：修复 #4669 引入的行为——原先当 LLVM_PASS_PLUGIN_PATH 加载插件时会强制丢弃 TargetMachine，导致 O3 管线缺少目标特定 pass（如 AMDGPUAttributor）与代价模型，加载一个纯打印插件都会让内核 LLIR 的 amdgpu-no-* 属性从 21 个变为 0，从而改变内核自身优化结果。实现方式：在 python/src/llvm.cc 的 init_triton_llvm::optimize_module 中，将 `if (!arch.empty() && pluginFile.empty())` 改为 `if (!arch.empty())`，即只要 arch 已知就创建 TargetMachine，与是否加载插件解耦，并删除了原有的长注释。潜在风险：插件注入的外部编译代码可能与 target machine 不匹配（原 #4669 想规避的问题），但作者说明正确修复在插件侧（应从被插桩函数移除 amdgpu-no-*），并已在 Omniprobe 上验证；当前仅影响 AMD（NVIDIA 后端不传 arch）。总体是低风险的行为一致性修复，注意该改动位于通用 C++ 绑定层，但仅触及 LLVM 优化管线构造，不改变任何 Python 可扩展接口。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "llvm",
+        "compiler",
+        "bindings"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[LLVM] Always set the target machine when arch is specified (#10849)\n\n`optimize_module` drops the target machine whenever an LLVM-IR pass\nplugin is loaded (`LLVM_PASS_PLUGIN_PATH`). That guard was added in\n#4669 for instrumentation plugins that splice in externally\n(Clang-)compiled code. This PR creates the target machine whenever\n`arch` is known, whether or not a plugin is loaded.\n\n## Why\n\nLoading a plugin currently changes how the kernel itself is optimized,\nnot only what the plugin adds. Without a target machine, the O3 pipeline\nruns without the AMDGPU target passes (for example `AMDGPUAttributor`)\nand without target cost models. Measured on gfx950 with a vector-add\nkernel:\n\n| | no plugin | in-tree `GPUHello` plugin loaded |\n|---|---:|---:|\n| `amdgpu-no-*` attributes in LLIR, `main` | 21 | 0 |\n| `amdgpu-no-*` attributes in LLIR, this PR | 21 | 21 |\n\n`GPUHello` only prints, yet loading it removes every attribute the\nattributor infers for this kernel. How much that matters depends on the\nkernel; for a plain matmul the generated code is nearly identical, while\nscheduler-style plugins, such as the out-of-tree LLIR scheduler used by\nthe gfx950 Gluon tutorials, lose performance without the target cost\nmodels. With this PR the optimized IR no longer depends on whether a\nplugin is loaded.\n\n## What #4669 was working around\n\nWith a target machine, the AMDGPU attributor runs at `OptimizerLastEP`\nbefore any plugin pass, because the target machine registers its\ncallbacks in the `PassBuilder` constructor. It marks kernels\n`amdgpu-no-*` for implicit inputs they do not use. An instrumentation\nplugin that then injects calls reading those inputs (workgroup id y/z,\nthe implicit-argument pointer, ...) leaves the kernel with attributes\nthat no longer hold, and the backend does not set those inputs up.\nDropping the target machine avoided this by never running the\nattributor, at the cost of disabling every target pass for all plugins.\n\nThe correct fix is in the plugin, which should remove `amdgpu-no-*` from\nthe functions it instruments. For Omniprobe, the instrumentation tool\nthis guard was written for, that fix is AMDResearch/omniprobe#44\n(reproduction and details in AMDResearch/omniprobe#43). I verified on\ngfx950 that with this PR and that fix, Omniprobe's instrumented kernels\nget the same implicit-input setup as today.\n\n## Scope\n\nToday this only affects AMD. The NVIDIA backend calls `optimize_module`\nwithout `arch`, so it never creates a target machine, with or without a\nplugin. If #11156 lands and passes `arch` for NVIDIA, NVIDIA plugin\nusers get the target machine as well.\n\n## Testing\n\n- Merged current `main`;\n`python/test/unit/instrumentation/test_gpuhello.py` passes on gfx950\nwith `LLVM_PASS_PLUGIN_PATH` set, as in the AMD CI job.\n- The table above, before and after this change.\n- Omniprobe's Triton plugin with and without AMDResearch/omniprobe#44,\nas described above."
+    },
+    {
+      "sha": "eb93a9a97e5dfc6a20c29da0096c047dbabd514c",
+      "comment": "变更意图：为 AMD gfx1250 在启用 expert scheduling（is_expert_scheduling_enabled）时追加 LLVM 标志 amdgpu-anti-hints-for-va-vdst，以抑制会产生 VALU→DS(store) WAR 冒险、需要 s_wait_alu va_vdst 等待的 VGPR 复用，从而改善指令调度。实现方式：在 third_party/amd/backend/compiler.py 的 get_llvm_flags(arch) 中，在既有 gfx942/gfx950 分支之后新增 gfx1250 条件分支追加标志；同时更新 python/test/unit/test_knobs.py 中 test_amd_codegen_options 参数化用例，将 gfx1250 期望 flags 从 [] 改为 [\"amdgpu-anti-hints-for-va-vdst\"]。潜在风险：极低，属于 AMD 后端与 knobs 测试的定向修改，仅影响 gfx1250 且在 expert scheduling 模式下的代码生成。",
+      "tags": [
+        "performance",
+        "low-risk",
+        "amd",
+        "compiler",
+        "test"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][gfx1250] Enable VA_VDST anti-hints for expert scheduling (#11976)"
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}
