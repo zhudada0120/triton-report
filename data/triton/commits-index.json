@@ -1,4 +1,20 @@
 {
+  "305953d02c28036a1e6cf10152773dd2de0fae09": {
+    "date": "2026-09-28",
+    "msg": "[BACKEND] Fix blocked scan register order and CTA partitioning (#11990)"
+  },
+  "86b92b86e96d18d415418d6ccfdd33f77129b1f9": {
+    "date": "2026-09-28",
+    "msg": "[Backend] Emit `trunc nuw` when transfering extended data (#11899)"
+  },
+  "6c2dc5ecf7df08f4143b8a96dbb7b7783e20f951": {
+    "date": "2026-09-28",
+    "msg": "[BACKEND] Fix scan prefix for single-lane axis with multiple blocks (#11981)"
+  },
+  "fd01b13fa17f7b2b5b3e9f2bcafb6909644869c8": {
+    "date": "2026-09-28",
+    "msg": "[TEST] Ensure private MLIR functions are tested (#11840)"
+  },
   "4fd7cc5cfd0a84acfeb5dadb1578dffa409903fc": {
     "date": "2026-09-27",
     "msg": "[LLVM] Always set the target machine when arch is specified (#10849)"

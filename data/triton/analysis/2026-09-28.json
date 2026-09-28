@@ -1,0 +1,88 @@
+{
+  "date": "2026-09-28",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-09-29T02:03:07.608666+08:00",
+  "daily_summary": "当日变更集中在 TritonGPU 后端正确性与性能优化上：(1) 修复 blocked layout scan 在多 CTA 分区与寄存器顺序裁剪下的结果错误（#11990）；(2) 对 extended 数据在 smem/shuffle 传输回来的 trunc 加上 nuw/nsw 溢出标志，让 LLVM 消除冗余 masking，带来可测性能收益（#11899）；(3) 修复单 lane 扫描轴多 block 场景下 AddPartialReduceOneWarp 使用 running total 错误的问题（#11981）；(4) 增强 lit 测试，把原本因被优化掉或缺少调用者而未被测试的 private MLIR 函数改为带副作用（store）的 public 函数，并加入 buffer-region remark 校验（#11840）。整体是典型的中端 lowering 修复 + 测试强化，无接口变更。",
+  "ascend_impact_summary": "当日四个 commit 均未触及 triton-ascend 的接口面与补丁点。两个 scan 修复位于 lib/Analysis/Utility.cpp 与 lib/Conversion/TritonGPUToLLVM/ScanOpToLLVM.cpp（TritonGPU→LLVM 路径），Ascend 走 TritonToLinalg 替代，不使用该 lowering；trunc nuw/nsw 改动全部落在 lib/Conversion/TritonGPUToLLVM 与 third_party/{nvidia,amd} 的 ConvertLayout/TargetInfo/Utility，亦属 Ascend 不使用的 TritonGPUToLLVM 路径；#11840 只改 test/Conversion/*.mlir。均不影响 AscendBackend/NPUDriver、monkey-patch 点（TritonSemantic.dot、CodeGenerator.__init__、compiler.parse）或 tt 方言定义，triton-ascend 无需同步改动。",
+  "commits": [
+    {
+      "sha": "305953d02c28036a1e6cf10152773dd2de0fae09",
+      "comment": "修复 blocked layout 下 scan 的两类正确性问题，全部集中在 lib/Analysis/Utility.cpp 的 ScanLoweringHelper。第一类是寄存器顺序：原先 getAxisElementStride() 用 getOrder()（未按 shape 裁剪调整的顺序）计算寄存器内元素步长，当 shape clipping 使实际连续寄存器顺序与原始 blocked order 不一致时会得到错误前缀和，改为改用 getEncoding().getOrder()（形状调整后的 linear encoding 寄存器顺序），同时保留原始 blocked order 用于 repetition block 计算。第二类是 CTA 分区：原先 partial result 只在各自 CTA 内合并，跨 CTA 切分 scan 轴时结果错误（64 个 1 被切成两段），现在在 isSupported() 中显式拒绝 getCTASplitNum(srcEncoding)[getAxis()] != 1 的布局（用 shape-adjusted encoding 判断，因此 broadcast CTA 仍被支持），并对非 scan 轴切分改用 getShapePerCTA 而非完整 shape 计算 getNonAxisNumBlocks()/getAxisBlockStride()，避免 valid 的非轴切分触发编译期断言。测试上新增 python/test/gluon/test_lowerings.py 的 test_scan_blocked_shape_clipping（5 组布局 incl. registers/multiwarp/nonaxis_split/broadcast/clipped_axis_split）与 test_scan_rejects_axis_split_across_ctas（断言 PassManager::run failed + 'unsupported scan layout'）。潜在风险：isSupported() 收紧会使部分此前'能编译但结果错'的布局直接编译失败，属于正确的 fail-fast 行为，但可能让下游依赖旧行为的 kernel 报错；broadcast CTA 的判定依赖 getCTASplitNum 语义，需确保 shape-adjusted encoding 的一致性。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "TritonGPU",
+        "Analysis",
+        "scan"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更文件 lib/Analysis/Utility.cpp 中的 ScanLoweringHelper 服务于 TritonGPU→LLVM lowering 的 scan 实现，triton-ascend 使用 TritonToLinalg 转换链替代 TritonGPUToLLVM，不调用该 helper；且该文件未出现在接口面/必然影响/可能影响路径列表中。",
+        "testing": "无影响。新增测试位于 python/test/gluon/test_lowerings.py，属 Gluon/NVIDIA 侧端到端测试，Ascend 不运行。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Fix blocked scan register order and CTA partitioning (#11990)\n\nFix two cases where scans of blocked tensors produce incorrect results.\n\n**Register order.** Shape clipping can make the contiguous register\norder differ from the original blocked order. For example, scanning axis\n0 with:\n\n```python\nlayout = BlockedLayout([2, 1], [32, 1], [4, 1], [1, 0])\nx = [[1, 2], [3, 4]]\n```\n\nproduces `[[1, 3], [3, 7]]` instead of `[[1, 2], [4, 6]]`. Compute\n`getAxisElementStride()` from the shape-adjusted linear encoding's\nregister order. Keep the original blocked order for repetition blocks.\n\n**CTA partitions.** Scanning 64 ones with two CTAs and:\n\n```python\nlayout = BlockedLayout([1], [32], [4], [0], cga_layout=[[1]])\n```\n\nproduces `[1, ..., 32, 1, ..., 32]` instead of `[1, ..., 64]`, because\npartial results are only combined within each CTA. Reject actual CTA\nsplits along the scan axis, using the shape-adjusted encoding so\nbroadcast CTAs remain supported. For splits along other axes, use the\nper-CTA shape in `getNonAxisNumBlocks()` and `getAxisBlockStride()`;\nusing the full tensor shape also causes a compiler assertion for valid\nnon-scan-axis partitions.\n\n<!-- codex-thread: 01a0e6af-9f8b-70f2-91ad-35a9811f9167 -->"
+    },
+    {
+      "sha": "86b92b86e96d18d415418d6ccfdd33f77129b1f9",
+      "comment": "性能优化：在通过 shared memory 或 warp shuffle 传输 extended（窄位宽被扩展）数据并 truncate 回原宽度的位置，为 trunc 加上 LLVM 整数溢出标志（NVIDIA/NPU-ish 通用路径用 IntegerOverflowFlags::nuw，因为那里是 zext；AMD 用 nsw 因为其 shuffle 走 sext），使 LLVM 能获知写回时数值确实在范围内，从而消除冗余的 masking 指令。改动覆盖 lib/Conversion/TritonGPUToLLVM/ConvertLayoutOpToLLVM.cpp（两处 smem/vec 解包 trunc）、MemoryOpToLLVM.cpp 的 AtomicPollOpConversion（i8→i1）、third_party/amd/lib/TritonAMDGPUToLLVM/{ConvertLayoutOpToLLVM.cpp, TargetInfo.cpp, Utility.cpp}（nsw）、third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/{ConvertLayoutOpToLLVM.cpp, Utility.cpp}。测试更新了 test/Conversion/amd/convert_layout.mlir、test/Conversion/tritongpu_to_llvm.mlir、test/Conversion/tritongpu_to_ptx.mlir（新增 shuffle_i1/i16/f16、shared_i1、packed_shuffle_i1/i8 等用例）、test/Conversion/atomic_ldst.mlir 的 FileCheck 断言，并新增 tritongpu_to_ptx.mlir 的 'no mask' 用例验证 shfl.sync 后没有 and.b32。报告微基准中重复 int16 layout 转换有 4.5% 加速。风险：溢出标志正确性依赖扩展操作与截断操作严格配对（zext↔nuw、sext↔nsw），若某处实际是 sext 却标了 nuw 会导致 LLVM 反向推断出错误的 poison/范围信息；需确认 AMD 路径确实使用 sext（sext 才配 nsw），从测试断言看 AMD 侧确为 llvm.sext + overflow<nsw>，自洽。",
+      "tags": [
+        "performance",
+        "low-risk",
+        "TritonGPU",
+        "Conversion",
+        "NVIDIA",
+        "AMD"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更全部位于 lib/Conversion/TritonGPUToLLVM/*（Ascend 不使用的 TritonGPU→LLVM lowering）与 third_party/nvidia、third_party/amd（纯平台特定实现）。未修改 TritonOpBuilder、TargetInfoBase 之外的任何 Ascend 接口面的签名，也未触及 monkey-patch 点或 tt 方言定义。",
+        "testing": "无影响。测试改动都在 test/Conversion/{amd,tritongpu_to_llvm,tritongpu_to_ptx,atomic_ldst}.mlir，为 NVIDIA/AMD lit 测试，Ascend 不运行。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Backend] Emit `trunc nuw` when transfering extended data (#11899)\n\nWe sometimes transport extended values through smem or warp shuffles,\nand truncate them back on the other side. Since these are opaque to\nllvm, it loses the information that the values were in range when they\nwere written, and so it has to emit masking instructions.\n\nBy tagging the trunc with nuw (or nsw for amd, as it uses sext), llvm\ncan often optimize the masking away. In a microbenchmark of repeated\nint16 layout conversions within a warp, this gives in a 4.5% speedup."
+    },
+    {
+      "sha": "6c2dc5ecf7df08f4143b8a96dbb7b7783e20f951",
+      "comment": "修复 AddPartialReduceOneWarp 在'扫描轴上只有一个 lane 持有唯一数据但存在多个 block'场景下的前缀和错误（lib/Conversion/TritonGPUToLLVM/ScanOpToLLVM.cpp）。当 numScanBlocks > 1 时，原代码直接把 accumulator 设为 srcValues[srcIndex]（即已包含当前 chunk 的 running total）并继续累加该 chunk 的其余元素，导致同一 chunk 被重复计入；修复方式是先把 lastElement = accumulator（保存前一 block 的累计值），再令 accumulator = srcValues[srcIndex]，使得 chunk 内后续元素基于'前一 block 的总和'而不是'包含本 chunk 的总和'来继续前缀和。典型复现为 BlockedLayout([2,4],[1,32],[1,4],[0,1]) 沿 axis 0 做 4x4 cumsum，原实现第 2 行得到 37 而非 15。测试在 python/test/gluon/test_lowerings.py 的 test_scan_layouts 布局列表新增 BlockedLayout([2,4],[1,THREADS_PER_WARP],[1,4],[0,1]) 与 BlockedLayout([4,2],[THREADS_PER_WARP,1],[4,1],[1,0])。改动很小（+3 行），语义清晰；风险点是 lastElement 的赋值时机必须严格在 accumulator 被覆盖之前，且需保证后续 srcValues[srcIndex] 的部分归约逻辑在 numScanBlocks==1 与 >1 两条分支上行为一致。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "TritonGPU",
+        "Conversion",
+        "scan"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Conversion/TritonGPUToLLVM/ScanOpToLLVM.cpp，属于 Ascend 完全不使用的 TritonGPU→LLVM lowering 路径（Ascend 以 TritonToLinalg 替代），未触及任何 Ascend 接口面。",
+        "testing": "无影响。新增布局参数加在 python/test/gluon/test_lowerings.py 的 test_scan_layouts 中，为 Gluon/NVIDIA 端到端测试，Ascend 不运行。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Fix scan prefix for single-lane axis with multiple blocks (#11981)\n\nWhen only one thread holds unique data along the scan axis but there are\nseveral blocks (e.g., `BlockedLayout([2, 4], [1, 32], [1, 4], [0, 1])`\nscanning axis 0), `AddPartialReduceOneWarp` combined the rest of each\nchunk with the running total that already included that chunk, instead\nof the total of the previous blocks. A 4x4 cumsum along axis 0 gives 37\ninstead of 15 in row 2.\n\nThis uses the previous blocks' total for the rest of the chunk, and adds\nthe layouts to `test_scan_layouts`.\n\n\n<!---\nThe core Triton is a small number of people, and we receive many PRs\n(thank\nyou!).  To help us review your code more quickly, **if you are a new\ncontributor (less than 3 PRs merged) we ask that you complete the\nfollowing\ntasks and include the filled-out checklist in your PR description.**\n\nComplete the following tasks before sending your PR, and replace `[ ]`\nwith\n`[x]` to indicate you have done them.\n-->\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)"
+    },
+    {
+      "sha": "fd01b13fa17f7b2b5b3e9f2bcafb6909644869c8",
+      "comment": "纯测试强化 commit，只改 test/Conversion 下的 4 个 lit 文件，目的是让 private MLIR 函数真正被测试到。此前有两类问题导致测试形同虚设：一是 LLVM（如 -O1）会把无副作用的函数优化成 no-op；二是模块级数据流分析会跳过没有调用者的 private 函数，从而得出错误的结论（例如 tmem_store_wait_unknown 本应把这些 buffer 标为 unknown 而不是 uninitialized，但两者产生的等待效果相同所以没被发现）。修法是把相关函数从 tt.func private 改为 tt.func public，并把返回值改为写入 %out 指针（引入真实副作用，防止被优化掉），同时补充 -test-print-buffer-region / -test-print-membar 等 RUN 行并在函数内加 expected-remark 断言（如 'Buffers: unknown'、'Buffers: [0, 256]'、'Buffers: [0, 1024]'、'Buffers: [0, 4096]'）。涉及 test/Conversion/cvt_to_llvm.mlir、lower_tensor_memory_to_llvm.mlir、reduce_to_llvm.mlir、tritonnvidiagpu_to_llvm.mlir。这类改动不改动任何编译器实现，仅提升测试覆盖与回归检测能力，风险极低；唯一需要注意的是 verify-diagnostics=only-expected 意味着这些 expected-remark 若与 pass 输出不匹配会直接 fail，未来数据流分析行为变化会立即暴露——这正是本次改动的目的。",
+      "tags": [
+        "test",
+        "low-risk",
+        "TritonGPU",
+        "Conversion",
+        "NVIDIA"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅涉及 test/Conversion/*.mlir 的 lit 测试文件（cvt_to_llvm.mlir、lower_tensor_memory_to_llvm.mlir、reduce_to_llvm.mlir、tritonnvidiagpu_to_llvm.mlir），未修改任何 C++/Python 实现、未触及 Ascend 的接口面、monkey-patch 点或补丁文件。",
+        "testing": "无影响。这些 lit 测试针对 NVIDIA/CUDA lowering 与 buffer-region/membar 分析输出，triton-ascend 的测试体系（third_party/ascend/unittest、python/test）不依赖这些文件。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TEST] Ensure private MLIR functions are tested (#11840)\n\nPrevious these cases are not properly tested due to two causes\n\n1. LLVM (e.g., -O1) optimizes these functions as no-op when there's no\nside effect.\n2. Module-level dataflow analysis skips private functions that do not\nhave any callers so we may derive incorrect results. For example,\n`tmem_store_wait_unknown` should tag these buffers as unknown instead of\nuninitialized, though they produced the same waiting effects and thus we\ndidn't catch"
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

@@ -1,0 +1,118 @@
+{
+  "date": "2026-09-28",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-09-29T02:03:26.856725+08:00",
+  "daily_summary": "当日变更以文档修正为主（术语统一：Ascend 950 → Ascend 950PR&950DT products / A2/A3 → Atlas A2/A3 products、精度指南与 profiling 表更新、链接修复、架构文档中 Passthrough 类名重命名同步），同时包含若干实质性后端改动：(1) get_module_map 将 triton.language.extra.libdevice 重映射到 cann.libdevice，修复 Ascend 上 tl.extra.libdevice 调用无法解析的问题；(2) 撤销（revert）#2380 的 staged lowering 重构，恢复 UseAnalysis + MetaUse/MixUse 标记与分析机制，TritonToLinalg pass 重新回到单次 partial conversion + MetaUseEraser 的路径；(3) DynamicCVPipeline 的 CloneOps 修复多缓冲包裹同步 op 的擦除逻辑，避免跨核多缓冲下重复握手导致的静默错误/挂起。",
+  "test_impact_summary": "当日引入两个需要新增看护的测试点：libdevice 重映射（新增 test_extra_libdevice_module_map.py 端到端验证 log1p）与 CloneOps 包裹式同步擦除（新增 clone-wrapped-sync.mlir）。同时 UseAnalysis revert 大范围调整了 TritonToLinalg 的 lowering 策略与内部结构（新增 UseAnalysis.h/.cpp、MetaUseEraser，重构 pass 主流程），虽未直接新增单测，但既有 Conversion lit 测试（atomic_rmw_block、test_while_loop_index_tensor）被改回旧 CHECK 形式，且删除了 #2380 引入的 block_pointer_memory_legality/mixed_use_splat_mask/remove_use_analysis 等 lit 文件，测试基线回到旧路径，需关注新旧路径切换是否引入覆盖盲区（尤其 block pointer 与 mixed-use mask 场景）。文档变更不影响测试逻辑，但大量 docs/zh/python-api/_examples 下 skip 原因字符串修改以及 test_softmax_2d 新增 skip 标记反映了 npuir 包替换期间部分用例处于暂挂状态，建议回归时确认跳过项恢复计划。",
+  "commits": [
+    {
+      "sha": "38945468f2aa1384a32a7d79a0f84015df6ce059",
+      "comment": "纯文档修正（#2394）。在 en/zh 两版 autotune_guide.md 中补充 do_bench_npu 对比打印，precision.md 中修正 triton_func 的 device 处理（x.npu()/y.npu() 后再 empty_like）并补充 test_vector_add 调用与 'Accuracy Comparison' 措辞，profiling.md 依据 CANN 9.2.0 补充 610/920/950 系列 soc-version 一览表。仅为示例代码与文档内容更新，不涉及编译器及后端逻辑。风险点：示例中对输入直接调用 .npu() 复用，需注意在 CPU 上运行示例时是否会因缺少 torch_npu 报错，但属示例文档范围。",
+      "tags": [
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅修改文档与示例代码片段，不涉及可执行测试代码路径（示例本身并非 pytest 用例）。",
+        "suggested_test_areas": []
+      },
+      "message": "[docs](fix)  Revision of Incorrect Document Content (#2394)\n\nSigned-off-by: LH-123L <liuhuan261@huawei.com>"
+    },
+    {
+      "sha": "767d721d0a667383014850d00b8d3d40744f887b",
+      "message": "Revert [TritonToLinalg](feat) remove UseAnalysis with staged lowering",
+      "comment": "回滚 #2380（e3707df2）的分阶段 lowering 重构，恢复 UseAnalysis 驱动的 MetaUse/MixUse 分析路径。核心变更：(1) 恢复 UseAnalysis.h/.cpp（约 780 行新增），实现 SparseBackwardDataFlowAnalysis 上的 UseInfo/MetaUseEraser，标记仅用于元数据（指针/掩码/偏移）的值，并在 TritonToLinalg 中通过 MetaUseEraser 擦除；(2) TritonToLinalgPass.h 去掉 initializeTargetOptions/normalizeMemoryAccessForms 等 staged helper，TritonToLinalgPass.cpp 回退到单次 partialConversion + addDynamicLegal + populateTritonToLinalgConversionPatterns 的旧主流程，并恢复 preservePointerDescriptorComputations 以保护 CFO 描述符重建链；(3) BlockPtrAnalysis 恢复 parseAddPtr/parseBitcast 的早期解析以及基于 MetaUse 属性的 bitcast 特殊分支；(4) MaskAnalysis 恢复 splatAsMask 用户集合判定（arith.and/select/load/store/atomic_rmw），使纯 mask 用法的布尔 splat 走 active extent 分支；(5) Utils 新增 isMetaUse/isMixUse/getIndirectLoadInterfaceOpType/opIsIndirectLoad/opIsIndirectCalc；(6) 删除 #2380 带来的 block_pointer_memory_legality/mixed_use_splat_mask/remove_use_analysis 三个 lit 测试，回退 atomic_rmw_block 与 test_while_loop_index_tensor 的 CHECK；(7) 重命名两个 pytest_ut 以反映 UseAnalysis 语义。风险：UseAnalysis 是复杂的数据流分析 + 多轮 postProcess 修补，对 Load/Store/Atomic/Custom/Indirect 等多种 op 有专门处理，任何遗漏都可能复现历史上的 MixUse 误删问题；新加入的 MetaUseEraser 与 addptr 的交互需要重点看护（addptr 单独排除在擦除之外）；同时 revert 会让前面针对 staged lowering 的稳定性改进丢失（文件删除本身也说明该分支不稳定）。",
+      "tags": [
+        "refactor",
+        "bugfix",
+        "high-risk",
+        "compiler",
+        "TritonToLinalg"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "回滚删除 #2380 引入的 lit 测试（block_pointer_memory_legality、mixed_use_splat_mask、remove_use_analysis），同时修改 atomic_rmw_block 与 test_while_loop_index_tensor 的校验；新增 UseAnalysis/MetaUseEraser 路径缺少针对性覆盖（尤其 block pointer、mixed-use splat、address-only chain DCE 三种场景）。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/",
+          "third_party/ascend/lib/TritonToLinalg/UseAnalysis.cpp",
+          "third_party/ascend/lib/TritonToLinalg/BlockPtrAnalysis.cpp",
+          "third_party/ascend/unittest/pytest_ut/test_use_analysis.py",
+          "third_party/ascend/unittest/pytest_ut/test_atomic_rmw_useanalysis.py"
+        ]
+      }
+    },
+    {
+      "sha": "9ced8e2684c9ca718d15b3403598a973c06bc621",
+      "comment": "修复 Ascend 后端 libdevice 模块映射（#2385）。AscendBackend.get_module_map 由返回空字典改为返回 {\"triton.language.extra.libdevice\": triton.language.extra.cann.libdevice}，使用户代码中 from triton.language.extra import libdevice 在 NPU 后端下正确解析到 CANN 实现，而非上游 CUDA 实现。这是 BaseBackend.get_module_map 契约的正确使用（NVIDIA/AMD 后端均以该方法重定向 libdevice）。风险较低，但需注意：cann.libdevice 的符号表需覆盖用户实际调用的所有函数，否则会从“找不到模块”变成“找不到符号”。新增 test_extra_libdevice_module_map.py 用 log1p 做端到端数值校验，看护合理。",
+      "tags": [
+        "bugfix",
+        "backend",
+        "low-risk",
+        "compiler"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "变更点位于后端模块解析，属于基础功能路径；新增测试直接覆盖 log1p 端到端，是必要的，因为它验证了模块映射生效并能正确执行。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_extra_libdevice_module_map.py",
+          "third_party/ascend/language/cann/libdevice.py",
+          "third_party/ascend/backend/compiler.py"
+        ]
+      },
+      "message": "[Backend](fix) remap triton.language.extra.libdevice to cann.libdevice (#2385)"
+    },
+    {
+      "sha": "0d5bf3b68e6e889dc9ba685fde84eebdf25d4c37",
+      "comment": "修复 DynamicCVPipeline 的 CloneOps 在多缓冲包裹下的同步擦除（#2161）。背景：CloneOps 为消除 cluster 内的跨 block memref 依赖，会把早期 block 的 op 克隆到后面的 block；Rule 1 按 op 类型匹配 SyncBlockWaitOp/SyncBlockSetOp/FixpipeOp 并擦除克隆体中的这些同步/传输 op。但 inter-core multi-buffering（>1 buffer）在上游已把每个 sync op 包裹在 scf.if 中（按迭代选择本半 buffer 对应的 flag），导致类型匹配失效，克隆的握手被保留下来，同一 tile 被两个不同迭代计数器以不同 parity 通知两次，出现静默错误或挂起（flash attention 在 128x128 出错、64x64 hang）。修复：(1) shouldEraseOpForCube 扩展匹配“无结果且内部仅含 sync 的 scf.if”；(2) validateClonedSyncOpsErased 增加 op.walk 检查嵌套 sync，作为安全网触发 fallback 而不再输出重复握手。新增 lit 测试 clone-wrapped-sync.mlir 验证恰好只保留原始一次通知。风险中等：类型匹配扩展到 scf.if 依赖“yield 空”这一约束，若未来多缓冲 wrapper 变化（比如包裹其它 op 或产生结果），需同步更新；validate 新增嵌套 walk 会在合法用例下引入少量编译开销。",
+      "tags": [
+        "bugfix",
+        "high-risk",
+        "DynamicCVPipeline",
+        "compiler"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "跨核多缓冲 + CloneOps 组合属于复杂控制流场景，典型的静默错误/挂起 bug，必须有针对性 lit 覆盖。新增 clone-wrapped-sync.mlir 覆盖了“consumer 读取同一 buffer 导致 clone 存活、只有类型匹配才能擦除”的关键路径，测试点选择合理。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AddControlFlowCondition/clone-wrapped-sync.mlir",
+          "third_party/ascend/lib/DynamicCVPipeline/AddControlFlowCondition/CloneOps.cpp"
+        ]
+      },
+      "message": "[ssbuffer](fix) erase cloned sync ops wrapped by multi-buffering (#2161)\n\nCloneOps replays an earlier block's operations into a later one to make each block self-contained, which is how a cross-block memref dependency in a CUBE scope gets resolved, and erases from the copy what belongs to the original block. Rule 1 of that cleanup matches synchronisation and transfer ops by operation type. Inter-core multi-buffering runs earlier and, above a buffer count of one, wraps every sync op in an scf.if selecting this iteration's buffer half, so the type test stops matching and a cloned handshake is kept by the dependency rules.\n\nOne produced tile is then announced twice, from two pipeline stages whose iteration counters are their own, so one flag pair runs on two unrelated parities: the consumer is released by a producer that has not finished writing, or by nobody. Observed on flash attention at an inter-core buffer count of 2 as wrong results at 128x128 and a hang at 64x64, both silent.\n\nErase the wrapped form as well, restricted to scf.ifs that yield nothing so the wrapper around a transfer op is untouched, and make validateClonedSyncOpsErased look inside cloned ops so a clone that still survives falls back instead of emitting a duplicated handshake.\n\nSigned-off-by: CrDem <147323633+CrDem@users.noreply.github.com>"
+    },
+    {
+      "sha": "5fe371759b6335a2f7cd2ed54ef57f67a9f6ac3f",
+      "comment": "大规模文档替换（#2326），177 个文件、约 1340 行增删，将用户文档中不规范的硬件名称统一为产品名：'Ascend 950' → 'Ascend 950PR&950DT products'、'Ascend A2/A3' → 'Atlas A2 products/Atlas A3 products'、'Ascend A5' → 'Ascend 950PR&950DT products'；dtype 支持表结构从 '平台/Ascend A2/A3/Ascend 950' 列改为 'Atlas A2 products/Atlas A3 products' 与 'Ascend 950PR&950DT products' 长名称列，表格分隔符对齐宽度同步调整。同时修正若干英文措辞（双空格式去除、'Ascend does not support' → '\"...\" are not supported' 等）。绝大多数为纯文本替换，语义未变；仅 _ascend_constraints.py 中的表格列名改变可能影响 docs 生成脚本的解析（如果脚本硬编码了表头字符串），需确认 docs 构建后表格渲染正常。另外软 max 用例新增 skip 标记（npuir 包替换暂挂），反映文档示例处于不稳定状态。",
+      "tags": [
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯文档/字符串替换，不涉编译器或运行时逻辑。仅需验证 docs 构建脚本与新表头兼容，以及 skip 标记确实阻止示例被 pytest 收集执行。",
+        "suggested_test_areas": [
+          "docs/zh/python-api/_ascend_constraints.py",
+          "docs/zh/python-api/_examples/triton.language.softmax.py"
+        ]
+      },
+      "message": "[Docs](fix) Use approved product names in user docs (#2326)"
+    },
+    {
+      "sha": "744895de91412a78e95f3ddbdc038e813161e713",
+      "comment": "文档优化（#2388），10 个文件、25 行增删。主要变更：(1) 架构文档 en/zh 中把过时的 Pass 名称改为当前实现：RewriteLoadOp/BuildMask/CreateLoad/RewriteStoreOp/CreateStore/RewriteAtomicRWMOp/RewriteAtomicCASOp/RewriteWhile/RewriteFor 统一替换为 MemOpConverter::LoadConverter、MaskState、LoadConverter::matchAndRewrite、MemOpConverter::StoreConverter、StoreConverter::matchAndRewrite；(2) 安装指南与向量算子指南中相对链接改为 GitHub 绝对链接，避免仓库内相对路径失效；(3) 迁移指南新增示例说明句；(4) 修正 '发射 grid' → '启动grid' 等措辞。纯粹文档维护，无代码影响。",
+      "tags": [
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "文档文本与链接修正，不改变任何可执行路径。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](fix) Optimize document content (#2388)\n\n* Optimize document content\n\n* Optimize document content- #2388\n\n---------\n\nCo-authored-by: yanggaofeng (C) <y60124509@china.huawei.com>"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

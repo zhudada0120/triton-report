@@ -1,4 +1,28 @@
 {
+  "38945468f2aa1384a32a7d79a0f84015df6ce059": {
+    "date": "2026-09-28",
+    "msg": "[docs](fix)  Revision of Incorrect Document Content (#2394)"
+  },
+  "767d721d0a667383014850d00b8d3d40744f887b": {
+    "date": "2026-09-28",
+    "msg": "Revert [TritonToLinalg](feat) remove UseAnalysis with staged lowering"
+  },
+  "9ced8e2684c9ca718d15b3403598a973c06bc621": {
+    "date": "2026-09-28",
+    "msg": "[Backend](fix) remap triton.language.extra.libdevice to cann.libdevice (#2385)"
+  },
+  "0d5bf3b68e6e889dc9ba685fde84eebdf25d4c37": {
+    "date": "2026-09-28",
+    "msg": "[ssbuffer](fix) erase cloned sync ops wrapped by multi-buffering (#2161)"
+  },
+  "5fe371759b6335a2f7cd2ed54ef57f67a9f6ac3f": {
+    "date": "2026-09-28",
+    "msg": "[Docs](fix) Use approved product names in user docs (#2326)"
+  },
+  "744895de91412a78e95f3ddbdc038e813161e713": {
+    "date": "2026-09-28",
+    "msg": "[Docs](fix) Optimize document content (#2388)"
+  },
   "e3707df24371d123e9c3e265794c68c778ca26fd": {
     "date": "2026-09-24",
     "msg": "[TritonToLinalg](feat) remove UseAnalysis with staged lowering (#2380)"
