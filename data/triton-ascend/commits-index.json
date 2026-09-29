@@ -1,4 +1,60 @@
 {
+  "1cdf2badad2da1b8e314b74a06b5e6dce4da7557": {
+    "date": "2026-09-29",
+    "msg": "[compiler](fix) source SIMT stack limit from config only (#2248)"
+  },
+  "21b1111e3d1e1131bd5e05c86e3ff8da9acb97f9": {
+    "date": "2026-09-29",
+    "msg": "[TritonToLinalg](fix) remove add127 bias to fix dot_scaled bf16 accuracy issue (#2399)"
+  },
+  "d6944006dc24abbdb2f55731acf8151a61670d21": {
+    "date": "2026-09-29",
+    "msg": "[compiler](feat) Pass --save-temps to bishengir-compile (#1616)"
+  },
+  "d03ddc785f77d014552aa3cfbd1e69b9bfb9c84d": {
+    "date": "2026-09-29",
+    "msg": "[ssbuffer](feat) optimization for load-exp pattern (#2409)"
+  },
+  "a976df28b0bfc5467f7612c3d45c00d291c40a93": {
+    "date": "2026-09-29",
+    "msg": "[ssbuffer](fix) Add SplitIf FallBack Pattern (#2408)"
+  },
+  "e6fb9a4afaadadd8b26dfdbd3d9d9f7010f06b0b": {
+    "date": "2026-09-29",
+    "msg": "Add Mojo DynamicCVPipeline compile check (#2352)"
+  },
+  "0561e97aac7d2abad195c74d48919fcde6b8a4eb": {
+    "date": "2026-09-29",
+    "msg": "[MaskAnalysis](fix) parse arith.subi, (offs - K) >= 0 stays continuous (#2406)"
+  },
+  "95d7906dc9d3c9dfba26e9d8fcecb8f24f2cb9a0": {
+    "date": "2026-09-29",
+    "msg": "[TritonToUnstructure](fix) preserve masks and specialize A5 row copies (#2401)"
+  },
+  "f994763a29f722b5024f54740367317bbc500f57": {
+    "date": "2026-09-29",
+    "msg": "[Autotune](fix) report missing feedback for user configs (#2369)"
+  },
+  "8ac38ed18719487d20d96bd11bbb7c394f6418f7": {
+    "date": "2026-09-29",
+    "msg": "[backend](fix) Rename A5 to Ascend 950 and port backend fixes (#2350)"
+  },
+  "11f6abaf6d2276adb1cd632058e13d8ea771942f": {
+    "date": "2026-09-29",
+    "msg": "[npuir](fix) npuir compilation option optimization (#2090)"
+  },
+  "bef66abb1970febb399536b84c9d68b0625a068f": {
+    "date": "2026-09-29",
+    "msg": "[Docs](fix) Fix documentation issues reported by tester. (#2378)"
+  },
+  "bfa78d0d29f2265aa3168ff87b0de69eb0b1d7a7": {
+    "date": "2026-09-29",
+    "msg": "[Docs](feat) document user-config autotune feedback (#2384)"
+  },
+  "088f41ed11cfc851a6a0c6de428957c416e3a4ad": {
+    "date": "2026-09-29",
+    "msg": "[Docs](fix) Optimize document content (#2437)"
+  },
   "38945468f2aa1384a32a7d79a0f84015df6ce059": {
     "date": "2026-09-28",
     "msg": "[docs](fix)  Revision of Incorrect Document Content (#2394)"

@@ -1,0 +1,268 @@
+{
+  "date": "2026-09-29",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-09-30T02:06:15.695453+08:00",
+  "daily_summary": "当日变更以修复和文档优化为主，覆盖 Ascend 后端编译选项整理、dot_scaled 精度修复、bishengir-compile 调试支持、DynamicCVPipeline 优化与回退分析、Mojo 编译检查 CI、MaskAnalysis 支持 arith.subi、全行拷贝特化、autotune 用户配置反馈、A5 更名为 Ascend 950、npubin 编译选项优化以及大量文档修正。重点提升编译链正确性和可调试性，增强 SIMT/SIMD 混合场景下的 mask 保留与全行拷贝优化，并完善社区治理与开发文档。",
+  "test_impact_summary": "当日变更引入多个需要新增测试看护的点：编译选项中移除了 simt_stack_limit 并新增了 save-temps 调试路径测试、dot_scaled bf16 精度修复需要更新数值测试、新增 ExpLoadPatternPass 和 AnalyzeSplitIfPass 需要 lit 测试、Mojo 编译检查引入了新的 CI 工作流和测试脚本、MaskAnalysis 新增 subi 解析需要 lit 和端到端测试、全行拷贝特化需要验证正反例、autotune 用户配置反馈增加了新的日志路径需要测试、A5 到 Ascend 950 的更名影响大量测试描述但逻辑不变、npubin 序列化优化需要验证 debug 与非 debug 模式。整体测试策略需覆盖新增的 MLIR pass、编译选项变更、以及 CI 工作流的正确性。",
+  "commits": [
+    {
+      "sha": "1cdf2badad2da1b8e314b74a06b5e6dce4da7557",
+      "comment": "该 commit 将 simt_stack_limit 从编译选项中移除，改为仅从 torch_npu 的 acl_default.json 配置或内核默认值 1152 解析。这简化了用户接口，避免了显式传参可能引入的配置不一致问题。变更涉及 NPUOptions 字段删除、get_simt_stack_limit 签名简化、以及相关测试的同步更新。潜在风险是如果用户依赖显式传递 simt_stack_limit，升级后会 TypeError，需要文档明确说明。",
+      "tags": [
+        "refactor",
+        "bugfix",
+        "low-risk",
+        "compiler"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "删除了 NPUOptions 的 simt_stack_limit 字段并修改了 get_simt_stack_limit 签名，现有测试需要同步更新以匹配新的无参调用方式，并新增测试验证该字段不再存在。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "third_party/ascend/unittest/pytest_ut/test_layout_memory_895_closure_differential.py"
+        ]
+      },
+      "message": "[compiler](fix) source SIMT stack limit from config only (#2248)\n\n(cherry picked from commit b23848e11e426da3bc1a6672166c481d97fe178b)"
+    },
+    {
+      "sha": "21b1111e3d1e1131bd5e05c86e3ff8da9acb97f9",
+      "comment": "该 commit 修复 dot_scaled bf16 精度问题，移除了对 scale 值的 add127 偏置操作，并将 ExtSIOp 改为 ExtUIOp。这是因为 scale 值在硬件语义中是 uint8 无符号解释，之前错误地按有符号处理并加上 127 偏置，导致 bf16 精度偏差累计。测试同步更新为 uint8 类型并将 NaN 掩码值从 -1 改为 255（uint8 的最大值）。这是一个正确的语义修复，但需要注意所有依赖旧行为的测试和 kernel 可能需要同步调整。",
+      "tags": [
+        "bugfix",
+        "accuracy",
+        "medium-risk",
+        "TritonToLinalg",
+        "dot_scaled"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "dot_scaled 的 scale 值语义从有符号 int8 改为无符号 uint8，测试用例中的数据类型和边界值需要同步更新，且需验证 bf16 精度修复后的数值正确性。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_dot_scaled.py",
+          "third_party/ascend/unittest/pytest_ut/test_dot_scaled_fp4_fp8.py"
+        ]
+      },
+      "message": "[TritonToLinalg](fix) remove add127 bias to fix dot_scaled bf16 accuracy issue (#2399)\n\n(cherry picked from commit bca00726494ed9909a01260d3a367c9914681c2c)"
+    },
+    {
+      "sha": "d6944006dc24abbdb2f55731acf8151a61670d21",
+      "comment": "该 commit 在 TRITON_DEBUG 设置时为 bishengir-compile 添加 --save-temps 参数，将临时文件保存到 dump 目录。这有助于调试编译问题，特别是 bishengir-compile 阶段的中间产物。变更涉及 910_95 和 A2_A3 两条编译路径，通过 _get_dump_paths 获取目标目录。风险较低，仅在 debug 模式下生效。",
+      "tags": [
+        "feature",
+        "debug",
+        "low-risk",
+        "compiler"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 debug 模式下 --save-temps 参数的传递路径，需要验证该参数在 910_95 和 A2_A3 编译分支中是否正确生成，以及是否仅在 debug 模式下启用。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "third_party/ascend/unittest/pytest_ut/test_debug_triton_opt_cmd.py"
+        ]
+      },
+      "message": "[compiler](feat) Pass --save-temps to bishengir-compile (#1616)\n\nPasses --save-temps to bishengir-compile if TRITON_DEBUG is set.\n\nPartially fixes #801\n\nSigned-off-by: Andrey Bokhanko <andreybokhanko@gmail.com>\n(cherry picked from commit 0a9939ab6ea318e1e6ce968d99db39d43a00093b)"
+    },
+    {
+      "sha": "d03ddc785f77d014552aa3cfbd1e69b9bfb9c84d",
+      "comment": "该 commit 新增 ExpLoadPatternPass，用于优化 load-exp-broadcast 模式。该 pass 匹配 VECTOR 块中的 load->exp->broadcast->mulf 模式，将其从原 block 复制到新的 VECTOR block 中，以改善 DynamicCVPipeline 的 CV 重叠。同时移除了两个特定 kernel 的硬编码禁用列表（chunk_gated_delta_rule_bwd_kernel_dhu_blockdim64 和 chunk_gated_delta_rule_fwd_kernel_h_blockdim64）。变更涉及 ComputeBlockOpt 管线，新增 pass 注册。风险在于模式匹配的准确性，如果匹配错误可能导致性能下降或正确性问题。",
+      "tags": [
+        "performance",
+        "feature",
+        "medium-risk",
+        "DynamicCVPipeline",
+        "ComputeBlockOpt"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 ExpLoadPatternPass，需要 lit 测试验证模式匹配的正确性（正例匹配、反例不匹配），以及端到端测试验证 CV 重叠改善效果。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/",
+          "third_party/ascend/lib/DynamicCVPipeline/ComputeBlockOpt/ExpLoadPatternPass.cpp"
+        ]
+      },
+      "message": "[ssbuffer](feat) optimization for load-exp pattern (#2409)\n\n(cherry picked from commit 05bdeb5e6c9e38571e8fb546e6395673a7f46d72)"
+    },
+    {
+      "sha": "a976df28b0bfc5467f7612c3d45c00d291c40a93",
+      "comment": "该 commit 新增 AnalyzeSplitIfPass，用于分析 split-if 场景。当 split-if 是 VECTOR 和 CUBE 主循环中唯一有意义的计算时（即 split-if 没有带来任何 CV 重叠），回滚 DynamicCVPipeline 到原始工作流。同时从 interceptrFunc 中移除了 parallel_nsa_fwd_kernel。这增强了 DynamicCVPipeline 的鲁棒性，避免在无意义场景下启用 pipeline 导致的额外开销。风险在于回滚条件的判断可能过于保守或激进。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "medium-risk",
+        "DynamicCVPipeline",
+        "AnalyzeDataFlow"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 AnalyzeSplitIfPass 和回滚逻辑，需要 lit 测试验证在各种 split-if 场景下的回滚决策是否正确，以及端到端测试验证 DynamicCVPipeline 回退后的编译正确性。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/",
+          "third_party/ascend/lib/DynamicCVPipeline/AnalyzeDataFlow/AnalyzeSplitIf.cpp"
+        ]
+      },
+      "message": "[ssbuffer](fix) Add SplitIf FallBack Pattern (#2408)\n\nCo-authored-by: shaoyiyang <shaoyiyang1@huawei.com>\n(cherry picked from commit 24b009dbcfe136fea093b0331173e924734aa4ee)"
+    },
+    {
+      "sha": "e6fb9a4afaadadd8b26dfdbd3d9d9f7010f06b0b",
+      "comment": "该 commit 新增 Mojo DynamicCVPipeline 编译检查 CI 工作流。该工作流在 PR 修改 DynamicCVPipeline 相关文件时触发，使用固定的 mojo_opset commit 编译一批 Mojo kernel 并检查 DynamicCVPipeline 是否成功应用。新增了 compile_ttadapter.py 和 ttadapter_test_source.py 两个核心脚本，支持从 pytest 测试源码中读取 kernel 特化参数，无需执行测试即可编译。这是一个重要的 CI 增强，但脚本复杂度较高，需要确保长期维护。",
+      "tags": [
+        "ci",
+        "feature",
+        "medium-risk",
+        "DynamicCVPipeline",
+        "test"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 CI 工作流和编译检查脚本，需要确保脚本本身的正确性，以及动态 CV pipeline 在不同 Mojo kernel 上的编译通过率。",
+        "suggested_test_areas": [
+          ".github/workflows/DynamicCVPipeline-ci.yml",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ttadapter/"
+        ]
+      },
+      "message": "Add Mojo DynamicCVPipeline compile check (#2352)\n\n(cherry picked from commit 8fa3187989ebf78905842900a6e128dfcb7aafaa)"
+    },
+    {
+      "sha": "0561e97aac7d2abad195c74d48919fcde6b8a4eb",
+      "comment": "该 commit 为 MaskAnalysis 添加 arith.subi 解析支持，使 (offs - K) >= 0 形式的连续 mask 能被正确识别，避免被 discrete-mask-access-conversion 拆分为 full load + select。变更涉及 TritonMemoryAccess 和 TritonToStructured 两个 MaskAnalysis 实现，新增 parseSub、subStates、subStateScalar 方法。仅支持 (range - scalar) 形式，scalar - range 会被拒绝并发出警告。这修复了连续 mask 在特定表达式形式下的优化失效问题。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "MaskAnalysis",
+        "DiscreteMaskAccess"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 subi 解析逻辑，需要 lit 测试验证 (offs - K) >= 0 形式的 mask 不被拆分，以及端到端测试验证 NPU 执行正确性。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DiscreteMaskAccess/continuous_mask_subi.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_continuous_mask_subi_load.py"
+        ]
+      },
+      "message": "[MaskAnalysis](fix) parse arith.subi, (offs - K) >= 0 stays continuous (#2406)\n\n(cherry picked from commit a72d1c87b1267f413fde4bdbda59a4ef72ab1eef)"
+    },
+    {
+      "sha": "95d7906dc9d3c9dfba26e9d8fcecb8f24f2cb9a0",
+      "comment": "该 commit 重新应用了全行拷贝优化（#2377 的重新应用），并新增了 residual load mask 保留逻辑。TritonToLinalg 中新增 specializeFullRowCopies 函数，将混合轴 load 的 bufferized 行拷贝循环特化为全宽快速路径 + 动态尾部路径。TritonToUnstructure 中新增 getResidualLoadMask，保留 load 的 mask 以支持后续结构化 lowering。同时将 named_ops 默认值改为 true，相应更新了多个 lit 测试的 RUN 行。这是一个较复杂的变更，涉及编译链多个 pass 的协同。",
+      "tags": [
+        "performance",
+        "bugfix",
+        "high-risk",
+        "TritonToLinalg",
+        "TritonToUnstructure"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 full row copy 特化和 residual mask 保留逻辑，需要 lit 测试验证特化的正反例（全宽、尾部、非连续、row-dependent extent 等），以及端到端测试验证 mask 保留后的正确性。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/full_row_copy.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToUnstructure/mixed_axis_load_mask.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_full_row_copy_inlining.py",
+          "third_party/ascend/unittest/pytest_ut/test_mixed_axis_load_mask.py"
+        ]
+      },
+      "message": "[TritonToUnstructure](fix) preserve masks and specialize A5 row copies (#2401)\n\n* [TritonToUnstructure](fix) preserve masks and optimize full-row copies\n\nReapply the changes from #2377 after their revert in #2398, preserving the subsequent staged TritonToLinalg lowering on main-dev.\n\nSigned-off-by: zhaojingkai <zhaojingkai4@huawei.com>\n\n* [TritonToLinalg](fix) preserve A5 full-row copy specialization\n\nMark successfully specialized row-copy modules and opt supported A5 SIMD kernels into libcall inlining, so dynamic tail calls do not prevent the full-width path from specializing. Keep the compiler default for unmarked kernels, other execution modes, and unsupported toolchains.\n\nSigned-off-by: zhaojingkai <zhaojingkai4@huawei.com>\n\n---------\n\nSigned-off-by: zhaojingkai <zhaojingkai4@huawei.com>\n(cherry picked from commit 175f918e91e1a403b5f6819f7c801ab157fabd93)"
+    },
+    {
+      "sha": "f994763a29f722b5024f54740367317bbc500f57",
+      "comment": "该 commit 为 autotune 添加用户配置的失败反馈机制。新增 _UserConfigDiagnostics 类跟踪用户显式配置（包括 hints 展开）的编译、benchmark、运行状态，在失败时输出诊断信息。变更涉及 _rough_bench_once 添加 config 参数、_record_user_timings、_bench_config、_handle_compile_failure 等方法。仅在 print_autotuning 启用且配置为用户提供时生效。这提升了 autotune 的可观测性，但增加了复杂度。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "autotune",
+        "runtime"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了用户配置诊断反馈机制，需要测试验证在各种失败场景（编译失败、benchmark 失败、中断）下是否正确输出诊断信息，以及成功场景下不输出冗余日志。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/autotune_ut/",
+          "third_party/ascend/backend/runtime/autotuner.py"
+        ]
+      },
+      "message": "[Autotune](fix) report missing feedback for user configs (#2369)\n\n* [Autotune](fix) report missing feedback for user configs\n\nSigned-off-by: lichangdongtw <68023558+lichangdongtw@users.noreply.github.com>\n\n* [Autotune](chore) defer user-config docs to a separate PR\n\nSigned-off-by: lichangdongtw <68023558+lichangdongtw@users.noreply.github.com>\n\n* [Autotune](fix) limit new diagnostics to failures\n\nSigned-off-by: lichangdongtw <68023558+lichangdongtw@users.noreply.github.com>\n\n---------\n\nSigned-off-by: lichangdongtw <68023558+lichangdongtw@users.noreply.github.com>\n(cherry picked from commit 6b3520e47437a2ffbe5f847e03c2a6b736f70961)"
+    },
+    {
+      "sha": "8ac38ed18719487d20d96bd11bbb7c394f6418f7",
+      "comment": "该 commit 将 A5 重命名为 Ascend 950，统一术语。变更涉及 compiler.py 中的注释和错误信息、op_dtype_config.py、utils.py、以及大量测试文件的 skip reason 和注释。这是一个纯文档/注释级别的变更，不改变任何逻辑。风险极低，但需要注意后续新代码也应统一使用 Ascend 950 术语。",
+      "tags": [
+        "refactor",
+        "docs",
+        "low-risk",
+        "compiler"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "变更仅为注释和错误信息的术语替换，不影响测试逻辑或断言，现有测试无需更新。",
+        "suggested_test_areas": []
+      },
+      "message": "[backend](fix) Rename A5 to Ascend 950 and port backend fixes (#2350)\n\n(cherry picked from commit c5f0eb228b8c11cd5f41cffe8142e45a5f87201f)"
+    },
+    {
+      "sha": "11f6abaf6d2276adb1cd632058e13d8ea771942f",
+      "comment": "该 commit 优化 npubin 编译选项，新增 _serialize_module 函数根据 debug 模式选择 str(mod) 或 str_nodebug()，并在非 debug 模式下跳过 ttir 文件写入和 --mlir-print-debuginfo 参数。同时将 --mlir-print-ir-after-failure、--mlir-print-stacktrace-on-diagnostic、--bishengir-print-ir-after=hivm-graph-sync-solver 等调试参数限制为仅在 debug 模式下启用。这减少了非 debug 编译的 I/O 开销和输出噪音。风险在于 str_nodebug() 可能丢失某些必要的调试信息，但仅在非 debug 模式使用。",
+      "tags": [
+        "performance",
+        "bugfix",
+        "low-risk",
+        "compiler",
+        "npuir"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "序列化行为在 debug 和非 debug 模式下不同，需要测试验证非 debug 模式下不写入 ttir 文件、不传递调试参数，以及 debug 模式下保持原有行为。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_debug_triton_opt_cmd.py",
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py"
+        ]
+      },
+      "message": "[npuir](fix) npuir compilation option optimization (#2090)\n\n* [npuir](fix) npuir compilation option optimization\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>\n\n* [optimized](fix) emit location debug info only in debug mode\n\nSigned-off-by: LH-123L <liuhuan261@huawei.com>\n\n---------\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>\nSigned-off-by: LH-123L <liuhuan261@huawei.com>\n(cherry picked from commit f9625cab678976bde7ec30334ba79f9d51056246)"
+    },
+    {
+      "sha": "bef66abb1970febb399536b84c9d68b0625a068f",
+      "comment": "该 commit 是一次大规模文档修正，修复了大量文档中的格式、链接、类型标注、描述不准确等问题。涉及 README、安装指南、架构设计、调试指南、性能调优、示例代码等 71 个文件。主要修正包括：Python 版本支持范围更新至 3.13、文档链接从 zh-cn 改为 en、代码块语言标注修正、 dtype 支持表格更新、ASCII 图表格式调整、autotune 文档中 key 类型从 dict 改为 list、max_autotune 参数从 tuning_params 改为直接传参、新增 sub_vec_num API 文档等。这是一次重要的文档质量提升。",
+      "tags": [
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "变更仅涉及文档内容，不影响代码逻辑或测试用例。但新增的 sub_vec_num 文档需要确保对应 API 已实现。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](fix) Fix documentation issues reported by tester. (#2378)\n\n* [docs](fix)  Revision of Incorrect Document Content (#2394)\n\nSigned-off-by: LH-123L <liuhuan261@huawei.com>\n\n* docs: update _ascend_constraints.py with Ascend-specific notes and fix Python formatting\n\n* [Docs](fix) Modify Docs\n\n---------\n\nSigned-off-by: LH-123L <liuhuan261@huawei.com>\nCo-authored-by: LH-123L <liuhuan261@huawei.com>\nCo-authored-by: wangxiaohua12345 <1350989037@qq.com>"
+    },
+    {
+      "sha": "bfa78d0d29f2265aa3168ff87b0de69eb0b1d7a7",
+      "comment": "该 commit 为 autotune 用户配置反馈机制补充文档，说明 TRITON_PRINT_AUTOTUNING=1 时的日志输出格式，包括成功配置的 benchmark 结果和失败配置的诊断信息。这是对前一个 commit（f994763）的文档补充，帮助用户理解新的诊断输出。",
+      "tags": [
+        "docs",
+        "low-risk",
+        "autotune"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅为文档补充，不影响测试逻辑。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](feat) document user-config autotune feedback (#2384)\n\n* [Docs](feat) document user-config autotune feedback\n\nSigned-off-by: lichangdongtw <68023558+lichangdongtw@users.noreply.github.com>\n\n* [Docs](fix) describe failure-only autotune diagnostics\n\nSigned-off-by: lichangdongtw <68023558+lichangdongtw@users.noreply.github.com>\n\n* [Docs](fix) simplify autotune feedback documentation\n\nSigned-off-by: lichangdongtw <68023558+lichangdongtw@users.noreply.github.com>\n\n* [Docs](feat) explain autotuning logs for handwritten configs\n\nSigned-off-by: lichangdongtw <68023558+lichangdongtw@users.noreply.github.com>\n\n---------\n\nSigned-off-by: lichangdongtw <68023558+lichangdongtw@users.noreply.github.com>"
+    },
+    {
+      "sha": "088f41ed11cfc851a6a0c6de428957c416e3a4ad",
+      "comment": "该 commit 优化了 01_vector_add_example 文档中的注释措辞，将 '不要忘记以keywords的方式传递meta-parameters' 改为 '必须以关键字参数的形式传递元参数'，使表述更明确。同时修正了中文文档中的 'case' 为 '例'。这是纯文档微调。",
+      "tags": [
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅为注释措辞优化，不影响测试。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](fix) Optimize document content (#2437)\n\nCo-authored-by: yanggaofeng (C) <y60124509@china.huawei.com>"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

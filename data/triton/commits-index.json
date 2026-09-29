@@ -1,4 +1,88 @@
 {
+  "ced7e4b42f992f0b125208767cafc371d079ffd9": {
+    "date": "2026-09-29",
+    "msg": "Fix AOT linker algo ID bounds check (#10684)"
+  },
+  "27c767ca43a5bd685cfb0e51d2678544d5178276": {
+    "date": "2026-09-29",
+    "msg": "[Frontend] Support integers in tl.clamp (#12005)"
+  },
+  "1725224a65ebc2dc7ca2ee1d84458344d93ee797": {
+    "date": "2026-09-29",
+    "msg": "[AMD] Do not stagger CDNA4 padded layouts over rows that do not exist (#11890)"
+  },
+  "895801b66e43eb6784624d9e68870af3b8fd78d8": {
+    "date": "2026-09-29",
+    "msg": "[AMD] NFC: Remove dead code in the AMD backend (#12017)"
+  },
+  "e618124d95fb0ad8d89e73cd58e6173770716150": {
+    "date": "2026-09-29",
+    "msg": "[AMD][TEST] Update test_mxfp_gemm_tdm.py to align with Gluon test (#11946)"
+  },
+  "cd080ba98d2125af97911fee8a64bc2cfe3ad6d9": {
+    "date": "2026-09-29",
+    "msg": "Absorb compatible layouts into broadcasts (#11760)"
+  },
+  "43f6091b348e3314b50fd0b47f2e5a9fb9b24d5e": {
+    "date": "2026-09-29",
+    "msg": "[AMD] Improve translate_to_mir compilation flow (#11251)"
+  },
+  "d19d4ca145444ea7f0fdc292505e055ba145d896": {
+    "date": "2026-09-29",
+    "msg": "Revert \"[AMD][GFX9] Enable amdgpu-use-amdgpu-trackers LLVM flag\" (#11763)"
+  },
+  "6f8c7040cfa37c1a49e1eb8964233250bf733881": {
+    "date": "2026-09-29",
+    "msg": "[BACKEND] Reject TCGen05 ops on unsupported targets (#11973)"
+  },
+  "343d1fcaeb68d9bb0361cd4806a7ec28825482be": {
+    "date": "2026-09-29",
+    "msg": "[AMD] Update CodeGen to triton-lang/llvm-project@6bc4aaf6 (#12016)"
+  },
+  "12225a8e0a55b93dcff775ff540f91901a6f8cd8": {
+    "date": "2026-09-29",
+    "msg": "[TRITONGPU] Preserve async read completion when hoisting shared allocations (#11975)"
+  },
+  "a0f70642fac7277a27099ea59291ac30cc60f199": {
+    "date": "2026-09-29",
+    "msg": "[GPU] Recognize reduction combiners before querying tree arity (#11943)"
+  },
+  "93592b6efd60926d32349857d8b971da9ba67ae7": {
+    "date": "2026-09-29",
+    "msg": "[Gluon] Keep backend compilation out of frontend tests (#12004)"
+  },
+  "88ccb04fc94590f0b6d94f43e4b5b499e20b56ce": {
+    "date": "2026-09-29",
+    "msg": "Revert \"[NVIDIA] Optimize BF16 to FP32 conversions\" (#12008)"
+  },
+  "0f845a49b117380da5c1e12ff031d9a2e407f7e9": {
+    "date": "2026-09-29",
+    "msg": "[Gluon] Skip unsupported cluster sizes in Gluon tests (#11918)"
+  },
+  "bfc047cd973ff1dddb38903e75375c823ef12de1": {
+    "date": "2026-09-29",
+    "msg": "[FRONTEND] Support chained comparisons (#12002)"
+  },
+  "0d564c5bbf5f24ccf39fc28f9d7c44f58a50adb5": {
+    "date": "2026-09-29",
+    "msg": "[TritonGPU] Restore dot operand rematerialization reuse (#11940)"
+  },
+  "00ea9ca84dc575b8c6bb2cec348122e09cd3398c": {
+    "date": "2026-09-29",
+    "msg": "[NVIDIA] Only try 128-byte swizzling for padded FP4 descriptors (#11998)"
+  },
+  "b769235728b5fae0800286b98bed1972302c4100": {
+    "date": "2026-09-29",
+    "msg": "[AMD] Build llvm @ 6bc4aaf6 for CodeGen (#12003)"
+  },
+  "1b24a39939875de5333e3990bec3ddcbfc64eb80": {
+    "date": "2026-09-29",
+    "msg": "[TEST] Fix order-dependent JIT cache key tests (#11971)"
+  },
+  "ef633a550d8565a8c4cd89edce63213c8b173e2b": {
+    "date": "2026-09-29",
+    "msg": "[NVIDIA] Optimize BF16 to FP32 conversions (#11985)"
+  },
   "305953d02c28036a1e6cf10152773dd2de0fae09": {
     "date": "2026-09-28",
     "msg": "[BACKEND] Fix blocked scan register order and CTA partitioning (#11990)"

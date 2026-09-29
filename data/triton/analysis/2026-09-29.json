@@ -1,0 +1,424 @@
+{
+  "date": "2026-09-29",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-09-30T02:04:00.584689+08:00",
+  "daily_summary": "当日变更以 AMD 后端清理与性能修正为主导：回退了导致 gfx942/gfx950 约 1.9x 性能损失的 amdgpu-use-amdgpu-trackers 全局 LLVM flag；重写了 translate_to_mir 的调度 DAG 输出路径（新增 MIRDAG 组件，从 MIR 文本重解析构建 (bb,pos) 键的 DAG，替代依赖寄存器名的 -misched-print-dags）；移除了 amdg.memory_counter_wait 等死代码（含 TargetInfoBase::localLoadOpAnnotation 钩子）；修复了 CDNA4 padded layout 在宽行场景下跨越不存在行的崩溃；并更新了 MXFP GEMM TDM 测试对齐 Gluon。同时在核心 TTGIR/TTIR 层有多项修复：RemoveLayoutConversions 现在可将兼容 layout 吸收进 broadcast、ReorderInstructions 修复了共享内存分配被错误上提到异步读完成等待之前的问题、ReduceOpToLLVM 修复了带有副作用 combiner（如 tt.print）时查询 reduction tree arity 的崩溃、tl.clamp 扩展支持整数类型。另有 NVIDIA 侧：回退了非按位一致的 BF16→FP32 优化、为 TCGen05/TMEM 增加目标支持校验以在 SM12x 上拒绝、Gluon 测试跳过不支持的 cluster size。整体看是 AMD 后端深度清理 + 核心 pass 正确性修复并重（含两次 revert）。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 的影响集中在两处：(1) 核心 TTGIR/TTIR 层变更——RemoveLayoutConversions 的 broadcast layout 吸收（lib/Dialect/TritonGPU/Transforms/Utility.cpp）与 ReorderInstructions 的共享内存分配上提修复（lib/Dialect/TritonGPU/Transforms/ReorderInstructions.cpp）属于 TritonGPU 通用 pass，Ascend 虽不走 TTGIR 主链但共享 MLIR 基础设施，影响有限；tt.clamp 的整数支持（python/triton/language/semantic.py）属于前端语义层，Ascend 直接复用该文件，被 monkey-patch 的 dot 未变但 semantic.py 本身是必然影响路径，需关注；(2) TargetInfoBase.h 移除了 localLoadOpAnnotation（纯虚/虚钩子删除，C++ 层接口变更），Ascend 不实现 TargetInfoBase 故无直接影响；ReduceOpToLLVM 的 combiner 识别修复涉及 TargetInfoBase::getReductionTreeArity，Ascend 无 TargetInfo 实现。AMD 侧所有变更（DAGBuilder、padded layout、trackers 回退、死代码清理、MXFP 测试）均为纯 AMD 专属，Ascend 不使用。NVIDIA 侧 TCGen05 校验、BF16 回退、Gluon cluster size 跳过均为纯平台特定。综合而言，当日无破坏 AscendBackend/NPUDriver 抽象契约的变更，风险较低。",
+  "commits": [
+    {
+      "sha": "ced7e4b42f992f0b125208767cafc371d079ffd9",
+      "comment": "修复 AOT linker 生成代码中 algo_id 越界检查。原代码 `assert(algo_id < (int)sizeof(kernel_array))` 错误地用字节数而非元素个数比较，且在 -DNDEBUG 下断言消失。改为先用 `sizeof(arr)/sizeof(arr[0])` 计算 num_algos，再对负值和越界返回 TT_ERROR_INVALID_VALUE，并移除不再需要的 assert.h。属于 python/triton/tools/link.py 的 AOT 链接工具，新增了一个不依赖 pytest/triton._C 的生成 C 回归测试（gcc -DNDEBUG 编译运行）。实现正确，风险低，仅影响 AOT link 工具的正确性。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "tools"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Fix AOT linker algo ID bounds check (#10684)\n\n## Summary\n- Check AOT linker `algo_id` values against the actual function-pointer\narray length before indexing.\n- Reject negative and out-of-range IDs with `TT_ERROR_INVALID_VALUE`\ninstead of relying on `assert`.\n- Add a small generated-C regression that runs with `-DNDEBUG` and\ncovers valid IDs plus `-1` and `2` for a two-algo table.\n\n## Root cause\nThe generated dispatcher compared `algo_id` with `sizeof(kernel_array)`,\nwhich is a byte count, and the guard disappeared in release builds. The\nexisting `*_get_num_algos()` helper already used the element-count\nexpression, so the dispatcher now follows that pattern.\n\n## Testing\n- `python3 -m py_compile python/triton/tools/link.py\npython/test/unit/tools/test_aot.py`\n- `git diff --check -- python/triton/tools/link.py\npython/test/unit/tools/test_aot.py`\n- Standalone generated-C validation compiled and run with `gcc -std=c99\n-DNDEBUG`\n\nNot run locally: `PYTHONPATH=python pytest -s --tb=short\npython/test/unit/tools/test_aot.py::test_linker_rejects_invalid_algo_id`\nbecause this checkout does not have `pytest` installed, and the local\nTriton package import also needs a built `triton._C` extension.\n\nCo-authored-by: peterbell10 <peterbell10@openai.com>"
+    },
+    {
+      "sha": "27c767ca43a5bd685cfb0e51d2678544d5178276",
+      "comment": "扩展 tl.clamp 支持整数类型。此前 clamp 仅支持浮点（走 create_clampf 做浮点优化），现在对整型改为 minimum(maximum(x, min), max) 的分解实现，非浮点非整型（如 bool 之外的）报 TypeError。改动位于 python/triton/language/semantic.py 的 TritonSemantic.clamp，这是 Ascend monkey-patch 路径的同一文件。测试覆盖了 gluon 前端的广播类型提升、test_core.py 的完整 dtype 矩阵（含 bool、各整型极值、scalar/variable bounds、nan 传播）、以及 test_frontend.py 的标量提升。注意 `dtype.is_int()` 对 int1（bool）也返回 true，测试中已有 int1 用例覆盖，行为符合预期。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "frontend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "python/triton/language/semantic.py 是 Ascend monkey-patch 的目标文件（TritonSemantic.dot 被 _apply_ascend_patch 覆写）。本次仅修改 clamp 方法，未触及 dot 签名，故现有 patch 不受破坏；但 Ascend 前端复用该 TritonSemantic 类，tl.clamp 的整数支持会自动对 Ascend kernel 生效（需依赖 Ascend lowering 对 minimum/maximum 的支持）。",
+        "testing": "tl.clamp 整数路径为新增前端语义，Ascend 若已有 clamp 相关测试需确认整型用例可编译；纯浮点用例不受影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/"
+        ]
+      },
+      "message": "[Frontend] Support integers in tl.clamp (#12005)\n\ntl.clamp was added to do some specific floating point optimizations, but\nthere's no reason we can't support integers as well. This just lowers it\nto minimum(maximum(x, lower), upper).",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/language/semantic.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "1725224a65ebc2dc7ca2ee1d84458344d93ee797",
+      "comment": "修复 composePaddedLayoutForAsyncCopyCDNA4 在 dot operand 的连续行跨度超过一个 warp 时中止编译的问题。将 contigLanes 从 contigDim/vecSize 直接计算改为 clamp 到 [1, warpSize]，使宽行时 warp 计为覆盖一行、窄于向量的行也不会算出 0。位于 third_party/amd/lib/TritonAMDGPUTransforms/Utility.cpp，新增 gfx950 lit 测试覆盖宽行场景。纯 AMD CDNA4 padded layout 逻辑，不涉及共享接口。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Do not stagger CDNA4 padded layouts over rows that do not exist (#11890)\n\n`composePaddedLayoutForAsyncCopyCDNA4` aborts the compiler for any dot\noperand whose contiguous row spans more than a warp. This clamps `contigLanes` to `[1, warpSize]`, so\na warp counts as covering one row when a row is wider than a warp, and a\nrow narrower than a vector can no longer make it zero."
+    },
+    {
+      "sha": "895801b66e43eb6784624d9e68870af3b8fd78d8",
+      "comment": "AMD 后端 NFC 死代码清理：删除 amdg.memory_counter_wait op 及其 lower-to-LLVM 实现（自 #10383 内存屏障改用 MMRA-annotated fence 后无人创建该 op）、TargetInfoBase::localLoadOpAnnotation 钩子（自 #7355 local_load 迁移到共享 lowering 后无调用者）、getScratchCvtInOutVecLengths 声明、buffer atomic lowering 中未使用的 GCNBuilder/MLIRContext 局部变量及 GCNAsmFormat.h include。需注意 TargetInfoBase.h 的 localLoadOpAnnotation 删除是核心头文件（include/triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h）的虚函数删除，属于跨后端共享抽象层的变更——任何曾 override 该钩子的 TargetInfo 实现都会被影响，此处仅 AMD 的 TargetInfo.cpp/h 有 override 并被一并删除，NVIDIA/Ascend 未实现该钩子故无影响。GCNBuilder 仍被 Proton AMD 后端使用，未被删除。",
+      "tags": [
+        "refactor",
+        "low-risk",
+        "amd",
+        "target-info"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。TargetInfoBase::localLoadOpAnnotation 被删除，但 Ascend 没有 TargetInfoBase 的具体实现（Ascend 走 TritonToLinalg 而非 TritonGPU→LLVM），故不涉及 Ascend 的类。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] NFC: Remove dead code in the AMD backend (#12017)\n\n- Remove amdg.memory_counter_wait and its lowering. Nothing has created\nthe op since memory barriers moved to MMRA-annotated fences (#10383).\n- Remove the TargetInfoBase::localLoadOpAnnotation hook, which has had\nno callers since local_load moved to the shared lowering (#7355).\n- Remove the getScratchCvtInOutVecLengths declaration; its definition\nwas removed together with OptimizeLDSUsage (#8282).\n- Remove unused GCNBuilder and MLIRContext locals in the buffer atomic\nlowerings, and GCNAsmFormat.h includes that nothing uses. GCNBuilder\nitself is still used by the Proton AMD backend."
+    },
+    {
+      "sha": "e618124d95fb0ad8d89e73cd58e6173770716150",
+      "comment": "更新 test_mxfp_gemm_tdm.py 对齐 Gluon 测试以进行同类性能对比：改用 transposed-B 路径（B 物理存储为 [N,K]）和 TDM descriptor store，新增 eager profiling 模式与 --benchmark_mode/--benchmark_num_iters 参数。同时移除 TRITON_HIP_DISABLE_TDM_REORDER flag（从 GetEnv.h 的 CACHE_INVALIDATING_ENV_VARS 列表删除，LowerLoops.cpp 中的 tdmReorder 条件简化为始终启用），理由是该重排在实测中普遍有益。注意移除 env var 会改变缓存键集合，但只影响 AMD 路径的编译缓存。纯 AMD 测试与调度策略调整。",
+      "tags": [
+        "test",
+        "performance",
+        "low-risk",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][TEST] Update test_mxfp_gemm_tdm.py to align with Gluon test (#11946)\n\nUpdates test_mxfp_gemm_tdm.py to match what the Gluon test does for\napples-to-apples performance comparison:\n   - use transposed-B and the TDM store path,\n   - add eager profiling to the test.\n   \nAlso remove the flag TRITON_HIP_DISABLE_TDM_REORDER as it appears that\nreordering is generally beneficial."
+    },
+    {
+      "sha": "cd080ba98d2125af97911fee8a64bc2cfe3ad6d9",
+      "comment": "允许 RemoveLayoutConversions 在源 layout 兼容时改变 broadcast 结果的 layout，将源记录为 fixed operand，从而消除跨 warp 的 layout conversion。实现在 lib/Dialect/TritonGPU/Transforms/Utility.cpp 的 canUseResultEncoding 中新增 BroadcastOp 分支，通过 DialectInferLayoutInterface::verifyBroadcastOpEncoding 验证后返回 broadcast.getSrcMutable() 作为唯一可重映射的 operand。属于 TTGIR 通用 pass。同时为 AMD 的 scaled-upcast 布局选择问题和 gfx950 FP8xFP4 NaN 问题临时跳过若干测试用例（带 TODO）。这是 Ascend 不使用的主链 TTGIR pass，但 lib/Dialect/TritonGPU 属于可能影响路径（共享 MLIR 基础设施）。AMD 测试跳过与 AMD 无关的 Ascend 无影响。",
+      "tags": [
+        "performance",
+        "refactor",
+        "medium-risk",
+        "ttgir"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。lib/Dialect/TritonGPU/Transforms/Utility.cpp 的 canUseResultEncoding 属 TTGIR 通用优化，Ascend 不经过 TTGIR（使用 TritonToLinalg），不调用该函数。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Absorb compatible layouts into broadcasts (#11760)\n\nAllow RemoveLayoutConversions to change a broadcast result layout when\nthe source layout is compatible, recording the source as a fixed\noperand.\nCover cross-warp conversion elimination and shared-source layout\nconflicts.\n\nTemporarily skip the affected AMD scaled-upcast test cases until layout\nselection preserves the packed groups required by lowering. Add TODOs to\nre-enable these cases once layout selection is fixed.\n\nAlso skip the gfx950 FP8 x FP4 configuration that produces NaNs with\nROCm 10.1, pending investigation of that separate correctness issue."
+    },
+    {
+      "sha": "43f6091b348e3314b50fd0b47f2e5a9fb9b24d5e",
+      "comment": "重写 translate_to_mir 的调度 DAG 输出流程。删除 python/src/llvm.cc 中的 dump_sched_dag 及 dumpSchedulingDAG（依赖 -misched-print-dags 文本、按寄存器名索引，脆弱），改为在 translate_to_mir 内调用新增的 llvm::mir_dag::buildSchedulingDAGText，从刚生成的 MIR 文本重解析出 MachineFunction 并运行 DAGBuilder（ScheduleDAGInstrs 子类，要求 LiveIntervals 以产生 subregister-precise 依赖），以 (bb, position) 为身份输出 edge list。新增 third_party/amd/lib/Target/MIRDAG/{DAGBuilder.cpp,DAGBuilder.h}（约 650 行）与对应 CMakeLists，AMD lib/CMakeLists 增加 add_subdirectory(Target)。HIPBackend.make_amdgcn 移除对 dump_sched_dag 的独立调用，test_knobs.py 相应调整（单次调用 mir 替代 mir+dag）。纯 AMD MIR 调试基础设施，不涉及共享编译器接口。",
+      "tags": [
+        "refactor",
+        "feature",
+        "low-risk",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。所有变更集中在 third_party/amd/lib/Target 与 AMD backend。python/src/llvm.cc 中删除的 dump_sched_dag 绑定为 AMD MIR dump 调试专用，Ascend 不使用。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Improve translate_to_mir compilation flow (#11251)\n\nReplaces the old `dump_sched_dag` path with a scheduling DAG emitted\ndirectly from the MIR that `translate_to_mir` already dumps. The old\npath ran a second, independently-scheduled compilation and printed\n`-misched-print-dags` text that keyed instructions by register name,\nwhich is fragile across virtual-register\nrenumbering. The new path appends a per-region edge list after the\n`SCHEDULING DAG` marker in the MIR dump:\n\n```\n  region <bb>\n  node <pos> <def-reg|-> <opcode>\n  edge <src-pos> <dst-pos> <Type> <latency> [<reg>]\n```\n\nInstruction identity is `(bb, position)`, so the MIR dump and the DAG\nstay correlatable regardless of how vregs are numbered.\nData/Anti/Output/Memory/Barrier edges are kept; Artificial/Cluster are\ndropped.\n\n`DAGBuilder` is a thin wrapper over LLVM's `ScheduleDAGInstrs`. It runs\nas a `MachineFunctionPass` so `LiveIntervals` is available; that lets\n`buildSchedGraph` track lane masks and produce **subregister-precise**\ndependencies that match LLVM's own scheduler (without LI, subregister\ndefs/uses are over-approximated and the DAG gains spurious WAW/WAR\nedges).\n\nThe DAG is currently built by re-parsing the dumped MIR text. A\nsubsequent commit will build it from the live pipeline `MachineFunction`\ninstead, avoiding the re-parse round-trip and reusing the pipeline's\n`LiveIntervals`."
+    },
+    {
+      "sha": "d19d4ca145444ea7f0fdc292505e055ba145d896",
+      "comment": "回退 #11285 为 gfx942/gfx950 全局启用的 amdgpu-use-amdgpu-trackers LLVM flag。实测该 flag 在 MI350X 上的 gemm_afp4wfp4 4096^3 场景造成约 1.9x/-48% 吞吐损失（AGPR 228→256 触及 occ-1 budget 上限，主循环出现 scratch spill），并关联到 ROCm/triton#970 的 gfx942 mxfp4 MoE decode GEMM 回归。删除 third_party/amd/backend/compiler.py 中 get_llvm_flags 的 arch 判断及该 flag 追加逻辑，python/test/unit/test_knobs.py 的 gfx942/gfx950 期望 flag 改为空。PR 提到 #11663 提出按 waves_per_eu > 1 键控的正确方向，此为过渡回退。纯 AMD LLVM flag 变更。",
+      "tags": [
+        "performance",
+        "bugfix",
+        "low-risk",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。HIPBackend.get_llvm_flags 与 LLVM 编译 flag 属 AMD 专属，Ascend 使用自己的编译链。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Revert \"[AMD][GFX9] Enable amdgpu-use-amdgpu-trackers LLVM flag\" (#11763)\n\nReverts the blanket `amdgpu-use-amdgpu-trackers` flag that #11285\nenabled for every gfx942/gfx950 compilation.\n\nMeasured on gfx950 (MI350X) with aiter's `gemm_afp4wfp4` at\n4096x4096x4096, same aiter revision on both sides, same kernel config\n(BLOCK 256/256/256, GROUP_M=2, num_warps=4, num_stages=2,\nwaves_per_eu=1, matrix_instr_nonkdim=32):\n\n|  | without flag | with flag (#11285) |\n| --- | --- | --- |\n| TFLOPS (min-of-3) | 2364-2668 | 1230-1338 |\n| AGPR | 228 | 256 |\n| next_free_vgpr | 484 | 512 (occ-1 budget ceiling) |\n| scratch_store / scratch_load | 0 / 0 | 24 / 24, inside the main loop |\n| occupancy | 1 | 1 |\n\nThat is roughly a 1.9x / -48% throughput loss on this kernel, and it is\nthe flag rather than a codegen bump: bisecting the release window lands\nexactly on 0027e4c as the first bad commit with its parent 76940ad as\nthe last good one. ROCm/triton#970 tracks a related mxfp4 MoE decode\nGEMM regression attributed to the same flag on gfx942.\n\n#11663 proposes keying the flag on `waves_per_eu > 1`, which looks like\nthe right shape until LLVM provide a per-function attribute for the\ntrackers. This revert is meant to restore the previous behavior in the\nmeantime; will close this pr if #11663 merge first.\n\n---------\n\nCo-authored-by: Lixun Zhang <lixun.zhang@amd.com>"
+    },
+    {
+      "sha": "6f8c7040cfa37c1a49e1eb8964233250bf733881",
+      "comment": "在 NVIDIA GPU IR 验证阶段拒绝 SM12x 目标上的 TCGen05/TMEM 操作，避免 ConSan 插入 wait 后到达 lowering 触发 LLVM abort。实现方式：(1) TargetInfoBase 新增 supportsTcgen05() 虚函数（默认 false）；(2) TargetFeatures.h 新增 supportsTcgen05()（架构族为 10 或 11），并把 supportsReuseA 从 `>=100 && <120` 改为复用该函数（语义等价，排除 SM12x）；(3) TritonNvidiaGPUOps.td 给 TMEMWaitOp 加 hasVerifier；(4) Ops.cpp 新增 verifyTcgen05Target 静态函数，通过 TargetInfoBase::fromModuleOp 获取目标并校验，为 TCGen5MMAOp/TCGen5CommitOp/TCGen5MMAScaledOp/TMEMWaitOp/TMEMStoreOp/TMEMLoadOp/TMEMAllocOp/TMEMCopyOp/TMEMSubSliceOp 的 verify 加入校验；(5) NVIDIA TargetInfo.h override supportsTcgen05。同时将受影响的 lit 测试目标从 cuda:90 改为 cuda:100，新增 test/TritonNvidiaGPU/invalid.mlir 回归（cuda:120 上 tmem_alloc 报错）。TargetInfoBase.h 是纯虚/虚接口层，新增默认实现虚函数不影响其他后端（包括 Ascend，其不实现 TargetInfoBase）。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "medium-risk",
+        "nvidia",
+        "target-info"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。TargetInfoBase::supportsTcgen05 为带默认实现（false）的虚函数，Ascend 不实现 TargetInfoBase。lib/Dialect/TritonNvidiaGPU 是 NVIDIA 专属方言，Ascend 不加载。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Reject TCGen05 ops on unsupported targets (#11973)\n\nSM12x targets do not support TCGen05, but TCGen05/TMEM operations could\nreach lowering and cause an LLVM abort when ConSan inserted a wait.\n\nReject these operations during NVIDIA GPU IR verification on unsupported\ntargets. Update affected test targets, document the architecture\nrequirement, and add a native MLIR regression.\n\nFixes #11747.\n\n## Testing\n\n- Built `triton-opt`\n- Pre-commit hooks passed against `upstream/main..HEAD`\n\n# New contributor declaration\n\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a concise PR description explaining why the change\nis needed.\n- [x] I have run `pre-commit run --from-ref upstream/main --to-ref\nHEAD`.\n- [x] I have added a test in `/test`.\n- [x] The lit test follows MLIR best practices, including the\nminimal-test guidance.\n\n---------\n\nCo-authored-by: Saiyam Bharara <saiyambharara@users.noreply.github.com>"
+    },
+    {
+      "sha": "343d1fcaeb68d9bb0361cd4806a7ec28825482be",
+      "comment": "更新 AMD CodeGen 依赖的 triton-lang/llvm-project 到 6bc4aaf6，同步修改 cmake/amd-llvm-info.json 的 llvm_hash 与各平台 sha256sum（含移除 windows-arm64 条目）。纯构建依赖版本升级。",
+      "tags": [
+        "chore",
+        "low-risk",
+        "amd",
+        "build"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Update CodeGen to triton-lang/llvm-project@6bc4aaf6 (#12016)"
+    },
+    {
+      "sha": "12225a8e0a55b93dcff775ff540f91901a6f8cd8",
+      "comment": "修复 ReorderInstructions pass 错误地把已初始化的共享内存分配（triton::gpu::LocalAlloc）上提到异步读完成等待（如 wait_barrier）之前的问题。改动两处：crossWriteSideEffectingOp 中在遍历 nextOp 时先判断 `nextOp == end` 再判断副作用（即检查目标操作本身之前，避免把目标操作自身的写副作用误判为阻断），以及在 hoistLocalAllocs 中当 LocalAlloc 与目标 op 之间存在写副作用操作时跳过移动（保留其在等待之后）。新增 lit 测试 @alloc_stays_after_completion_wait 覆盖 loop 内带 loop-invariant 初始化器的分配。属于 TTGIR 通用 pass，位于 lib/Dialect/TritonGPU/Transforms/ReorderInstructions.cpp。Ascend 不走 TTGIR 主链，但该文件属 lib/Dialect/TritonGPU 可能影响路径。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "ttgir"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。lib/Dialect/TritonGPU/Transforms/ReorderInstructions.cpp 为 TTGIR 优化 pass，Ascend 使用 TritonToLinalg 转换链，不经过该 pass。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TRITONGPU] Preserve async read completion when hoisting shared allocations (#11975)\n\nKeep initialized shared allocations after completion waits. Check the\ndestination before its write effects when scanning intervening\noperations"
+    },
+    {
+      "sha": "a0f70642fac7277a27099ea59291ac30cc60f199",
+      "comment": "修复 ReduceOpToLLVM 在 reduction combiner region 首操作不是真正 combiner 时的崩溃。原代码无条件取 `combineRegion.front().front()` 作为 combiner 传给 targetInfo.getReductionTreeArity，当 combiner 带副作用（如 tt.print 作为首操作）时会出错。改为优先用 vectorCombineRegion 的首操作，否则用 op.getSingleCombiner()，并在无法识别 combiner 时默认 arity 为 2，三元 reduction 用例配合 test/Conversion/reduce_to_llvm.mlir 新增 @reduce_maximum_with_print 验证。涉及 TargetInfoBase::getReductionTreeArity 的调用点，但未改其接口；Ascend 不实现 TargetInfoBase。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "ttgir",
+        "conversion"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。lib/Conversion/TritonGPUToLLVM 是 NV/AMD 使用的 TTGIR→LLVM lowering，Ascend 走 TritonToLinalg 跳过此路径；TargetInfoBase 亦无 Ascend 实现。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[GPU] Recognize reduction combiners before querying tree arity (#11943)"
+    },
+    {
+      "sha": "93592b6efd60926d32349857d8b971da9ba67ae7",
+      "comment": "把 test_frontend.py 中会调用后端工具链的两个测试（test_gluon_ast_source_without_driver 与 test_inline_asm_shared_amd_compilation）迁移到 test_core.py，避免 `make test-nogpu` 在 macOS 上执行 Linux ptxas（修复 #11995）。迁移后 test_frontend.py 不再包含 triton.compile 调用。断言、CUDA/HIP 目标、driver 访问 guard、fresh cache 覆盖均保留（HIP_TARGET_CDNA3/AMPERE_TARGET 常量在 test_core.py 中替换为直接构造 GPUTarget）。纯测试组织调整。",
+      "tags": [
+        "test",
+        "low-risk",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Gluon] Keep backend compilation out of frontend tests (#12004)\n\nThe offline-compilation regression added in #11806 invokes the backend\ntoolchain from `test_frontend.py`, causing `make test-nogpu` to execute\nLinux `ptxas` on macOS.\n\nMove `test_gluon_ast_source_without_driver` and the other\nfull-compilation test, `test_inline_asm_shared_amd_compilation`, into\n`test_core.py`. Preserve the CUDA/HIP targets, driver-access guard,\nfresh-cache coverage, and assertions. The frontend suite now contains no\n`triton.compile` calls.\n\nFixes #11995.\nCloses #11844, superseded by keeping backend compilation out of the\nfrontend suite.\n\nValidation:\n- All pre-commit checks passed.\n- All four relocated cases passed on Brix GB300 using the pre-existing\nTriton build; the synced commit and changed-file hashes were verified.\n- The broader frontend run reached 92 passes before failing in the\nunchanged `test_packed_arith_scalar_broadcast_frontend[True]` with that\npre-existing runtime. A full frontend-suite pass and macOS execution\nremain unverified."
+    },
+    {
+      "sha": "88ccb04fc94590f0b6d94f43e4b5b499e20b56ce",
+      "comment": "回退 #11985 的 BF16→FP32 转换优化，因结果非按位一致。删除 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/ElementwiseOpToLLVM.cpp 中的 ExtFOpConversion（曾对 BF16→F32 用 bitcast+shl 16 技巧避开 cvt.f32.bf16，使 ptxas 用 IMAD+LOP3 而非 PRMT+两 IMAD），恢复 arith::ExtFOp 走标准 LLVM::FPExtOp 的 POPULATE_OP 宏，并移除对应 PTX 测试 extf_bf16_scalar/extf_bf16_packed 与 test_core.py 的 all_values 测试。回退理由合理（位一致性优先）。纯 NVIDIA lowering。",
+      "tags": [
+        "revert",
+        "bugfix",
+        "low-risk",
+        "nvidia"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。third_party/nvidia/lib/TritonNVIDIAGPUToLLVM 为 NVIDIA 专属 lowering，Ascend 不使用。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Revert \"[NVIDIA] Optimize BF16 to FP32 conversions\" (#12008)\n\nReverts triton-lang/triton#11985 as it is not bitwise identical"
+    },
+    {
+      "sha": "0f845a49b117380da5c1e12ff031d9a2e407f7e9",
+      "comment": "在 Gluon 测试中跳过设备不支持的 cluster size。在 python/triton/_internal_testing.py 新增 _cluster_size_probe 与 lru_cache 的 _supports_cluster_size（用最小 Triton kernel 的 warmup+_init_handles 后查询 cuOccupancyMaxActiveClusters，仅作测试预筛），以及 skip_if_unsupported_cluster_size(num_ctas) 辅助；test_core.py 与 test_lowerings.py 中多个请求 16-CTA cluster 的用例（如 ctas_per_cga=[4,4]、test_shared_gather_cga 的 16-cta、test_reduce_funky_layout 的 num_ctas）加入该跳过。修复 Jetson Thor (SM110) 上的 CUDA_ERROR_INVALID_CLUSTER_SIZE。纯测试基础设施变更，依赖 triton.runtime.driver.active.utils.cuOccupancyMaxActiveClusters。",
+      "tags": [
+        "test",
+        "low-risk",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更全在 python/test/gluon 与 python/triton/_internal_testing.py 的测试辅助，依赖 CUDA 专属 driver utils，Ascend 测试不使用。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Gluon] Skip unsupported cluster sizes in Gluon tests (#11918)\n\nOn a Jetson Thor (SM110), Gluon tests requesting a 16-CTA cluster fail\nat launch with `CUDA_ERROR_INVALID_CLUSTER_SIZE` / \"cluster\nmisconfiguration\". For example, pytest's `ctas_per_cga2` label is the\n`[4, 4]` parameter, which requests 16 CTAs rather than 2.\n\nQuery cluster occupancy once per device and requested size using a small\nTriton kernel, then skip affected test parameters when even that\nlow-resource kernel cannot fit a cluster. The probe is only a test\nprefilter: a real kernel can still have stricter resource limits.\nExisting 2/4/8-CTA cases continue to run.\n\nReproduce on a Thor GPU before this change:\n\n```bash\nCUDA_LAUNCH_BLOCKING=1 python -m pytest -s --tb=short -q -n 0 \\\n  'python/test/gluon/test_core.py::test_shared_gather_cga[16-cta-sharded]' \\\n  --device=cuda\n```\n\nBefore: `RuntimeError: Triton Error [CUDA]: a kernel launch error has\noccurred due to cluster misconfiguration`. After: skipped with `Device\ndoes not support 16 CTAs per cluster`.\n\nValidation on Thor, based on upstream `main` at test time:\n\n```bash\nCUDA_LAUNCH_BLOCKING=1 python -m pytest -s --tb=short -q -n 0 \\\n  python/test/gluon/test_core.py python/test/gluon/test_lowerings.py \\\n  -k 'ctas_per_cga2 or (test_mma_scaled_tcgen05_copy and ctas_per_cga5) or (test_shared_gather_cga and 16-cta) or (test_reduce_funky_layout and (src_layout5-0 or src_layout11-1))' \\\n  --device=cuda\n```\n\nResult: `16 passed, 5856 skipped, 0 failed`. Four representative\n2/4/8-CTA cases passed.\n\n# New contributor declaration\n\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n[rules](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --from-ref upstream/main --to-ref HEAD`\non the PR changes.\n- [x] This PR does not need a new test case because it changes the skip\nbehavior of existing Gluon tests, which are exercised by the commands\nabove.\n- [x] I have not added any `lit` tests."
+    },
+    {
+      "sha": "bfc047cd973ff1dddb38903e75375c823ef12de1",
+      "comment": "前端新增链式比较支持（如 0 <= x <= 8）。实现上重构了 CodeGenerator.visit_Compare：将原本只允许单比较的检查改为生成器 comparisons()，逐个求值相邻操作数并复用中间操作数（避免重复求值副作用），多个比较结果通过新抽取的 _apply_boolean_values(node, operator, values, warn_non_scalar) 以逻辑 AND 组合；同时将 visit_BoolOp 改为惰性生成器传入，实现编译期短路（constexpr 为假时跳过后续操作数求值，如 test_chained_comparison_short_circuit 验证 atomic_add 不被执行），warn_non_scalar 参数区分 bool op 与非 bool op 的告警行为。解释器侧在 ASTTransformer 新增 visit_Compare，将链式比较改写为 _InterpreterComparison 包装器链，调用 __lt__ 累积 tensor 结果、__bool__ 决定短路、get_result 用 logical_and 聚合，并保持赋值表达式在原始作用域绑定；同时 visit_Assign 改为 self.visit(node.value) 以递归处理嵌套比较。文档 docs/python-api/triton-semantics.rst 新增 Chained Comparisons 章节说明求值顺序与短路语义。测试覆盖值正确性（range/long/mixed/constexpr）、广播、求值顺序（atomic 计数）、短路、assignment scope（walrus）、constexpr 静态断言、scalar promotion 与 out-of-range 错误、以及 Gluon filecheck。潜在风险：visit_Compare 现在对多比较返回 _apply_boolean_values 的结果，若某操作数为 block tensor 且 warn_non_scalar=False，行为与 bool op 略有差异；中间操作数 'lhs = rhs' 复用逻辑需确保 _apply_binary_method 不会重复触发 rhs 求值副作用。",
+      "tags": [
+        "feature",
+        "refactor",
+        "low-risk",
+        "language-frontend",
+        "code-generator",
+        "interpreter"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "python/triton/compiler/code_generator.py 的 CodeGenerator.visit_Compare 被重写，并新增 _apply_boolean_values 辅助方法；visit_BoolOp 也改为调用该方法。Ascend 通过 third_party/ascend/backend/__init__.py::_apply_ascend_patch 覆写 CodeGenerator.__init__（注入 hacc.target），其 patch 依赖 CodeGenerator 类的整体结构；虽然 __init__ 签名未变，但 visit_Compare 生成的 TTIR 形态发生变化（链式比较会产生多条 arith.cmpi + arith.andi），Ascend 的 TritonToLinalg 转换链必须能处理这种新增的 IR 组合。此外 python/triton/runtime/interpreter.py 的 ASTTransformer 新增 visit_Compare 并修改 visit_Assign，AscendInterpreterBuilder 及其 AscendReduceOps/AscendScanOps 依赖 InterpreterBuilder/ASTTransformer 协议，需确认 CPU 解释执行 Ascend kernel 时链式比较可正常工作。",
+        "testing": "triton-ascend 的算子端到端测试（third_party/ascend/unittest/pytest_ut/）与 Ascend 解释器测试应新增链式比较场景的覆盖，验证 Ascend 的 TritonToLinalg 路径能处理 arith.cmpi+arith.andi 组合以及短路语义。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/ (新增链式比较算子测试)",
+          "third_party/ascend/backend/ascend_interpreter.py 相关 CPU 解释执行测试",
+          "third_party/ascend/unittest/Conversion/ (TTIR->linalg 对 arith.andi 组合的处理)"
+        ]
+      },
+      "message": "[FRONTEND] Support chained comparisons (#12002)\n\n## Summary\n\nSupport chained comparisons such as `0 <= x <= 8` in Triton and Gluon.\nCompare adjacent operands and combine their results with elementwise\nlogical AND, evaluating each operand once and retaining each\ncomparison's scalar promotion and broadcasting rules.\n\nReuse the existing boolean lowering to preserve compile-time\nshort-circuiting. Runtime tensor comparisons, including scalar tensors,\nevaluate the remaining operands eagerly. Provide matching interpreter\nbehavior while keeping operand expressions in their enclosing scope,\nincluding assignment-expression bindings. Document these semantics and\ncover longer chains, mixed operators, constexpr evaluation,\nbroadcasting, assignment scope, and evaluation order with side effects.\n\n## Validation\n\nValidated on a Brix GB300 devbox with matching source hashes, using\nexisting compiler binaries for this Python-only change:\n\n- Full language frontend suite and tuple boolean regression: **690\npassed**.\n- Chained-comparison and existing short-circuiting GPU tests, including\nassignment-scope regressions: **25 passed**.\n- The same tests with `TRITON_INTERPRET=1`: **25 passed**.\n- Gluon chained-comparison and operator-dispatch regressions: **5\npassed**.\n- Ruff, YAPF, and `git diff --check` passed.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/compiler/code_generator.py",
+          "python/triton/runtime/interpreter.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "0d564c5bbf5f24ccf39fc28f9d7c44f58a50adb5",
+      "message_ignored": true,
+      "comment": "TritonGPU RemoveLayoutConversions pass 中恢复 dot operand rematerialization 复用（reland #11538）。两处修复：(1) hoistConvertDotOperand 中，当 innerSlice 为空时提前 return false，避免在 mapping 未填充时构造 convert，同时修正了原逻辑中 innerSlice 检查位置过晚的问题；(2) rewriteSlice 中 replacements 的 lookup 改为 lookupOrDefault，因为源已处于目标 encoding 时（identity conversion）映射中不存在对应条目，直接 lookup 会断言失败。测试文件 test/TritonGPU/combine.mlir 新增两个用例：hoist_dot_operand_reuse_existing_remat 验证即使无操作可 hoist 也能复用已有 remat（避免重复 cvt.rna.tf32.f32），hoist_dot_operand_identity_conversion 验证 identity conversion 的空 backward slice 场景。属于 NVIDIA/TritonGPU 路径的可靠性修复，对 AMD/Ascend 无直接耦合。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "low-risk",
+        "tritongpu",
+        "layout-conversion"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。lib/Dialect/TritonGPU/Transforms/RemoveLayoutConversions.cpp 属于 TritonGPU 布局转换优化 pass，Ascend 走 TritonToLinalg 路径而非 TTGIR/TritonGPU 优化链，不使用该 pass。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TritonGPU] Restore dot operand rematerialization reuse (#11940)\n\nReland #11538, with a fix for `rewriteSlice` of empty slices."
+    },
+    {
+      "sha": "00ea9ca84dc575b8c6bb2cec348122e09cd3398c",
+      "comment": "NVIDIA NVMMA shared encoding 优化：将默认 swizzle 启发式抽取为 NVMMASharedEncodingAttr::getDefaultSwizzlingByteWidth（TritonGPUAttrDefs.td 声明、Dialect.cpp 实现），供 attribute builder 与 descriptor matching 共用，消除重复逻辑。OptimizeDescriptorEncoding.cpp 中 getCompatibleSharedEncoding 重写为：先用启发式得到 preferredSwizzle 并按 preferred 优先匹配，未命中则遍历 {0,32,64,128} 跳过 preferredSwizzle，最后只尝试 128B swizzle 的 FP4 padded 候选（因为 padded FP4 TMA 只支持 128B swizzle），避免构造不被支持的 padded 候选。这是 #11935 的后续清理与正确性修复，属 NVIDIA 专属 descriptor/TMA 路径。",
+      "tags": [
+        "refactor",
+        "bugfix",
+        "low-risk",
+        "nvidia-backend",
+        "tritongpu"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 include/triton/Dialect/TritonGPU/IR/TritonGPUAttrDefs.td、lib/Dialect/TritonGPU/IR/Dialect.cpp 与 lib/Dialect/TritonNvidiaGPU/Transforms/OptimizeDescriptorEncoding.cpp，均为 NVIDIA TMA descriptor / NVMMA shared encoding 相关，Ascend 不加载 TritonNvidiaGPU 方言也不走 TMA descriptor 路径。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Only try 128-byte swizzling for padded FP4 descriptors (#11998)\n\nDescriptor layout matching still constructs FP4-padded candidates with\nunsupported swizzle sizes before rejecting them. Try only the supported\n128-byte padded layout.\n\nExtract the default swizzle heuristic into\n`NVMMASharedEncodingAttr::getDefaultSwizzlingByteWidth`, shared by the\nattribute builder and descriptor matching. Check the preferred swizzle\nfirst, then skip that size directly when trying the remaining unpadded\nlayouts. All candidates use the same element bit width and\nnon-transposed form.\n\nFollow-up to #11935. Covered by the existing tests.\n\nValidation on GB300:\n- Rebuilt Triton with `make`.\n- `make test-lit`: 302 passed, 2 unsupported.\n- `test_mxfp8_mxfp4_matmul_tma`: all 36 cases passed.\n- Local pre-commit checks passed."
+    },
+    {
+      "sha": "b769235728b5fae0800286b98bed1972302c4100",
+      "comment": "AMD 后端将构建所用 LLVM commit 从 d26ff26ef 更新为 6bc4aaf6（cmake/amd-llvm-build-info.json），仅版本号变更，用于 AMD CodeGen 相关的 LLVM 修复。属构建配置维护，无代码逻辑变化。",
+      "tags": [
+        "chore",
+        "low-risk",
+        "amd-backend",
+        "build"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。cmake/amd-llvm-build-info.json 仅控制 AMD 后端使用的 LLVM 版本，与 Ascend 构建链无关。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Build llvm @ 6bc4aaf6 for CodeGen (#12003)"
+    },
+    {
+      "sha": "1b24a39939875de5333e3990bec3ddcbfc64eb80",
+      "comment": "修复 JIT cache key 测试的顺序依赖问题（python/test/unit/runtime/test_cache.py）。原 apply_src_change 恢复依赖源码后未使调用方 hash 失效，导致 test_nested2_change 后运行 test_nochange 时 cache_key 与 baseline 不一致（对应 GB200 CI 失败）。改为用 ExitStack 注册 cleanup：进入时把 kernel/function_0..2/target 的 hash 置 None，退出时（含异常路径）恢复所有 hash 为 None 并还原源码；同时在各测试中新增 assert 验证恢复后 cache_key == baseline，并在 invalidation 中包含 target。属测试可靠性修复，不涉及生产代码。",
+      "tags": [
+        "test",
+        "bugfix",
+        "low-risk",
+        "runtime-jit"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。仅修改 python/test/unit/runtime/test_cache.py 测试文件，不涉及 JITFunction/cache key 计算的实现逻辑。",
+        "testing": "无影响。triton-ascend 若无对应 cache key 测试文件则不涉及；但若 Ascend 有复用该测试的 CI，可受益于顺序稳定性提升。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TEST] Fix order-dependent JIT cache key tests (#11971)\n\n## Summary\n\nRunning `test_nested2_change` before `test_nochange` can fail because\n`apply_src_change` restores a dependency's source while leaving its\ncallers' hashes cached for the modified source. This reproduces the\nexact hash mismatch in [the GB200 CI\nfailure](https://github.com/triton-lang/triton/actions/runs/36076855353/job/107889912179).\n\nRestore the original source and invalidate all affected hashes when\nleaving the helper, including on exceptions. Include the requested\ntarget in invalidation, and strengthen the existing mutation tests to\ncheck that the original cache key is restored.\n\n## Validation\n\n- Brix GB300: reproduced the baseline failure with `test_nested2_change`\nfollowed by `test_nochange`.\n- Brix GB300: all five targeted tests passed after the fix, including\nthat order and the keyword-only dependency case. Used the existing\nTriton build; verified the test-file digest and matching JIT runtime\nsource.\n- Ruff, Python syntax validation, and `git diff --check` passed.\n- All commit hooks passed, including YAPF and mypy."
+    },
+    {
+      "sha": "ef633a550d8565a8c4cd89edce63213c8b173e2b",
+      "comment": "NVIDIA 后端优化 BF16→FP32 转换：在 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/ElementwiseOpToLLVM.cpp 新增 ExtFOpConversion，针对 bf16→f32 的 arith.extf 用整数位操作实现——zext i16 到 i32、左移 16 位、bitcast 到 f32，替代原 LLVM::FPExtOp；注释说明这样 LLVM 可把 packed 高半部分提取折叠为 mask，ptxas 13.4 下 BF16x2 用 IMAD+LOP3 代替 PRMT+两条 IMAD，从 3 条 SASS 降到 2 条。同时从 POPULATE_OP 宏列表移除 arith::ExtFOp，单独 patterns.add<ExtFOpConversion>。测试新增 test_cast_bfloat16_to_float32_all_values（遍历全部 2^16 bf16 值，含 stride 变体，验证 NaN 与位精确相等）与 test/Conversion/tritongpu_to_ptx.mlir 中 extf_bf16/extf_bf16_scalar/extf_bf16_packed 三个 FileCheck（检查 shl.b32 / and.b32 替代 cvt.f32.bf16）。属 NVIDIA PTX 生成路径，硬编码 ptxas 版本相关行为需注意回归风险。",
+      "tags": [
+        "performance",
+        "low-risk",
+        "nvidia-backend",
+        "conversion-lowering"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/ 与 NVIDIA 专属测试，Ascend 不使用 TritonGPUToLLVM/NVIDIA 的 ElementwiseOpToLLVM lowering，走 TritonToLinalg 路径。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Optimize BF16 to FP32 conversions (#11985)\n\nLower BF16-to-FP32 casts through integer bit operations so LLVM can\nunpack a BF16 pair with a shift and a mask, reducing the conversion from\nthree SASS instructions to two.\n\n<!-- codex-thread: 01a0e3c4-d069-7cc1-8a34-48198db9a669 -->"
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

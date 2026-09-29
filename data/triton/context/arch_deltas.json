@@ -625,6 +625,32 @@
       "interface_changes": "BC-Breaking：收紧 tensor 完整切片索引语义。在 python/triton/language/core.py 的 tensor.__getitem__ 中，引入 src_rank = len(self.shape) 与 indexed_dims 计数器：遇到 None（newaxis）仍调用 _semantic.expand_dims（视为新增输出维度、不消耗源维度），遇到全 None 的完整切片时 indexed_dims += 1 并在超过 src_rank 时抛出 'too many indices for tensor of rank {src_rank}'；同时把测试中原本靠多余全切片做 unsqueeze 的写法（z_ptr[None, None, :] / [None, None, None, :]）改为去掉末尾多余切片。并在 python/triton/language/semantic.py 的 expand_dims 中加入 axis < 0 or axis > len(dst_shape) 的越界校验，避免静默 append。新增/更新了 pyt",
       "change_summary": "[BC-Breaking] Reject too many tensor slice indices (#10429)",
       "ascend_impact": true
+    },
+    "27c767ca43a5bd685cfb0e51d2678544d5178276": {
+      "date": "2026-09-29",
+      "affected_modules": [
+        "python/triton/language/semantic.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/language/semantic.py"
+      ],
+      "interface_changes": "扩展 tl.clamp 支持整数类型。此前 clamp 仅支持浮点（走 create_clampf 做浮点优化），现在对整型改为 minimum(maximum(x, min), max) 的分解实现，非浮点非整型（如 bool 之外的）报 TypeError。改动位于 python/triton/language/semantic.py 的 TritonSemantic.clamp，这是 Ascend monkey-patch 路径的同一文件。测试覆盖了 gluon 前端的广播类型提升、test_core.py 的完整 dtype 矩阵（含 bool、各整型极值、scalar/variable bounds、nan 传播）、以及 test_frontend.py 的标量提升。注意 `dtype.is_int()` 对 int1（bool）也返回 true，测试中已有 int1 用例覆盖，行为符合预期。",
+      "change_summary": "[Frontend] Support integers in tl.clamp (#12005)",
+      "ascend_impact": false
+    },
+    "bfc047cd973ff1dddb38903e75375c823ef12de1": {
+      "date": "2026-09-29",
+      "affected_modules": [
+        "python/triton/compiler/code_generator.py",
+        "python/triton/runtime/interpreter.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/compiler/code_generator.py",
+        "python/triton/runtime/interpreter.py"
+      ],
+      "interface_changes": "前端新增链式比较支持（如 0 <= x <= 8）。实现上重构了 CodeGenerator.visit_Compare：将原本只允许单比较的检查改为生成器 comparisons()，逐个求值相邻操作数并复用中间操作数（避免重复求值副作用），多个比较结果通过新抽取的 _apply_boolean_values(node, operator, values, warn_non_scalar) 以逻辑 AND 组合；同时将 visit_BoolOp 改为惰性生成器传入，实现编译期短路（constexpr 为假时跳过后续操作数求值，如 test_chained_comparison_short_circuit 验证 atomic_add 不被执行），warn_non_scalar 参数区分 bool op 与非 bool op 的告警行为。解释器侧在 ASTTransformer 新增 visit_Compare，将链式比较改写为 _InterpreterComparison 包装器链，调用 __lt__ 累积 tensor 结果、__bool__ 决定短路、get_result 用 lo",
+      "change_summary": "[FRONTEND] Support chained comparisons (#12002)",
+      "ascend_impact": false
     }
   }
 }
