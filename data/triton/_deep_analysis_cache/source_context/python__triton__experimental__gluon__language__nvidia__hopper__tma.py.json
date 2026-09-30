@@ -1,0 +1,31 @@
+{
+  "content_hash": "fc0b5e87c10e1824",
+  "analysis": {
+    "interface_summary": "定义 6 个类；定义 37 个函数",
+    "key_interfaces": [
+      "_tensor_descriptor_type_base",
+      "tensor_descriptor_type",
+      "tensor_descriptor_im2col_type",
+      "_tensor_descriptor_value_base",
+      "tensor_descriptor",
+      "tensor_descriptor_im2col",
+      "_tensor_descriptor_type_base.__str__",
+      "_tensor_descriptor_type_base.nbytes_per_cta",
+      "_tensor_descriptor_type_base._to_ir",
+      "_tensor_descriptor_type_base._unflatten_ir",
+      "_tensor_descriptor_type_base._flatten_ir_types",
+      "tensor_descriptor_type._to_ir",
+      "tensor_descriptor_type._unflatten_ir",
+      "tensor_descriptor_im2col_type._to_ir",
+      "tensor_descriptor_im2col_type._unflatten_ir",
+      "_tensor_descriptor_value_base.__init__",
+      "_tensor_descriptor_value_base._set_name",
+      "_tensor_descriptor_value_base._flatten_ir",
+      "_tensor_descriptor_value_base.nbytes_per_cta",
+      "_tensor_descriptor_value_base.block_type",
+      "tensor_descriptor.__init__",
+      "tensor_descriptor_im2col.__init__"
+    ]
+  },
+  "cached_at": "2026-10-01T02:04:24.648615+08:00"
+}

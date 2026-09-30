@@ -1,0 +1,87 @@
+{
+  "date": "2026-09-30",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-10-01T02:05:14.422679+08:00",
+  "daily_summary": "当日三项变更方向明确：一是对 dot_scaled 文档用例做了一次递归 revert/re-apply（前两个 commit 互为回退，最终净效果为零，属文档示例在 int8/uint8 与 device 选择上的摇摆）；二是 Ascend 后端新增 multibuffer_mode 编译选项（compiler.py 的 NPUOptions、A2/A3 与 950 两条 bishengir 编译路径均转发 --multibuffer-mode，runtime 层 Config/autotuner/hints 与 JSON 缓存做归一化并强制与 num_stages 互斥，附带新增 utils._multibuffer_mode_to_tuple 冻结字典以便稳定哈希），并补齐大量无设备回归测试；三是 DiscreteMask 的 atomic_rmw 修复：在 SIMD+SIMT 混合模板模式下，用 OffsetAnalysis 判定指针是否结构化，仅非结构化指针保留 MixCompileDiscreteMask 走 SIMT 间接原子 ABI，结构化指针改走 SIMD select+atomic 路径，判定结果以 ExplicitRouteToSIMD 布尔属性 memoize 在 op 上。整体看是「编译选项能力扩展 + lowering 正确性修复 + 文档示例回退」的组合，集中在 Ascend 后端 compiler/utils/runtime 与 TritonToLinalg 转换链。",
+  "test_impact_summary": "当日变更显著加大了测试看护面。multibuffer_mode 引入了新的编译选项面与互斥约束（与 num_stages 不可同时指定），影响 NPUOptions 解析与 hash、Config 构造与 JSON 缓存往返、AutoTilingTuner 的 config 展开与 key 生成、BaseAutotuner.get_max_configs 与 hints 归一化等多条路径，属于新增的、需要长期回归的测试点；本次已随提交新增 test_multibuffer_autotune.py（302 行）并在 test_compiler_layout_memory_contract.py 补齐 ~10 组参数化用例（转发、冲突、缓存还原、旧接口保持、910-95/A2-A3 分支），覆盖度较高，但作者明确说明未运行 pytest 与真实 NPU 验证，且新增测试大量依赖 AST 抽取/exec 与 monkeypatch 的「无设备」桩，与真实编译产物之间仍有缝隙，需要在 CI 与真机上补跑。DiscreteMask 修复同步更新了 Conversion/General/DiscreteMaskAccess 与 TritonToUnstructure 两处 lit 用例的 CHECK，断言由 MixCompileDiscreteMask+间接原子 ABI 改为 arith.select+普通 atomic_rmw（xchg 用例例外），属于对既有测试期望的实质改变，必须回归 else 分支（非结构化指针）仍走间接 ABI 的场景，避免修复结构化路径时破坏 SIMT 模板语义。dot_scaled 文档示例的 revert 使该示例回到 uint8/device 版本，与仓库实际 npu 示例可能再度不一致，docs 示例的可用性缺少自动化看护。总体建议：把 multibuffer_mode 的编译选项契约（互斥、hash 稳定性、旧接口兼容）纳入固定回归集，并对已改 CHECK 的两份 lit 测试在真实 triton-opt 上确认，同时评估 docs 示例是否有 CI 校验。",
+  "commits": [
+    {
+      "sha": "35c55ba0d2351a919fed8f9bdddcbb3acaae0ac9",
+      "comment": "Revert 提交，回退 1b8b836266c81e45118c78dfd235a394ee2217da（即后一 commit 2712c39 的内容）。仅改动 docs/zh/python-api/_examples/triton.language.dot_scaled.py 中两处 scale 张量构造：由 dtype=torch.int8/device=\"npu\" 且偏移 min_scale-128/max_scale-127 的写法，回退为 dtype=torch.uint8/device=device 的原始写法。属于文档示例层面的回退，不涉及编译器或后端逻辑，也不触及 TritonSemantic.dot/dot_scaled 的实现路径（Ascend 的 monkey-patch 只覆写 dot，不涉及此处示例）。风险极低，但会与 Naple 后端上 dot_scaled 对 int8 scale 的实际要求产生一致性问题：如果 dot_scaled 在 Ascend 上确实需要 int8 scale，则回退后的文档示例在 npu 设备上可能不可运行。",
+      "tags": [
+        "docs",
+        "chore",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯文档示例回退，无代码逻辑变更，不涉及任何编译阶段、pass 或运行时路径，现有测试无需改动。",
+        "suggested_test_areas": []
+      },
+      "message": "Revert \"[TritonToLinalg](fix) refresh docs test case due to dot_scaled op modified (#2435)\"\n\nThis reverts commit 1b8b836266c81e45118c78dfd235a394ee2217da."
+    },
+    {
+      "sha": "5a0162ca96a68dc6368e3a1ee17a32292048d861",
+      "comment": "为 Ascend 后端新增 multibuffer_mode 编译选项。compiler.py 侧：NPUOptions 新增 multibuffer_mode 字段（Dict[str,int] 或冻结后的 (str,int) 元组），num_stages 由 int=2 改为 Optional[int]=None 以区分「未指定」与「显式指定」，__post_init__ 中调用 _multibuffer_mode_to_tuple 归一化，并强制 multibuffer_mode 与 num_stages 互斥（同时给出则 ValueError），两者都未给时回落 num_stages=2；linalg_to_bin_enable_npu_compile_910_95 与 linalg_to_bin_enable_npu_compile_A2_A3 两条 bishengir 编译路径均把 mode 展开为 --multibuffer-mode=[(level,count),...] 追加到 _compile_option_list，同时保留原有 --enable-auto-multi-buffer 等 legacy 参数。utils.py 侧：新增 _multibuffer_mode_to_tuple，对字典按 key 排序冻结、对 JSON 还原的 pair 列表校验 str key 与严格 int count（拒绝 bool/float），保证 hash 与 JSON 缓存稳定。runtime 侧：_patch_config_init 用哨兵对象区分 num_stages 默认值与显式值，检测到 kwargs 里带 multibuffer_mode 时把 num_stages 置 None 并做互斥校验，同时把 multibuffer_mode 冻结为元组；autotuner.py 中 _normalize_config_hints 增加 has_multibuffer_mode 参数、在存在 mode 时不再 pop multibuffer/不注入默认 num_stages、新增互斥校验；AutoTilingTuner.generate_key_and_configs 记录 _raw_config_hints 与 user_specified_multibuffer_mode，把 multibuffer_mode 纳入 cache key，并在带 mode 时清掉 tile generator 产生的 legacy num_stages、把默认 Config 的 num_stages 置 None；_expand_simd_multibuffer_configs 在存在 mode 时直接返回不再展开；_ALL_PARAMS/_CUBE_PARAMS/_MIXCV_PARAMS/_VECTOR_PARAMS 均加入 multibuffer_mode 并新增 _check_multibuffer_mode_list 校验规则；get_max_configs 与 BaseAutotuner.generate_configs 同步做互斥与跳过 num_stages 的处理，并把默认 num_stages 不再硬编码为 2。整体设计是把「结构化 multibuffer 模式」作为 num_stages 的替代入口，同时保持旧接口与旧默认行为不变，并且让字典顺序不影响哈希与缓存。潜在风险：num_stages 默认值由 2 改为 None 是语义层面的改动，凡是依赖 NPUOptions().num_stages == 2 的调用点（包括外部脚本、旧缓存、依赖 metadata['num_stages'] 的路径）都需要确认；此外 _patched_config_init 用哨兵替代默认值，若上游 Config.__init__ 签名或默认 num_stages=3 变化，patch 需同步。",
+      "tags": [
+        "feature",
+        "refactor",
+        "medium-risk",
+        "compiler",
+        "autotuner"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增编译选项面并改了 NPUOptions.num_stages 的默认语义（2 → Optional[int]=None），同时新增 num_stages/multibuffer_mode 互斥约束，涉及 compiler 选项解析与 hash、Config 构造与 JSON 缓存往返、autotuner hints 归一化与 config 展开、get_max_configs 等多条路径，属于必须新增回归覆盖的接口行为变更；本次提交已自带测试。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "third_party/ascend/unittest/pytest_ut/test_multibuffer_autotune.py",
+          "third_party/ascend/unittest/autotune_ut/test_autotune_param_valid.py",
+          "third_party/ascend/backend/compiler.py",
+          "third_party/ascend/backend/utils.py",
+          "third_party/ascend/backend/runtime/__init__.py",
+          "third_party/ascend/backend/runtime/autotuner.py"
+        ]
+      },
+      "message": "[compiler](feat) support multibuffer_mode option (#2439)\n\nAccept multibuffer_mode dictionaries and forward them to NPU IR on the A2/A3 and 950 compilation paths. Reject simultaneous num_stages values while preserving existing legacy option behavior.\n\nKeep Config, autotune and JSON caches compatible with the new option using stable immutable pairs, and add regression coverage for forwarding, conflicts and cache restoration.\n\nValidation: Python AST parsing for all 7 changed files and git diff --check passed. Pytest and real NPU IR/device validation have not been run.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\nCo-authored-by: KanuaK <yihan_z@qq.com>"
+    },
+    {
+      "sha": "2712c39381c0f8e213365fe4bb84b5c7a56c6969",
+      "comment": "修改 docs/zh/python-api/_examples/triton.language.dot_scaled.py 中 dot_scaled 示例的两处 scale 构造，把 dtype=torch.uint8/device=device 改为 dtype=torch.int8/device=\"npu\" 并把取值范围从 (min_scale, max_scale) 改为 (min_scale-128, max_scale-127)，意图是适配 dot_scaled op 改动后对 int8 scale 的要求。仅文档示例改动，不涉及编译器、pass 或运行时逻辑。device=\"npu\" 硬编码会让示例在非 NPU 环境（CI 的 CPU 环境）不可执行。该提交随后被 35c55ba 回退，净效果为零。",
+      "tags": [
+        "docs",
+        "chore",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "文档示例修改，无代码逻辑变更，不涉及编译阶段、pass 或运行时，现有测试无需改动。",
+        "suggested_test_areas": []
+      },
+      "message": "[TritonToLinalg](fix) refresh docs test case due to dot_scaled op modified (#2435)"
+    },
+    {
+      "sha": "286a9a89af049d0cfbc356a917508c657c631afc",
+      "comment": "修复 DiscreteMaskAccessConversion 中 atomic_rmw 在 SIMD+SIMT 混合模板模式（compile-on-910-95 + simd_simt_template）下对结构化指针的处理。此前只要处于 SIMT 模板模式，DiscreteMaskAtomicConversion 就无条件打上 MixCompileDiscreteMask 并返回 failure，把 op 留给 TritonToUnstructure 走 SIMT 间接原子 ABI；但结构化指针并不需要该 ABI，应当直接走 SIMD 的 select+atomic 重写。修复方式是新增 routeToSIMD：先用 OffsetAnalysis 的 triton::parse 对 ptr 做偏移分析，offsetMap 中该 ptr 的 PtrOffsetInfo.isStructured() 为真则判定结构化；判定结果以 BoolAttr 形式 memoize 到 op 的 ExplicitRouteToSIMD 属性上（而非缓存 Value，因为 greedy driver 会反复重匹配并可能擦除被引用 op，属性不会因此悬挂）；bail-out 条件改为 isSimtTemplateMode && !routeToSIMD(op)。同步在 Utils.h 增加 explicitRouteToSIMDAttrName。复用 OffsetAnalysis 保证与 TritonToUnstructure 对「结构化」的判定一致，避免两 pass 结论分歧。风险点：属性一旦被 memoize 就不再重算，若首次判定时 ptr 的 IR 形态尚未稳定（例如后续还有 make_tensor_ptr 相关变换），可能留下过期结论；同时需要在后续 pass 中正确清理/忽略该属性，否则可能在 IR 中残留（lit 用例已可见 ExplicitRouteToSIMD = true 出现在 atomic_rmw 上）。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "triton-to-linalg",
+        "discrete-mask"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "修复改变了 atomic_rmw 在 SIMD+SIMT 模板模式下的 lowering 路由，现有两份 lit 用例的 CHECK 期望被实质改写：DiscreteMaskAccess/indirect_atomic.mlir 中 add/and/or/xor/max/min 由「无 arith.select + 带 MixCompileDiscreteMask 的三操作数 atomic_rmw」改为「有 arith.select + 两操作数 atomic_rmw」，xchg 因走 else 分支仍保留 MixCompileDiscreteMask 并新增 ExplicitRouteToSIMD = true；TritonToUnstructure/indirect_atomic.mlir 中 add 由间接原子内建改为 select+普通 atomic_rmw，i16 fallback 用例由 scf.for/scf.if 循环下沉改为直接 atomic_rmw。这些断言变更必须回归，且需补充非结构化指针仍走 MixCompileDiscreteMask/间接 ABI 的用例，防止修复结构化路径时破坏 SIMT 模板语义。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DiscreteMaskAccess/indirect_atomic.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToUnstructure/indirect_atomic.mlir",
+          "third_party/ascend/lib/DiscreteMaskAccessConversion/DiscreteMaskAccessConversionPass.cpp",
+          "third_party/ascend/include/Utils/Utils.h"
+        ]
+      },
+      "message": "[DiscreteMask](fix) run atomic_rmw with cont-ptr and disc-mask in SIMD mode (#2418)\n\nKeep the mixCompileDiscreteMask bail-out in DiscreteMaskAtomicConversion\nonly for unstructured pointers: they need the SIMT indirect atomic ABI,\nwhich consumes the original lane mask. Structured pointers do not need\nthe indirect ABI and take the plain SIMD select+atomic rewrite instead.\n\nPointer structure is decided with OffsetAnalysis (triton::parse), the\nsame analysis TritonToUnstructure relies on, so both passes agree on\nthe verdict and structured accesses still reach the structured lowering.\nThe verdict is memoized on the op itself as an ExplictRouteToSIMD bool\nattribute: the greedy driver re-matches ops many times, and an\nattribute cannot dangle the way a cached Value would when the driver\nerases the ops behind it.\n\nSigned-off-by: liwei-link <leawill1120@gmail.com>\nCo-authored-by: Claude Code <noreply@anthropic.com>"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

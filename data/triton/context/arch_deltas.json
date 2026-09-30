@@ -651,6 +651,30 @@
       "interface_changes": "前端新增链式比较支持（如 0 <= x <= 8）。实现上重构了 CodeGenerator.visit_Compare：将原本只允许单比较的检查改为生成器 comparisons()，逐个求值相邻操作数并复用中间操作数（避免重复求值副作用），多个比较结果通过新抽取的 _apply_boolean_values(node, operator, values, warn_non_scalar) 以逻辑 AND 组合；同时将 visit_BoolOp 改为惰性生成器传入，实现编译期短路（constexpr 为假时跳过后续操作数求值，如 test_chained_comparison_short_circuit 验证 atomic_add 不被执行），warn_non_scalar 参数区分 bool op 与非 bool op 的告警行为。解释器侧在 ASTTransformer 新增 visit_Compare，将链式比较改写为 _InterpreterComparison 包装器链，调用 __lt__ 累积 tensor 结果、__bool__ 决定短路、get_result 用 lo",
       "change_summary": "[FRONTEND] Support chained comparisons (#12002)",
       "ascend_impact": false
+    },
+    "3931812707d1f7f60a2c591f943ecf050ef48d96": {
+      "date": "2026-09-30",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "修复 reduction 向量化与 layout reassociation：isAssociative() 不再先用 srcElementTypes[0] 的浮点性直接短路，而是统一只看 reduce_size 与 combiner 中是否含 arith::AddFOp/MulFOp——这正确覆盖了 int-first（如 addi+addf 混合元组）场景，避免对含浮点组合子的整数首元素 reduce 错误地判定为可结合而做重结合。getInThreadVectorizeOpKind 改用 op.getCombineOp().front().getOperations().size() 与 getSingleCombiner()，并要求 combiner 真正使用块参数，从而剔除捕获外部值的伪组合子（新增 reduce_captured_combiner 回归）。该逻辑位于 lib/Analysis/Utility.cpp，被 TritonGPU 的 reduce 向量化/Combine pass 使用，属于后端无关分析与优化。",
+      "change_summary": "[BACKEND] Fix reduction vectorization and layout reassociation (#12011)",
+      "ascend_impact": false
+    },
+    "ce9338d0f83bc7a1dd4d595ef787178f216b167d": {
+      "date": "2026-09-30",
+      "affected_modules": [
+        "python/triton/language/semantic.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/language/semantic.py"
+      ],
+      "interface_changes": "为 device 侧 tl.make_tensor_descriptor 增加 16 字节 stride 对齐校验：TritonSemantic 新增 _check_tensor_descriptor_alignment_static（静态 stride 非 16 字节对齐直接 ValueError）与 _iisan_check_tensor_descriptor_alignment（iisan 模式下对 base 指针与动态 stride 发 device assert），并在 make_tensor_descriptor 中调用；Gluon hopper/tma.make_tensor_descriptor 同步接入；补 tensor_descriptor 与 gluon test_core 用例（含 run_in_process 的 iisan 正反例）。修复 #10927 中 misaligned stride 在 sm100 上静默算错的问题。",
+      "change_summary": "[frontend] Validate 16-byte stride alignment in make_tensor_descriptor (#10931)",
+      "ascend_impact": false
     }
   }
 }

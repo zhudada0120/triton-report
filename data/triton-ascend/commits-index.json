@@ -1,4 +1,20 @@
 {
+  "35c55ba0d2351a919fed8f9bdddcbb3acaae0ac9": {
+    "date": "2026-09-30",
+    "msg": "Revert \"[TritonToLinalg](fix) refresh docs test case due to dot_scaled op modified (#2435)\""
+  },
+  "5a0162ca96a68dc6368e3a1ee17a32292048d861": {
+    "date": "2026-09-30",
+    "msg": "[compiler](feat) support multibuffer_mode option (#2439)"
+  },
+  "2712c39381c0f8e213365fe4bb84b5c7a56c6969": {
+    "date": "2026-09-30",
+    "msg": "[TritonToLinalg](fix) refresh docs test case due to dot_scaled op modified (#2435)"
+  },
+  "286a9a89af049d0cfbc356a917508c657c631afc": {
+    "date": "2026-09-30",
+    "msg": "[DiscreteMask](fix) run atomic_rmw with cont-ptr and disc-mask in SIMD mode (#2418)"
+  },
   "1cdf2badad2da1b8e314b74a06b5e6dce4da7557": {
     "date": "2026-09-29",
     "msg": "[compiler](fix) source SIMT stack limit from config only (#2248)"

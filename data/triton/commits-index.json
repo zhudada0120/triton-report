@@ -1,4 +1,56 @@
 {
+  "661c1deb09c76522533adab47c60df97baad9131": {
+    "date": "2026-09-30",
+    "msg": "[AMD] NFC: Modernize backend code with C++20 features (#12039)"
+  },
+  "3931812707d1f7f60a2c591f943ecf050ef48d96": {
+    "date": "2026-09-30",
+    "msg": "[BACKEND] Fix reduction vectorization and layout reassociation (#12011)"
+  },
+  "a667a1aee844c6fc25fdbb9ce506fa758aac4392": {
+    "date": "2026-09-30",
+    "msg": "[AMD][BACKEND] Improve emitted errors when a direct-to-LDS copy cannot be lowered (#10886)"
+  },
+  "93ba8872b6d783665af1cf662ebd48bda49e60b9": {
+    "date": "2026-09-30",
+    "msg": "[AMD][gfx1250] Fix TDM verifiers to use shaperPerCTA (#11963)"
+  },
+  "a34c2ab7c9700e33085aedc732352e7ce4c7ddfc": {
+    "date": "2026-09-30",
+    "msg": "[BACKEND] Reland CUDA 13 ptxas for Hopper (#12035)"
+  },
+  "83a381bb1103862c395f2143b26838e2b08b63db": {
+    "date": "2026-09-30",
+    "msg": "[AMD][KERNELS] Disable XCD swizzle on RDNA (#11992)"
+  },
+  "85609ca2481c7a98b87e305a6104e26bdb66fa8d": {
+    "date": "2026-09-30",
+    "msg": "[AMD] NFC: Remove dead cache-swizzle code (#12036)"
+  },
+  "0d45e109ad9e7d3dd5bf11b961fd590a2368a160": {
+    "date": "2026-09-30",
+    "msg": "[triton_kernels] Use explicit FMA for matmul bias epilogues (#12032)"
+  },
+  "1ddf88c5ca1716b39b82351d0ac2a422f8b4e0c6": {
+    "date": "2026-09-30",
+    "msg": "[AMD][CI] Bump rocjitsu and enable more tests (#12031)"
+  },
+  "90d1c9c419854d1e428cc57de0a72fe24bef589c": {
+    "date": "2026-09-30",
+    "msg": "[Gluon] Expose cumprod/cumsum (#12007)"
+  },
+  "a3c982d24d81ae9d97a80dd526bdb0cf30a52ba0": {
+    "date": "2026-09-30",
+    "msg": "[CD] Raise minimum supported Python to 3.11. Max supported is 3.15 (#12006)"
+  },
+  "3ee177d0468b2fbfd0fe259641244ecd9c2f00e5": {
+    "date": "2026-09-30",
+    "msg": "[TRITONGPU] Add verifier for NvidiaMmaEncodingAttr and handle unsupported versions in toLinearLayout (#11969)"
+  },
+  "ce9338d0f83bc7a1dd4d595ef787178f216b167d": {
+    "date": "2026-09-30",
+    "msg": "[frontend] Validate 16-byte stride alignment in make_tensor_descriptor (#10931)"
+  },
   "ced7e4b42f992f0b125208767cafc371d079ffd9": {
     "date": "2026-09-29",
     "msg": "Fix AOT linker algo ID bounds check (#10684)"

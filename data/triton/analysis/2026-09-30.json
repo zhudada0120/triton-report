@@ -1,0 +1,275 @@
+{
+  "date": "2026-09-30",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-01T02:03:18.549508+08:00",
+  "daily_summary": "当日变更以 AMD 后端为主：C++20 现代化清理、direct-to-LDS 失败诊断增强、TDM verifier 使用 shapePerCTA 修 false-negative、删除死代码 cache-swizzle；同时包含若干 NFC 清理。跨后端方向包括：修复 reduction 向量化与 layout reassociation（混合 int/float combiner）、为 NvidiaMmaEncodingAttr 增加 verifier 并拒绝 Volta/非法版本、device tensor descriptor 16 字节 stride 对齐校验（含 iisan 动态断言）、Gluon 暴露 cumprod/cumsum、CUDA 13 ptxas 在 Hopper+ 上 reland、triton_kernels matmul bias epilogue 改用 tl.fma 以及 RDNA 关闭 XCD swizzle。核心面向 Ascend 的变更集中在 language/semantic.py（新增 tensor descriptor 对齐校验辅助方法，可能影响 monkey-patch 的 make_tensor_descriptor 路径）与 Dialect/TritonGPU 的 attr verifier。",
+  "ascend_impact_summary": "当日除两个 commit 外，其余均为 NVIDIA/AMD 平台特定代码、测试或文档，对 triton-ascend 无影响。两个相关 commit：(1) [BACKEND] Fix reduction vectorization and layout reassociation 修改了 lib/Analysis/Utility.cpp 中 ReduceOpHelper::isAssociative/getInThreadVectorizeOpKind 与 TritonGPU Combine pass 行为，属于 Ascend 复用的 TTIR/TTGIR 共享优化与分析基础设施，通过组合子语义影响 IR 输出形态，需回归；(2) [frontend] Validate 16-byte stride alignment 在 python/triton/language/semantic.py 的 TritonSemantic 中新增 _check_tensor_descriptor_alignment_static/_iisan_check_tensor_descriptor_alignment 并在 make_tensor_descriptor 调用，semantic.py 是 triton-ascend 的必然影响路径（_apply_ascend_patch monkey-patch 的挂载点），虽为纯新增方法，但需确认 Ascend 的 TMA/descriptor 路径不受影响且无签名冲突。其余 commit（AMD C++20 清理、direct-to-LDS 诊断、TDM verifier、NvidiaMma verifier、CUDA ptxas、Gluon cumsum/cumprod、triton_kernels fma、RDNA xcd swizzle）均落在不相关或绝不影响的路径上。",
+  "commits": [
+    {
+      "sha": "661c1deb09c76522533adab47c60df97baad9131",
+      "comment": "纯 AMD 后端的 NFC 现代化：用 requires 子句替代 always_false/static_assert 模板约束，用 std::ranges::stable_partition/generate 替代裸迭代器，用 product()/use_empty() 简化，删除 getDotEncoding 无用形参，并把 MFMA/WMMA 的 tuple 映射值改为具名 struct 以便命名访问。改动全部落在 third_party/amd/lib/TritonAMDGPUToLLVM 与 TritonAMDGPUTransforms，纯粹是同一语义的等价重写，不改变生成代码。",
+      "tags": [
+        "refactor",
+        "low-risk",
+        "amd-backend",
+        "nfc"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] NFC: Modernize backend code with C++20 features (#12039)\n\nUse C++20 features where they simplify the AMD backend:\n- Replace the always_false static_assert workaround in\nConvertToBufferOps with a requires clause on\nConvertTritonLoadToBufferLoad.\n- Move FP cast template type static_asserts into requires clauses.\n- Use std::ranges::stable_partition in BlockPingpong and pass the\nresulting non-dot ranges as ArrayRef instead of raw pointer pairs.\n- Use std::ranges::generate for cluster initialization.\n\nAlso perform a few related cleanups:\n- Use product() instead of std::accumulate in histogram lowering.\n- Use use_empty() to check whether buffer atomic results have users.\n- Drop the unused dummy parameter from getDotEncoding.\n- Replace MFMA/WMMA map value tuples with named structs."
+    },
+    {
+      "sha": "3931812707d1f7f60a2c591f943ecf050ef48d96",
+      "comment": "修复 reduction 向量化与 layout reassociation：isAssociative() 不再先用 srcElementTypes[0] 的浮点性直接短路，而是统一只看 reduce_size 与 combiner 中是否含 arith::AddFOp/MulFOp——这正确覆盖了 int-first（如 addi+addf 混合元组）场景，避免对含浮点组合子的整数首元素 reduce 错误地判定为可结合而做重结合。getInThreadVectorizeOpKind 改用 op.getCombineOp().front().getOperations().size() 与 getSingleCombiner()，并要求 combiner 真正使用块参数，从而剔除捕获外部值的伪组合子（新增 reduce_captured_combiner 回归）。该逻辑位于 lib/Analysis/Utility.cpp，被 TritonGPU 的 reduce 向量化/Combine pass 使用，属于后端无关分析与优化。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "tritongpu",
+        "analysis",
+        "reduction"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "lib/Analysis/Utility.cpp::ReduceOpHelper::isAssociative 与 getInThreadVectorizeOpKind 属于 include/triton/Analysis + lib/Analysis 的共享分析基础设施，按架构规则属于'可能影响'（若 Ascend 的 pass 复用该分析则传导）。变更改变了 tt.reduce 是否被视为可结合、是否在 thread 内做向量化的判定，会改变 TritonGPU Combine/Reduce 相关 pass 对 TTIR/TTGIR 的处理结果，进而改变 Ascend TTIR → TritonToLinalg 链的输入 IR 形态（尤其是 int/float 混合 combiner 的 reduce）。TritonSemantic 层的 dot/load/store monkey-patch 不受影响。",
+        "testing": "Ascend 侧对含混合类型 combiner（如同时 addi 与 addf）或捕获外部值的 reduce kernel 的端到端算子测试需要回归，确认 IR 形态与数值结果与之前一致或更正确。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/ (reduce/scan 类算子端到端)",
+          "test/Conversion/reduce_to_llvm.mlir 对应 Ascend lowering 回归"
+        ]
+      },
+      "message": "[BACKEND] Fix reduction vectorization and layout reassociation (#12011)\n\n1. Handle cases where we have mixed integer and float combiners\n2. Simplify getInThreadVectorizeOpKind using getSingleCombiner and\nremove redundant code",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "a667a1aee844c6fc25fdbb9ce506fa758aac4392",
+      "comment": "改进 AMD direct-to-LDS 拷贝失败时的诊断信息：新增 DirectToLdsVecInfo 记录指针/offset 允许的向量宽度与 mask 允许的宽度，canLoadDirectToLDS 增加 failureReason 出参，按失败检查点生成含可达成向量宽度、原因区分（mask 受限 vs 对齐受限）与修复建议（tl.multiple_of、mask 向量对齐、拆分 ragged 余数）的错误信息；同时把 amdg.buffer_load_to_local 在 AMD ConvertToLLVM target 中标记为 illegal，使其在下不成功时在 legalization 阶段即刻报错而非拖到 LLVM translation 出现 unrealized_conversion_cast。Gluon buffer_load_to_shared/global_load_to_shared 文档补充 mask 向量对齐要求。改动集中在 third_party/amd 与 test/Conversion/amd，纯平台特定。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "amd-backend",
+        "diagnostics",
+        "docs"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][BACKEND] Improve emitted errors when a direct-to-LDS copy cannot be lowered (#10886)\n\n## Problem\n\nOn CDNA, `ttg.async_copy_global_to_local` and\n`amdg.buffer_load_to_local` lower\nto a direct-to-LDS copy only when `canLoadDirectToLDS` succeeds. When it\ndoesn't,\nthe failure was surfaced in two unhelpful ways:\n\n- `amdg.buffer_load_to_local` is not marked illegal in the AMD\nConvertToLLVM\n  target, so a failed lowering silently survived the pass and surfaced\n  much later, during LLVM-IR translation, as a bare\n`error: LLVM Translation failed for operation:\nbuiltin.unrealized_conversion_cast`\n  with no hint at the real cause.\n- `ttg.async_copy_global_to_local` failed at legalization but only with\nthe\ngeneric `failed to legalize operation ... marked illegal`, again with no\n  explanation.\n\n\n## What changes\n\nFailures are now reported at legalization where the decision happens,\nwith\na message that states the achievable vector width and distinguishes the\ntwo\ncauses, as well as concrete guidance (raise provable alignment with\n`tl.multiple_of`,\nalign the mask to the vector width, or peel the ragged remainder into a\nseparate\nload). `amdg.buffer_load_to_local` is made illegal in the AMD\nConvertToLLVM\ntarget so an unlowerable one fails here instead of continuing IR\ntranslation.\nThe mask vector-alignment requirement is also documented in the Gluon\n`buffer_load_to_shared` / `global_load_to_shared` docstrings.\n\n---------\n\nCo-authored-by: Axel Sorenson <AxelPSorenson@gmail.com>"
+    },
+    {
+      "sha": "93ba8872b6d783665af1cf662ebd48bda49e60b9",
+      "comment": "修复 gfx1250 TDM gather/scatter/store verifier：padding interval 校验由 blockShape 改为 shapePerCTA，避免 multi-CTA 布局下因 blockShape 大于 CTA 内实际形状产生的 false-negative；tdm_store 的错误信息也从打印 blockShape 改为 shapePerCTA，与判定一致。改动仅涉及 third_party/amd/lib/Dialect/TritonAMDGPU/IR/Dialect.cpp 与 test/TritonGPU/amd/invalid.mlir，是 AMD 专属方言验证逻辑。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "amd-backend",
+        "verifier",
+        "tdm"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][gfx1250] Fix TDM verifiers to use shaperPerCTA (#11963)\n\nFixes tdm gather/scatter verifiers comparing the padding intervals with\nthe `blockShape` instead of the `shapePerCTA` which produces\nfalse-negatives for multi-cta layouts.\nThe error message for tdm_store did compare against `shapePerCTA`\nalready but was printing blockShape on error."
+    },
+    {
+      "sha": "a34c2ab7c9700e33085aedc732352e7ce4c7ddfc",
+      "message": "[BACKEND] Reland CUDA 13 ptxas for Hopper (#12035)",
+      "comment": "Reland 之前被 #11915 回退的变更：get_ptxas 按 arch 选择 assembler，arch < 90 仍用 knobs.nvidia.ptxas（legacy），arch >= 90 改用 knobs.nvidia.ptxas_blackwell（注释说明该名字有误导性，保留至 legacy ptxas 移除）。保留 get_ptxas/get_ptxas_version 名称与 ptxas_blackwell knob 不变。仅一行逻辑改动，位于 third_party/nvidia/backend/compiler.py。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "nvidia-backend",
+        "ptxas"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "83a381bb1103862c395f2143b26838e2b08b63db",
+      "comment": "RDNA3/RDNA4 关闭 XCD swizzle：make_default_opt_flags_amd 中 num_xcds 由固定 8 改为 rdna 版本 3/4 时为 1，其余目标保持 8。因为 RDNA 单 XCD 布局下 8 路 swizzle 无意义且会引入不必要的调度扰动。改动仅在 python/triton_kernels/matmul_details/opt_flags.py，属于 triton_kernels 的 AMD 默认调优参数。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "amd-backend",
+        "triton-kernels"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][KERNELS] Disable XCD swizzle on RDNA (#11992)\n\nUse a single scheduling domain for RDNA3 and RDNA4. The existing\neight-way behavior remains unchanged for CDNA and other AMD\ntargets."
+    },
+    {
+      "sha": "85609ca2481c7a98b87e305a6104e26bdb66fa8d",
+      "comment": "删除 AMD BufferEmitter 中 #if 0 包裹的死代码 cache-swizzle stride 构造，createResourceDescriptor 去掉 blockStride/inferredStride 形参与各 buffer op lowering 中透传的 llStride 变量（buffer ops 本身仍保留 stride operand）。属于纯清理：移除无用参数与不可达分支，不改变 resource descriptor 语义（stride 恒为 0）。",
+      "tags": [
+        "refactor",
+        "low-risk",
+        "amd-backend",
+        "nfc",
+        "dead-code"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] NFC: Remove dead cache-swizzle code (#12036)\n\nThe cache-swizzle stride setup in\nBufferEmitter::createResourceDescriptor has been disabled behind `#if\n0`, leaving the blockStride parameter and the stride values passed in by\nthe buffer op lowerings unused. Remove the disabled block and that\nplumbing. The buffer ops keep their stride operand for now."
+    },
+    {
+      "sha": "0d45e109ad9e7d3dd5bf11b961fd590a2368a160",
+      "comment": "triton_kernels 的 matmul/parallel matmul bias epilogue 由 acc + bias*betas 改为 tl.fma(bias, betas, acc)，使乘加融合为一次 FMA，减少一遍读写并提升精度/性能。改动仅在 python/triton_kernels/matmul_details/_matmul.py 与 _p_matmul.py 两个内核。",
+      "tags": [
+        "performance",
+        "low-risk",
+        "triton-kernels",
+        "matmul"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[triton_kernels] Use explicit FMA for matmul bias epilogues (#12032)"
+    },
+    {
+      "sha": "1ddf88c5ca1716b39b82351d0ac2a422f8b4e0c6",
+      "message": "[AMD][CI] Bump rocjitsu and enable more tests (#12031)\n\n- Bumps rocjitsu\n- Enable passing tests on new whl\n- Disable expensive matmuls\n- Set rocjitsu cpu thread budget to `4`",
+      "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 triton-ascend。",
+      "tags": [
+        "chore"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "90d1c9c419854d1e428cc57de0a72fe24bef589c",
+      "comment": "Gluon 通过 _import_from_triton 复用 tl.standard 的 cumsum/cumprod，在实验性 Gluon 语言 API 中暴露这两个便捷扫描函数，并补充 docs/gluon/api/language.rst 文档与 test/gluon/test_lowerings.py 的大量参数化覆盖（双轴、负轴、forward/reverse、int8/uint8 整型提升、显式 out dtype、layout 保持）。改动为零逻辑新增，仅导出与测试，Gluon 编译到 TTGIR。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "gluon",
+        "scan",
+        "test"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Gluon] Expose cumprod/cumsum (#12007)\n\nGluon provides associative scans but does not expose the `cumsum` and\n`cumprod` convenience functions. Export both using the shared Triton\nimplementations and add them to the language API documentation.\n\nAdd coverage for both axes (including a negative axis), forward/reverse\nscans, integer promotion, explicit output dtypes, and layout\npreservation.\n\nValidation: 84 scan regression cases passed on NVIDIA GB300; pre-commit\nchecks passed."
+    },
+    {
+      "sha": "a3c982d24d81ae9d97a80dd526bdb0cf30a52ba0",
+      "message": "[CD] Raise minimum supported Python to 3.11. Max supported is 3.15 (#12006)\n\nPython 3.10 reaches end of life in October 2026. Drop it ahead of EOL so\nTriton stops shipping wheels for an unsupported interpreter.\n\n`MIN_PYTHON` drives both `python_requires` and the `Programming Language\n:: Python ::` classifiers, so the one constant is enough on the\npackaging side: `python_requires` becomes `>=3.11,<3.15` and the 3.10\nclassifier goes away.\n\nIn `wheels.yml` only the version-specific cibuildwheel pass changes. It\nbuilt `cp310` and `cp311`; it now builds `cp311` alone. The abi3 pass is\nuntouched -- it is built on 3.12 and already covers 3.12+.\n\nPython 3.10 reaches end of life in October 2026. Drop it ahead of EOL so\nTriton stops shipping wheels for an unsupported interpreter.\n\n`MIN_PYTHON` drives both `python_requires` and the `Programming Language\n:: Python ::` classifiers, so the one constant is enough on the\npackaging side: `python_requires` becomes `>=3.11,<3.16` and the 3.10\nclassifier goes away.\n\nIn `wheels.yml` only the version-specific cibuildwheel pass changes. It\nbuilt `cp310` and `cp311`; it now builds `cp311` alone. The abi3 pass is\nuntouched -- it is built on 3.12 and already covers 3.12+.\n\n---------\n\nCo-authored-by: Andrey Talman <atalman@users.noreply.github.com>",
+      "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 triton-ascend。",
+      "tags": [
+        "feature",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "3ee177d0468b2fbfd0fe259641244ecd9c2f00e5",
+      "comment": "为 NvidiaMmaEncodingAttr 增加 verifier（genVerifyDecl=1），拒绝 Volta versionMajor=1 与 {2,3} 之外的版本，修复了此前 !isAmpere() 时在 toLinearLayout 中 assert(isHopper()) 触发 SIGABRT 的问题，改为 else if (isHopper()) 加 llvm::report_fatal_error 的防御式处理；同步更新 .td 文档并将 Volta 布局说明删除，新增 invalid-attributes.mlir 用例。属于 TritonGPU 方言 attr 校验的加固，对支持版本（2/3）行为不变。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "tritongpu",
+        "verifier",
+        "mma"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（NvidiaMmaEncodingAttr 为 NVIDIA MMA 专属 layout，Ascend 走 TritonToLinalg 不使用 TTGIR mma encoding；架构规则将 include/triton/Dialect/TritonGPU 与 lib/Dialect/TritonGPU 列为'可能影响'，但此处变更为 NVIDIA mma attr 的版本校验，与控制流/类型定义无关，不传导到 Ascend）",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TRITONGPU] Add verifier for NvidiaMmaEncodingAttr and handle unsupported versions in toLinearLayout (#11969)\n\nFixes #11961.\n\n### Motivation and Root Cause\n`NvidiaMmaEncodingAttr` lacked verification (`genVerifyDecl = 1`),\nallowing unsupported or arbitrary `versionMajor` values (e.g. Volta\n`versionMajor = 1` or invalid numbers) to be parsed or created via\nGluon/IR without diagnostic checks.\n\nWhen downstream operations (such as `SliceEncodingAttr::toLinearLayout`\nor `verifyTensorLayouts` on `MakeRangeOp`) attempted to compute the\nLinear Layout for an encoding with an unsupported parent,\n`NvidiaMmaEncodingAttr::toLinearLayout` assumed `isHopper()` when\n`!isAmpere()`, failing an assertion and aborting the compiler process\n(`assert(isHopper())` / SIGABRT):\n```\npython3: /project/lib/Dialect/TritonGPU/IR/LinearLayoutConversions.cpp:953: \nLinearLayout mlir::triton::gpu::NvidiaMmaEncodingAttr::toLinearLayout(ArrayRef<int64_t>) const: \nAssertion `isHopper()' failed.\n```\n\n### Proposed Changes\n1. **`include/triton/Dialect/TritonGPU/IR/TritonGPUAttrDefs.td`**:\n   - Enabled `let genVerifyDecl = 1;` on `NvidiaMmaEncodingAttr`.\n2. **`lib/Dialect/TritonGPU/IR/Dialect.cpp`**:\n- Implemented `NvidiaMmaEncodingAttr::verify(...)` to validate\n`versionMajor`, rejecting unsupported versions (emitting explicit\ndiagnostics for deprecated Volta `versionMajor = 1` and any version\noutside `{2, 3}`).\n3. **`lib/Dialect/TritonGPU/IR/LinearLayoutConversions.cpp`**:\n- Replaced unchecked fallback assertion with `else if (isHopper())` and\na defensive `llvm::report_fatal_error(...)` for invalid versions in\n`toLinearLayout`.\n4. **`test/TritonGPU/invalid-attributes.mlir`**:\n- Added regression test cases verifying clean diagnostics on unsupported\nVolta (`versionMajor = 1`) and invalid MMA versions.\n\n### Validation\n- Tested `test/TritonGPU/invalid-attributes.mlir` with `triton-opt\n-split-input-file -verify-diagnostics` (all 16 tests passing, expected\nerrors matched).\n- Validated that supported versions (`versionMajor = 2` for Ampere and\n`versionMajor = 3` for Hopper) continue to parse and verify cleanly.\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>"
+    },
+    {
+      "sha": "ce9338d0f83bc7a1dd4d595ef787178f216b167d",
+      "comment": "为 device 侧 tl.make_tensor_descriptor 增加 16 字节 stride 对齐校验：TritonSemantic 新增 _check_tensor_descriptor_alignment_static（静态 stride 非 16 字节对齐直接 ValueError）与 _iisan_check_tensor_descriptor_alignment（iisan 模式下对 base 指针与动态 stride 发 device assert），并在 make_tensor_descriptor 中调用；Gluon hopper/tma.make_tensor_descriptor 同步接入；补 tensor_descriptor 与 gluon test_core 用例（含 run_in_process 的 iisan 正反例）。修复 #10927 中 misaligned stride 在 sm100 上静默算错的问题。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "frontend",
+        "tensor-descriptor",
+        "tma",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "python/triton/language/semantic.py 属于 triton-ascend 的'必然影响'路径：该文件被 third_party/ascend/backend/__init__.py::_apply_ascend_patch 运行时 monkey-patch（覆写 TritonSemantic.dot），且 TritonSemantic 是其挂载点。本次为纯新增方法（_check_tensor_descriptor_alignment_static/_iisan_check_tensor_descriptor_alignment）并在 make_tensor_descriptor 内新增调用：若 Ascend 复用上游 make_tensor_descriptor（目前 Ascend 对 TMA 走自有路径的可能性较大，但 descriptor 前端为共享路径），则 Ascend 上任何非 16 字节对齐的静态 stride 会在编译期抛 ValueError；Ascend 若自行覆写 make_tensor_descriptor 或使用非 TMA descriptor 则不受影响。此外 _iisan_check 使用 self.builder.options.enable_iisan，Ascend 若 builder.options 无该属性需确认 getattr 兜底（tl 路径已用 getattr，Gluon 路径直接访问 .enable_iisan，但 Gluon 不由 Ascend 使用）。dot 的 monkey-patch 签名未受影响。",
+        "testing": "需验证 Ascend 侧 make_tensor_descriptor 相关算子（含非 16 字节对齐 stride 的用例）在新静态校验下不再静默通过；确认 Ascend 未因 ValueError 提前抛出而出现新的编译失败或测试用例需要改写 stride。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/ (tensor descriptor / TMA 相关算子端到端)",
+          "python/test/unit/language/test_tensor_descriptor.py 的 Ascend 侧对应测试（如存在）"
+        ]
+      },
+      "message": "[frontend] Validate 16-byte stride alignment in make_tensor_descriptor (#10931)\n\n### Summary (updated)\n\nTMA needs every non-contiguous descriptor stride to be 16-byte aligned.\nHost `TensorDescriptor` already checks; device\n`tl.make_tensor_descriptor` did not, so misaligned strides could silence\nwrong results on device TMA (#10927, tried on sm100).\n\nExample: bf16 `[M, K]`, `K=511` → row stride 1022 B (not ÷16) → broken\ntiles + wrong `tl.dot`.\n\n### Fixes\n\n- Compile-time `ValueError` for **static** misaligned strides (matches\nhost message).\n- **Dynamic** strides: still a precondition in normal builds;\n**`TRITON_INSTRUMENTATION_MODE=iisan`** adds device asserts for\nnon-constexpr strides only (Gluon TMA pattern — no always-on /\ndebug-only assert).\n\nsummary of how solved:\n```\nCase                          normal              iisan\nstatic misaligned stride      compile error       compile error\ndynamic misaligned stride     no check            device assert\ndynamic aligned stride          unchanged           unchanged\n```\n\n### checklist\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n[rules](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n- [x] I have added tests (`/python/test`).\n- [x] I have not added any `lit` tests.\n\nFixes #10927\n\n<details>\n<summary>Env — develop & test</summary>\n\n- Triton: this branch on `triton-lang/triton` main + frontend changes in\n`semantic.py`\n- Tests: `python/test/unit/language/test_tensor_descriptor.py` (static\ncompile error, iisan dynamic stride on Hopper+)\n- iisan: `TRITON_INSTRUMENTATION_MODE=iisan`, `CUDA_LAUNCH_BLOCKING=1`\nin subprocess tests\n\n</details>\n\n<details>\n<summary>Env — where #10927 shows up</summary>\n\n- **Bug:** device-side descriptor + TMA gather/load × `tl.dot`,\nmisaligned leading stride → wrong output (reported on **Blackwell\nsm100**)\n- **Repro shape:** bf16, leading stride not multiple of 16 bytes (e.g.\n`K=511`)\n\n</details>\n\n<details>\n<summary>Driver / API — host vs device</summary>\n\n- **Host** `TensorDescriptor` / `cuTensorMapEncodeTiled`: invalid stride\n→ **`CUDA_ERROR_INVALID_VALUE`** (seen with driver **580.159.03**, CUDA\n**13.0**)\n- **Device** `tl.make_tensor_descriptor`: builds tensormap on-device,\n**does not** call that encode path → **no driver error**, silent\nmiscompute until this PR (compile error or iisan assert)\n\n</details>",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/language/semantic.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}
