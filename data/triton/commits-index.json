@@ -1,4 +1,36 @@
 {
+  "aad2a60d958f945420c5c40936b37d411fb02e89": {
+    "date": "2026-10-01",
+    "msg": "[AMD] Support controlling WGP/CU mode for RDNA (#11910)"
+  },
+  "c5c826de2dc826b644c6da081ba1db6986898c82": {
+    "date": "2026-10-01",
+    "msg": "[GSan] Support graphs of kernel dependencies (#12023)"
+  },
+  "23b7630da4bee9c0326b9c27721ad6c26bab0433": {
+    "date": "2026-10-01",
+    "msg": "[AMD] Emit packed scaled_upcast layout for dot decomposition (#11909)"
+  },
+  "c2457268a150e5fc7678492c534d24c4b348c20e": {
+    "date": "2026-10-01",
+    "msg": "[AMD][CI] Move rocjitsu workflow to gfx90a (#12043)"
+  },
+  "cedae8dfdfe1bcce78793f2bff6757a1d81d8dfc": {
+    "date": "2026-10-01",
+    "msg": "[BACKEND] Simplify ReduceOpHelper and reduction lowering (#12013)"
+  },
+  "4c398335e06430cf74b6be7ee4543393e643dce0": {
+    "date": "2026-10-01",
+    "msg": "[AMD] Remove RDNA1 and RDNA2 target support (#12042)"
+  },
+  "6c14a3d5e824fcab6e8c4f7ea137ccd839c87140": {
+    "date": "2026-10-01",
+    "msg": "[Gluon][NVIDIA] Support L2 cache policies on TMA transfers (#12000)"
+  },
+  "350f9626789950b44c08646f5f217bdaedf71537": {
+    "date": "2026-10-01",
+    "msg": "[BACKEND] Minimise bank conflicts when lowering {ld,st}matrix.trans (#12033)"
+  },
   "661c1deb09c76522533adab47c60df97baad9131": {
     "date": "2026-09-30",
     "msg": "[AMD] NFC: Modernize backend code with C++20 features (#12039)"

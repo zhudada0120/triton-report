@@ -1,0 +1,160 @@
+{
+  "date": "2026-10-01",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-02T02:03:26.211085+08:00",
+  "daily_summary": "当日变更集中在四个方向：(1) AMD 后端增强——新增 WGP/CU 执行模式控制选项、为 scaled_dot 的 upcast 分解引入 packed layout 与新的 EfficientLayoutOpInterface 布局锚点机制、移除 RDNA1/RDNA2 目标支持；(2) GSan 内存/竞态检测器重构——用 per-node launch descriptor(table+index) 替代 stream clock/kernel id 隐式顺序，新增 CUDA 显式图的 fork/join 依赖追踪、Completion 快照与生命周期管理；(3) 通用后端 reduce lowering 简化——ReduceOpHelper 去重、统一 scratch 偏移计算、把 in-thread vectorized combine op 下沉到 lowering；(4) NVIDIA Gluon/TMA 新增 L2 cache policy 支持（cache_policy 参数 + cachePolicy IR 属性），以及 ldmatrix/stmatrix.trans 寄存器排序以减少 bank conflict 的优化。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 影响很小。仅有第三个 commit（ReduceOpHelper/reduction lowering 简化）命中 ascend 关注面（lib/Analysis 被 ascend 的 pass 复用为可能影响路径），但它仅做等价重构、不改变对外接口语义；其余 commit 全部落在 third_party/amd、third_party/nvidia、lib/Dialect/TritonNvidiaGPU、lib/Conversion/TritonInstrumentToLLVM 等纯平台特定路径，或仅涉及 Triton/TritonGPU 的新增 op interface（EfficientLayoutOpInterface）定义，后者虽在 include/triton/Dialect/Triton/ 下，但 ascnd 不加载这些接口的消费方逻辑，只有 TTGIR 相关的 RemoveLayoutConversions/Utility 会用到，而 ascend 走 TritonToLinalg 路径，不会触发。总体 ascent_affected=false，无需更新测试。",
+  "commits": [
+    {
+      "sha": "aad2a60d958f945420c5c40936b37d411fb02e89",
+      "comment": "AMD HIP 后端新增 wgp_cu_mode 编译选项（默认 wgp），允许在 gfx10/gfx11/gfx120x 上通过 kernel_fn.add_fn_target_feature(\"+cumode\") 请求 CU mode，并在选项校验中拒绝与 llvm_fn_attrs 的 target-features 覆写以及 TRITON_ENABLE_ASAN 同时使用。变更局限在 HIPOptions/HIPBackend，属 platform-specific，不影响后端抽象接口。测试通过读取 kernel.asm[\"amdgcn\"] 中的 .amdhsa_workgroup_processor_mode 验证。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "amd-backend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Support controlling WGP/CU mode for RDNA (#11910)\n\nOn gfx10+ a work-group is by default spread across both CUs of a work-group\nprocessor (WGP mode). CU mode confines it to a single CU, which changes\nwhat a work-group shares  one vector L0 cache rather than two.\n\nLLVM exposes this as the `+cumode` subtarget feature, but Triton passes\nan empty feature string in `make_amdgcn`, so every RDNA kernel is compiled for\nWGP mode with no supported way to ask for the alternative.\n\nThis PR adds the option. It is **off by default**, so no existing kernel\nchanges behaviour."
+    },
+    {
+      "sha": "c5c826de2dc826b644c6da081ba1db6986898c82",
+      "comment": "GSan 检测器从隐式 stream launch 顺序升级为 per-node launch descriptor。核心变化：(1) TTI_ExperimentalGSanInitOp 移除 acquireStreamClock 属性；(2) tti.gsan_stream_clock / tti.gsan_kernel_id 参数属性改名为 tti.gsan_launch_table / tti.gsan_launch_index，且 init 运行函数参数减少一个 i32（-1 个 acquirePrevious）；(3) GSan.h 新增 LaunchState 结构；(4) GSanLibrary.cu 用 acquireLaunchClocks/publishLaunchClock 替代 stream-clock 逻辑，并修正 initThread 语义（gdcWaitCalled = numWaitClocks==0）；(5) 新增 python/triton/experimental/gsan/graph.py 显式图支持（GraphNode/GraphPlan/Completion/acquire_completions 等），并在 _stream_sync、_testing_utils、_allocator 中同步。涉及 C++ ABI 与 CUDA 端 runtime 签名，均在 TritonInstrument/NVIDIA GPU 路径。",
+      "tags": [
+        "feature",
+        "refactor",
+        "medium-risk",
+        "instrumentation"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（GSan 完全在 lib/Dialect/TritonInstrument、lib/Conversion/TritonInstrumentToLLVM、third_party/nvidia 与 python/triton/experimental/gsan/ 内，属 CUDA 专属检测器路径，triton-ascend 不加载也不依赖这些组件或其隐藏参数属性。）",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[GSan] Support graphs of kernel dependencies (#12023)\n\nGSan currently derives inter-kernel ordering from stream launch order,\nwhich cannot represent branches and joins in explicit CUDA graphs.\nReplace the implicit predecessor selection with per-node launch\ndescriptors: full dependencies acquire completion clocks at kernel\nentry, while programmatic dependencies acquire them at `gdc_wait`.\n\nAdd graph boundary helpers, replay and lifetime handling, and immutable\ncompletion snapshots for dependencies established by CUDA events. Eager\nlaunches use the same descriptor interface. Tests cover fork/join\ngraphs, PDL, repeated launches, stream transitions, lifetime cleanup,\nand detection of unordered accesses and missing waits. Stream capture\nremains unsupported.\n\n### Validation\n\n- Rebuilt the PR source on GB300 and verified the patched test checksum.\nGSan suite: **421 passed, 2 xfailed** in the main phase; **8 passed, 1\nskipped** in the multi-GPU phase. The multi-GPU phase passed on retry\nafter a TCP port collision during process-group setup.\n- Repeated both graph PDL failure cases 50 times each across eight\nworkers: **100 passed**. These retain exact diagnostic and\nsource-location assertions.\n- All commit hooks passed, including Ruff, YAPF, mypy, and Python syntax\nchecks; `git diff --check` passed."
+    },
+    {
+      "sha": "23b7630da4bee9c0326b9c27721ad6c26bab0433",
+      "comment": "为 AMD scaled_dot 软件分解新增 EfficientLayoutOpInterface（include/triton/Dialect/Triton/IR/TritonOpInterfaces.td），并用它统一替换 RemoveLayoutConversions/Utility 中 GatherOp/ReshapeOp 特判的 efficient_layout 检查；ReshapeOp/GatherOp/ScaledUpcastFp4Op/ScaledUpcastFp8Op 都声明实现该接口。AccelerateAMDMatmul 里新增 getPackedScaledUpcastEncoding，使 upcast 结果布局沿 K 轴 groupSize（4/8）个连续元素归同一线程，避免软仿路径被 RemoveLayoutConversions 破坏。ScaledUpcastFp8Op 新增 verifier（要求 scale i8 类型和完整 register group）。这个新的 op interface 位于 include/triton/Dialect/Triton/，但消费方在 TritonGPU（RemoveLayoutConversions/Utility）与 AMD dialect，ascend 不走 TTGIR。",
+      "tags": [
+        "feature",
+        "performance",
+        "low-risk",
+        "amd-backend",
+        "triton-ir"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（EfficientLayoutOpInterface 定义在 include/triton/Dialect/Triton/IR/TritonOpInterfaces.td，但 ascend 不加载 TTGIR 布局传播消费方 RemoveLayoutConversions/Utility，也不使用 amdg.scaled_upcast_* op。新接口只对 AMSG/AMD 软件模拟路径产生语义约束，Ascend 使用 TritonToLinalg 路径，不涉及这些 op 的编码决策。）",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Emit packed scaled_upcast layout for dot decomposition (#11909)\n\n`amdgpu.scaled_upcast` requires a layout which has `groupSize` (min 4)\nelements along `axis` held by a thread. When doing software emulation\nfor scaled_dot we currently emit a blocked layout invalidating this\nrequirement and rely on RemoveLayoutConversation to fix this for us.\nWith https://github.com/triton-lang/triton/pull/11760 this no longer\nreliably works and this PR emits an legal packed initial layout. We also\ntreat it as a layout anchor to avoid invalidating the layouts with\nRemoveLayoutConversions.\n\nThis also allows us to have a proper verifier to ensure the layouts are\ncompatible and we no longer trigger late asserts when lowering to llvm.\nThe other option would be to implement a software path were we lower via\nunpacked instructions, but it would silently regress performance if we\nmess up the layouts, especially in Gluon.\n\n## Known issues\nThis will break if the axis dimension is too small so we do not have\nenough unique elements along `axis`. This is a latent bug and would\ntrigger an assert in the lowering before this PR (it's now a verifier\nfail). This will be fixed in a follow up PR.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "include/triton/Dialect/Triton/"
+        ],
+        "recommend_refresh": true
+      }
+    },
+    {
+      "sha": "c2457268a150e5fc7678492c534d24c4b348c20e",
+      "message": "[AMD][CI] Move rocjitsu workflow to gfx90a (#12043)\n\n- Drop expensive test_hooks",
+      "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 triton-ascend。",
+      "tags": [
+        "chore"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "cedae8dfdfe1bcce78793f2bff6757a1d81d8dfc",
+      "comment": "ReduceOpHelper 与 ReduceOpToLLVM 重构：删除重复的 srcElementTypes/setScratchSizeInBytes/getSmemBaseOffsets/getReduceMemElemTy/getInterLayout/createInThreadVectorizedCombineOp 等冗余实现；新增 getScratchConfig 返回 {offsets,sizeInBytes}；将 in-thread vectorized combine op 的创建从 Analysis 移到 lib/Conversion（通过 DenseMap<InThreadVectorizeOpKind, CreateOpFn> 派发 LLVM op）；getInterLayout 重命名为 getInterWarpReductionLayout；reducedRegLaneLayout 用 removeZeroBasesAlongDim 简化。同时从 lib/Analysis/CMakeLists.txt 移除 MLIRLLVMDialect 依赖。改动为等价重构，但公共头文件 include/triton/Analysis/Utility.h 的 ReduceOpHelper 成员函数被删除/新增/改名，属于 ascend 复用的 Analysis 层。",
+      "tags": [
+        "refactor",
+        "low-risk",
+        "analysis",
+        "reduce"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（include/triton/Analysis/Utility.h 属 ascend 的'可能影响'路径，但本次变更仅为 ReduceOpHelper 内部重构：删除 getScratchSizeInBytes 中重复的逐输入循环并用 getScratchConfig 统一实现、删除本就在 transform 内部而非后端使用的 createInThreadVectorizedCombineOp、把 getInterLayout 重命名为 getInterWarpReductionLayout。没有修改公开契约所依赖的语义（scratch 大小/偏移计算与降级路径仍等价），ascend 的 TritonToLinalg 路径不调用 ReduceOpHelper 也不进入 ReduceOpToLLVM，故不会有编译或行为差异。）",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Simplify ReduceOpHelper and reduction lowering (#12013)\n\nMostly just simplify code, remove duplicate code, reuse existing\nfunctions, and improve comments"
+    },
+    {
+      "sha": "4c398335e06430cf74b6be7ee4543393e643dce0",
+      "comment": "移除 RDNA1（gfx1010/gfx1011）和 RDNA2（gfx1030）支持：TargetFeatures 的 ISAFamily 枚举删去 RDNA1/RDNA2，getISAFamily 不再返回这两个值，supportsBufferAtomicFMinMax/isRDNA/BufferOpsEmitter/TargetInfo::getSharedLdStTiles 相应清理，hip/utils.py 的 smid 分支也去掉 gfx10；lit 测试删除 gfx1030 的 RUN 行改用 gfx90a。纯 AMD 平台清理。",
+      "tags": [
+        "refactor",
+        "chore",
+        "low-risk",
+        "amd-backend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Remove RDNA1 and RDNA2 target support (#12042)"
+    },
+    {
+      "sha": "6c14a3d5e824fcab6e8c4f7ea137ccd839c87140",
+      "comment": "为 Gluon NVIDIA TMA 相关五个 op（async_tma_copy_global_to_local/local_to_global/gather/scatter，及后端 reexport）新增 L2 cache policy 支持：用单个可选 cachePolicy(AnyAttr) 取代旧的 cacheModifier/evictionPolicy 文本语法，替换后的 IR 属性在 Ops.cpp 中集中校验（拒绝 cache modifier、L1 policy、L2 prefetch size、volatile 与遗留 cache/evict 属性）。数据路径一侧新增 createTMACachePolicy/createCachePolicy 生成 64-bit policy operand，并把 computeCapability 注入各 Conversion pattern（min 90 用于 load/store，min 100 用于 gather/scatter），在 PTX 中追加 .L2::cache_hint 与 policy 寄存器。同时 Python 前端 gluon nvidia hopper/blackwell 的 tma API 新增 cache_policy 参数并复用 _tma_cache_policy 校验。全部落在 TritonNvidiaGPU / NVWS / NVIDIA TMA 相关路径。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "nvidia-backend",
+        "tma",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（TMA cache policy 完全在 third_party/nvidia、lib/Dialect/TritonNvidiaGPU、python/triton/experimental/gluon/nvidia、NVWS 与 TritonNVIDIAGPUToLLVM 中；TTTNG.AsyncTMACopy*/Gather/Scatter 的 cachePolicy 属性与 cache_hint PTX 是 NVIDIA 专属，ascend 不加载 TritonNvidiaGPU 方言也不使用 Gluon NVIDIA 后端。）",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Gluon][NVIDIA] Support L2 cache policies on TMA transfers (#12000)\n\nGluon TMA operations currently cannot express L2 eviction hints, and\ndescriptor-load rewrites discard their cache policy. Add the single\n`cache_policy` argument to `async_load`, `async_load_im2col`,\n`async_store`, `async_gather`, and `async_scatter`, including the\nBlackwell reexports.\n\nAll five APIs accept the existing generic or NVIDIA `CachePolicy`\nobjects, including `CachePolicy(l2=FractionalEvictionPolicy(...))`.\nOmission or `None` emits no hint; explicit detailed `evict_normal`\nremains a real L2 policy. There is no separate `eviction_policy`\nargument on the TMA frontend. Share the L2-only validation across the\nPython APIs and TMA IR operations: reject L1 policies, cache modifiers,\nand prefetch sizes, while retaining the existing volatile-load\nrejection.\n\nUse one optional `cachePolicy` IR attribute and the common\ndecoder/policy generator. Emit the 64-bit policy operand on every\nmessage, after im2col offsets and the multicast mask where present. Keep\nexisting no-policy C++ builder overloads. Forward load policies through\ndescriptor lowering, pipelining, NVWS, and Hopper warp specialization;\npreserve gather/scatter policies through layout conversion. Memory\neffects, fences, barriers, and completion accounting are unchanged.\n\nThe obsolete TMA-load textual `cacheModifier`/`evictionPolicy` syntax is\nreplaced by `cachePolicy`; generic IR with legacy `cache`/`evict`\nattributes diagnoses instead of silently dropping them.\n\n### Validation\n\nCompiler and GPU validation at 3b0560557d, before the Python-only\nremoval of the separate `eviction_policy` argument:\n\n- Full lit suite: 302 passed, 2 unsupported.\n- Full Gluon frontend suite: 725 passed, 199 skipped.\n- Focused frontend/assembler tests: 193 passed, 15 unsupported\narchitecture cases skipped. Covers SM90 loads/stores and SM100\ngather/scatter through pinned PTXAS 12.9.86 / 13.4.59.\n- Focused GPU tests: 175 passed, covering rank 1/2/5,\ndefault/generic/NVIDIA policies, false predicates, im2col, multicast,\nand multi-CTA gather/store/scatter.\n- Repository pre-commit checks passed.\n\nThe subsequent Python-only API cleanup passed pre-commit and\nsignature/call-site checks. The existing tests now pass policies through\n`cache_policy`; GPU tests were not rerun for that cleanup, and the\ncompiler was not rebuilt.\n\nThe load implementation at d880253fcc also passed the upstream H100 and\nGB200 jobs. Those jobs will rerun for this extension.\n\nPerformance qualification at d880253fcc: a same-address hot/cold TMA\nmicrobenchmark passed exact copy/reduction checks. Across two runs,\ntyped `evict_first` changed approximately 55.4 us to 51.8 us and 73.7 us\nto 70.3 us in its two configurations; identical-kernel controls differed\nby up to 1.4%. A separate 16-GB300 integration workload measured +4.95%\nand +4.94% latency when only TMA hints were removed (+4.94% combined),\nagainst +0.024% for the identical-kernel control. All 96 TMA-specific\ndistributed correctness checks passed. These observations are\nworkload-specific and do not establish performance gains for\ngather/store/scatter. The model and ablation instrumentation are\nexcluded from this PR."
+    },
+    {
+      "sha": "350f9626789950b44c08646f5f217bdaedf71537",
+      "comment": "在 lowerLdStMatrix（third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/Utility.cpp）中新增 getLdStMatrixRowPermutation：根据 128B bank-conflict phase 遍历 1 或 2 个 row register 位置排列，按 (bank conflicts, -wordBits, -orderedBits) 的字典序最小化，从而减少 {ld,st}matrix.trans 的 bank 冲突与 PRMT。为支持该选择，LinearLayout 增加 getSourceIndex，reps 上应用 permRows 后以 regPerm.leftCompose(permRows) 累积，regPerm.inverse() 统一在 load 时一次性还原；同时把打包/解包改为 packLLVector/unpackLLVector；并把 i8Tile 由 zerosLike 改为 identity 形式以保持语义。纯 NVIDIA GPU 后端 + 通用 LinearLayout 工具的小幅扩展。",
+      "tags": [
+        "performance",
+        "low-risk",
+        "nvidia-backend",
+        "linear-layout"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（改动位于 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/Utility.cpp（NVIDIA 专属 lowering）与 include/triton/Tools/LinearLayout.h 的纯附加 getter（getSourceIndex），未修改任何现有 LinearLayout 行为，ascend 即使复用 LinearLayout.h 也不受行为影响；ldmatrix/stmatrix 是 NVIDIA 指令，ascend 不使用。）",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Minimise bank conflicts when lowering {ld,st}matrix.trans (#12033)\n\n`{ld,st}matrix.trans` has a peculiar shape, in that the registers\nwe choose affect the 8 groups (the 8 rows in the `{ld,st}matrix` tile\nof 4 banks that are moved in each transaction. In this PR we choose the\nregisters so that they minimise (in this order):\n- The number of bank conflicts\n- Two heuristics to reduce PRMTs\n\nCloses https://github.com/triton-lang/triton/pull/11927"
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}
