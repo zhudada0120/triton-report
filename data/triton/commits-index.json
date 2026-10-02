@@ -1,4 +1,60 @@
 {
+  "9fe38d528bd600e67dcedf29b47c4dcfca7308d2": {
+    "date": "2026-10-02",
+    "msg": "[GSan] Add configurable per-allocation shadow granularity (#11639)"
+  },
+  "a4eec8ec15931c155b307a7c38692252764e93a2": {
+    "date": "2026-10-02",
+    "msg": "[Backend] Lower umulhi with nvvm intrinsics (#12069)"
+  },
+  "0888aa798f997144766676b9026cff1a7e7d8955": {
+    "date": "2026-10-02",
+    "msg": "[BACKEND] Make noncommutative reduction results agree across lanes (#12045)"
+  },
+  "111ce2768c3eaf40a2628e8ff7ef58179d92327c": {
+    "date": "2026-10-02",
+    "msg": "[Runtime] Add max_occupancy flag (#12068)"
+  },
+  "e45c3c2404159624e47affa4b199a2db0f075bf1": {
+    "date": "2026-10-02",
+    "msg": "[BACKEND] Centralize the REDUX heuristics under `warpReduce32` (#12067)"
+  },
+  "d2cc13a63bf438a773173534919071cdc22778fa": {
+    "date": "2026-10-02",
+    "msg": "[AMD][gfx1250] Turn on kernarg SGPR preload (#12063)"
+  },
+  "596bd304220ebabc84fa877d4ac794ca1046e710": {
+    "date": "2026-10-02",
+    "msg": "[NVIDIA] Pack independent 16-bit reduction shuffles (#12057)"
+  },
+  "a78623ab1178631c2c8f54457606eddedb3d6ae6": {
+    "date": "2026-10-02",
+    "msg": "[Python] Release Gluon layout and builder references (#12049)"
+  },
+  "73625ba8b70288e2014e86c798b63ed5e3c26ea5": {
+    "date": "2026-10-02",
+    "msg": "[NVIDIA] Reduce temporary LLVM struct cleanup costs (#12047)"
+  },
+  "79141cb19d815d7a7b250f59991c0ff6ab09c52b": {
+    "date": "2026-10-02",
+    "msg": "[AMD] Enable test_debug.py in CI (#12050)"
+  },
+  "96977dbe8b0b3bb9701e16727ee42be434e06985": {
+    "date": "2026-10-02",
+    "msg": "[NVIDIA] Move GSan shared-memory reservation to the launcher (#12055)"
+  },
+  "886f2fd8f9f4b96b94bf51cb00281fef75546029": {
+    "date": "2026-10-02",
+    "msg": "[AMD][gfx1250] Fix partitioned shared and WMMA layouts for CGAs (#11707)"
+  },
+  "dd7167259f38efd489620fd09d35a53420e2f80b": {
+    "date": "2026-10-02",
+    "msg": "[NVIDIA] Support padded tcgen05.mma layouts (#11805)"
+  },
+  "7d85777c747a342b7f67b8b3ed959f623a940c87": {
+    "date": "2026-10-02",
+    "msg": "[triton_kernels] Support tiled storage for persistent ragged-K matmul (#12041)"
+  },
   "aad2a60d958f945420c5c40936b37d411fb02e89": {
     "date": "2026-10-01",
     "msg": "[AMD] Support controlling WGP/CU mode for RDNA (#11910)"

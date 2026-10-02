@@ -1,0 +1,22 @@
+{
+  "content_hash": "30021b19942589fa",
+  "analysis": {
+    "interface_summary": "定义 5 个类；定义 19 个函数",
+    "key_interfaces": [
+      "GraphNode",
+      "KernelLaunch",
+      "Completion",
+      "GraphLaunch",
+      "GraphPlan",
+      "Completion.__init__",
+      "GraphLaunch.__init__",
+      "GraphLaunch.finish",
+      "GraphPlan.__init__",
+      "GraphPlan._boundary",
+      "GraphPlan.boundary_kernels",
+      "GraphPlan.node_launch_args",
+      "GraphPlan.prepare_launch"
+    ]
+  },
+  "cached_at": "2026-10-03T05:31:24.731176+08:00"
+}

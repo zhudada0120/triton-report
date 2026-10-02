@@ -1,0 +1,309 @@
+{
+  "date": "2026-10-02",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-03T05:31:04.498950+08:00",
+  "daily_summary": "当日变更以 GSan（Global Sanitizer）的可配置 shadow granularity 为主轴，将原来固定的 1/4 字节粒度扩展为 1/2/4/8/16 字节可选的 10 个内存池，并配套修改了分配器、运行时库、shadow cell 布局、导出/导入 API 与大量测试。随后几个 commit 继续围绕 GSan 做工程化收敛：把共享内存预留从编译期移到 launcher（引入 max_occupancy 选项）、修复 umulhi 走 NVVM intrinsic、集中 warp reduction 的 REDUX 启发式、为 noncommutative reduction 增加跨 lane 一致性广播、打包 16-bit reduction shuffle，以及 TMEM 布局的 padding 支持（tcgen05.mma 允许逻辑张量小于物理 tile）。此外还有 NVIDIA LLVM 临时 struct 折叠的性能优化、Gluon layout/builder 引用泄漏修复、AMD gfx1250 的 kernarg SGPR preload 与 partitioned shared/WMMA CGA 布局修复、triton_kernels 的 ragged-K tiled storage 支持，以及 AMD CI 启用 test_debug.py。整体方向是持续完善 GSan 可配置性、NVIDIA 后端 reduction/TMEM 代码生成质量，以及 AMD gfx1250 新架构适配。",
+  "ascend_impact_summary": "当日绝大多数变更属于 NVIDIA(GSan/NVVM/reduction/TMEM/TCGen05)、AMD(gfx1250/WMMA) 平台特定实现或纯测试/CI，不影响 triton-ascend。需要关注的是少数触及平台无关接口的改动：GSan 相关 commit 修改了 python/triton/compiler/compiler.py 中 CompiledKernel._init_handles 的共享内存校验逻辑（改为读取 launcher.shared）以及第三方 Nvidia 的 CUDABackend.parse_options/add_stages（对 Ascend 无直接语法破坏，但编译流水线框架变化属可能影响路径）；有多个 commit 修改了 lib/Dialect/TritonGPU/IR/LinearLayoutConversions.cpp、lib/Tools/LayoutUtils.cpp、include/triton/Tools/LayoutUtils.h 中 ensureLayoutNotLargerThan/ensureLayoutNotSmallerThan/getReps 的函数签名，这些位于平台无关的 LinearLayout 工具层，但 Ascend 不走 TTGIR/LinearLayout 路径，属可能影响而非必然影响；另有 commit 修改了 include/triton/Dialect/TritonNvidiaGPU、TMEM 相关（Ascend 不加载）。总体而言 triton-ascend 的硬契约（BaseBackend/DriverBase/semantic.dot/CodeGenerator.__init__/compiler.parse/ir.cc TritonOpBuilder）未被当日变更破坏，但 LinearLayout 工具函数签名变更与 CompiledKernel 共享内存校验路径值得在下次同步时重点回归。",
+  "commits": [
+    {
+      "sha": "9fe38d528bd600e67dcedf29b47c4dcfca7308d2",
+      "comment": "[GSan] 为整个 GSan 栈引入可配置的 per-allocation shadow granularity（1/2/4/8/16 字节）。核心改动：(1) GSan.h 把原来两个 1TiB arena（normal/write-once）重构为 10 个池，池索引低位选模式、剩余位编码 log2 粒度，getShadowGranularity/getShadowAddress/isGsanManaged 等全部改为按地址推导；(2) GSanAllocator.cc 新增 gsanMallocWithGranularity 与 gsanMalloc{1,2,4,8,16}/gsanMallocWriteOnce{2,4,8,16} 入口，树根数组改为 kNumPools，realSize 用 roundDownToPowerOfTwo 计算，alignment 用 gcd 缩放以保证 shadow 页对齐；新增 include_granularity 导出/导入协议，非默认池若不带该标志会返回 -2 报错，防止旧调用方静默导入错误 shadow 布局；(3) GSanLibrary.cu 用 getShadowGranularity(address) 替代全局常量，新增 checkCoarseAccess（16 字节池要求完整对齐访问）与 checkAtomicGranularity（原子访问粒度不得大于元素宽度），kMaxAtomicShadowCells 从 3 提到 8；(4) GSanToLLVM.cpp 的 atomic_begin_scalar 增加 nBytes 参数并移除 keepWithinSingleShadowCell 对 vec 的裁剪，atomic event state 的 cell 数组扩到 8；(5) 测试大量参数化到 5 种粒度，并新增 disjoint masked access、mixed-granularity pool、coarse-pool 限制等测试。风险点：池索引布局假设 kReserveSize 是 16 的幂，kPoolReserveSize/kNumPools 与地址掩码耦合紧密，任何常量改动都会破坏 isGsanManaged/getPoolIndex；导出导入 API 从三元组变为可选四元组，向后兼容依赖 include_granularity 检查，若下游仅用默认粒度可保持旧行为。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "instrumentation",
+        "gsan",
+        "allocator"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。整个提交位于 GSan（lib/Conversion/TritonInstrumentToLLVM、python/triton/experimental/gsan）这一 NVIDIA 专属 sanitizer 子系统，Ascend 不启用 GSan，也不引用 gsan_testing/shadow_granularity 等绑定。",
+        "testing": "无影响。测试仅覆盖 python/test/gsan 与 test/Conversion/tritongpu_to_llvm_gsan.mlir，属 NVIDIA 专属路径。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[GSan] Add configurable per-allocation shadow granularity (#11639)"
+    },
+    {
+      "sha": "a4eec8ec15931c155b307a7c38692252764e93a2",
+      "comment": "[Backend] 部分回退 #11768，让 NVIDIA 的 umulhi 走 NVVM intrinsic（llvm.nvvm.mulhi.ui / mulhi.ull）而非宽乘积+移位。原因是宽乘积实现依赖 LLVM 识别显式符号扩展来恢复 mul.hi，InstCombine 会把扩展替换成掩码从而丢失 mul.hi，导致 philox RNG 性能回归。新增 MulhiUIOpConversion 模式（benefit +1 覆盖通用 lowering），并在 test_compile_only.py 增加只编到 PTX 的回归测试、在 test_core.py 放宽 CUDA 断言（不再检查 mul.hi 不存在）、在 tritongpu_to_llvm.mlir 增加两个 UMULHI 用例。风险：改动仅限 third_party/nvidia 的 ElementwiseOpToLLVM，AMD 仍走通用路径，需要保证 AMD 的 amdgcn 断言保持。实现上是干净的针对性修复。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "low-risk",
+        "nvidia",
+        "codegen"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。MulhiUIOpConversion 定义在 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/ElementwiseOpToLLVM.cpp，仅注册到 NVIDIA 后端；Ascend 不加载 NVVM dialect 也不使用该 lowering。test_core.py 中 CUDA/HIP 分支的条件判断也不影响 Ascend。",
+        "testing": "无影响。测试改动为 test_compile_only.py 的 CUDA-only 用例与 test_core.py 的 CUDA/HIP 断言。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Backend] Lower umulhi with nvvm intrinsics (#12069)\n\nReverts part of https://github.com/triton-lang/triton/pull/11768\n\nFixes regressions seen in philox random number generation.\n\nI'll send an LLVM PR to implement known bit propagation through the\nintrinsics as well, so we can get the best of both worlds."
+    },
+    {
+      "sha": "0888aa798f997144766676b9026cff1a7e7d8955",
+      "comment": "[BACKEND] 解决 noncommutative reduction 在不同 lane 上结果不一致的问题。butterfly reduction 可能在一个 lane 计算 combine(a,b)、另一个 lane 计算 combine(b,a)，对 argmin/argmax（不破平局）等非交换 combiner 会产生不同索引。修复方式：在 ReduceOp::isCommutative() 中通过表达式 DAG 哈希（OperationEquivalence::computeHash + 完整结构等价 + 输出位置/属性校验）证明交换两个输入 tuple 是否保持每个结果不变；在 ReduceOpToLLVM 的 warp reduce 结束后，若 !isCommutative 则用 shuffleIdx 从 laneId & ~reduceLaneIdMask 广播 leader 结果。新增 TritonOps.td 接口声明、Ops.cpp 实现、ReduceOpToLLVM 广播逻辑，以及 gluon 测试、reduce_to_llvm.mlir 用例和 UtilityTest.cpp 的 13 个 commutativity 单测。风险：isCommutative 的保守性与性能开销（需要对每个 reduce op 做哈希与结构比较），但仅在 warp reduce 末尾做一次，且对已判定为 commutative 的情形完全跳过广播。对浮点不做 reassociation，安全。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "reduction",
+        "correctness",
+        "nvidia"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动集中在 include/triton/Dialect/Triton/IR/TritonOps.td（新增 ReduceOp::isCommutative 声明）、lib/Dialect/Triton/IR/Ops.cpp（TTIR 通用实现）和 lib/Conversion/TritonGPUToLLVM/ReduceOpToLLVM.cpp（NVIDIA/AMD 共用的 TTGIR→LLVM warp reduce 路径）。虽然 TTIR 是平台无关的，但 Ascend 不走 TritonGPUToLLVM 路径而是用 TritonToLinalg，isCommutative 只是新增的接口方法，不改变 ReduceOp 结构或语义，因此不影响 Ascend。",
+        "testing": "无影响。新增测试位于 python/test/gluon、test/Conversion/reduce_to_llvm.mlir 和 unittest/Analysis/UtilityTest.cpp，均为上游 GPU 路径。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Make noncommutative reduction results agree across lanes (#12045)\n\nThe butterfly reduction can evaluate `combine(a, b)` in one lane and\n`combine(b, a)` in another. For a noncommutative combiner, lanes that\nthe result layout treats as redundant can therefore hold different\nvalues. This includes argmin/argmax when not breaking ties left. With\nthe current implementation you can get different indices on different\nthreads!\n\nAfter each warp reduction, broadcast the result from the lane whose\nreduction bits are all clear, using `shuffleIdx` with `laneId &\n~reduceLaneIdMask`. Skip the broadcast when `ReduceOp::isCommutative()`\nproves that exchanging the input tuples preserves every result. The\ncheck numbers the combiner's expression DAG in its original and swapped\nforms, using `OperationEquivalence::computeHash` and full structural\nequality checks. It recognizes deeper trees such as complex\nmultiplication, preserves output positions and operation properties, and\nconservatively rejects side effects and nested regions without\nreassociating floating-point expressions.\n\nFixes #11614. Closes #11630.\n\n## Validation\n\n- Built on NVIDIA GB300 and passed 37 targeted GPU cases, covering\nnoncommutative reductions, complex multiplication, packed reductions,\ncross-warp broadcasts, argmin/argmax NaN handling, and side-effectful\nreductions.\n- Passed 13 symbolic commutativity cases, including shared\nsubexpressions, constants, captures, comparison properties, result\npositions, and conservative fallbacks. Eight complex-product GPU cases\ncheck exact agreement across result replicas with FP fusion disabled.\n- The 16 new regression cases check every result replica for single- and\nmixed-width tuple reductions across different layouts. The unfixed\ncompiler fails the first case with 32/64 mismatched elements.\n- `make test-lit`: 303 passed, 2 unsupported.\n- Commit hooks passed, including Ruff, YAPF, clang-format, and mypy.\n\n## Performance\n\nThese measurements are from the initial leader-broadcast implementation\n(`d44bbbdb20`), before the generic commutativity check; they have not\nbeen rerun for `bfad653330`.\n\nPaired CUDA-graph measurements on GB300, using the same input/output\naddresses, alternating execution order, and two reversed\nbinary-load-order passes (50 pairs per case). FP32 row-wise argmin;\n4,096 rows except 32,768 columns, which uses 1,024 rows. Four warps\nexcept the largest case, which uses eight.\n\nMedian paired latency changes relative to the original unfixed compiler\n(`ced7e4b42f`):\n\n| Columns | Default tie breaking | Fast tie breaking |\n| ---: | ---: | ---: |\n| 128 | +1.5% | +2.5% |\n| 1,024 | +2.5% | +1.7% |\n| 8,192 | +0.6% | +0.1% |\n| 32,768 | +0.2% | +0.3% |\n\nSingle-row overhead was 0.6–2.2%. The sum control produced identical\nbinaries.\n\nCompared with ordering operands using selects at every butterfly step,\nthis approach is 7.9% and 13.3% faster for default argmin at 128 and\n1,024 columns. Fast tie breaking is 5.2% and 6.7% slower than that\nalternative at 128 and 32,768 columns, respectively; its overhead\nagainst the original compiler remains as shown above. At 32,768 columns,\nan SLP-vectorization difference explains the gap to the select-based\nalternative.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "include/triton/Dialect/Triton/",
+          "lib/Dialect/Triton/"
+        ],
+        "recommend_refresh": true
+      }
+    },
+    {
+      "sha": "111ce2768c3eaf40a2628e8ff7ef58179d92327c",
+      "comment": "[Runtime] 新增 max_occupancy 选项，用共享内存预留来限制每 SM 常驻 CTA 数。原 min_shared_mem 选项本意只服务 GSan，但被内部用户复用；本 commit 用更明确的 max_occupancy 取代之。CUDAOptions 增加 max_occupancy 字段（校验必须为正整数或 None），CUDABackend.parse_options 在 GSan 启用时自动设 max_occupancy=1；CudaLauncher.__init__ 读取 metadata.max_occupancy，按 properties[\"max_shared_mem_per_multiprocessor\"] // (max_occupancy + 1) + 1 计算 min_shared 并与 metadata.shared 取 max，再在启动时把 kernel_metadata 的共享内存替换为 self.shared；driver.c 的 getDeviceProperties 新增 max_shared_mem_per_multiprocessor 字段；CompiledKernel._init_handles 改为用 getattr(self._run, \"shared\", metadata.shared) 做共享内存上限校验，并传给 load_binary；gsan 的 ExplicitGraph 与 graph.py 也改用 compiled.run.shared。新增 test_compile_only 与 test_launch 的 max_occupancy 用例，并更新 GSan 共享内存测试。风险：CompiledKernel._init_handles 现在信任 launcher 的 shared 属性，backend 若不提供会发生回退；新增 device property 字段需各后端 driver 同步（对 AMD 无影响因 AMD driver 不暴露该键，但 getattr 回退保证兼容）。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "runtime",
+        "nvidia",
+        "gsan"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "影响 python/triton/compiler/compiler.py::CompiledKernel._init_handles：共享内存超限校验与 load_binary 现在使用 `shared = getattr(self._run, \"shared\", self.metadata.shared)`。Ascend 的 NPUDriver/launcher 若不定义 `.shared` 属性将回退到 metadata.shared，行为保持兼容；但若 Ascend launcher 希望像 CudaLauncher 那样在启动时追加预留，需自行实现 `shared` 属性。max_occupancy 选项本身定义在 CUDAOptions/CUDABackend 中，Ascend 不受影响（Ascend 使用自有 options）。",
+        "testing": "新增测试在 python/test/unit/language/test_compile_only.py 与 python/test/unit/runtime/test_launch.py，均为 CUDA-only。GSan 的 ExplicitGraph 测试也不影响 Ascend。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Runtime] Add max_occupancy flag (#12068)\n\nThe original min_shared_mem flag was meant to be just for gsan, but it\nseems it picked up some internal users. If I had intended for it to be\nused, this is what I would have created. You specifically request an\noccupancy, and the launcher calculates the smem that that corresponds to\nautomatically.\n\nI also update gsan to use this mechanism by `max_occupancy=1` when gsan\nis enabled.",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "e45c3c2404159624e47affa4b199a2db0f075bf1",
+      "comment": "[BACKEND] 将 REDUX 启发式集中到 warpReduce32 helper。原来 64-bit warp reduction 在没有 broadcast 时才拆分调用，且 broadcast 扩展后逻辑散落。本 commit 把 32-bit 元素的 REDUX 判定与执行（包括 partial warp、broadcast、partitioned group、min/max 用 CREDUX、ADD/XOR maskBroadcast、identity 构造）全部收拢到静态函数 warpReduce32，返回空 Value 表示应改用 shuffle；TargetInfo::warpReduce 对 64-bit 元素先判断 shuffle 与 REDUX 收益（stages < pieces * groups 则退回 shuffle），再拆高低 32-bit 调用 warpReduce32；非 32-bit 整数先拓展到 32-bit 再截断。更新了 test_lowerings.py 的 64-bit redux 计数与 test_core.py 的 redux.sync 计数断言。风险：纯 NVIDIA codegen，需要确保部分 warp / broadcast 场景下 REDUX 与 shuffle 选择的阈值不改变数值正确性（常量与 identity 语义保持不变）。",
+      "tags": [
+        "refactor",
+        "performance",
+        "medium-risk",
+        "nvidia",
+        "reduction"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/TargetInfo.cpp，是 NVIDIA TargetInfo 的 warpReduce 实现与 NVVM::ReduxOp 生成逻辑，Ascend 不实现 TargetInfoBase 也不走该路径。",
+        "testing": "无影响。测试为 python/test/gluon/test_lowerings.py 与 python/test/unit/language/test_core.py 中 NVIDIA redux 用例。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Centralize the REDUX heuristics under `warpReduce32` (#12067)\n\nWe used to split the 64b warp reductions and call directly the reduction\nhelper\nonly when there was no broadcasting. After Peter's work to extend the\nheuristics\nallowing broadcasting in some cases (and partial reductions) we pack all\nthese\nunder a function that reduces 32b elements when profitable using these\ntricks.\nWe then call this function to reduce elements with `bitdwidth != 32`.\n\nThe diff is quite big, I'd recommend just reading the new code as it's\nquite clean.\n\nBenchmarks:\n\n| Layout within each warp | Add | Min/max | AND/OR/XOR |\n| --- | --- | --- | --- |\n| 4 distinct values, broadcast across the warp | Unchanged | 1.42× |\n1.20–1.26× |\n| 8 distinct values, broadcast across the warp | 1.08× | 2.12× |\n1.76–1.81× |\n| 16 distinct values, broadcast across the warp | 1.35× | 2.72× |\n2.16–2.22× |\n| Two independent groups of 16 values | Unchanged | 1.37× | 1.17× |\n| Full 32-value reduction | Unchanged | Unchanged | Unchanged |\n\n<!-- codex-thread: 01a0fbed-e267-7430-b004-a4312866ab9d -->"
+    },
+    {
+      "sha": "d2cc13a63bf438a773173534919071cdc22778fa",
+      "comment": "[AMD][gfx1250] 打开 kernarg SGPR preload。原代码对 gfx1250 显式跳过 set_all_fn_arg_inreg（MIR swap/dump 时不支持该值的序列化），现在只保留 swap_mir/dump_mir 的排除条件，即 gfx1250 也开始进行 kernarg SGPR 预加载。这是单行条件修改，需要 gfx1250 硬件/驱动正确支持该特性；AMD 后端专属，与上游编译器栈无交互。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "amd",
+        "gfx1250"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 third_party/amd/backend/compiler.py，属 ROCm/HIP 后端专属。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][gfx1250] Turn on kernarg SGPR preload (#12063)"
+    },
+    {
+      "sha": "596bd304220ebabc84fa877d4ac794ca1046e710",
+      "comment": "[NVIDIA] 打包独立的 16-bit reduction shuffle：把两路独立的 16-bit reduction 输出合并进一个 32-bit warp shuffle，再在 packed 向量上应用 combiner，减少 FP16/BF16 reduction 当线程持有多个输出时的 shuffle 与 combine 指令数。为此 ReduceOpHelper::getInThreadVectorizeOpKind 签名去掉 axisPack 参数并把 axisPack>=4 与 combiner 元素数检查移到 ReduceOpToLLVM 调用点；createVectorCombineRegion 改收 supportBitwidth32Elementwise；warpReduce 重构为先尝试 targetInfo.warpReduce（REDUX），失败则走打包 shuffle 路径（reg+1，若 regs 足够），否则普通 shuffle；新增 shuffleAndCombine helper 按 packed vector 类型 bitcast 到 i32 再 shuffle；reduce_to_llvm.mlir 新增 packed_shuffle_* 用例。风险：仅 NVIDIA codegen，需确保 packed shuffle 路径仅在支持 16-bit elementwise 的硬件启用，且 combiner 是单一、纯运算的组合。",
+      "tags": [
+        "performance",
+        "medium-risk",
+        "nvidia",
+        "reduction"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。lib/Analysis/Utility.cpp 与 include/triton/Analysis/Utility.h 中 getInThreadVectorizeOpKind 的签名变更只被 lib/Conversion/TritonGPUToLLVM/ReduceOpToLLVM.cpp 与 third_party/nvidia 引用；Ascend 不走 TritonGPUToLLVM 的 ReduceOp 转换。",
+        "testing": "无影响。新增用例在 test/Conversion/reduce_to_llvm.mlir，为 NVIDIA lit 测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Pack independent 16-bit reduction shuffles (#12057)\n\nPack pairs of independent 16-bit reduction outputs into one 32-bit warp\nshuffle, then apply the packed combiner. This reduces shuffle and\ncombine instructions for FP16/BF16 reductions when a thread owns\nmultiple outputs."
+    },
+    {
+      "sha": "a78623ab1178631c2c8f54457606eddedb3d6ae6",
+      "comment": "[Python] 修复 Gluon layout/builder 在解释器退出时的引用泄漏。两个 C++ 所有权 bug：(1) GluonLayouts 用 py::object::release() 把 owning reference 存进 py::handle 字段，导致静态 layout cache 永久持有 Python 类及其模块全局（进而持有 ir.builder 与 TMA Attribute 默认值），本 commit 用 SmallDenseMap<StringRef, LayoutImport> 只缓存模块/类名，类查找用临时 owning py::object；(2) ir.builder.extend_with 的 lambda 捕获了 owning shared_ptr<py::class_<TritonOpBuilder>> 形成 ir.builder → extend_with → capture → ir.builder 循环，改为在调用时用 py::type<TritonOpBuilder>() 取回已注册类型。新增 test_bindings.py 的 shutdown 泄漏测试（子进程检查 stdout/stderr）。风险：extend_with 依赖 py::type<TritonOpBuilder>() 在解释器关闭后仍可用，若在 shutdown 后被调用会抛 runtime_error；对 TritonOpBuilder 注册顺序有隐含依赖。属于正确的所有权修复。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "python-bindings",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。修改位于 python/src/gluon_ir.cc（Gluon layout 转换）与 python/src/ir.cc::init_triton_ir 的 extend_with 实现。Gluon 前端 Ascend 不使用；extend_with 是插件扩展 builder 的通用机制，Ascend 的 AscendNPUIROpBuilder 继承 TritonOpBuilder 但不通过 extend_with 注册，因此该 bugfix 不改变 Ascend 行为。",
+        "testing": "无影响。新增测试在 python/test/unit/runtime/test_bindings.py，为 Gluon/通用绑定测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Python] Release Gluon layout and builder references (#12049)\n\nConverting a Gluon layout can cause Python to exit with `nanobind:\nleaked ...` warnings. Two C++ ownership bugs keep Python objects alive\nduring interpreter shutdown.\n\n**The layout cache holds references that are never released.**\n`GluonLayouts` calls `py::object::release()` and stores the resulting\nowning references in `py::handle` fields, which do not decrement\nreference counts. The cached classes retain Python module globals, which\nin turn retain the builder bindings and their default arguments:\n\n```text\nstatic layout cache → layout classes → Python module globals\n                    → GluonOpBuilder → TMA methods → Attribute defaults\n```\n\nThe four TMA `Attribute()` defaults made this older retention bug\nvisible as instance-leak warnings. The fix replaces the cache with a\n`SmallDenseMap` containing only module and class names. Class lookup now\nuses temporary owning Python references that are released after use.\n\n**The builder’s `extend_with` method owns its own class.** Its C++\nlambda captures an owning `shared_ptr<py::class_<TritonOpBuilder>>`,\ncreating this cycle:\n\n```text\nir.builder → extend_with → C++ capture → ir.builder\n```\n\nPython’s garbage collector cannot traverse that C++ capture. The fix\nremoves the capture and retrieves the registered builder type when\n`extend_with` is called.\n\n<!-- codex-thread: 01a0f6cc-0610-7f61-9fe5-d6679ca63c10 -->",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/src/ir.cc"
+        ],
+        "recommend_refresh": true
+      }
+    },
+    {
+      "sha": "73625ba8b70288e2014e86c798b63ed5e3c26ea5",
+      "comment": "[NVIDIA] 在 NVIDIA GPU→LLVM lowering 结束时对临时 LLVM struct 做规范化折叠，降低宽张量生成的大 struct 在 pass 边界 verifier 上的开销。在 ConvertTritonGPUToLLVM::runOnOperation 末尾用 applyPatternsGreedily 应用 LLVM::InsertValueOp::getCanonicalizationPatterns，采用 top-down traversal，best-effort（不因达到迭代上限而失败）。为让折叠生效，conversion fixture 改为返回此前未使用的结果（tt.return 携带被测试的 value），大量 lit 测试的 CHECK 从顺序匹配改为 DAG 或更新为折叠后的 IR。风险：修改测试期望而非编译器语义，但若某个 pattern 折叠掉待测 op 会掩盖回归，因此 fixture 显式返回结果；性能收益只在宽张量时明显。",
+      "tags": [
+        "performance",
+        "medium-risk",
+        "nvidia",
+        "codegen",
+        "test"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/TritonGPUToLLVM.cpp，Ascend 不执行该 conversion pass。test/Conversion 下的 lit 测试为 NVIDIA 专属。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Reduce temporary LLVM struct cleanup costs (#12047)\n\n## Summary\n\nNVIDIA GPU-to-LLVM lowering builds temporary LLVM structs for tensor\nvalues. Wide tensors make these aggregates expensive to verify at the\nlowering pass boundary.\n\nApply LLVM's existing `InsertValueOp` canonicalization patterns with\ntop-down traversal before the lowering pass returns. This folds\ntemporary aggregate packing before verification while leaving the\nremaining cleanup to the existing pipeline. Reaching the cleanup\niteration limit does not fail compilation; normal verification still\nchecks the resulting IR.\n\n## Desired features\n\n- Fold temporary LLVM aggregate packing unconditionally before NVIDIA\nlowering's pass-boundary verifier.\n- Use the existing LLVM patterns with top-down traversal and treat\ncleanup as best-effort.\n- Check aggregate removal and correct handling of overwritten and\nunresolved fields.\n\n## Validation\n\nValidated on NVIDIA GB300 using the existing LLVM dependency\n`b010a18d2b648cab83c83967ff26b8fde11acdc6`. Conversion fixtures return\npreviously unused results so cleanup does not erase the operations being\ntested, and their checks reflect the folded IR.\n\nAfter rebuilding with `make`, conversion checks can be run from the\nconfigured build directory with `lit -v test/Conversion`.\n\nA controlled synthetic one-warp int32 reduction with 1,048,576 elements\ncompiled in **9.11 seconds with Concurrency Sanitizer (ConSan)** and\n**9.02 seconds without it**, using fresh processes and caches. Exact GPU\nreference checks passed. Triton GPU IR, LLVM IR, PTX, and cubin were\nbyte-identical to the custom-batching implementation within each\ninstrumentation mode. These are single-run compilation measurements from\nthe matching implementation, excluding GPU execution, not\nrepresentative-workload speedup claims.\n\nThe measured kernel forms `arange(0, 1048576) + source[0]` using\n`BlockedLayout([1], [32], [1], [0])`, reduces it to one int32 result,\nand uses `num_warps=1`. No affine iterations are applied.\n\n## Lines Changed\n\n| Type | Added | Removed | Net |\n| --- | ---: | ---: | ---: |\n| Tests | 460 | 403 | +57 |\n| Core Logic | 9 | 0 | +9 |\n| AutoGenerated | 0 | 0 | 0 |\n| Total | 469 | 403 | +66 |\n\n## Reviewers Guide\n\n- `third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/TritonGPUToLLVM.cpp`:\npattern registration, top-down traversal, cleanup placement, and\nbest-effort convergence handling.\n- `test/Conversion/`: retain tested results and update expectations for\nfolded IR, including aggregate-removal and struct-field cases.\n- No files are primarily movements."
+    },
+    {
+      "sha": "79141cb19d815d7a7b250f59991c0ff6ab09c52b",
+      "comment": "[AMD] 在 CI 中启用 test_debug.py，并在 _internal_testing._call_in_process 中对 HIP 设置 RLIMIT_CORE=(0,0) 与 HIP_SKIP_ABORT_ON_GPU_ERROR=1，避免 AMD runtime 在 device assert 时 abort。改动为测试基础设施，提升 AMD 后端的 device assert 测试覆盖；对非 HIP 路径用 is_hip() 守卫，不影响 CUDA/Ascend。",
+      "tags": [
+        "ci",
+        "test",
+        "low-risk",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。.github/workflows/integration-tests-amd.yml 与 python/triton/_internal_testing.py 的 HIP 分支对 Ascend 无耦合（is_hip() 为 False）。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Enable test_debug.py in CI (#12050)\n\nCo-authored-by: Alexander Efimov <efimov.alexander@gmail.com>"
+    },
+    {
+      "sha": "96977dbe8b0b3bb9701e16727ee42be434e06985",
+      "comment": "[NVIDIA] 把 GSan 的共享内存预留从编译期搬到 launcher，消除 AOT 编译对活动 GPU/driver 的依赖。移除 set-minimum-shared-memory pass（Passes.td、Allocation.cpp、triton_nvidia.cc 绑定、RegisterTritonDialects 注册）与 CUDAOptions.min_shared_mem；CUDABackend.parse_options 不再查询 driver；CudaLauncher.__init__ 在 gsan_enabled 时把 self.shared 提升到设备 max_shared_mem，并在调用 self.launch 前把 kernel_metadata 的 shared 字段替换为 self.shared；CompiledKernel._init_handles 用 getattr 的 shared 做上限检查与 load_binary；gsan 的 ExplicitGraph/graph.py 用 compiled.run.shared；test_compile_only 用 UnavailableDriver 断言编译期不访问 driver。风险：删除公共 pass 与绑定属于 API 破坏（下游若直接调用 add_set_minimum_shared_memory 会失败），tritongpu_to_llvm_gsan.mlir 的 CHECK-SHARED 前缀随之移除。",
+      "tags": [
+        "refactor",
+        "medium-risk",
+        "nvidia",
+        "gsan",
+        "runtime"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "影响 python/triton/compiler/compiler.py::CompiledKernel._init_handles——共享内存校验与 load_binary 改为读取 `shared = getattr(self._run, \"shared\", self.metadata.shared)`。Ascend 的 launcher 若无 `.shared` 属性则回退到 metadata.shared（行为与之前一致），如需在启动时追加预留可自行实现该属性。同时 third_party/nvidia 的 pass 删除（set-minimum-shared-memory）与 CUDAOptions.min_shared_mem 删除属 NVIDIA 专属，不影响 Ascend。",
+        "testing": "无影响测试结构；GSan/test_compile_only 测试均为 CUDA-only。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Move GSan shared-memory reservation to the launcher (#12055)\n\nGSan queried the active CUDA driver during compiler option parsing to\nreserve enough shared memory for one CTA per SM. This made ahead-of-time\ncompilation depend on a live GPU.\n\nResolve the reservation in `CudaLauncher` and use that size for function\nloading, eager kernel launches, and native CUDA graph launch\ndescriptors, while keeping compiled shared-memory metadata\ndevice-independent. Remove the `set-minimum-shared-memory` pass, its\nbindings and registration, and the `min_shared_mem` option. Extend the\nexisting regressions to reject driver access during compilation and\ncheck the shared-memory size passed to eager and explicit graph\nlaunches.\n\n### Validation\n\n- Brix GB300 native rebuild and focused GSan lowering lit test passed.\n- 12 focused tests passed: driver-free compilation, eager shared-memory\nreservation, and all explicit graph fork/join replay combinations.\n- Full single-GPU GSan suite: 466 passed, 10 skipped, 3 xfailed using\neight workers.\n- All applicable pre-commit hooks passed, including Ruff, YAPF,\nclang-format, and mypy.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/compiler/compiler.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "886f2fd8f9f4b96b94bf51cb00281fef75546029",
+      "comment": "[AMD][gfx1250] 修复 partitioned shared 与 WMMA layout 在 CGA 下的问题。核心修改：(1) LinearLayoutConversions.cpp 的 partitionedSharedToLinearLayout 先 divideRight 抽出 CGA 映射，再在各 CTA 内组合 partition/group bits，最后 combineCtaCgaWithShape，避免 partition/group 位跨 CTA 交织；(2) Types.cpp 新增 PartitionedSharedEncodingAttr 的校验：禁止嵌套、禁止 NVMMAShared inner、要求 per-CTA 沿 partitionDim 的 extent 能被 numPartitions*numGroups 整除、inner padded/shared_linear 的 per-CTA piece shape 必须与期望一致；(3) ViewOpToLLVM.cpp 的 MemDescSubslice 对 PartitionedSharedEncodingAttr 改用直接的 piece 大小计算 partitionShift（替代原 LinearLayout 反演），并用 pseudoinverse 处理 broadcast CGA；(4) WMMA.cpp 移除 wmmaRepLayoutForTensor，直接从 per-CTA wmmaLL 用 instruction-sized stride 迭代，并加 assert 校验 tile register bits 与 dElemsToStorePerThread/elemsPerVec 一致；(5) 新增 invalid.mlir 负例、gfx1250 lit 用例、PaddedTest 单测。风险：ViewOpToLLVM.cpp 的 MemDescSubslice 是通用 pass（lib/Conversion/TritonGPUToLLVM），partitionShift 计算从 LinearLayout 反演改为 pieceSize 除法，语义等价性依赖 verifier 已保证的整除关系。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "amd",
+        "layout",
+        "gfx1250"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。lib/Conversion/TritonGPUToLLVM/ViewOpToLLVM.cpp 与 lib/Dialect/TritonGPU/IR 属于 TritonGPU 层，Ascend 使用 TritonToLinalg 而非 TritonGPUToLLVM，且不加载 PartitionedSharedEncodingAttr。third_party/amd 为 ROCm 专属。",
+        "testing": "无影响。新增用例在 test/Conversion/amd、test/Analysis、test/TritonGPU 与 unittest/Dialect/TritonGPU，均为 GPU 路径。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][gfx1250] Fix partitioned shared and WMMA layouts for CGAs (#11707)\n\n## Problem\n\nPartitioned shared layouts were composed globally before applying the\nCGA mapping. This could interleave partition/group bits across CTAs\ninstead of keeping each CTA’s physical partitions local.\n\nClustered WMMA lowering also derived repetition counts from the full CGA\ntile, causing block dimensions to produce redundant WMMA instructions.\nBroadcast CGA layouts could additionally make partitioned subslice\nlowering fail because their layouts are surjective but not square.\n\n## Solution\n\n- Compose partitioned shared layouts within each CTA, then add the CGA\nmapping.\n- Validate that each per-CTA partition extent is divisible by all\nlogical pieces.\n- Use a pseudoinverse when recovering partition selection from broadcast\nlayouts.\n- Compute WMMA repetitions from the per-CTA layout and shape.\n- Add regression tests for padded/swizzled layouts, physical-base\nrotation, and scaled/unscaled WMMA lowering."
+    },
+    {
+      "sha": "dd7167259f38efd489620fd09d35a53420e2f80b",
+      "comment": "[NVIDIA] 支持 padded tcgen05.mma 布局：允许逻辑张量不覆盖完整 tile（部分列/行为保留但未定义）。五方面改动：(1) 为 TMEM 实现 ensureLayoutNot{Larger,Smaller}Than —— toLinearLayout 里用 combineCtaCgaWithShape 统一构造，narrow allocation 保留 col 基，subview 通过 ensureLayoutNotLargerThan 收缩；(2) LayoutUtils 的 ensureLayoutNotLargerThan/ensureLayoutNotSmallerThan 改为接 dimNames+shape 与显式 inDim 参数，getReps 放宽为 tile 可小于 cvt 且包含 zero bases；(3) BufferRegion.cpp 的 getMemDescAddresses 用 zeroBits = (inDimSize-1) & ~inputBasisMask 统一纳入分配 zero 基（含 TMEM 的 row-16 排除），替代原先特判 block/row 位的逻辑；(4) 新增 getMMAv5InstructionN 并重写 verifyMMAv5Op，校验 N 范围、twoCTA 一致性、B CTA 偏移、scale 行保留、descriptor stride 16 字节对齐等；(5) NvmmaSmemAttrs 增加 isCompatibleWith 与重叠 core matrix 的 fallback，MMAHelpers 用 allocation layout 而非 pseudoinverse 做 descriptor tiling；(6) [minor] Gluon 的 tcgen05_mma/tcgen05_mma_scaled 标记 isAsync=true 并更新文档；(7) 大量 lit/单测更新（invalid.mlir、buffer-region、tmem_barrier_insertion、LinearLayoutConversionsTest 等）。风险：这是深度重构，涉及 TMEM layout、descriptor 构造、verifier 全面收紧；wmmaRepLayoutForTensor 相关的 AMD WMMA.cpp 也被同步改签名（ensureLayoutNotLargerThan 新签名），跨后端工具函数签名变更需所有调用点同步。",
+      "tags": [
+        "feature",
+        "high-risk",
+        "nvidia",
+        "tmem",
+        "layout",
+        "tcgen05"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。核心改动集中在 include/triton/Tools/LayoutUtils.h、lib/Tools/LayoutUtils.cpp（ensureLayoutNotSmallerThan 签名变更）、lib/Dialect/TritonGPU/IR/LinearLayoutConversions.cpp、lib/Dialect/TritonNvidiaGPU、TMEM 与 tcgen05 相关代码。Ascend 不加载 TritonNvidiaGPU dialect，也不使用 LinearLayout/TMEM/tcgen05 路径，其 TTIR→Linalg 转换不经过这些工具。third_party/amd 的 WMMA.cpp 同步适配属 AMD 路径。",
+        "testing": "无影响。测试集中在 test/TritonNvidiaGPU、test/NVWS、test/Analysis、test/Conversion、python/test/gluon 与 unittest/Dialect/TritonNvidiaGPU、unittest/Tools，均为 GPU 专属。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Support padded tcgen05.mma layouts (#11805)\n\nWe allow in `tcgen05.mma` layouts where the logical tensor does not\ncover\nthe full tile (i.e., part of it is reserved but undefined).\n\nTo do this we do several things:\n\n1. Implement `ensureLayoutNot{Larger,Smaller}Than` for TMEM\n2. Simplify and generalise TMEM layout creation in `toLinearLayout`\n3. Generalise `getReps` to handle these smaller layouts properly\n4. Support padded MMAv5 operands (+ tighten the verifier)\n5. [minor] Mark Gluon MMAv5 operations as asynchronous. (the flag was\nnot used, but yeah)"
+    },
+    {
+      "sha": "7d85777c747a342b7f67b8b3ed959f623a940c87",
+      "comment": "[triton_kernels] 为 persistent ragged-K matmul 增加 tiled storage 支持：新增 TiledLayout（major_dim + tile_size，对矩阵分块转置存储）及其 Transformation（swizzle/unswizzle 用 reshape+transpose），make_dense_tma 把 TiledLayout 张量展开成 5 维 descriptor（batch, rows//tile, cols//tile, tile, tile），_p_matmul 新增 _load_matrix 处理 5 维 descriptor 并按块 reshape，matmul.py 增加约束检查（仅 persistent、ragged-K、TMA、单 tile 沿连续维）。新增 test_tiled_layout_roundtrip 与 test_k_ragged_tiled_values（覆盖 tile_a/tile_b、out dtype、accumulate）。风险：TiledLayout 只在 Blackwell persistent ragged-K TMA 路径受支持，非连续编码或不对齐维度会被拒绝；新增描述符形状需与 TMA 硬件约束（16U4_ALIGN16B 等）保持一致。属 triton_kernels 库层扩展。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "triton-kernels",
+        "matmul"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 python/triton_kernels（triton_kernels Python 库，非 triton 编译器前端/后端），Ascend 后端不依赖该库。新增的 TiledLayout 是 triton_kernels 内部抽象，不影响 BaseBackend/DriverBase 等契约。",
+        "testing": "无影响。新增测试在 python/triton_kernels/tests/，属 triton_kernels 库测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[triton_kernels] Support tiled storage for persistent ragged-K matmul (#12041)\n\nAllow matrix producers to write tiled values and pass them to the\nordinary `matmul` API without repacking or a separate launcher.\n`TiledLayout` describes the storage encoding, the existing TMA builder\ncreates its five-dimensional descriptor, and the persistent kernel loads\nits tiles directly.\n\nThe initial matmul support is limited to aligned, persistent ragged-K\nTMA operations with one tile along the contiguous dimension. Unsupported\ndescriptor shapes and noncontiguous encoded storage are rejected.\n\nValidation on Blackwell: 28 tests passed, covering exact layout round\ntrips, retained output buffers, either or both tiled operands, BF16/FP32\noutputs, accumulation, and an empty slice. The same 28 tests pass with\nthe upstream explicit bias-FMA fix\n(`0d45e109ad9e7d3dd5bf11b961fd590a2368a160`) included in this branch.\n\n```\npytest -s --tb=short \\\n  python/triton_kernels/tests/test_tensor.py::test_tiled_layout_roundtrip \\\n  python/triton_kernels/tests/test_matmul.py::test_k_ragged_tiled_values\n```"
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

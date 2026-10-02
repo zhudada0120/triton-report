@@ -675,6 +675,30 @@
       "interface_changes": "为 device 侧 tl.make_tensor_descriptor 增加 16 字节 stride 对齐校验：TritonSemantic 新增 _check_tensor_descriptor_alignment_static（静态 stride 非 16 字节对齐直接 ValueError）与 _iisan_check_tensor_descriptor_alignment（iisan 模式下对 base 指针与动态 stride 发 device assert），并在 make_tensor_descriptor 中调用；Gluon hopper/tma.make_tensor_descriptor 同步接入；补 tensor_descriptor 与 gluon test_core 用例（含 run_in_process 的 iisan 正反例）。修复 #10927 中 misaligned stride 在 sm100 上静默算错的问题。",
       "change_summary": "[frontend] Validate 16-byte stride alignment in make_tensor_descriptor (#10931)",
       "ascend_impact": false
+    },
+    "111ce2768c3eaf40a2628e8ff7ef58179d92327c": {
+      "date": "2026-10-02",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "[Runtime] 新增 max_occupancy 选项，用共享内存预留来限制每 SM 常驻 CTA 数。原 min_shared_mem 选项本意只服务 GSan，但被内部用户复用；本 commit 用更明确的 max_occupancy 取代之。CUDAOptions 增加 max_occupancy 字段（校验必须为正整数或 None），CUDABackend.parse_options 在 GSan 启用时自动设 max_occupancy=1；CudaLauncher.__init__ 读取 metadata.max_occupancy，按 properties[\"max_shared_mem_per_multiprocessor\"] // (max_occupancy + 1) + 1 计算 min_shared 并与 metadata.shared 取 max，再在启动时把 kernel_metadata 的共享内存替换为 self.shared；driver.c 的 getDeviceProperties 新增 max_shared_mem_per_multiproc",
+      "change_summary": "[Runtime] Add max_occupancy flag (#12068)",
+      "ascend_impact": false
+    },
+    "96977dbe8b0b3bb9701e16727ee42be434e06985": {
+      "date": "2026-10-02",
+      "affected_modules": [
+        "python/triton/compiler/compiler.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/compiler/compiler.py"
+      ],
+      "interface_changes": "[NVIDIA] 把 GSan 的共享内存预留从编译期搬到 launcher，消除 AOT 编译对活动 GPU/driver 的依赖。移除 set-minimum-shared-memory pass（Passes.td、Allocation.cpp、triton_nvidia.cc 绑定、RegisterTritonDialects 注册）与 CUDAOptions.min_shared_mem；CUDABackend.parse_options 不再查询 driver；CudaLauncher.__init__ 在 gsan_enabled 时把 self.shared 提升到设备 max_shared_mem，并在调用 self.launch 前把 kernel_metadata 的 shared 字段替换为 self.shared；CompiledKernel._init_handles 用 getattr 的 shared 做上限检查与 load_binary；gsan 的 ExplicitGraph/graph.py 用 compiled.run.shared；test_c",
+      "change_summary": "[NVIDIA] Move GSan shared-memory reservation to the launcher (#12055)",
+      "ascend_impact": false
     }
   }
 }

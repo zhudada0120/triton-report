@@ -1,0 +1,21 @@
+{
+  "content_hash": "82772f8b88deb9c8",
+  "analysis": {
+    "interface_summary": "定义 3 个类；定义 28 个函数",
+    "key_interfaces": [
+      "CudaUtils",
+      "CudaLauncher",
+      "CudaDriver",
+      "CudaUtils.__new__",
+      "CudaUtils.__init__",
+      "CudaLauncher.__init__",
+      "CudaLauncher.__call__",
+      "CudaDriver.__init__",
+      "CudaDriver._get_device_capability",
+      "CudaDriver._get_current_stream",
+      "CudaDriver._get_current_device",
+      "CudaDriver._set_current_device"
+    ]
+  },
+  "cached_at": "2026-10-03T05:31:24.738842+08:00"
+}

@@ -1,0 +1,16 @@
+{
+  "content_hash": "e9b0e5f09963d98d",
+  "analysis": {
+    "interface_summary": "定义 2 个类；定义 20 个函数",
+    "key_interfaces": [
+      "ExplicitGraph",
+      "Params",
+      "ExplicitGraph.__init__",
+      "ExplicitGraph._call",
+      "ExplicitGraph._params",
+      "ExplicitGraph._add",
+      "ExplicitGraph.add_kernel"
+    ]
+  },
+  "cached_at": "2026-10-03T05:31:24.728806+08:00"
+}
