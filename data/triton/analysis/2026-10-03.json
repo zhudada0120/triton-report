@@ -1,0 +1,155 @@
+{
+  "date": "2026-10-03",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-04T04:17:51.605911+08:00",
+  "daily_summary": "当日变更集中在 AMD 后端（gfx1250-strict 初步支持、MIR 调度 DAG 构建方式重构、测试基础设施修复）以及两个通用/工具类修复：一个是 GSan 影子锁从 16 位原子改用 32 位原子以提升性能，另一个是删除未使用的 distributed layout 辅助函数（NFC）。此外还有 triton/testing.py 的单行 bugfix（多 GPU 场景下设备能力获取错误）和 python/triton/language/target_info.py 中 HIP 目标判断的健壮性修复。整体方向是 AMD GPU 后端能力增强与测试可靠性提升，同时清理死代码。",
+  "ascend_impact_summary": "当日变更多为 NVIDIA/AMD 特定后端实现、Profiler、测试与工具层修复，未触及 triton-ascend 依赖的核心可扩展接口。唯一需要关注的是 python/triton/language/target_info.py 的改动：其中 is_hip_cdna3/is_hip_cdna4/is_hip_gfx1250 增加了 `target.backend == \"hip\"` 前置判断，这是所有后端共用的前端 target_info 模块；但 Ascend 后端使用 GPUTarget('npu', ...)，不会命中这些 HIP 分支，因此行为不变。其余涉及 python/triton/testing.py（TFLOPS 估算辅助）、GSan（NVIDIA 专属 sanitizer）、MIR DAG/AMD 测试与 third_party/amd 全部属于 Ascend 不使用或纯平台特定路径。BaseBackend/DriverBase/GPUTarget/code_generator/compiler.parse/JITFunction 等 load-bearing 接口在本批 commit 中均未变更，因此对 triton-ascend 无功能影响，无需更新测试。",
+  "commits": [
+    {
+      "sha": "ebdd5b6b485600bdd62fb3becab87e0f6bf15b6f",
+      "comment": "重构 AMD MIR 调度 DAG 的生成方式：原先通过 `-stop-before=machine-scheduler` 转储 MIR 文本再重新解析成新的 MachineFunction 来构建 DAG（遗留 TODO），现改为在 live codegen pipeline 上直接构建。实现上让 EmitSchedulingDAGPass 通过 `substitutePass(&MachineSchedulerID, &EmitSchedulingDAGPass::ID)` 顶替 machine scheduler 的槽位，并以 `-stop-after=<livePipelineDAGPassName()>` 截断 pipeline，同时新增 arm/disarm 接口在 translateLLVMIRToMIR 中配对使用。原因是重解析后 MIR parser 按读取顺序给基本块编号（即 layout position），与 MIR printer 输出的 `bb.N`（原始编号）不一致时会导致 `region <bb>` 错键（如 gfx1250 fp16 matmul 中 710 个节点有 41 个错键），造成下游错误重排。此外 buildSchedGraph 会清除子寄存器 def 的 `undef` 位（期望调度器重新添加），在 live MF 上无法恢复，故新增 snapshot/restore 逻辑。风险点：新增的全局 sink 是进程级、非线程安全（需靠 arm/disarm 配对），且通过 RegisterTargetPassConfigCallback 懒注册来避免静态初始化顺序竞争。整体是修复真实正确性 bug 的 refactor，测试新增了 DAG 与 MIR 块号一致性交叉校验。",
+      "tags": [
+        "refactor",
+        "bugfix",
+        "medium-risk",
+        "amd",
+        "codegen"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 python/src/llvm.cc 的 translateLLVMIRToMIR 与 third_party/amd/lib/Target/MIRDAG/*，均为 AMD MIR 转储与调度 DAG 生成的 NVIDIA/AMD 专属路径，Ascend 走 TritonToLinalg 不使用 MIR DAG，也不调用 translate_to_mir。",
+        "testing": "无影响。新增测试在 python/test/backend/test_mir_stage.py（AMD MIR 专属），Ascend 不运行该测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Build the scheduling DAG on the live codegen MachineFunction (#12058)\n\n`translate_to_mir` dumped MIR with `-stop-before=machine-scheduler`,\nthen\nre-parsed that text into a fresh `MachineFunction` to build the\nscheduling DAG.\nThis emits the DAG from the pipeline's own `MachineFunction` instead,\nresolving\nthe `TODO` left in `DAGBuilder.cpp` by #11251.\n\n## Why\n\nBesides dropping the round-trip and reusing the `LiveIntervals` the\npipeline\nalready computed, this fixes a real mis-keying bug.\n\nThe DAG keys instruction identity on `(bb, pos)`, so a consumer resolves\n`region <bb>` against the `bb.N` labels in the MIR dumped beside it. But\nthe MIR\nparser numbers blocks in the order it reads them, so on a re-parsed\nfunction that\nnumber is the block's **layout position**, not its original number. The\ntwo agree\nonly when layout order happens to match numbering.\n\nIt does not always match. A plain fp16 matmul on gfx1250 lays its tail\nout as\n`... bb.73 bb.76 bb.74 bb.75`, and the DAG published `bb.74`'s\ndependencies under\nthe name `region 75` and `bb.75`'s under `region 76` — 41 of 710 nodes\nkeyed to\nthe wrong block. A consumer reordering on that information is reordering\nagainst\nanother block's constraints.\n\nEmitting from the live function keys on the same `MachineBasicBlock` the\nMIR\nprinter labels, so the two cannot diverge.\n\n## How\n\nThe pass takes the machine scheduler's slot via `substitutePass`, and\nthe\npipeline stops after it.\n\n`insertPass(&MachineSchedulerID, ...)` does not work here:\n`-stop-before=machine-scheduler` sets `Stopped`, so\n`TargetPassConfig::addPass`\ntakes its `delete P` branch and silently drops anything inserted at that\nanchor.\nAnchoring on `RenameIndependentSubregs` instead would place the pass\nahead of\nAMDGPU's own `GCNRewritePartialRegUses` insertion, which rewrites\ninstructions —\nthe DAG would then describe a different function than the one dumped.\nSubstituting runs the pass at exactly the point `MachineScheduler` would\nhave,\nwith the same `LiveIntervals`, and it preserves all analyses.\n\nOne subtlety: building the DAG perturbs the function. `buildSchedGraph`\nclears\n`undef` on subregister defs, expecting the scheduler to re-add it as it\nplaces\ninstructions. Nothing restores it when we only build the graph, and a\nsubregister def that loses `undef` makes the dumped MIR unparseable\n(\"Use not\njointly dominated by defs\"). That was harmless while the function was a\nthrowaway re-parse. The pass now snapshots those flags and restores\nthem."
+    },
+    {
+      "sha": "88771e23f88b3e515cdcf585c4675248101ce72e",
+      "message": "[AMD] Run the MIR-stage tests in AMD CI (#12080)\n\npython/test/backend/ is not referenced by any workflow, so nothing in\ntest_mir_stage.py runs in CI.\n\nThe file already skips itself when the active backend is not HIP.",
+      "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 triton-ascend。",
+      "tags": [
+        "chore"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "d357d441ff44b2c9c3051ad068d4d5159a980e75",
+      "comment": "GSan 影子锁性能优化：由于 PTX 16 位原子指令实际由 ptxas 模拟，改用原生 32 位原子。ShadowCell 中原先分开的 `uint16_t numReads` 与 `uint16_t lock` 合并为单个 `uint32_t readCountAndLock`，lock 取 bit 16（kLockBit），读计数取低 16 位（kReadCountMask）。acquireShadow 从 CAS 循环改为 `fetch_or(kLockBit)`，releaseShadow 改为 `fetch_and(~kLockBit)`，recordRead 用 RELAXED atomic load+store 更新计数（仅锁持有者改计数）。结构体大小仍为 24 字节（static_assert 保持不变），gsan_testing.cc 相应提取掩码。属于正确性保持的性能改进，注意 recordRead 使用原子 store 而非非原子自增是因为 waiter 会并发 OR lock bit。",
+      "tags": [
+        "performance",
+        "nvidia",
+        "gsan",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 python/triton/experimental/gsan/src/*（GSan 是 NVIDIA 侧内存 sanitizer，基于 CUDA 的 __scoped_atomic_* 内建），Ascend 不启用 GSan。",
+        "testing": "无影响。gsan_testing.cc 的改动仅同步字段访问，属 GSan 专属测试支撑。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[GSan] Use 32-bit atomics for shadow lock (#12078)\n\nIt turns out that despite ptx having 16 bit atomic instructions, these\nare actually emulated in ptxas.\n\nThis changes the locking to use native 32-bit atomic instructions,\ngiving a 1.4x speedup in a matmul benchmark running under gsan."
+    },
+    {
+      "sha": "1fed70ca7a62da927f49c8df3705fbefd837e047",
+      "comment": "NFC 清理：删除未使用的分布式 layout 辅助函数 `supportWMMA(triton::DotOp)`、`shouldUseDistSmem`（Analysis/Utility）与 `getCTAOrder`（TritonGPU Dialect），以及相关声明。这些函数在 ConvertLayout/分布式共享内存处理历史演进后已无调用点（注释中 TODO 也指出应归入 ConvertLayoutOpHelper）。纯删除，不改变任何行为，无风险。",
+      "tags": [
+        "refactor",
+        "chore",
+        "low-risk",
+        "tritongpu",
+        "analysis"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。删除的函数属于 TritonGPU/Analysis 中 Ascend 不使用的 ConvertLayout 分布式 shared memory 路径（Ascend 用 TritonToLinalg 替代 TritonGPU→LLVM），且这些函数本就没有调用者。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NFC] Remove unused distributed layout helpers (#12081)"
+    },
+    {
+      "sha": "210fb9952a776ac63fce6ca24e69c7a925a09c05",
+      "comment": "AMD 新增 gfx1250-strict 初步支持。核心机制：TargetFeatures 引入 baseArch 概念（arch 去掉 \"-strict\" 后缀）与 isGFX1250Strict() 判定；parseGfxArch 允许解析 \"gfx1250-strict\" 并限制仅 major==12&&minor==5；新增 supportsMulticast/supportsCvtPkScalePk8Upcast/supportsCvtPkScalePk8Block16 等能力开关，并将 getUnsupportedWmmaFeatures 返回 kWmmaRestrictedInstsFeature（wmma-restricted-insts），使得 WmmaIntrinsic/WmmaScaleIntrinsic 携带 requiredFeature 并在 selectFor 中过滤不支持的 intrinsic，转换阶段报清晰的 \"not supported on gfx1250-strict\" 错误。HIPBackend 侧新增 get_amd_codegen_target_triple 特别返回 \"amdgpu12.50s-amd-amdhsa\"，并区分 target_triple（strict，仅 stamp 到 module）与 layout_triple（base，用于 core LLVM target machine/datalayout/optimize_module/architected SGPR 检查），因为 core LLVM 不认识 amdgpu12.50s。同时为 dump_mir/swap_mir 在 strict 下显式抛错（Triton core LLVM 不支持）。附带大量 lit/pytest 测试更新（STRICT-NOT/expected-error 前缀）、gluon 示例与测试的 skip 逻辑。规模较大（856+/361-，32 文件），涉及目标特性、intrinsic 选择、TargetInfo、Codegen 多处，属新特性但只影响 AMD 路径。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "amd",
+        "codegen",
+        "target-info"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更为 AMD HIP 后端（third_party/amd/**、python/triton/tools/triton_to_gluon_translator/amd_helpers.py）专属。唯一触及的通用前端文件 python/triton/language/target_info.py 中的 is_hip_* 宏增加了 target.backend=='hip' 前置判断，但 Ascend 的 GPUTarget 为 ('npu', arch) 本就不会命中 HIP 分支，行为不变。BaseBackend/DriverBase/GPUTarget 契约未变。",
+        "testing": "无影响。新增/修改的测试都在 test/Conversion/amd/、test/TritonGPU/amd/ 与 third_party/amd/python/test/*，为 AMD 专属 lit/pytest。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Add initial GFX1250-strict Support (#11945)\n\nCurrently there is no support for gfx1250-strict in triton compiler,\nwhich is missing some instructions available in nonstrict gfx1250. This\nPR intends to cover that by implementing restrictions for\nTargetFeatures, including Block16Convert instructions, parsing allowance\nfor \"gfx1250-strict\" instead of just \"gfx1250\"."
+    },
+    {
+      "sha": "8a522e2c8ea1a22a353111874a41ae1c2b82df2c",
+      "comment": "测试基础设施修复：python/test/backend/test_mir_stage.py 中 5 处 `subprocess.run([\"python\", ...])` 改为 `subprocess.run([sys.executable, ...])`。原因是裸镜像（如仅 /usr/bin/python3）或某些 venv 下 PATH 中没有 \"python\" 可执行文件，会 FileNotFoundError 导致测试在真正执行前就失败；改用 sys.executable 保证子进程是运行测试的同一解释器并继承正确环境。纯测试改动，无产品代码影响。",
+      "tags": [
+        "test",
+        "ci",
+        "low-risk",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。仅修改 AMD MIR 阶段测试中 subprocess 调用方式。",
+        "testing": "无影响。该测试文件为 AMD MIR 专属，Ascend 不运行。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Launch the MIR-stage subprocess tests with sys.executable (#12062)\n\nFive tests spawn a child interpreter as subprocess.run([\"python\", ...]).\nThat only works where a \"python\" executable happens to be on PATH -- in\na venv, say. On a bare image with just /usr/bin/python3 it raises\nFileNotFoundError before the test does anything.\n\nUse sys.executable so the child is the interpreter running the test,\nwhich is also what makes the child inherit the right environment."
+    },
+    {
+      "sha": "c54e4b74631017d3bfee3827b24b31b563478f40",
+      "comment": "测试基础设施改进：test_mir_stage.py 的 _find_llc() 增加在 Triton 自身下载的预编译 LLVM 包中查找 llc（glob $TRITON_HOME/.triton/llvm/*/bin/llc），并置于 shutil.which(\"llc\")（PATH）之前。原因是原逻辑只查 LLVM_SYSPATH/LLVM_BUILD_DIR/PATH：无 llc 则最强 DAG 交叉校验被静默跳过；有 llc 则可能是比 Triton 构建所用 LLVM 落后多个大版本的发行版 llc，DAG 不可比。预编译包携带匹配的 llc 且 CI 已缓存，使交叉校验可在裸 CI 镜像上运行。纯测试改动，无产品代码影响。",
+      "tags": [
+        "test",
+        "ci",
+        "low-risk",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。仅修改 AMD MIR DAG 交叉校验测试中 llc 的查找顺序。",
+        "testing": "无影响。该测试文件为 AMD 专属，Ascend 不运行。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Find llc in Triton's own LLVM package for the DAG cross-check (#12064)\n\ntest_dag_matches_llvm compares the scheduling DAG we emit against the\none llc prints, but it only looked for llc via LLVM_SYSPATH,\nLLVM_BUILD_DIR, or PATH. Neither variable is set on a bare CI image, and\nboth outcomes from there are bad:\n\n- with no llc on PATH the test skips, so the strongest check that the\nDAG is right quietly stops running;\n- with a distribution llc on PATH it runs against that, which can be\nmany major versions behind the LLVM Triton was built against.\n\nSearch the prebuilt LLVM package Triton downloads as well. It carries a\nmatching llc and CI already caches it, so the cross-check runs there.\nSearch it ahead of PATH so a stray system llc stays a last resort."
+    },
+    {
+      "sha": "98fd66d1242c2b97fbb64367932b092ee4da7c91",
+      "comment": "单行一致性 bugfix：python/triton/testing.py 的 get_max_simd_tflops 中 `torch.cuda.get_device_capability()` 改为 `torch.cuda.get_device_capability(device)`。函数入口已从入参或 torch.cuda.current_device() 解析出 device 并正确传给 get_device_properties，但获取 compute capability 时未传 device。单 GPU 上 current 与 resolved 相同故不可见；多 GPU 且显式传入与 current 不同的 device 时，会把一个 GPU 的 multiprocessor_count 与另一个 GPU 的 compute capability 混用，导致 ops_per_sub_core 分支判断（capability[0]<8）错误，从而静默给出错误 TFLOPS 估算。sibling 函数 get_max_tensorcore_tflops 已正确传 device，本次修复使其对齐。属正确性修复，风险低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "runtime",
+        "testing-utility"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 python/triton/testing.py，属于基于 torch.cuda 的 NVIDIA BFLOPS/TFLOPS 估算辅助（使用 torch.cuda.get_device_capability），不涉及 BaseBackend/DriverBase/GPUTarget/code_generator/compiler.parse 等 Ascend 依赖的接口，Ascend 无 CUDA compute capability 概念也不调用该路径。",
+        "testing": "无影响。该修复由现有/多 GPU CI 覆盖，与 Ascend 测试无关。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Fix device capability retrieval in testing.py (#12071)\n\nNew contributor declaration\n\n[x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n[x] I have written a PR description following these rules\n(https://cbea.ms/git-commit/#why-not-how).\n\n[ ] I have run pre-commit run --from-ref origin/main --to-ref HEAD.\n(Not run — I don't have the actual Triton repo checked out in this\nenvironment, so I can't verify this against the real pre-commit config.\nPlease run this yourself before merging.)\n\nSelect one of the following.\n[ ] I have added tests.\n[x] This PR does not need a test because it's a one-line consistency fix\nrestoring an existing call-site pattern (passing device to\ntorch.cuda.get_device_capability) that the sibling function\nget_max_tensorcore_tflops already uses correctly; a regression test\nwould require a multi-GPU CI runner with GPUs of different compute\ncapabilities to actually exercise the divergent-device code path.\n\nSelect one of the following.\n[x] I have not added any lit tests.\n[ ] The lit tests I have added follow these best practices\n(https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices).\n\nDescription\n\nget_max_simd_tflops resolves device from the caller (or\ntorch.cuda.current_device() as a fallback) and correctly passes it to\nget_device_properties(device), but calls\ntorch.cuda.get_device_capability() with no argument — always reading the\ncurrently active device's compute capability instead of the resolved\ndevice. On a single-GPU machine this is invisible since \"current\" and\n\"resolved\" coincide. On a multi-GPU machine, calling this with an\nexplicit device that differs from the current one mixes one GPU's\nmultiprocessor count with another GPU's compute-capability generation,\nwhich decides the ops_per_sub_core branch — producing a silently wrong\nTFLOPS estimate. The sibling function get_max_tensorcore_tflops,\nstructured identically just above it in the same file, passes device\nthrough correctly.\n\nAdditional information\n\nDiff:\n\nnum_subcores =\ndriver.active.utils.get_device_properties(device)[\"multiprocessor_count\"]\n* 4\ncapability = torch.cuda.get_device_capability()\ncapability = torch.cuda.get_device_capability(device)\nif capability[0] < 8:"
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

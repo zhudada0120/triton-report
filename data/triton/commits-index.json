@@ -1,4 +1,36 @@
 {
+  "ebdd5b6b485600bdd62fb3becab87e0f6bf15b6f": {
+    "date": "2026-10-03",
+    "msg": "[AMD] Build the scheduling DAG on the live codegen MachineFunction (#12058)"
+  },
+  "88771e23f88b3e515cdcf585c4675248101ce72e": {
+    "date": "2026-10-03",
+    "msg": "[AMD] Run the MIR-stage tests in AMD CI (#12080)"
+  },
+  "d357d441ff44b2c9c3051ad068d4d5159a980e75": {
+    "date": "2026-10-03",
+    "msg": "[GSan] Use 32-bit atomics for shadow lock (#12078)"
+  },
+  "1fed70ca7a62da927f49c8df3705fbefd837e047": {
+    "date": "2026-10-03",
+    "msg": "[NFC] Remove unused distributed layout helpers (#12081)"
+  },
+  "210fb9952a776ac63fce6ca24e69c7a925a09c05": {
+    "date": "2026-10-03",
+    "msg": "[AMD] Add initial GFX1250-strict Support (#11945)"
+  },
+  "8a522e2c8ea1a22a353111874a41ae1c2b82df2c": {
+    "date": "2026-10-03",
+    "msg": "[AMD] Launch the MIR-stage subprocess tests with sys.executable (#12062)"
+  },
+  "c54e4b74631017d3bfee3827b24b31b563478f40": {
+    "date": "2026-10-03",
+    "msg": "[AMD] Find llc in Triton's own LLVM package for the DAG cross-check (#12064)"
+  },
+  "98fd66d1242c2b97fbb64367932b092ee4da7c91": {
+    "date": "2026-10-03",
+    "msg": "Fix device capability retrieval in testing.py (#12071)"
+  },
   "9fe38d528bd600e67dcedf29b47c4dcfca7308d2": {
     "date": "2026-10-02",
     "msg": "[GSan] Add configurable per-allocation shadow granularity (#11639)"
