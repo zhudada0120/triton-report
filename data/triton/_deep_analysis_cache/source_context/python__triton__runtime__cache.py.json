@@ -1,0 +1,36 @@
+{
+  "content_hash": "58b25352786ff1d0",
+  "analysis": {
+    "interface_summary": "定义 5 个类；定义 32 个函数",
+    "key_interfaces": [
+      "CacheManager",
+      "FileCacheManager",
+      "RemoteCacheBackend",
+      "RedisRemoteCacheBackend",
+      "RemoteCacheManager",
+      "CacheManager.__init__",
+      "CacheManager.get_file",
+      "CacheManager.put",
+      "CacheManager.get_group",
+      "CacheManager.put_group",
+      "FileCacheManager.__init__",
+      "FileCacheManager._make_path",
+      "FileCacheManager.has_file",
+      "FileCacheManager.get_file",
+      "FileCacheManager.get_group",
+      "RemoteCacheBackend.__init__",
+      "RemoteCacheBackend.get",
+      "RemoteCacheBackend.put",
+      "RedisRemoteCacheBackend.__init__",
+      "RedisRemoteCacheBackend._get_key",
+      "RedisRemoteCacheBackend.get",
+      "RedisRemoteCacheBackend.put",
+      "RemoteCacheManager.__init__",
+      "RemoteCacheManager._materialize",
+      "RemoteCacheManager.get_file",
+      "RemoteCacheManager.put",
+      "RemoteCacheManager.get_group"
+    ]
+  },
+  "cached_at": "2026-10-05T04:37:02.030290+08:00"
+}

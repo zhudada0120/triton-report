@@ -1,7 +1,7 @@
 {
-  "content_hash": "01f6cef2f11e6c1b",
+  "content_hash": "076c6c237921393a",
   "analysis": {
-    "interface_summary": "定义 13 个类；定义 167 个函数",
+    "interface_summary": "定义 14 个类；定义 173 个函数",
     "key_interfaces": [
       "TensorHandle",
       "TensorDescHandle",
@@ -13,6 +13,7 @@
       "ReduceOps",
       "ScanOps",
       "GridExecutor",
+      "_InterpreterComparison",
       "ASTTransformer",
       "FunctionRewriter",
       "InterpretedFunction",
@@ -52,6 +53,11 @@
       "GridExecutor._init_args_hst",
       "GridExecutor._restore_args_dev",
       "GridExecutor.__call__",
+      "_InterpreterComparison.__init__",
+      "_InterpreterComparison.__lt__",
+      "_InterpreterComparison.__bool__",
+      "_InterpreterComparison.get_result",
+      "ASTTransformer.visit_Compare",
       "ASTTransformer.visit_Assign",
       "FunctionRewriter.__init__",
       "FunctionRewriter.rewrite_ast",
@@ -65,5 +71,5 @@
       "InterpretedFunction.__name__"
     ]
   },
-  "cached_at": "2026-09-30T02:04:29.191401+08:00"
+  "cached_at": "2026-10-05T04:33:50.876274+08:00"
 }

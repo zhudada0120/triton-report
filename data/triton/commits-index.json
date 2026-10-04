@@ -1,4 +1,16 @@
 {
+  "1e4b57beb3a6fa2abeac38ed958f67bf65966f30": {
+    "date": "2026-10-04",
+    "msg": "[TEST] Remove the dead out-of-tree backend test (#12097)"
+  },
+  "6fe3348e6e907584e07e593ab19a35caee95c37a": {
+    "date": "2026-10-04",
+    "msg": "[INTERPRETER] Preserve cast rounding modes and fix shared RTNE (#12028)"
+  },
+  "745efac57446898aa0f171f5ea8c7849347703f2": {
+    "date": "2026-10-04",
+    "msg": "[RUNTIME] Store file cache group children relative to the cache dir (#12001)"
+  },
   "ebdd5b6b485600bdd62fb3becab87e0f6bf15b6f": {
     "date": "2026-10-03",
     "msg": "[AMD] Build the scheduling DAG on the live codegen MachineFunction (#12058)"

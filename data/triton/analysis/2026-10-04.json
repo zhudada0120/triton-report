@@ -1,0 +1,101 @@
+{
+  "date": "2026-10-04",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-05T04:33:50.457745+08:00",
+  "daily_summary": "当日三个 commit 分别聚焦于：清理已失效的 out-of-tree backend 测试（沿用新 entry_points 插件机制前的遗留代码）、修复 CPU 解释器中浮点转换的舍入模式丢失与 RTNE 位运算逻辑错误（含 bf16/fp8 的 tie/carry/subnormal 边界）、以及修复 FileCacheManager.put_group/get_group 使用绝对路径导致缓存目录搬迁后失效的问题。整体方向为测试清理、解释器数值正确性修复和编译缓存可移植性修复，均非架构性变更，但涉及的 interpreter.py 与 cache.py 属于 triton-ascend 复用的通用路径。",
+  "ascend_impact_summary": "当日变更中，commit 1e4b57beb3a6 删除的是已废弃的 out-of-tree backend 测试（triton.common.backend 早已被 entry_points 插件机制取代），仅影响 test/CI，不影响 triton-ascend；commit 6fe3348e6e90 修改了 python/triton/runtime/interpreter.py 的 `_convert_float` 与 `InterpreterBuilder.cast_impl/create_fp_to_fp` 签名，而 triton-ascend 的 AscendInterpreterBuilder/AscendReduceOps/AscendScanOps 继承该 InterpreterBuilder 并依赖解释执行协议，同时其 monkey-patch 亦关注 semantic/code_generator 路径；该变更虽不改变抽象基类接口但改变了浮点转换语义与 cast_impl 可选参数，Ascend 的 CPU 解释执行 Ascend kernel 在 bf16/fp8 转换结果上可能与上游解释器行为不一致，需评估测试；commit 745efac57446 修改了 python/triton/runtime/cache.py 的 FileCacheManager 组缓存存储格式（绝对路径改为相对 cache_dir 的名称），属于通用缓存路径，可能影响 triton-ascend 编译产物的磁盘缓存命中与 Group 读取，但由于 triton-ascend 主要走自己的编译阶段且缓存键包含 triton_key()，实际风险较低。总体而言，对 triton-ascend 无破坏性接口变更，主要是解释器数值语义与缓存格式的兼容性观察点。",
+  "commits": [
+    {
+      "sha": "1e4b57beb3a6fa2abeac38ed958f67bf65966f30",
+      "comment": "删除自 2024 年 #2887 移除 triton/common 后即无法被 pytest 收集的死测试 python/test/backend/test_device_backend.py 及其辅助 C 源文件 extension_backend.c，并把 AMD CI 从点名 test_mir_stage.py 改为整个 python/test/backend/ 目录。该测试原本覆盖已被 entry_points 插件机制取代的 register_backend()/compute_core_version_key()/ExtensionBackend 等旧 API，且依赖已变为空文件的 triton/compiler/make_launcher.py，同时 BaseBackend 的抽象方法集已扩展到 6 个（add_stages 只是其中之一），旧测试与新契约完全不匹配。因此这是纯粹的测试遗留清理，属于 test/chore 范畴，不触碰任何生产代码、抽象接口或运行时路径，风险极低。若未来需要覆盖 out-of-tree backend 注册，应针对 entry_points 发现机制（_discover_backends/_find_concrete_subclasses）另写新测试。",
+      "tags": [
+        "test",
+        "chore",
+        "ci",
+        "low-risk",
+        "backend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。该 commit 仅删除失效的 out-of-tree backend 测试与 CI 目标调整，未修改 python/triton/backends/__init__.py 的发现机制、BaseBackend/DriverBase 契约或任何 Python 运行时/编译器实现。",
+        "testing": "无影响。triton-ascend 使用自己的 third_party/ascend 后端注册（entry_points group='triton.backends' + TRITON_PLUGIN_DIRS）与独立的 third_party/ascend/unittest 测试体系，删除的 python/test/backend/test_device_backend.py 与 Ascend 无关。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TEST] Remove the dead out-of-tree backend test (#12097)\n\n`python/test/backend/test_device_backend.py` has not been collectable\nsince\n#2887 (Jan 2024) removed `triton/common`. It imports\n`triton.common.backend`,\nso collecting `python/test/backend/` fails outright -- which is why\n88771e23f8\nhad to point AMD CI at `test_mir_stage.py` by name rather than at the\ndirectory.\n\nThis is not a stale import path. The test was added in #1643 to cover\n`register_backend()`, and #2887 replaced that mechanism wholesale with\nthe\nstandard plugin interface:\n\n- `register_backend()` and `compute_core_version_key()` are gone;\nbackends are\n  discovered via entry points and the `triton/backends/` package.\n- `BaseBackend` moved to `triton.backends.compiler` and now takes a\n`GPUTarget`\n  rather than a `device_type` string.\n- Of the six abstract methods `BaseBackend` declares today,\n`ExtensionBackend`\n  implements only `add_stages`.\n- `triton/compiler/make_launcher.py`, the source of its\n`make_so_cache_key`\n  import, is now an empty file.\n\nReviving this coverage means writing a new test against entry-point\ndiscovery --\na different test, not a repair of this one. If there is appetite for\nkeeping\nout-of-tree backend registration under test, I'm happy to pursue that\ninstead.\n\nThe second commit points the AMD job at `python/test/backend/` now that\nthe\ndirectory collects again. No behaviour change today: `test_mir_stage.py`\nis the\nonly file left there."
+    },
+    {
+      "sha": "6fe3348e6e907584e07e593ab19a35caee95c37a",
+      "comment": "修复 CPU 解释器浮点转换的两个正确性缺陷：(1) cast_impl 默认丢弃 RTNE 舍入模式（fp32→bf16 会截断而非就近舍入），且 fp16↔bf16 通过 fp32 中转也受影响；现在 cast_impl 接受 rounding_mode 参数并在 create_fp_trunc 中显式传入 RTNE，同时删除 fp16↔bf16 的中间 fp32 两次转换路径，直接走 _convert_float。(2) 重写 _convert_float 的 RTNE 逻辑：原来 cut_off 只判断是否置位（ties away from zero）且未处理尾数进位，导致 fp8 舍入错误；新实现将隐藏位纳入 full_significand，对齐 subnormal 结果后再舍入，正确处理 ties-to-even、进位传播到指数、溢出/非有限值（NaN payload、inf）以及 FNUZ 格式的零/NaN 编码。这属于 interpreter.py 的数值语义修复，涉及 InterpreterBuilder.cast_impl 签名和 create_fp_to_fp（不再做 fp16↔bf16 两级转换）。由于 triton-ascend 的 AscendInterpreterBuilder 继承 InterpreterBuilder 并复写相关 op 执行逻辑，此变更改变了 float cast 的调用/语义约定。风险中等：解释器内部行为变化可能使 Ascend 上 CPU 解释执行结果与硬件端结果或上游参考不一致，但不会导致 import/继承链断裂（cast_impl 新增参数带默认值，属向后兼容）。",
+      "tags": [
+        "bugfix",
+        "test",
+        "medium-risk",
+        "runtime",
+        "interpreter"
+      ],
+      "ascend_impact": {
+        "ascend_affected": true,
+        "functionality": "python/triton/runtime/interpreter.py 是 triton-ascend 的 AscendInterpreterBuilder（third_party/ascend/backend/ascend_interpreter.py, 继承 InterpreterBuilder）与 AscendReduceOps/AscendScanOps 的基类实现。本 commit 修改了 InterpreterBuilder.cast_impl 的签名（新增可选参数 rounding_mode=None，向后兼容）与 create_fp_to_fp 内部逻辑（移除 fp16↔bf16 经 fp32 中转、统一走 _convert_float），并重写了模块级 _convert_float 的 RTNE/进位/subnormal 逻辑。Ascend 解释器若复用基类 cast_impl/create_fp_to_fp，其 bf16/fp8 cast 结果将随上游一起变更为正确的 RTNE 语义；若 Ascend 覆写了这些方法，则需要对齐 _convert_float 新语义以保证与上游一致。未涉及 BaseBackend/DriverBase 等后端契约接口，无破坏性签名变更。",
+        "testing": "triton-ascend 的 third_party/ascend/unittest/（含 pytest_ut/ 与解释执行路径测试）中涉及 bf16/fp8 cast 的用例在完全走基类实现时可能因语义修正而后端结果变化；需要核对是否依赖旧的截断/ties-away 行为。上游新增的 test_cast_bf16_rounding、test_cast_fp8_rounding（python/test/unit/language/test_core.py）与 test_float_conversion_subnormal_rounding（python/test/unit/runtime/test_interpreter.py）为解释器舍入模式提供了参考测试模板。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/",
+          "third_party/ascend/backend/ascend_interpreter.py",
+          "python/test/unit/runtime/test_interpreter.py（作为对照参考）"
+        ]
+      },
+      "message": "[INTERPRETER] Preserve cast rounding modes and fix shared RTNE (#12028)\n\nThe interpreter dropped the default RTNE mode when casting fp32 to bf16,\ntruncating instead of rounding. The fp16-to-bf16 path was also affected\nthrough its fp32 intermediate.\n\n```python\nx.to(tl.bfloat16)\n```\n\n| Input | Interpreter before this change | Expected RTNE |\n| --- | ---: | ---: |\n| fp32 `1.99999` | 1.9921875 | 2.0 |\n| fp16 `65504.0` | 65280.0 | 65536.0 |\n\nForward rounding modes through `cast_impl`, including RTNE for default\nnarrowing conversions.\n\nThe shared `_convert_float` RTNE logic also rounded ties up and\nmishandled mantissa carry. For example, an fp32 `1.9990234375` cast to\nfp8e5 became `1.0` instead of `2.0`. Fix ties-to-even, propagate carry\ninto the exponent, and align subnormal results before rounding.\n\nAdds bf16 rounding-mode tests, fp8 tie/carry boundary tests, and exact\nsubnormal bit-pattern tests.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/runtime/interpreter.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": true,
+        "affected_interfaces": [
+          "python/triton/runtime/interpreter.py::_convert_float",
+          "python/triton/runtime/interpreter.py::InterpreterBuilder.cast_impl",
+          "python/triton/runtime/interpreter.py::InterpreterBuilder.create_fp_trunc",
+          "python/triton/runtime/interpreter.py::InterpreterBuilder.create_fp_to_fp"
+        ],
+        "adaptation_effort": "medium",
+        "adaptation_guide": "The commit rewrites the body of `_convert_float` in python/triton/runtime/interpreter.py and changes `cast_impl`'s signature to `(self, src, dst_type, rounding_mode=None)`, plus routes `create_fp_trunc` through `cast_impl(..., _ir.ROUNDING_MODE.RTNE)` and removes the fp16<->bf16 two-step intermediate path in `create_fp_to_fp`. triton-ascend does not override these in third_party/ascend/backend/ascend_interpreter.py (AscendInterpreterBuilder inherits cast_impl/create_fp_to_fp/create_fp_trunc unchanged, and `ascend_cast_impl` in third_party/ascend/language/cann/extension/vec_ops.py only calls create_fp_to_fp/create_fp_trunc/create_fp_ext with unchanged 2-arg signatures, so the code change itself is backward-compatible). The real impact is that triton-ascend maintains a build-time patch `third_party/ascend/patch/triton-ascend-3.6.0.patch` containing 3 hunks that modify `_convert_float` to (1) mark NaN via `input_nan_index = (exponent == (1<<input_exponent_width)-1) & (significand != 0)`, (2) compute `overflow_index = exponent_unclamped > output_max_exponent - 1` and (3) force overflow to inf via `significand_output[overflow_index & ~input_nan_index] = 0`. All 3 hunks are anchored to the OLD body (the `# Prevent overflow and underflow` block and the downcast/underflow sections that this commit deletes/replaces), so they will fail to apply cleanly when the patch is reapplied on top of this commit. Required adaptation: re-derive these 3 `_convert_float` hunks against the new implementation. Most of the Ascend patch's intent is now subsumed upstream — the new code already detects `nonfinite`/`input_nan` and converts overflow to inf (RTNE branch: `exponent_output[overflow]=max_exponent; significand_output[overflow]=0`) and NaN to NaN. However, semantic parity must be verified because (a) upstream gates the nonfinite/overflow handling behind `if not input_dtype.is_fp8() and not output_dtype.is_fp8()`, whereas the Ascend patch was unconditional, and (b) upstream's non-RTNE branch clamps overflow to largest-finite (`exponent_output=max_exponent-1; significand_output=all-ones`) instead of inf, differing from Ascend's always-inf behavior. Likely the 3 hunks can be dropped or reduced to a minimal guard, followed by running the Ascend interpreter tests (third_party/ascend/unittest) to confirm overflow->inf and NaN propagation semantics are preserved for fp8 and non-fp8 casts.",
+        "risk": "medium"
+      }
+    },
+    {
+      "sha": "745efac57446898aa0f171f5ea8c7849347703f2",
+      "comment": "修复 FileCacheManager 在缓存目录被搬移或复制后失效的问题（#11999）：put_group 原先把每个子文件的完整绝对路径写入 __grp__<name>.json，get_group 又按该绝对路径精确查找，导致缓存目录搬迁后全部 miss 并触发全量重编译。现在 put_group 改为按文件名（sorted(group)）存储子文件，get_group 通过 _make_path 与 cache_dir 拼接；同时保留对旧格式全路径子项及 cache_dir 之外子文件（_make_path 对绝对路径直接返回）的兼容，因此无需迁移数据。这是 python/triton/runtime/cache.py 的通用缓存修复，与 RemoteCacheManager.put_group 的既有行为对齐，并新增两个单测。属于 bugfix，风险低，但改变了 __grp__ json 的 child_paths 内容语义——任何外部工具读取该 json 的假定需注意。",
+      "tags": [
+        "bugfix",
+        "test",
+        "low-risk",
+        "runtime",
+        "cache"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "python/triton/runtime/cache.py 位于‘可能影响’路径（python/triton/runtime/cache.py：编译产物磁盘缓存与 code_cache 键格式变更可能影响 Ascend kernel 的缓存命中，但属于通用路径影响）。本 commit 修改了 FileCacheManager.put_group/get_group 的存储格式（子文件绝对路径 → 相对 cache_dir 的名称），使缓存目录可搬迁/复制。triton-ascend 的编译产物缓存复用该 FileCacheManager（AscendBackend.add_stages 产出的 npubin/mlirbc 等通过缓存落地），因此缓存目录被搬移后也能正确命中，属正向改进；若 Ascend 侧或外部脚本曾按全路径解析 __grp__ json，则需适配。",
+        "testing": "triton-ascend 若存在缓存相关的端到端或 CI 测试（如依赖第三方向缓存、跨构建复用缓存目录），需验证搬迁后 Group 读取仍正确；上游新增的 test_file_cache_manager_get_group_relocated_dir 与 test_file_cache_manager_get_group_accepts_full_child_paths 可作为参考。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/（缓存/编译产物复用相关用例）",
+          "python/test/unit/runtime/test_cache.py（作为对照参考）"
+        ]
+      },
+      "message": "[RUNTIME] Store file cache group children relative to the cache dir (#12001)\n\nfixes #11999\n\n`FileCacheManager.put_group` wrote the full path of every child into\n`__grp__<name>.json`, and `get_group` looked up those exact paths. so a\ncache dir only worked where it was built: copy it somewhere else, remove\nthe original and every lookup misses and triton recompiles everything.\n\nnow `put_group` stores children that live in the cache dir by name like\n`RemoteCacheManager.put_group` already does and `get_group` joins them\nwith the cache dir. full paths from older group files and children\noutside the cache dir still work. nothing needs migrating, since the key\nincludes `triton_key()` and a different triton build never reads these\nfiles.\n\nadded `test_file_cache_manager_get_group_relocated_dir` and\n`test_file_cache_manager_get_group_accepts_full_child_paths`.\n\nchecked on an A100 with triton 3.8.0 (its `cache.py` is identical to\nmain's) with the patched file dropped in:\n- the relocated test fails without the patch and passes with it\n- `test_cache.py` from 3.8.0: 41 passed, 1 skipped, with and without the\npatch\n- in the repro from #11999 the plain copy now hits. the script's own\nrebase step assumes full paths, so it errors out after that step with\nthis change\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n[rules](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode and using the instructions it generates is not minimal.)",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}
