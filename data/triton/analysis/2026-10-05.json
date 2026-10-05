@@ -1,0 +1,412 @@
+{
+  "date": "2026-10-05",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-06T07:25:40.933522+08:00",
+  "daily_summary": "当日变更以 NVIDIA 后端的 MEMBAR / mbarrier / TMEM 同步体系重构为绝对主线（约 10 个提交，含 Membar analysis 集中调度线程同步、per-warp mbarrier arrival、TMA expectation 分发到 producer warp、TMEM 线程归属与 publication、CFG 边界前 flush 等），同时包含若干前端与通用分析修复：tl.flip 对 size-1 维度改为 no-op、bf16 标量常量改为直接构建、AxisInfo 在 tensor select 上保留指针对齐、LLVM 层传播指针 align 属性、autotuner listener 解包修复，以及 E5M2→BF16 转换重写（BC-breaking）。主要方向是减少冗余 barrier、提升 attention 类内核编译与运行性能，并加固多 CTA / warp-specialized 场景的正确性。",
+  "ascend_impact_summary": "当日绝大多数变更集中在 NVIDIA 专属路径（third_party/nvidia、TritonNvidiaGPU/Membar、TTNG 方言的 per_warp 属性、TMEM wait 插入），这些路径 triton-ascend 完全不加载（Ascend 走 TritonToLinalg 而非 TritonGPU→LLVM）。但其中若干改动触及 triton-ascend 的必然影响面：(1) python/src/ir.cc 的 get_bf16 实现变更影响 AscendNPUIROpBuilder 继承的 TritonOpBuilder 基础 API；(2) lib/Analysis/Membar.{h,cpp} 与 BufferIndexAnalysis 的接口/数据流状态结构变化，若 Ascend 复用 Membar/Allocation 分析则会传导；(3) python/triton/runtime/autotuner.py 的 Autotuner listener 逻辑变更直接影响继承 Autotuner 的 AutoTilingTuner；(4) python/triton/language/standard.py 的 tl.flip 属于 Ascend 也使用的前端算子；(5) lib/Analysis/AxisInfo.cpp 的 select 对齐推导会影响所有后端生成的 vectorization。总体而言当日主线（NVIDIA MEMBAR/TMEM）对 triton-ascend 无直接影响，但前端的 flip/bf16/AxisInfo/autotuner 改动需要 ascend 侧回归验证。",
+  "commits": [
+    {
+      "sha": "d9519f50b6500f14aa381a36149dc832d587f637",
+      "message": "[Docs] Improve constexpr floor division documentation (#10930)\n\n## Summary\n\n`(-5.0) % 3.0` produces a different result depending on whether it is\nconstant-folded (both operands `constexpr`) or evaluated at runtime —\nthe sign of the remainder flips. Reported in #10920.\n\nThe `constexpr.__mod__` path folded with Python's built-in `%`, whose\nremainder takes the sign of the **divisor** (floored division). The\nruntime lowering in `semantic.py::mod` emits `frem` for floats and\n`srem` for signed integers, both of which truncate toward zero, so the\nremainder takes the sign of the **dividend**. For mixed-sign operands\nthe two disagree:\n\n| expression | folded (before) | runtime | folded (after) |\n| --- | --- | --- | --- |\n| `(-5.0) % 3.0` | `1.0` | `-2.0` | `-2.0` |\n| `5.0 % (-3.0)` | `-1.0` | `2.0` | `2.0` |\n| `(-5) % 3` | `1` | `-2` | `-2` |\n\n## Fix\n\nFold `constexpr.__mod__` with the runtime semantics instead: `math.fmod`\nfor floats, and a truncated integer remainder (`abs(a) % abs(b)`\ncarrying the sign of the dividend) otherwise. Same-sign and all-positive\noperands are unchanged.\n\n## Testing\n\nAdded `test_constexpr_mod_matches_runtime_truncation` (host-only, no\ndevice needed): it asserts the folded results now match `frem`/`srem`\nfor the mixed-sign cases that previously flipped, and that the\nalready-agreeing cases stay put. I verified the folding logic against\nthe `frem`/`srem` sign rule offline; the runtime side is exercised by\nCI.\n\nNote: `constexpr.__floordiv__` has the same floored-vs-truncated\nmismatch and could be a follow-up, but I've kept this scoped to the `%`\noperator reported in the issue.\n\nFixes #10920.",
+      "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 triton-ascend。",
+      "tags": [
+        "chore"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "3662b39820260cd28339e86acd8c02468084ae1f",
+      "comment": "在 AddressSet::operator< 开头加入 *this == other 的快速路径，直接返回 false，避免对相等集合做完整逐元素比较。改动位于 include/triton/Analysis/BufferRegion.h，是 Membar/TMA 同步分析的热点。语义等价于原 lexicographic 比较（相等时原逻辑也会返回 false），因此是纯性能优化，风险极低；收益在大 attention 内核编译时间上体现为约 2x。",
+      "tags": [
+        "performance",
+        "low-risk",
+        "compiler-analysis"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[MEMBAR] Fast-path equal AddressSet comparisons (#12117)\n\nThis halves compilation times in some attention kernels."
+    },
+    {
+      "sha": "ad06eedcf59d0340d8de9b9bf540a573e3434318",
+      "message": "[FRONTEND] Make tl.flip a no-op on a dimension of size 1 (#12066)\n\n`tl.flip` on a dimension of size 1 fails with `AttributeError: 'dtype'\nobject has no attribute 'numel'`. With zero swap steps, `flip` reshapes\na 1-element tensor to a scalar and then tries to reshape that scalar\nback.\n\n```python\n@triton.jit\ndef flip_kernel(X, Z):\n    off = tl.arange(0, 1)\n    tl.store(Z + off, tl.flip(tl.load(X + off)))  # AttributeError\n```\n\nFlipping a dimension of size 1 is a no-op, so `flip` now returns its\ninput unchanged in that case and never builds a scalar.\n\nAdds `test_flip_size_one`, which fails before this change and passes\nafter, on GPU and with the interpreter.\n\nValidation on an RTX 3050 (sm_86): `test_standard.py` 245 passed (GPU);\n`test_standard.py -k flip` 82 passed (interpreter).\n\n### New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)",
+      "comment": "tl.flip 在维度大小为 1 时 steps 为 0，原实现会先 reshape 成 [2]*0=[] 即标量再 reshape 回来从而报 AttributeError。修复方式是把整个 reshape/xor_sum/reshape 逻辑包在 if steps > 0 分支下，steps==0 时直接返回输入。属前端算子语义修复，逻辑清晰，附带 GPU 与 interpreter 双路测试 test_flip_size_one。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "frontend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "python/triton/language/standard.py 是 Triton 语言前端公共算子模块，triton-ascend 复用同一前端。tl.flip 的 size-1 分支修复同样使 Ascend 后端受益（此前在该场景会抛出 AttributeError）。该文件未被 ascend 侧 monkey-patch 覆盖。",
+        "testing": "triton-ascend 若已有 flip 相关算子测试，应补齐 size-1 维度的用例以覆盖此修复。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/",
+          "python/test/unit/language/test_standard.py"
+        ]
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "20d9d98fead78c2f65e1b3ba5a7881d86a836dad",
+      "comment": "重写 NVIDIA 的 E5M2→BF16 转换：合并原来的 Fp8E5M2_to_Bf16 / Fp8E4M3Nv_to_Bf16 为统一的 Fp8_to_Bf16(computeCapability, isE5M2)。Blackwell 且 PTX 9.2 走原生 cvt.rn.bf16x2.e5m2x2；sm_89 以下走 E5M2→FP16→FP32→BF16 的精确扩宽路径（保留 inf/NaN）；其余（Ada/Hopper）走 cvt.f16x2 + cvt.bf16.f16 或经 FP32。标题标注 BC-Breaking，因为旧路径下 bf16 结果是近似（末尾乘 2^112 触发舍入）而新路径是精确的，结果位模式会变化。风险中等：改变了数值语义，需要调用方接受 bit-exact 更好的结果；测试更新覆盖全编码（test_typeconvert_e5m2_bf16_all_encodings）。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "medium-risk",
+        "nvidia-backend",
+        "e5m2"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（third_party/nvidia/lib/TritonNVIDIAGPUToLLVM 与 test/Conversion 均为 NVIDIA 专属路径，Ascend 不加载）。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BC-Breaking][NVIDIA] Optimize E5M2 to BF16 conversions (#12086)\n\nPreserve infinities and NaNs in E5M2-to-BF16 conversions. Use native\npacked conversion on Blackwell with PTX 9.2, an FP16 path on Ada and\nHopper, and exact FP16/FP32 widening on older GPUs.\n\n<!-- codex-thread: 01a1002b-7abf-7c41-9ba1-49b1f5d649ed -->"
+    },
+    {
+      "sha": "0ccad974ee86942e704ac06dafdc0c3f214eb229",
+      "comment": "大幅扩展 Membar 的过滤回调签名：MembarFilterFn 现在接收 (Operation*, Operation*, bool, bool, Allocation*, AllocationSlice&, AllocationSlice&)，并在 AllocationSlice 中新增 sharedKind（std::optional<gpu::SharedKind>）参与排序/相等。Membar.cpp getAllocationSlices 透传 sharedKind；NVIDIA canSkipBarSync 据此区分 Barrier kind 并细化 mbarrier signal/wait 的必需性判断；AMD membarFilter 同步适配新签名。同时更新大量 lit 测试的 CHECK 期望（barrier 位置变化）。风险较高：改动了跨后端共享的 Membar 分析核心接口，且 NVIDIA 侧的跳过逻辑直接影响 mbarrier 与 TMA 同步正确性；新增了 hasOnlySourceAliases 用于分配器复用别名判定。",
+      "tags": [
+        "refactor",
+        "performance",
+        "high-risk",
+        "compiler-analysis",
+        "nvidia-backend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "include/triton/Analysis/Membar.h 的 MembarFilterFn 是被 lib/Analysis/Membar.cpp 和 backend 共享的分析接口，triton-ascend 复用 lib/Analysis 与 Allocation 分析。MembarFilterFn 参数增删属于签名级破坏：任何 ascend 侧注册的 filter 回调（若存在）必须同步更新到新签名。AllocationSlice 新增 sharedKind 字段改变了其 asTuple() 比较语义，可能影响 ascend 侧基于 slice 排序/相等性的逻辑。",
+        "testing": "Ascend 侧若复用 MembarAnalysis 或自定义 membar filter，需要重编译并验证 filter 参数数量与类型；若存在 lit 测试带 membar filter 期望，需更新。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/",
+          "third_party/ascend/lib/ (Membar filter 使用点)"
+        ]
+      },
+      "message": "[MEMBAR] Refine TMA and mbarrier synchronization (#11690)\n\nUse access kinds and physical allocation slices to skip redundant\nsynchronization between mbarrier signals, waits, and completed TMA\naccesses. Retain barriers for payload hazards and storage reuse.\n\nStacked on #11697.",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "af49825f354b1b7c6cb6725a0a0b1ed92819fb28",
+      "comment": "把 TMA expectation 像 software arrival 一样分发到各 producer warp：TTNG_BarrierExpectOp 新增 per_warp UnitAttr，MBarrierOpInterface 增加 isPerWarp；OptimizeMBarrierArrivals 扩展处理 expects（getDistributionScale 需同时考虑 arrivals 与 expects，若存在 expects 则 scale = numWarps 且不得与 arrivals 混用，否则放弃优化）；Lowerer BarrierOpToLLVM 在 per_warp 时 size /= numWarps、id 用 getLaneId；ConSan 按 warp 数计 count。属性能优化，逻辑链较长，边界（scalar group 保留原 count、mixed group 补 compensating arrival、物理 count 溢出保护）都被测试覆盖。风险中高，但限定在 SM90+。",
+      "tags": [
+        "performance",
+        "feature",
+        "medium-risk",
+        "nvidia-backend",
+        "mbarrier",
+        "tma"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（TTNG 方言、OptimizeMBarrierArrivals、NVIDIA BarrierOpToLLVM 均为 NVIDIA 专属，Ascend 不加载 TritonNvidiaGPU 方言，也不走 TritonGPU→LLVM lowering）。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[MEMBAR] Distribute TMA expectations across producer warps (#11697)\n\nDistribute TMA expectations across producer warps using the same delayed\nfinalization as software arrivals. Fully scalar groups keep their\noriginal counts; mixed groups receive compensating arrivals.\n\nStacked on #11573."
+    },
+    {
+      "sha": "bf6bc386df551164c29589873b936a10d08771b0",
+      "comment": "引入 warp-scope ttg.barrier（TritonGPUEnums 加 BarrierScope 枚举、BarrierOp 加 scope 属性与 verifier、lowering 经 targetInfo.warpSync），以及 ttng.arrive_barrier 的 per_warp flag。Membar 学会识别 warp barrier（warpsSynced 状态、requiresWarpBefore 插入 warp barrier）；新增 OptimizeMBarrierArrivalsPass（SynchronizationAnalysis 基于 Membar 状态找冗余 warp barrier、清除非必要的 per_warp 标记，并对每个 barrier group 计算 lcm scale 后统一放大 init/arrive count）。AMD 侧 BarrierOp 对 warp scope 走 failure 交给通用 lowering。改动跨 TritonGPU 方言、Membar、NVIDIA 与 AMD lowering，是当日最大的结构性变更之一，风险高但由大量 lit + pytest（test_mbarrier_automatic_warp_arrivals 等）覆盖。",
+      "tags": [
+        "feature",
+        "refactor",
+        "performance",
+        "high-risk",
+        "tritongpu-dialect",
+        "nvidia-backend",
+        "membar"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "lib/Analysis/Membar.{h,cpp} 被修改（新增 MembarInfo::warpsSynced / syncWarps / hasEffects，update 签名允许 builder 为 nullptr，requiresThreadSync 变为 virtual），这些是 Ascend 若复用 Membar 与 Allocation 分析所使用的接口。ttg.barrier 新增 scope 属于 TritonGPU 方言变化，但 Ascend 走 TritonToLinalg 不使用 ttg.barrier；仅当 Ascend 侧 C++ pass 或 Python builder 直接构造 ttg.barrier 时才需要同步。对 triton-ascend 前端语义与 CANN 编译链的主链路无直接破坏。",
+        "testing": "若 Ascend 侧使用 Membar 做共享内存 barrier 调度（TritonToLinalg 之前的分析），需要重编译并验证新增的 scope 语义不会改变结果。",
+        "needs_test_update": false,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/ (共享内存 barrier 相关)"
+        ]
+      },
+      "message": "[MEMBAR] Automatic per-warp mbarrier arrival (#11573)\n\nThis PR adds a few things, but it's less scary than the LOC diff\nsuggests:\n- It adds warp scope to `ttg.barrier`, lowered through the existing\n`targetInfo.warpSync`\n- It teaches membar about warp barriers and tracks warp synchronization\nin each execution region\n- We add a new flag `per_warp` flag for `arrive` which means that each\nwarp will arrive on its own (not just warp0).\n- We provisionally enable `per_warp` for eligible arrivals, then add a\npass to finalise the flags and counts.\n\nThe pipeline works as follows:\n- At `prepareMBarrierArrivals`, before any `bar.sync` is inserted, we\nset as `per_warp` any arrive that:\n- Uses an initialized barrier allocation with only init, arrive, wait,\ninvalidate and deallocation uses, allowing views and forwarding that\npreserve the same allocation\n- We run membar\n- We then run `OptimizeMBarrierArrivalsPass`\n- It first runs `SynchronizationAnalysis`, which removes redundant warp\nbarriers and identifies arrivals with synced warps, whole-region\nsynchronization on every path, and no pending effects. The pass clears\ntheir `per_warp` tags.\n- Then `getDistributionScale` computes the least common multiple of\n`numWarps / gcd(numWarps, count)` over the remaining per-warp arrivals.\nThe pass multiplies all init and arrive counts for that barrier\nallocation by this scale.\n\n\nStacked on #11557.",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "5ba08e536db6d12a09d47f6dc93347665bcf3373",
+      "comment": "TMEM 线程归属与 publication 重构：抽出 computeTMemLdStLayout（供 TMemWarpOwnership 计算物理 warp 归属），删除 TritonNvidiaGPUTMemWaitInsertionPass 而把 wait 插入合并进 TMemBarrierInsertionPass（TMemSyncAnalysis 取代 TMemBarrierAnalysis + TMemWaitAnalysis）；用 TMemBoundary（None/Wait/Publication）代替原 isWaitBoundary 布尔；同一 warp 拥有者可跳过 barrier，跨 warp 才插入。Membar 侧 syncIfNeeded/insertBarrier 改为返回 Operation* 便于记录 lastBarrier。大量 lit 与 gluon 测试更新。属于 Blackwell 关键路径重构，风险高但测试覆盖充分。",
+      "tags": [
+        "refactor",
+        "performance",
+        "high-risk",
+        "nvidia-backend",
+        "tmem"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（TMEM 是 NVIDIA Blackwell 专属硬件概念，Ascend 无该硬件抽象；涉及文件 include/triton/Dialect/TritonNvidiaGPU/** 与 lib/Analysis/Membar.cpp 的返回类型变更——syncIfNeeded/insertBarrier 从 void 改为 Operation*，是 lib/Analysis 的接口变化，但 Ascend 侧的 monkey-patch 与自研 pass 并未覆写这两个函数，且 MembarAnalysis 的 update 契约未变）。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Track TMEM thread ownership and publication (#11557)\n\nTrack pending TMEM loads and stores through their completion and\npublication boundaries. Use physical access geometry and warp ownership\nto skip barriers between accesses owned by the same warp, while placing\ncompletion waits at actual hazards or publication points.\n\nStacked on #11556."
+    },
+    {
+      "sha": "d564edd6a62c6d30ae6d41719e9af584b1d92fe1",
+      "comment": "在 NVIDIA canSkipBarSync 中放宽 mbarrier signal/wait 之间的冗余 CTA barrier：incrementing async-copy arrive 保留 rendezvous，但 TMA load、barrier_expect、arrive_barrier、tc_gen5_commit 与 wait_barrier 之间可跳过 barrier。改动很小（仅 Membar.cpp + 测试），但直接改变同步正确性判定，属高风险正确性敏感优化，由 test/Analysis/test-membar-ttng.mlir 大段新增用例覆盖。",
+      "tags": [
+        "performance",
+        "high-risk",
+        "nvidia-backend",
+        "mbarrier",
+        "membar"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（仅修改 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/Membar.cpp 的 NVIDIA canSkipBarSync，Ascend 不加载该实现）。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Skip barriers between mbarrier signals and waits (#11556)\n\nSkip redundant CTA barriers between compatible mbarrier signals and\nwaits, including aliased descriptors and nested control flow. Keep the\nrendezvous required by incrementing async-copy arrivals.\n\nStacked on #11555."
+    },
+    {
+      "sha": "eb529d89e77a41078642105bacfe7ba0da648068",
+      "comment": "在 CFG 分支/return/WS 边界前 flush 未完成的 TMEM load/store，避免 incomplete access 跨越控制流边。具体做法是把 BranchOpInterface 等从'不 flush'改为 isWaitBoundary 返回 true，并删除 RegionBranchOpInterface/RegionBranchTerminatorOpInterface 的旧豁免逻辑，同时移除了跨 join/backedge 携带 pending 的注释与相应分支。属 TMemBarrierInsertion 的正确性加固，风险中（仅在 Blackwell 上生效），有 lit 期望更新覆盖。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "nvidia-backend",
+        "tmem"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（lib/Dialect/TritonNvidiaGPU/Transforms/TMemBarrierInsertion.cpp 为 NVIDIA 专属 TMEM 分析）。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Flush pending TMEM accesses before CFG branches (#11555)\n\nComplete outstanding TMEM loads and stores before CFG branches so\nincomplete accesses do not cross control-flow edges.\n\nStacked on #11693."
+    },
+    {
+      "sha": "74366d933ad3ae8de09be16e2409b32b9b6ea786",
+      "comment": "正确性修复：保证一个 pending 的 mbarrier wait 在所有参与 warp 完成之前，其它线程不能通过写通知对端推进 phase。Membar 引入 ThreadSyncKind::MBarrierWait 与 peerWaitNeedsSync/mayNotifyPeer 状态，并在 requiresThreadSync 中新增 (peerWaitNeedsSync && mayNotifyPeer) 触发条件；通过 hasRegionLocalUses 判定 barrier 与写目标是否局限在相同 region/CTA 从而省略多余 rendezvous。同时重构 hasCrossCTASharedAccess/hasCrossCTAMBarrierUse 到 MBarrierUtilities。属同步语义加固，风险高（错判会导致死锁或数据竞争），由 gluon pytest（test_mbarrier_tma_progress 等）与 lit 覆盖。",
+      "tags": [
+        "bugfix",
+        "high-risk",
+        "nvidia-backend",
+        "mbarrier",
+        "membar"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "lib/Analysis/Membar.cpp 被修改（BlockInfo 新增 peerWaitNeedsSync/mayNotifyPeer，requiresThreadSync 增加新判定，新增 isRegionLocal/mayNotifyPeer 私有方法）。BlockInfo 属 Analysis 共享结构，若 Ascend 复用 Membar 或 Allocation 分析，需重新编译；新增字段不会破坏既有调用点，但语义变化（更严格要求同步）可能影响 Ascend 侧依赖 Membar 输出的 pass。third_party/amd 相关文件同步被改，表明这是跨后端共享接口。",
+        "testing": "若 Ascend 复用 MembarAnalysis，需要回归共享内存 barrier 插入用例。",
+        "needs_test_update": false,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/ (共享内存/mbarrier 相关)"
+        ]
+      },
+      "message": "[MEMBAR][CORRECTNESS] Preserve mbarrier wait progress before notifications (#11693)\n\nEnsure all participating warps finish a pending mbarrier wait before a\nwrite can notify a peer that advances its phase. Omit the extra\nrendezvous when the mbarrier or write destinations are confined to the\nsame execution region and CTA.\n\nStacked on #11481.",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "2b48bed223aacb2e3b6f2f728f515905968cb18a",
+      "comment": "Membar 体系大重构（本批次的核心）：移除 arrival/wait/MMA/TMA lowering 各自独立插入的 barrier，统一由 Membar 集中调度，并把线程同步需求（ThreadSyncState/ThreadDemandState/IssuerSummary/CompletionSync）随控制流和函数调用传播，延迟到消费者真正需要时再插入 barrier。新增 BufferIndexAnalysis::entersLoop 与 loopHeaders 追踪，在进入循环前对 CompletionSync::All 的 pending completion 插入一次 barrier；kernl call 改为断言 summary 必须存在。更新了大量 lit 测试与 AMD 相关 MLIR 测试用例（--convert-scf-to-cf 前置）。风险很高（跨后端共享分析接口 + 各 lowering 的 barrier 责任转移），但用大量测试覆盖。",
+      "tags": [
+        "refactor",
+        "high-risk",
+        "compiler-analysis",
+        "membar",
+        "nvidia-backend",
+        "amd-backend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "include/triton/Analysis/Membar.h 与 lib/Analysis/Membar.cpp 被大范围重写：BlockInfo 增加 threadSync/threadDemands 子结构、operator== 改为 default、MembarFilterFn 语义保留但数据流状态扩展；BufferIndexAnalysis 新增 entersLoop 和 loopHeaders。这些都是 lib/Analysis 层面的共享接口，若 triton-ascend 复用了 MembarAnalysis 或 BufferIndexAnalysis（例如 Ascend 的自研 membar 调度），需重新编译并适配新增的线程同步状态语义。同时第三方的 AMD 后端也同步适配了（test/Conversion/amd），表明该接口对不同后端具有传导性。",
+        "testing": "triton-ascend 若依赖 lib/Analysis/Membar 或 BufferIndexAnalysis 的 lit 测试或端到端用例，需重新跑通并检查 barrier 位置变化。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/",
+          "third_party/ascend/unittest/pytest_ut/ (共享内存 barrier 相关)"
+        ]
+      },
+      "message": "[Membar] Schedule thread synchronization with Membar analysis (#11481)\n\nRemove barriers inserted independently by arrival, wait, MMA, and TMA\nlowerings.\nInsert barriers centrally, sharing one barrier between compatible\noperations—for example, consecutive arrivals from the same issuer.\nCarry ordering requirements through control flow and function calls.\nDelay synchronization until a consumer needs it, while handling loops\nand memory-lifetime markers.",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "fa8415bdf83ad9f8f8e0b36aeed5e55677617f7f",
+      "comment": "修复 autotune listener 在 interpreter 模式下找不到正确对象的问题：原 while not isinstance(jit_fn, JITFunction) 在 TRITON_INTERPRET=1 时会越过 InterpretedFunction 继续走到 None 报错；改为与 Autotuner.__init__ 的 base_fn 查找完全一致的 while not inspect.isfunction(jit_fn.fn)。改动一行，语义对齐，风险极低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "runtime",
+        "autotuner"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "python/triton/runtime/autotuner.py 的 Autotuner 是 AutoTilingTuner 的基类（triton-ascend 的 AutoTilingTuner 继承 Autotuner 并扩展 tiling/num_stages/multibuffer 参数展开）。本变更修改了 Autotuner.run 中 listener 分支的逻辑，Ascend 若启用 knobs.autotuning.listener 会使用同一路径；行为从'遍历到 JITFunction'变为'遍历到 fn 是普通函数'，Ascend 在 interpreter 模式下同样受益。",
+        "testing": "建议 Ascend 侧的 autotune_ut 增加 interpreter 模式下的 listener 用例覆盖。",
+        "needs_test_update": false,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/autotune_ut/"
+        ]
+      },
+      "message": "[AUTOTUNER] Unwrap the listener kernel the same way as base_fn (#12084)\n\nThe autotune listener finds the kernel to report by walking `.fn` until\nit reaches a `JITFunction`. The `base_fn` lookup in `Autotuner.__init__`\nwalks the same chain but stops on `inspect.isfunction`. Use that check\nfor the listener too: stop at the object whose `.fn` is a plain\nfunction.\n\nIn compiled mode this is the same `JITFunction` as before. Under\n`TRITON_INTERPRET=1`, where `@triton.jit` returns an\n`InterpretedFunction`, the listener now gets that object instead of\nwalking past it.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [ ] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n- [x] This PR does not need a test because it only makes the listener's\nunwrap loop use the same `inspect.isfunction` check as the `base_fn`\nlookup.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/runtime/autotuner.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "174b934f439cb9ad6fca09abf5b68fd38e3503aa",
+      "message": "[AMD][CI] Name the test that hangs instead of cancelling the job (#12106)\n\nWhen a test stops responding, the AMD jobs currently run out their\ntimeout-minutes and GitHub cancels them with \"The operation was\ncanceled.\" The log ends mid-phase, so there is nothing identifying which\ntest hung -- only that some tests never reported. Rerunning is the only\nrecourse, and it tells you nothing if the hang is intermittent.\n\nThe rocjitsu job already guards against this with pytest-timeout on some\nof its phases. Do the same everywhere, via PYTEST_ADDOPTS rather than\nper invocation, so phases added later are covered without anyone\nremembering to annotate them. That also picks up the phases rocjitsu had\nmissed, notably its Gluon tests, and lets the now-redundant\nper-invocation copies go.\n\nUse the thread method rather than pytest-timeout's default. The signal\nmethod produces a cleaner report, but it needs the main thread to regain\ncontrol, which is what a wedged GPU queue may never give back; the\nthread method fires from a timer thread regardless. Under -n it costs\nthe rest of that worker's tests and reduces the report to \"worker\ncrashed while running <test>\", which is still the test name that is\nmissing today.\n\nThe 300s bound on test_scatter_pipeline is deliberate and stays: a\ncommand-line --timeout overrides the one from PYTEST_ADDOPTS.\n\npytest-timeout now has to be installed on every AMD runner, since the\nflags apply to every invocation including the compile cache warmup. Only\nsome runners install test-requirements.txt; the rest take their test\ndependencies from the container image.",
+      "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 triton-ascend。",
+      "tags": [
+        "chore"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "11506fc3501ef0d9e39702c7748616fea8b91877",
+      "comment": "修复 bf16 标量常量精度丢失：原实现用 std::to_string(v) 构造 APFloat 字符串（默认 6 位小数），导致 tl.full(..., 1e-8, tl.bfloat16) 变为 0；改为与 get_fp16 一致地用 getBuilder().getFloatAttr(type, v) 直接由 float 构造。属前端 C++ 绑定 bug 修复，附带 7 组小数值测试。风险低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "frontend",
+        "ir-bindings"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "python/src/ir.cc 中的 TritonOpBuilder::get_bf16 是 triton-ascend 的 AscendNPUIROpBuilder 所继承的基础 builder 方法（TritonOpBuilder 构造器与基础接口变更是 Ascend 的必然影响面）。修复 bf16 常量构造方式后，Ascend 侧所有使用 bf16 小数值常量的 kernel 都会获得正确结果，属于一致性收益，接口本身（方法签名）未变。",
+        "testing": "triton-ascend 应补充 bf16 小数值常量的端到端测试（tl.full 或标量运算）以验证修复传导到 NPU。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/ (bf16 常量相关)"
+        ]
+      },
+      "message": "[FRONTEND] Build bf16 scalar constants directly instead of through std::to_string (#12103)\n\nFixes #12102\n\n`get_bf16` now builds the constant from the float the way `get_fp16`\ndoes instead of through `std::to_string`, to avoid cutting bf16\nconstants to 6 decimals (`tl.full(..., 1e-8, tl.bfloat16)` and `x_bf16 *\n1e-8` were 0).\n\nTests: `test_full_bf16_small_constant` fails for 5 of its 7 values\nwithout the change (NVIDIA L40S, sm_89).",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/src/ir.cc"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "da9c410f1f91af7fe5006f33d13f49bcebcfaac6",
+      "comment": "AxisInfo 在 arith.select 上保留指针对齐：当 select 的 condition 保持 contiguity 时保留原 divisibility；当 condition 的 constancy 把输出 contiguity 降低时，说明有新 group base 出现在原 group 内部，此时按 contiguity * pointee_elem_bytes 计算新的 divisibility 下界。同时处理 mixed groups（一侧 contiguity 更小）与 poison 情况。变更 lib/Analysis/AxisInfo.cpp 并新增大量 test-alignment.mlir 用例与一个 tritongpu_to_llvm 的向量化用例。属分析层增强，风险中等（会改变下游 vectorization 决策，但仅放宽/收紧为更精确的保守值）。",
+      "tags": [
+        "feature",
+        "performance",
+        "medium-risk",
+        "compiler-analysis",
+        "axis-info"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "lib/Analysis/AxisInfo.cpp 是所有后端共用的对齐/连续性分析。改动影响 select 之后指针的 divisibility 推导，进而影响 load/store 的向量化宽度。Ascend 后端在 TritonToLinalg 之前也依赖 AxisInfo（例如 vectorization 决策），因此行为变化会传导到 Ascend 生成的 linalg IR。",
+        "testing": "Ascend 侧 select/where 后指针 load/store 的向量化用例需要回归，确认 precision 提升带来更大 vector width 且数值正确。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/ (select/where 相关向量化用例)"
+        ]
+      },
+      "message": "[Analysis] Preserve pointer alignment through tensor selects (#12109)\n\nPreserve byte alignment when tensor selects keep pointer groups intact,\nand account for pointee size when a selection splits those groups. This\nallows aligned pointer selections to retain vectorized memory accesses.\n\nAllows to vectorize\n```python\ndestination = gl.where(cond, ptr1, ptr2)\ngl.store(destination, value, valid)\n```\n\n<!-- codex-thread: 01a1087d-71bb-7482-9bf1-a30862b06259 -->",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "61e7e75a39dbf208875effdc808f587402747cb0",
+      "comment": "在 NVIDIA TritonGPUToLLVM 下降中把 triton 的 tt.divisibility（含 AxisInfo 推导的对齐）转为 LLVM 函数参数的 align 属性，取与已有 align 的较大值，跳过 1 和超过 MaximumAlignment 的值（poison 指针会得到极大 divisor）。改动 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/TritonGPUToLLVM.cpp，并新增 lit 测试验证多种参数情况。属 LLVM 层对齐信息传递优化，风险低，仅在 NVIDIA 后端生效。",
+      "tags": [
+        "optimization",
+        "performance",
+        "low-risk",
+        "nvidia-backend",
+        "ir-lowering"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（该实现位于 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/TritonGPUToLLVM.cpp，Ascend 走 TritonToLinalg，不进入 TritonGPUToLLVM lowering 路径）。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[LLVM] Preserve pointer argument alignment during conversion (#12107)\n\nPreserve pointer argument alignment (`tt.divisibility`) as LLVM\nparameter `align` attributes so LLVM can simplify address arithmetic and\nalignment checks.\n\n<!-- codex-thread: 01a10768-8256-72c0-88f5-fc4df1c1d4c8 -->"
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

@@ -723,6 +723,102 @@
       "interface_changes": "修复 FileCacheManager 在缓存目录被搬移或复制后失效的问题（#11999）：put_group 原先把每个子文件的完整绝对路径写入 __grp__<name>.json，get_group 又按该绝对路径精确查找，导致缓存目录搬迁后全部 miss 并触发全量重编译。现在 put_group 改为按文件名（sorted(group)）存储子文件，get_group 通过 _make_path 与 cache_dir 拼接；同时保留对旧格式全路径子项及 cache_dir 之外子文件（_make_path 对绝对路径直接返回）的兼容，因此无需迁移数据。这是 python/triton/runtime/cache.py 的通用缓存修复，与 RemoteCacheManager.put_group 的既有行为对齐，并新增两个单测。属于 bugfix，风险低，但改变了 __grp__ json 的 child_paths 内容语义——任何外部工具读取该 json 的假定需注意。",
       "change_summary": "[RUNTIME] Store file cache group children relative to the cache dir (#12001)",
       "ascend_impact": false
+    },
+    "ad06eedcf59d0340d8de9b9bf540a573e3434318": {
+      "date": "2026-10-05",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "tl.flip 在维度大小为 1 时 steps 为 0，原实现会先 reshape 成 [2]*0=[] 即标量再 reshape 回来从而报 AttributeError。修复方式是把整个 reshape/xor_sum/reshape 逻辑包在 if steps > 0 分支下，steps==0 时直接返回输入。属前端算子语义修复，逻辑清晰，附带 GPU 与 interpreter 双路测试 test_flip_size_one。",
+      "change_summary": "[FRONTEND] Make tl.flip a no-op on a dimension of size 1 (#12066)",
+      "ascend_impact": false
+    },
+    "0ccad974ee86942e704ac06dafdc0c3f214eb229": {
+      "date": "2026-10-05",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "大幅扩展 Membar 的过滤回调签名：MembarFilterFn 现在接收 (Operation*, Operation*, bool, bool, Allocation*, AllocationSlice&, AllocationSlice&)，并在 AllocationSlice 中新增 sharedKind（std::optional<gpu::SharedKind>）参与排序/相等。Membar.cpp getAllocationSlices 透传 sharedKind；NVIDIA canSkipBarSync 据此区分 Barrier kind 并细化 mbarrier signal/wait 的必需性判断；AMD membarFilter 同步适配新签名。同时更新大量 lit 测试的 CHECK 期望（barrier 位置变化）。风险较高：改动了跨后端共享的 Membar 分析核心接口，且 NVIDIA 侧的跳过逻辑直接影响 mbarrier 与 TMA 同步正确性；新增了 hasOnlySourceAliases 用于分配器复用别名判定。",
+      "change_summary": "[MEMBAR] Refine TMA and mbarrier synchronization (#11690)",
+      "ascend_impact": false
+    },
+    "bf6bc386df551164c29589873b936a10d08771b0": {
+      "date": "2026-10-05",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "引入 warp-scope ttg.barrier（TritonGPUEnums 加 BarrierScope 枚举、BarrierOp 加 scope 属性与 verifier、lowering 经 targetInfo.warpSync），以及 ttng.arrive_barrier 的 per_warp flag。Membar 学会识别 warp barrier（warpsSynced 状态、requiresWarpBefore 插入 warp barrier）；新增 OptimizeMBarrierArrivalsPass（SynchronizationAnalysis 基于 Membar 状态找冗余 warp barrier、清除非必要的 per_warp 标记，并对每个 barrier group 计算 lcm scale 后统一放大 init/arrive count）。AMD 侧 BarrierOp 对 warp scope 走 failure 交给通用 lowering。改动跨 TritonGPU 方言、Membar、NVIDIA 与 AMD lowering，是当日",
+      "change_summary": "[MEMBAR] Automatic per-warp mbarrier arrival (#11573)",
+      "ascend_impact": false
+    },
+    "74366d933ad3ae8de09be16e2409b32b9b6ea786": {
+      "date": "2026-10-05",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "正确性修复：保证一个 pending 的 mbarrier wait 在所有参与 warp 完成之前，其它线程不能通过写通知对端推进 phase。Membar 引入 ThreadSyncKind::MBarrierWait 与 peerWaitNeedsSync/mayNotifyPeer 状态，并在 requiresThreadSync 中新增 (peerWaitNeedsSync && mayNotifyPeer) 触发条件；通过 hasRegionLocalUses 判定 barrier 与写目标是否局限在相同 region/CTA 从而省略多余 rendezvous。同时重构 hasCrossCTASharedAccess/hasCrossCTAMBarrierUse 到 MBarrierUtilities。属同步语义加固，风险高（错判会导致死锁或数据竞争），由 gluon pytest（test_mbarrier_tma_progress 等）与 lit 覆盖。",
+      "change_summary": "[MEMBAR][CORRECTNESS] Preserve mbarrier wait progress before notifications (#11693)",
+      "ascend_impact": false
+    },
+    "2b48bed223aacb2e3b6f2f728f515905968cb18a": {
+      "date": "2026-10-05",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "Membar 体系大重构（本批次的核心）：移除 arrival/wait/MMA/TMA lowering 各自独立插入的 barrier，统一由 Membar 集中调度，并把线程同步需求（ThreadSyncState/ThreadDemandState/IssuerSummary/CompletionSync）随控制流和函数调用传播，延迟到消费者真正需要时再插入 barrier。新增 BufferIndexAnalysis::entersLoop 与 loopHeaders 追踪，在进入循环前对 CompletionSync::All 的 pending completion 插入一次 barrier；kernl call 改为断言 summary 必须存在。更新了大量 lit 测试与 AMD 相关 MLIR 测试用例（--convert-scf-to-cf 前置）。风险很高（跨后端共享分析接口 + 各 lowering 的 barrier 责任转移），但用大量测试覆盖。",
+      "change_summary": "[Membar] Schedule thread synchronization with Membar analysis (#11481)",
+      "ascend_impact": false
+    },
+    "fa8415bdf83ad9f8f8e0b36aeed5e55677617f7f": {
+      "date": "2026-10-05",
+      "affected_modules": [
+        "python/triton/runtime/autotuner.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/runtime/autotuner.py"
+      ],
+      "interface_changes": "修复 autotune listener 在 interpreter 模式下找不到正确对象的问题：原 while not isinstance(jit_fn, JITFunction) 在 TRITON_INTERPRET=1 时会越过 InterpretedFunction 继续走到 None 报错；改为与 Autotuner.__init__ 的 base_fn 查找完全一致的 while not inspect.isfunction(jit_fn.fn)。改动一行，语义对齐，风险极低。",
+      "change_summary": "[AUTOTUNER] Unwrap the listener kernel the same way as base_fn (#12084)",
+      "ascend_impact": false
+    },
+    "11506fc3501ef0d9e39702c7748616fea8b91877": {
+      "date": "2026-10-05",
+      "affected_modules": [
+        "python/src/ir.cc"
+      ],
+      "affected_interfaces": [
+        "python/src/ir.cc"
+      ],
+      "interface_changes": "修复 bf16 标量常量精度丢失：原实现用 std::to_string(v) 构造 APFloat 字符串（默认 6 位小数），导致 tl.full(..., 1e-8, tl.bfloat16) 变为 0；改为与 get_fp16 一致地用 getBuilder().getFloatAttr(type, v) 直接由 float 构造。属前端 C++ 绑定 bug 修复，附带 7 组小数值测试。风险低。",
+      "change_summary": "[FRONTEND] Build bf16 scalar constants directly instead of through std::to_string (#12103)",
+      "ascend_impact": false
+    },
+    "da9c410f1f91af7fe5006f33d13f49bcebcfaac6": {
+      "date": "2026-10-05",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "AxisInfo 在 arith.select 上保留指针对齐：当 select 的 condition 保持 contiguity 时保留原 divisibility；当 condition 的 constancy 把输出 contiguity 降低时，说明有新 group base 出现在原 group 内部，此时按 contiguity * pointee_elem_bytes 计算新的 divisibility 下界。同时处理 mixed groups（一侧 contiguity 更小）与 poison 情况。变更 lib/Analysis/AxisInfo.cpp 并新增大量 test-alignment.mlir 用例与一个 tritongpu_to_llvm 的向量化用例。属分析层增强，风险中等（会改变下游 vectorization 决策，但仅放宽/收紧为更精确的保守值）。",
+      "change_summary": "[Analysis] Preserve pointer alignment through tensor selects (#12109)",
+      "ascend_impact": false
     }
   }
 }

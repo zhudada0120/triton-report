@@ -1,4 +1,72 @@
 {
+  "d9519f50b6500f14aa381a36149dc832d587f637": {
+    "date": "2026-10-05",
+    "msg": "[Docs] Improve constexpr floor division documentation (#10930)"
+  },
+  "3662b39820260cd28339e86acd8c02468084ae1f": {
+    "date": "2026-10-05",
+    "msg": "[MEMBAR] Fast-path equal AddressSet comparisons (#12117)"
+  },
+  "ad06eedcf59d0340d8de9b9bf540a573e3434318": {
+    "date": "2026-10-05",
+    "msg": "[FRONTEND] Make tl.flip a no-op on a dimension of size 1 (#12066)"
+  },
+  "20d9d98fead78c2f65e1b3ba5a7881d86a836dad": {
+    "date": "2026-10-05",
+    "msg": "[BC-Breaking][NVIDIA] Optimize E5M2 to BF16 conversions (#12086)"
+  },
+  "0ccad974ee86942e704ac06dafdc0c3f214eb229": {
+    "date": "2026-10-05",
+    "msg": "[MEMBAR] Refine TMA and mbarrier synchronization (#11690)"
+  },
+  "af49825f354b1b7c6cb6725a0a0b1ed92819fb28": {
+    "date": "2026-10-05",
+    "msg": "[MEMBAR] Distribute TMA expectations across producer warps (#11697)"
+  },
+  "bf6bc386df551164c29589873b936a10d08771b0": {
+    "date": "2026-10-05",
+    "msg": "[MEMBAR] Automatic per-warp mbarrier arrival (#11573)"
+  },
+  "5ba08e536db6d12a09d47f6dc93347665bcf3373": {
+    "date": "2026-10-05",
+    "msg": "[NVIDIA] Track TMEM thread ownership and publication (#11557)"
+  },
+  "d564edd6a62c6d30ae6d41719e9af584b1d92fe1": {
+    "date": "2026-10-05",
+    "msg": "[NVIDIA] Skip barriers between mbarrier signals and waits (#11556)"
+  },
+  "eb529d89e77a41078642105bacfe7ba0da648068": {
+    "date": "2026-10-05",
+    "msg": "[NVIDIA] Flush pending TMEM accesses before CFG branches (#11555)"
+  },
+  "74366d933ad3ae8de09be16e2409b32b9b6ea786": {
+    "date": "2026-10-05",
+    "msg": "[MEMBAR][CORRECTNESS] Preserve mbarrier wait progress before notifications (#11693)"
+  },
+  "2b48bed223aacb2e3b6f2f728f515905968cb18a": {
+    "date": "2026-10-05",
+    "msg": "[Membar] Schedule thread synchronization with Membar analysis (#11481)"
+  },
+  "fa8415bdf83ad9f8f8e0b36aeed5e55677617f7f": {
+    "date": "2026-10-05",
+    "msg": "[AUTOTUNER] Unwrap the listener kernel the same way as base_fn (#12084)"
+  },
+  "174b934f439cb9ad6fca09abf5b68fd38e3503aa": {
+    "date": "2026-10-05",
+    "msg": "[AMD][CI] Name the test that hangs instead of cancelling the job (#12106)"
+  },
+  "11506fc3501ef0d9e39702c7748616fea8b91877": {
+    "date": "2026-10-05",
+    "msg": "[FRONTEND] Build bf16 scalar constants directly instead of through std::to_string (#12103)"
+  },
+  "da9c410f1f91af7fe5006f33d13f49bcebcfaac6": {
+    "date": "2026-10-05",
+    "msg": "[Analysis] Preserve pointer alignment through tensor selects (#12109)"
+  },
+  "61e7e75a39dbf208875effdc808f587402747cb0": {
+    "date": "2026-10-05",
+    "msg": "[LLVM] Preserve pointer argument alignment during conversion (#12107)"
+  },
   "1e4b57beb3a6fa2abeac38ed958f67bf65966f30": {
     "date": "2026-10-04",
     "msg": "[TEST] Remove the dead out-of-tree backend test (#12097)"

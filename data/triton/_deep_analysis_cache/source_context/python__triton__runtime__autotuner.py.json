@@ -1,5 +1,5 @@
 {
-  "content_hash": "658aa436dced0d44",
+  "content_hash": "b8ad4c3605f36ded",
   "analysis": {
     "interface_summary": "定义 3 个类；定义 23 个函数",
     "key_interfaces": [
@@ -20,5 +20,5 @@
       "Heuristics.run"
     ]
   },
-  "cached_at": "2026-09-07T03:41:07.041922+08:00"
+  "cached_at": "2026-10-06T07:29:41.812175+08:00"
 }
