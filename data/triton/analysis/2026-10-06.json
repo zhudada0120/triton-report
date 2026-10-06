@@ -1,0 +1,187 @@
+{
+  "date": "2026-10-06",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-07T05:57:39.527844+08:00",
+  "daily_summary": "当日变更以 AMD/CDNA5 后端（Gluon warp-pipeline GEMM 示例重构与多 CTA 支持、mbarrier 同步的 TDM 拷贝 membar 过滤）为主，同时包含语言前端新增 any/all 逻辑归约、编译器分析层 BufferRegion 去重性能优化、Triton 优化器移除 reshape-reduce 重排序模式（正确性修复）、Proton 运行时后端注册机制，以及 Windows ARM64 LLVM 构建的 CI 修复。整体方向是：AMD 平台能力与示例扩展、前端算子便利性增强、编译期分析性能与正确性修复、以及工具链/CI 稳定性。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 的影响集中在两处：(1) python/triton/language/standard.py 新增 all/any 归约并导出到 triton.language 与 Gluon language，属于 Ascend 复用的前端 API 面扩展，Ascend 可直接继承使用，同时需要在 Ascend 的算子测试中覆盖；(2) lib/Dialect/Triton/Transforms/Combine.cpp 移除 CombineReshapeReducePatterns，会改变 TTIR 层的 reshape 语义（不再自动 allow_reorder），属于 Ascend 复用 TTIR 前端的必然影响路径，Ascend 的 TritonToLinalg 转换链依赖 reshape 顺序语义，需评估。其余变更（AMD membar/TDM、AMD Gluon 示例、Proton 运行时注册、CI MSVC pin、BufferRegion 分析优化）均不触及 Ascend 的编译链或运行时路径。",
+  "commits": [
+    {
+      "sha": "7f4cac460752188dbada45b41f7aa9417952e552",
+      "comment": "AMD 后端 membar 放置优化。memBar 过滤函数 filterLDSMemoryBarriersDependencies 原本只识别 InitBarrier/ArriveBarrier/AsyncCopyMbarrierArrive/WaitBarrier 四类 mbarrier op，现在扩展为识别任何实现 ttg.MBarrierOpInterface 且带 barrier 操作数的 op（即 amdg.async_tdm_copy_*）。理由是这些 TDM 拷贝完成时会向 mbarrier 发出 LDS atomic arrive，因此已参与 workgroup 级 mbarrier 同步，无需再插入 ttg.barrier；而带 async wait 计数器的无 barrier 拷贝仍保留 barrier。实现仅在 third_party/amd/lib/TritonAMDGPUToLLVM/MembarUtility.cpp 增加了 dyn_cast 分支，测试在 test/Conversion/amd/amdgpu_membar.mlir 新增 3 个用例覆盖无 barrier/有 barrier/循环场景。属于 AMD 平台特定 lowering 的 correct+perf 改进，风险低。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "test",
+        "low-risk",
+        "backend-amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅位于 third_party/amd/lib/TritonAMDGPUToLLVM/MembarUtility.cpp 与 test/Conversion/amd/amdgpu_membar.mlir，属于 AMD TritonGPU→LLVM lowering 路径。Ascend 走 TritonToLinalg 替代路径，不加载 AMD 方言也不使用 MembarUtility。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Do not insert barriers between mbarrier-synchronized TDM copies (#11896)\n\nAn async copy that carries an mbarrier operand sends an LDS atomic\narrive when it completes, so it takes part in mbarrier synchronization\nexactly like AsyncCopyMbarrierArriveOp, which membarFilter already\nrecognizes. The mbarrier orders those accesses across the whole\nworkgroup, so a ttg.barrier between two such ops synchronizes nothing.\n\nCopies without a barrier operand are deliberately not covered here.\nThose are ordered by their async wait instead, and an async wait counter\nis per wave, so it cannot order accesses between waves.\n\nWithout this, a TDM collective expressed with mbarrier completion emits\nmore barriers than the async_tdm_wait formulation it replaces, which\nmakes mbarrier unusable as an alternative."
+    },
+    {
+      "sha": "8262c9a91a1d6828ad4f36437fa0046daa67720d",
+      "comment": "AMD Gluon CDNA5 示例重构：将 f16_gemm_warp_pipeline_cdna5.py 删除，替换为功能更完整的 gemm_warp_pipeline_cdna5.py（1649 行）。新示例支持 BF16、MXFP8、MXFP4、FP8×MXFP4 四种数据类型组合，使用 4x4 CTA cluster、TDM multicast 到 LDS、五阶段流水线、多缓冲输出 epilogue，并新增 CLI（--dtype/--mxfp8-tile/--mxfp8-cluster/--flat-pipeline/--benchmark/--rotate-inputs 等）、参考正确性校验、GPU graph 基准测试与输入轮转。纯示例/文档性质变更，不触及编译器与运行时核心，仅演示 CDNA5 特性。",
+      "tags": [
+        "docs",
+        "test",
+        "low-risk",
+        "backend-amd",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/amd/python/examples/gluon/ 下的 AMD Gluon 示例脚本，不涉及 Python 前端契约、后端抽象或 TTIR/TTGIR 定义。Ascend 不使用 Gluon（默认编译到 TTGIR 且为 NV/AMD 专属），也不加载 AMD 示例。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][Gluon] Add Gluon example for CDNA5 clustered warp-pipeline GEMMs (#12073)\n\n## Summary\nAdd high-performance examples of 8-wave GEMM kernel\n\n  Supported operand combinations:\n\n  - **BF16 × BF16** (`--dtype bf16`)\n- **MXFP8 × MXFP8** (`--dtype mxfp8`): FP8 E4M3 operands with E8M0 block\nscales.\n- **MXFP4 × MXFP4** (`--dtype mxfp4`): FP4 E2M1 operands with E8M0 block\nscales.\n- **FP8 × MXFP4** (`--dtype fp8_mxfp4`): unscaled FP8 E4M3 A and FP4\nE2M1 B with E8M0 block scales.\n  - **All four variants** (`--dtype all`, the default).\n\nAll kernels use FP32 accumulation and BF16 output. TDM transfers\nmulticast operands into shared memory.\n\nBF16 uses a two-tile unrolled load/compute/refill schedule. The three\nscaled variants use five-stage pipelines with delayed cluster waits,\nsix-tile main-loop unrolling, and cleanup/drain handling.\n\nMXFP8 supports explicit CTA tile and CGA cluster selection. An optional\ntwo-buffer output epilogue overlaps the BK256 output stores. Matrix\ndimensions are supplied through the CLI, and unsupported configurations\nare rejected.\n\nThe example includes reference correctness checks and GPU graph\nbenchmarking, with optional rotation through distinct input/output\nallocations. Input generation, compilation, and correctness checking are\nexcluded from timing.\n\n  ## Command-line options\n\n  ### Kernel configuration\n\n- `--dtype {all,bf16,mxfp8,mxfp4,fp8_mxfp4}`: kernel variant; default\n`all`.\n  - `-M`, `-N`, `-K`: matrix dimensions.\n- `--mxfp8-tile {256x256x256,128x128x512,64x64x512}`: MXFP8 CTA tile;\nrequired when running MXFP8, including with `--dtype all`.\n- `--mxfp8-cluster {2x2,4x4}`: MXFP8 CGA cluster; required when running\nMXFP8.\n- `--mxfp8-output-buffers {1,2}`: output LDS buffer count; default `1`.\nTwo buffers require the BK256 MXFP8 tile.\n- `--flat-pipeline`: fully unroll the loop including tail so compiler\ncan fully optimize it. Only supports mxfp8 for now.\n\n  ### Inputs and correctness\n\n- `--input {auto,random,trig,positive_mxfp8}`: input generation mode;\ndefault `auto`. `--input-mode` is an alias.\n  - `--seed`: random seed; default `42`.\n- `--check`: verify output against a reference. Enabled automatically\nwhen neither checking nor benchmarking is requested.\n\n`auto` selects trig inputs for BF16, MXFP8, and MXFP4, and random inputs\nfor FP8 × MXFP4. `positive_mxfp8` generates positive FP8 values and E8M0\nscales and requires `--dtype mxfp8`.\n\n  ### Benchmarking\n\n  - `--benchmark`: measure kernel execution using GPU graphs.\n  - `--warmup`: warmup launches; default `20`.\n- `--rotate-inputs`: benchmark distinct copies of operands, scales, and\noutput. Disabled by default; implies `--benchmark`.\n- `--repeats`: total timed launches with rotation; default `100`, range\n`1–200`.\n  - `--samples`: timing samples; default `4`. Rotation requires `1`.\n- `--replays`: graph replays per sample; default `20`. Rotation requires\n`1`.\n- `--iters-per-graph`: launches per graph; default `50`. With rotation,\nmust equal `--repeats`.\n  - `-h`, `--help`: display usage and option descriptions.\n\n  ## Validation\n\n- Correctness checks for all four data-type combinations and all\nsupported MXFP8 tile/cluster combinations.\n  - Positive input values and scales match the archived generator.\n- One- and two-buffer MXFP8 output epilogues produce bitwise-identical\nresults.\n  - Python syntax, formatting, and whitespace checks passed."
+    },
+    {
+      "sha": "44d20e046234badbdc703f0a6c6bbe5893cfa3dc",
+      "comment": "前端新增 any/all 逻辑归约便捷算子。在 python/triton/language/standard.py 中用 @jit + @core._tensor_member_fn 定义 all/any，实现为 core.reduce(input.to(core.int1), axis, _elementwise_min/_elementwise_max, keep_dims=...)，即用 min/max redux 替代 tl.sum(pred) != 0，作者给出实测 min/max 较 sum 有 1.07x~1.62x 提速。同时在 language/__init__.py、docs/python-api/triton.language.rst、core.py 的 tensor 成员方法声明（all/any）导出，Gluon 侧通过 _import_from_triton 引入 all/any 并更新 gluon/language/__init__.py、docs/gluon/api/language.rst。测试在 python/test/unit/language/test_standard.py 新增 test_all_any_reduction，覆盖 bool/uint8/int32/float32、axis=None/0/1/-1、keep_dims、member/non-member 调用与 zeros/nonzero/mixed 输入模式。属于纯前端 API 扩展，向后兼容，签名遵循既有 reduce 约定。",
+      "tags": [
+        "feature",
+        "test",
+        "docs",
+        "low-risk",
+        "frontend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "python/triton/language/standard.py 新增 all/any 并被 python/triton/language/__init__.py 导出，属于 Ascend 直接复用的前端 API 面（Ascend 复用 AST→TTIR 前端与 language 模块），Ascend kernel 可直接调用 tl.all/tl.any。该变更本身不修改任何既有签名，不破坏 AscendBackend/NPUDriver 的契约；但新算子最终降低为 tt.reduce + arith.min/max (int1)，需要 Ascend 的 TritonToLinalg 转换链能正确支持 int1 类型上的 reduce min/max（elementwise min/max 语义），否则 Ascend 上编译/运行会失败。Gluon 侧 all/any 通过 _import_from_triton 引入，Ascend 不使用 Gluon 无需关注。",
+        "testing": "需要在 triton-ascend 的算子/前端测试中覆盖 tl.all/tl.any（沿 axis=None/0/1、keep_dims、多种输入 dtype 的语义与数值正确性），并验证其在 Ascend 后端 lowering 后的运行结果与 torch.all/torch.any 一致。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/（新增 tl.all/tl.any 归约用例）",
+          "python/test/unit/language/test_standard.py（同步上游用例以验证 Ascend 后端）"
+        ]
+      },
+      "message": "[Standard] Add any/all reductions (#12129)\n\nThis adds a convenience helper for doing any/all reductions. Lots of\nexisting code does `tl.sum(pred) != 0` for any, but it turns out that\nthe min/max redux operations are more efficient than the add operation\nso this results in higher latency:\n\nElements | Min/max, ns/iteration | Sum, ns/iteration | Speedup\n-- | -- | -- | --\n32 | 22.6 | 36.6 | 1.62×\n128 | 57.4 | 81.8 | 1.43×\n512 | 71.0 | 102.5 | 1.44×\n2048 | 110.2 | 140.7 | 1.28×\n8192 | 265.8 | 283.7 | 1.07×\n\nBuilding the faster method into the stdlib should encourage its use more\nbroadly.",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "c06feeba611111fe2838f251e467e3f33b16b9d7",
+      "comment": "CI 修复：windows-11-arm runner 迁移到 VS 2026 镜像后其 MSVC 14.51 在编译生成的 AMDGPU 表时堆耗尽并触发 mlir-tblgen 的 ARM64 ICE。改为在 .github/workflows/llvm-build.yml 的 Windows 11 ARM64 matrix 项显式指定 msvc_toolset: '14.44'，并将该参数透传给 ilammy/msvc-dev-cmd 的 toolset。同时把 cmake/amd-llvm-build-info.json 的 build_number 从 1 提升到 2 以触发 main 分支的重新构建并上传完整包（含 Windows ARM64）。纯 CI/工具链变更，无代码语义影响。",
+      "tags": [
+        "ci",
+        "chore",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅涉及 .github/workflows/llvm-build.yml 与 cmake/amd-llvm-build-info.json 的构建配置，不改变任何编译器接口或运行时行为。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[CI] Pin MSVC 14.44 toolset for Windows ARM64 LLVM builds (#12127)\n\nThe windows-11-arm runner label moved to the Visual Studio 2026 image,\nwhose MSVC 14.51 runs out of heap compiling the generated AMDGPU tables\nand hits an internal compiler error in mlir-tblgen on ARM64. The image\nstill ships the 14.44 toolset side by side, so select it explicitly.\n\nBump the AMD codegen build number so the push to main rebuilds and\nuploads a complete set of packages, including Windows ARM64."
+    },
+    {
+      "sha": "1c1604eea99f51d319edda6fc9176b583a19c2af",
+      "comment": "编译器分析层性能优化：include/triton/Analysis/BufferRegion.h 将 BufferRegionView 全部字段改为 const 并把 RegionInfo::ViewList 从 std::set 换成 std::unordered_set，配合 BufferRegionView::Hash（缓存 std::optional<size_t> 全内容哈希，translated/subview 产生新值并清空缓存），lib/Analysis/BufferRegion.cpp 实现 hash()（hash_combine 覆盖 allocationFrame/region.baseOffset/length/storageBase/affineOffset/affinePartitionOffset/affineCTAOffset/allocation/partitionBases 以及 ctaAddresses 中每个 cta 的地址集合），translated()/getAllocView()/getSubView()/getScratchFootprint() 改为按新构造方式产生不可变视图。RegionInfo 增加 copy-and-swap operator= 以兼容 libc++ 上不可赋值元素，print() 对 unordered 视图排序保证诊断确定性；lib/Dialect/TritonInstrument/IR/Utility.cpp 对 emitted cases 按 (baseOffset, ctaMask) 排序保证 ConSan 输出稳定。测试新增 unittest/Analysis/UtilityTest.cpp 的哈希跟踪/不可变/容器赋值/碰撞用例、test/lib/Analysis/TestBufferRegion.cpp 调整构造、test/Analysis/test-membar.mlir 新增 equal_large_footprints 回归。属于分析基础设施内部改造，可能影响依赖 BufferRegionAnalysis 语义的下游 pass，但接口语义保持一致。",
+      "tags": [
+        "performance",
+        "refactor",
+        "test",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 include/triton/Analysis/BufferRegion.h、lib/Analysis/BufferRegion.cpp、lib/Dialect/TritonInstrument/IR/Utility.cpp 及对应测试。BufferRegionAnalysis 与 TritonInstrument 是 NV/AMD 路径（membar 放置、ConSan sanitizer）使用的分析基础设施，Ascend 使用 TritonToLinalg 路径且不调用 membar/ConSan 相关分析，因此不触及 Ascend 编译链。变更未修改 BufferRegionView 的相等语义（仍要求全字段相等），也未改动 TTIR/TTGIR 定义或后端契约。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Analysis] Speed up buffer-view deduplication (#12085)\n\n## Summary\n\nReplace ordered buffer-view deduplication with a hash set. This avoids\nrepeated address-set comparisons used only to order views. Each stored\nview caches a full hash of its metadata, cooperative thread array (CTA)\nIDs, and exact address sets. Matching hashes still require full\nequality.\n\n`BufferRegionView` stores its full-content hash in a private\n`std::optional`, computed on first use by the hash set. All equality\nfields are const, so the cached value cannot become stale. Translation\nand subview construction produce new values with empty caches; copies\npreserve the cache. Equality can reject different cached hashes\nimmediately, but matching hashes still require full comparison.\n`RegionInfo` uses copy-and-swap assignment for libc++ compatibility with\nimmutable elements. Diagnostics and emitted sanitizer cases are sorted\nfor deterministic output.\n\nHash collisions can still require O(n²) equality checks across n\ninsertions; ordered-set insertion requires O(n log n) ordering\ncomparisons.\n\n## Desired features\n\n- Deduplicate buffer views without per-insertion address-set ordering.\n- Lazily cache full-content hashes inside immutable buffer views.\n\n## Validation\n\nNVIDIA GB300 / Linux AArch64; two fresh-process, empty-cache runs per\nworkload, with line information disabled. Previously recorded mean\ncompilation times, before this immutable-view refactor: **1.482 s**\nsynthetic, **10.346 s** for 15 tutorial/example compilations, and\n**49.578 s** for the 135-compilation sweep. Synthetic timing covers cold\ncompilation; tutorial timing sums compiler-listener measurements.\n\nValidation includes native analysis tests and compiler regressions on\nmacOS (Apple Clang/libc++) and Linux AArch64 (GCC/libstdc++), plus\nfocused Concurrency Sanitizer (ConSan) GPU tests on NVIDIA GB300.\nPerformance benchmarks were not rerun for this immutable-view refactor.\nEarlier benchmark runs matched GPU test outcomes and compiled binaries;\nearly source/IR names matched after normalizing Python object addresses.\n\n### Recorded master comparison\n\n**These historical benchmark and profile tables predate cached\nfull-content hashing; their PR columns do not measure the current\nhead.** Master is `dd7167259f38`; LLVM is `b010a18d2b64`. Times are\nseconds; two cold runs per individual workload and one per compiler for\nthe 135-compilation sweep.\n\n| Workload | Master | This PR | Speedup |\n| --- | ---: | ---: | ---: |\n| Synthetic stress case | 70.308 | 1.453 | 48.40x |\n| Overlapping accumulator | 2.325 | 0.663 | 3.51x |\n| Multi-CTA tutorial | 1.477 | 0.624 | 2.37x |\n| Attention | 6.531 | 3.707 | 1.76x |\n| 135-compilation tutorial/example sweep | 72.545 | 50.545 | 1.44x |\n\n**Recorded profile highlights — time and share of compilation:**\n\n| Cost | Synthetic stress case | 15 tutorial/example kernels |\n| --- | ---: | ---: |\n| Equality | 52.0 ms (3.55%) | 17.5 ms (0.17%) |\n| Copying | 366.8 ms (25.04%) | 135.2 ms (1.33%) |\n| Footprint construction | 39.9 ms (2.72%) | 267.3 ms (2.62%) |\n| All measured analysis operations | 472.6 ms (32.25%) | 532.1 ms\n(5.22%) |\n\nProfile: `bf5bb5373058`, excluding nested double-counting; timer\noverhead may remain. The recorded master/hash-set comparison produced\nidentical GPU binaries, and the synthetic also matched intermediate\nrepresentations and PTX. Historical hash-variant checks matched binaries\nand LLVM IR across 30 focused and 270 broad compilation pairs.\n\nRecorded native collision stress before the move optimization: 4,096\nviews sharing descriptor metadata took **2.079 ms** with an 8-address\ncommon prefix and **7.909 ms** with a 256-address common prefix,\nincluding construction, hash preparation, and insertion (two-run means).\n\n## Lines Changed\n\n| Type | Added | Removed | Net |\n| --- | ---: | ---: | ---: |\n| Tests | 133 | 7 | 126 |\n| Core Logic | 110 | 38 | 72 |\n| AutoGenerated | 0 | 0 | 0 |\n| Total | 243 | 45 | 198 |\n\n## Synthetic benchmark\n\nThis kernel repeatedly merges two equal shared-memory footprints across\n128 unrolled branches. It deliberately exaggerates comparison cost,\nrather than representing a typical workload.\n\nMeasured with `WIDTH=131072`, `STEPS=128`, `CTAS=8`, `STAGES=1`,\n`num_warps=4`, `num_ctas=8`, and `grid=(1,)`. The first two `flags`\nentries are zero; the remaining entries are runtime booleans. Timing\ncovers cold compilation; GPU execution is checked afterward (all 128\noutputs must equal 9).\n\n<details>\n<summary>Synthetic kernel</summary>\n\n```python\nfrom triton.experimental import gluon as g\nfrom triton.experimental.gluon import language as gl\n\n@g.jit\ndef descriptor_swap(flags, out, WIDTH: gl.constexpr, STEPS: gl.constexpr, CTAS: gl.constexpr, STAGES: gl.constexpr):\n    cga: gl.constexpr = [[0]] * (CTAS.bit_length() - 1)\n    layout: gl.constexpr = gl.BlockedLayout([1], [32], [4], [0], cga_layout=cga)\n    parent = gl.allocate_shared_memory(gl.int8, [STAGES, WIDTH], gl.SwizzledSharedLayout(1, 1, 1, [0], cga_layout=cga))\n    for stage in gl.static_range(STAGES):\n        parent.index(stage).slice(0, 128).store(gl.full([128], 3 + 4 * stage, gl.int8, layout))\n    ia = gl.load(flags)\n    ib = gl.load(flags + 1)\n    if STAGES != 1:\n        ia = ia % STAGES\n        ib = ib % STAGES\n    a = parent.index(ia)\n    b = parent.index(ib)\n    for i in gl.static_range(STEPS):\n        cond = gl.load(flags + 2 + i) != 0\n        if cond:\n            a, b = b, a\n    x = a.slice(0, 128).load(layout)\n    y = b.slice(0, 128).load(layout)\n    gl.store(out + gl.arange(0, 128, layout=layout), x.to(gl.int32) + 2 * y.to(gl.int32))\n```\n\n</details>\n\n## Reviewers Guide\n\n- `include/triton/Analysis/BufferRegion.h`: immutable view fields, lazy\nhash cache, hash-set storage, and deterministic printing.\n- `lib/Analysis/BufferRegion.cpp`: full-content hashing and construction\nof translated views and subviews.\n- `lib/Dialect/TritonInstrument/IR/Utility.cpp`: sorts `(baseOffset,\nctaMask)` cases for deterministic ConSan output.\n- `test/lib/Analysis/TestBufferRegion.cpp`: constructs views with their\nallocation frame.\n- `unittest/Analysis/UtilityTest.cpp` and\n`test/Analysis/test-membar.mlir`: equality/collision, immutable\ncached-hash, container assignment, and barrier regressions.\n\nThere are no movement-only files."
+    },
+    {
+      "sha": "b1c34b00c7f6a6819927577c00a98c0753c1709f",
+      "comment": "正确性修复：lib/Dialect/Triton/Transforms/Combine.cpp 删除 CombineReshapeReducePatterns 模式及其注册。该模式会把所有 user 均为 tt.reduce/tt.histogram 的一维 tt.reshape 的 allow_reorder 置为 true，在多操作数 reduce 或带 mask 的 histogram 场景下会破坏操作数之间的逐元素对应关系。删除后 reshape 保持元素顺序语义。同步更新 test/Triton/combine.mlir 的 test_reshape_reduce 期望（CHECK 不再含 allow_reorder），并在 test/TritonGPU/combine.mlir 新增 4 个用例（单/多操作数标量 reduce、histogram、masked histogram）验证 remove_layout_conversions 能在不依赖 allow_reorder 的情况下消除输入输出 layout 转换且保持元素顺序。这是 TTIR 层语义收紧，属于 Triton 方言 transform 行为变更。",
+      "tags": [
+        "bugfix",
+        "test",
+        "medium-risk",
+        "dialect-triton"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "lib/Dialect/Triton/Transforms/Combine.cpp 属于 Ascend 复用 TTIR 前端的必然影响路径（Ascend 从 tt 方言 op 定义与 transforms 开始 TritonToLinalg 转换）。移除 CombineReshapeReducePatterns 后，tt.reshape 不再被自动标记 allow_reorder，Ascend 的 lowering 链拿到的是保序 reshape。若 Ascend 侧此前依赖 allow_reorder=true 做 layout 消除或 reshape 自由化优化（例如把 reshape 折叠进 linalg 转换），则需要重新评估 TritonToLinalg 中 reshape 处理逻辑；若 Ascend 一直按保序语义处理，则本次变更为语义对齐且更安全。需确认 Ascend 的 reshape lowering 不依赖 allow_reorder 属性。",
+        "testing": "需要在 triton-ascend 的 Conversion/前端测试中验证 reshape 保序语义下的归约（单/多操作数）、直方图与 masked histogram 行为，确保移除 allow_reorder 后 Ascend 编译链不出现 layout 转换缺失或数值错误。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/（reshape+reduce/histogram 保序用例）",
+          "third_party/ascend/unittest/pytest_ut/（reshape 相关算子端到端测试）"
+        ]
+      },
+      "message": "[Optimizer] Remove reshape reduction reordering pattern (#12124)\n\nReshape operands of a multi-operand reduction or a masked histogram must\npreserve their elementwise correspondence.\n`CombineReshapeReducePatterns` independently marks one-dimensional\nreshapes as `allow_reorder`, which can break that correspondence. Remove\nthe pattern and its registration, and update the existing combine test\nto check that reshape order is preserved.\n\nThe layout-conversion tests cover ordered reshapes feeding single- and\nmulti-operand scalar reductions, plus plain and masked histograms. They\ncheck that `remove_layout_conversions` eliminates the input/output\nconversions while preserving element order and operand correspondence,\nwithout running `triton-combine`.\n\n## Validation\n\nMonorepo CI tested compiler commit `becbd4eb85`, based directly on the\nOpenAI monorepo's Triton pin, `fa8415bdf8`. Commit `314f33c59b` adds\nonly the lit coverage described below; the compiler change is unchanged.\n\n- [Normal OpenAI monorepo\nCI](https://buildkite.com/openai-mono/monorepo/builds/8265104)\n(internal), via the [Triton wheel pin\nupdate](https://github.com/openai/openai/pull/1654370), reports\n**success**. 2,302 jobs passed, including the non-quarantined KI\ncorrectness and runtime-performance checks. All seven initially blocking\ntimeout failures passed on retry; no confirmed correctness or\nruntime-performance regression was found.\n- Coverage limits: 69 quarantined jobs were skipped, two reporting jobs\nhad non-blocking timeouts, and the optional async/personal suites were\nnot run.\n- Rebuilt the exact source on a Brix GB300 devbox: 303 lit tests passed\n(2 unsupported), and all 20 focused reshape/histogram GPU tests passed.\n- With the added cases, `test/TritonGPU/combine.mlir` passes on Brix\nGB300 using the previously built compiler and the verified updated test\nsource. The run invokes only `tritongpu-remove-layout-conversions` and\nCSE.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "lib/Dialect/Triton/"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "fea7e5ed91d2399f629e789a673c72a4d2376804",
+      "comment": "Proton 扩展：新增 proton::registerBackend(BackendRegistration) 允许后端在运行时注册 profiler/device/runtime，解决此前只能通过 TRITON_PLUGIN_DIRS 在构建期注册的问题。实现上 third_party/proton/csrc/lib/Backend/RegisteredBackends.in 把 static 向量提取为 registrations() 访问器，getBackendRegistrations() 返回同一容器，registerBackend() 做 push_back，因此运行时注册与构建期注册共用注册表且构建期在后端优先级更高。DeviceType.in 新增 EXTERNAL 枚举（单槽位，每进程仅一个运行时注册后端）。HatchetMsgPack.cpp 改为从 getDeviceRegistrations() 取设备名而非遍历 DeviceType 枚举，避免未使用的 EXTERNAL 需要名字。文档与 BackendRegistrationTest 新增 testRuntimeRegistration。属于 Proton 独立子系统扩展，需 TRITON_EXT_ENABLED 构建。",
+      "tags": [
+        "feature",
+        "test",
+        "docs",
+        "low-risk",
+        "proton"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/proton/ 下的独立性能剖析子系统，除非 Ascend 显式启用 Proton，否则不参与 Ascend 编译与运行路径。变更未修改 BaseBackend/DriverBase/TargetInfoBase 或 TTIR/TTGIR 定义，也不影响 triton.backends 发现机制。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[PROTON][triton-ext] Allow registering a backend at runtime (#12118)\n\nCloses #12048\n\nProton backends can only be registered at build time, through\n`TRITON_PLUGIN_DIRS` (#10246). A backend shipped as its own package\nagainst an already built Triton cannot add its profiler, device and\nruntime.\n\nThis adds `proton::registerBackend()`. The backend's library calls it\nwhen it is loaded, for example from the package Triton imports through\nthe `triton.backends` entry point, so no new discovery mechanism is\nneeded.\n\n- Runtime registrations go into the same registry as the build-time\nones, after them, so every existing query sees them and build-time\nbackends keep priority. Build-time registration is unchanged.\n- The device of such a backend uses the new `DeviceType::EXTERNAL`.\nThere is one such value, so one runtime-registered backend per process.\n**_(Should there be more slots in advance?)_**\n- The msgpack dump now takes device type names from the registrations\ninstead of looking up every value up to `COUNT`, so an unused `EXTERNAL`\nneeds no name.\n- `registerBackend` is resolved from `libproton`, so this needs a build\nwith `TRITON_EXT_ENABLED`, as the official wheels are.\n\nTested with a new case in `BackendRegistrationTest`, and end to end with\na profiler built as a separate library and registered this way. Profiler\nselection, the `proton` CLI in a child process, and hatchet and msgpack\noutput work as they do with a profiler built into Proton.\n\n@Jokeren @GeorgeWigley @abrown"
+    },
+    {
+      "sha": "3c313d577931655180051dedef38c97976f930a1",
+      "comment": "AMD Gluon 示例扩展：为 third_party/amd/python/examples/gluon/mxfp_gemm_cdna5.py 增加 multi-CTA 支持。核心改动是在 MXFPGEMMConfig 中新增 CGA_LAYOUT 字段并推导 cga_a/cga_b/cga_b_data，get_wmma_layout/get_scale_blocked_layout 支持传入 cga_layout，shared_layout_a/b/scale 使用带 cga_layout 的 PaddedSharedLayout，kernel 签名新增 CGA_LAYOUT 并 static_assert(num_ctas == 2**len(CGA_LAYOUT))，同时新增 validate_cga_layout 校验 preshuffled scale 的 128 行分组约束。测试新增 test_runtime_mxgemm_tdm_multi_cta 参数化 11 个多 CTA 组合（baseline/sliceK 支持 M/N/M×N 切分，sliceNK 不支持 N 切分，sliceMNK 暂不支持），CLI 新增 --ctas_m/--ctas_n。纯 AMD Gluon 示例能力扩展，不触及编译器与后端契约。",
+      "tags": [
+        "docs",
+        "test",
+        "feature",
+        "low-risk",
+        "backend-amd",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/amd/python/examples/gluon/mxfp_gemm_cdna5.py，属于 AMD CDNA5 Gluon 示例的组合与调度扩展，不修改 Python 前端契约、BaseBackend/DriverBase 抽象或 TTIR/TTGIR 定义。Ascend 不使用 Gluon 也不加载 AMD 示例。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][GLUON] Add multi-cta to mxfp gemm example on CDNA5 (#12119)\n\nThis PR adds multi-cta support to the simpler scheduling variants:\n\nSchedule | M split | N split | M×N split\n-- | -- | -- | --\nbaseline | Yes | Yes | Yes\nsliceK | Yes | Yes | Yes\nsliceNK | Yes | No | No\nsliceMNK | No | No | No\n\nThe missing variants will be added in a followup PR. They require\nreshapes/permutes so it's easier to review if they are in a separate PR."
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

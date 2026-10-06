@@ -1,4 +1,36 @@
 {
+  "7f4cac460752188dbada45b41f7aa9417952e552": {
+    "date": "2026-10-06",
+    "msg": "[AMD] Do not insert barriers between mbarrier-synchronized TDM copies (#11896)"
+  },
+  "8262c9a91a1d6828ad4f36437fa0046daa67720d": {
+    "date": "2026-10-06",
+    "msg": "[AMD][Gluon] Add Gluon example for CDNA5 clustered warp-pipeline GEMMs (#12073)"
+  },
+  "44d20e046234badbdc703f0a6c6bbe5893cfa3dc": {
+    "date": "2026-10-06",
+    "msg": "[Standard] Add any/all reductions (#12129)"
+  },
+  "c06feeba611111fe2838f251e467e3f33b16b9d7": {
+    "date": "2026-10-06",
+    "msg": "[CI] Pin MSVC 14.44 toolset for Windows ARM64 LLVM builds (#12127)"
+  },
+  "1c1604eea99f51d319edda6fc9176b583a19c2af": {
+    "date": "2026-10-06",
+    "msg": "[Analysis] Speed up buffer-view deduplication (#12085)"
+  },
+  "b1c34b00c7f6a6819927577c00a98c0753c1709f": {
+    "date": "2026-10-06",
+    "msg": "[Optimizer] Remove reshape reduction reordering pattern (#12124)"
+  },
+  "fea7e5ed91d2399f629e789a673c72a4d2376804": {
+    "date": "2026-10-06",
+    "msg": "[PROTON][triton-ext] Allow registering a backend at runtime (#12118)"
+  },
+  "3c313d577931655180051dedef38c97976f930a1": {
+    "date": "2026-10-06",
+    "msg": "[AMD][GLUON] Add multi-cta to mxfp gemm example on CDNA5 (#12119)"
+  },
   "d9519f50b6500f14aa381a36149dc832d587f637": {
     "date": "2026-10-05",
     "msg": "[Docs] Improve constexpr floor division documentation (#10930)"

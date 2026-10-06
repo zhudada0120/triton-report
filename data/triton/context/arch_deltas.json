@@ -819,6 +819,30 @@
       "interface_changes": "AxisInfo 在 arith.select 上保留指针对齐：当 select 的 condition 保持 contiguity 时保留原 divisibility；当 condition 的 constancy 把输出 contiguity 降低时，说明有新 group base 出现在原 group 内部，此时按 contiguity * pointee_elem_bytes 计算新的 divisibility 下界。同时处理 mixed groups（一侧 contiguity 更小）与 poison 情况。变更 lib/Analysis/AxisInfo.cpp 并新增大量 test-alignment.mlir 用例与一个 tritongpu_to_llvm 的向量化用例。属分析层增强，风险中等（会改变下游 vectorization 决策，但仅放宽/收紧为更精确的保守值）。",
       "change_summary": "[Analysis] Preserve pointer alignment through tensor selects (#12109)",
       "ascend_impact": false
+    },
+    "44d20e046234badbdc703f0a6c6bbe5893cfa3dc": {
+      "date": "2026-10-06",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "前端新增 any/all 逻辑归约便捷算子。在 python/triton/language/standard.py 中用 @jit + @core._tensor_member_fn 定义 all/any，实现为 core.reduce(input.to(core.int1), axis, _elementwise_min/_elementwise_max, keep_dims=...)，即用 min/max redux 替代 tl.sum(pred) != 0，作者给出实测 min/max 较 sum 有 1.07x~1.62x 提速。同时在 language/__init__.py、docs/python-api/triton.language.rst、core.py 的 tensor 成员方法声明（all/any）导出，Gluon 侧通过 _import_from_triton 引入 all/any 并更新 gluon/language/__init__.py、docs/gluon/api/language.rst。测试在 python/test/unit/language/t",
+      "change_summary": "[Standard] Add any/all reductions (#12129)",
+      "ascend_impact": false
+    },
+    "b1c34b00c7f6a6819927577c00a98c0753c1709f": {
+      "date": "2026-10-06",
+      "affected_modules": [
+        "lib/Dialect/Triton/"
+      ],
+      "affected_interfaces": [
+        "lib/Dialect/Triton/"
+      ],
+      "interface_changes": "正确性修复：lib/Dialect/Triton/Transforms/Combine.cpp 删除 CombineReshapeReducePatterns 模式及其注册。该模式会把所有 user 均为 tt.reduce/tt.histogram 的一维 tt.reshape 的 allow_reorder 置为 true，在多操作数 reduce 或带 mask 的 histogram 场景下会破坏操作数之间的逐元素对应关系。删除后 reshape 保持元素顺序语义。同步更新 test/Triton/combine.mlir 的 test_reshape_reduce 期望（CHECK 不再含 allow_reorder），并在 test/TritonGPU/combine.mlir 新增 4 个用例（单/多操作数标量 reduce、histogram、masked histogram）验证 remove_layout_conversions 能在不依赖 allow_reorder 的情况下消除输入输出 layout 转换且保持元素顺序。这是 TTIR 层语义收紧，属于 Trit",
+      "change_summary": "[Optimizer] Remove reshape reduction reordering pattern (#12124)",
+      "ascend_impact": false
     }
   }
 }
