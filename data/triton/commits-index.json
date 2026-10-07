@@ -1,4 +1,56 @@
 {
+  "32f06df4bf1c30885ff61ee3488836ca81ed65f0": {
+    "date": "2026-10-07",
+    "msg": "[AMD][gfx1250] Use explicit fma in mxfp FA example (#12156)"
+  },
+  "0fe4694a34d3f47da460142c97ca595db4b5fd53": {
+    "date": "2026-10-07",
+    "msg": "[Gluon] Release native builder references at shutdown (#12153)"
+  },
+  "2c4734af22b154a20fc6886e76e93439c2a016aa": {
+    "date": "2026-10-07",
+    "msg": "[AMD] Fix RDNA DRAM bandwidth estimates (#11922)"
+  },
+  "ef68b539a4c30dacaa6fcbbb209a0ecdc7c2c166": {
+    "date": "2026-10-07",
+    "msg": "[AMD][gfx1250] Lower math.fma to packed FMA (#12154)"
+  },
+  "0d4e0a0ceae18cecacf582b9c6f557847a772bdf": {
+    "date": "2026-10-07",
+    "msg": "[AMD] Match the standalone code generator's NDEBUG to its LLVM's (#12123)"
+  },
+  "ec1672ba0f6f3f720e0eab9f784a513b4879bc30": {
+    "date": "2026-10-07",
+    "msg": "[AMD][FpSan] Support compact scaled FP4 upcasts (#12140)"
+  },
+  "1666e85e189a96db0890ccc5ba5572a40e5f1180": {
+    "date": "2026-10-07",
+    "msg": "[AMD][gfx1250] Support CTA-local slicing in MXFP GEMM example (#12143)"
+  },
+  "65acdb9fcaf4a2a5897f47fc3c517a10472f7751": {
+    "date": "2026-10-07",
+    "msg": "[AMD] Use the codegen library to upgrade legacy named barriers (#12147)"
+  },
+  "ac37c71f15e6f67cf4f3b2484a0f43ec513d1171": {
+    "date": "2026-10-07",
+    "msg": "[triton_kernels] Preserve feasible Hopper MXFP4 occupancy (#12132)"
+  },
+  "4daa27c97f93aaca1e74d38d51d23f2ac2cc5908": {
+    "date": "2026-10-07",
+    "msg": "[KERNELS] Support NVFP4 activations with MXFP4 weights by upcasting via MXFP8 (#12135)"
+  },
+  "4a5147d919defd3064388d4cdd202fb5e9403b61": {
+    "date": "2026-10-07",
+    "msg": "[AMD] Remove pre-CDNA2 target support (#12146)"
+  },
+  "9448f5bf1da6cea9050e714a411e4941469705f5": {
+    "date": "2026-10-07",
+    "msg": "[NVIDIA] Raise the LLVM PTX version cap to 9.4 (#12087)"
+  },
+  "d384927313d01b3be466fabad70ff5a8cb0800f0": {
+    "date": "2026-10-07",
+    "msg": "[AMD] Convert legacy named barriers in the codegen library (#12145)"
+  },
   "7f4cac460752188dbada45b41f7aa9417952e552": {
     "date": "2026-10-06",
     "msg": "[AMD] Do not insert barriers between mbarrier-synchronized TDM copies (#11896)"

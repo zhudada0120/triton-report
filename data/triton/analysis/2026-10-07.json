@@ -1,0 +1,239 @@
+{
+  "date": "2026-10-07",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-08T06:21:32.038097+08:00",
+  "daily_summary": "当日变更集中在 AMD 后端（gfx1250 打包 FMA 降低、RDNA DRAM 带宽估算修正、legacy named barrier 迁移至 codegen 库、移除 pre-CDNA2 目标支持、MXFP GEMM/FpSan 示例与修复）以及 NVIDIA 侧（PTX 9.4/SM107 支持、Hopper MXFP4 占用率启发式、NVFP4×MXFP4 量化路径）。另有 Gluon 语义模块在解释器关闭时释放 native builder 引用的内存泄漏修复。整体以 AMD 平台适配与 triton_kernels 数值路径的性能/正确性优化为主，核心前端与后端抽象接口基本未变。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 基本无影响。绝大多数改动位于纯平台特定路径（third_party/amd、third_party/nvidia）或 triton_kernels 与教程/测试文件，均不落入 ascend 的接口面或跨项目影响规则中的必然/可能影响清单。Gluon 语义模块（python/triton/experimental/gluon/language/_semantic.py）的 TYPE_CHECKING 与延迟注解修改理论上属于 Gluon 前端，但该文件只涉及类型注解导入与解释器关闭时的引用释放，不改变 GluonOpBuilder 接口、ASTSource/JITFunction 基类行为或 add_stages 契约，Ascend 默认不使用 Gluon，且未触及 TritonSemantic/CodeGenerator 的 monkey-patch 挂载点，因此对 triton-ascend 无功能或测试层面影响。",
+  "commits": [
+    {
+      "sha": "32f06df4bf1c30885ff61ee3488836ca81ed65f0",
+      "comment": "纯示例改动：在 third_party/amd/python/examples/gluon/mxfp_fa_cdna5.py 中把 softmax 归一化相关的 `x * sm_scale - m` 与 `l_i * alpha + l_ij` 等表达式替换为 ttgl.fma，使 AMD 默认 enable_fp_fusion=False 下也能生成 v_pk_fma_f32。变更仅限 AMD Gluon 示例 kernel 源码，等价改写不改变语义，仅依赖 gluon 已支持 ttgl.fma 并能在 gfx1250 上选择打包 FMA。风险低。",
+      "tags": [
+        "performance",
+        "low-risk",
+        "amd-gluon-example"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][gfx1250] Use explicit fma in mxfp FA example (#12156)\n\nAMD compiles with `enable_fp_fusion=False` by default, so the softmax `x\n* sm_scale - m` and `l_i * alpha + l_ij` expressions were lowered to\nseparate packed mul and add. Use `ttgl.fma`, which now lowers to\n`v_pk_fma_f32` on gfx1250."
+    },
+    {
+      "sha": "0fe4694a34d3f47da460142c97ca595db4b5fd53",
+      "comment": "修复 Gluon 语义模块在解释器关闭时的 nanobind 泄漏：将 `from typing import ...` 中添加 TYPE_CHECKING，并把 `from triton._C.libtriton.gluon_ir import GluonOpBuilder` 移入 `if TYPE_CHECKING:` 块，同时添加 `from __future__ import annotations` 延迟注解求值，避免 JIT 闭包通过语义 globals 与已求值注解保留 GluonOpBuilder builder 引用。两处改动必须同时存在才能消除泄漏，作者已验证。改动范围仅 python/triton/experimental/gluon/language/_semantic.py，属于纯 Gluon 前端内部修改，不改变 GluonOpBuilder 的运行时接口或 ASTSource/JITFunction 契约。风险低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Gluon] Release native builder references at shutdown (#12153)\n\nCredit to @alexk-oai (Alex Karpenko) for reporting the issue and\nproviding the original fix.\n\nA JIT closure capturing a Gluon builtin can retain `GluonOpBuilder`\nthrough semantic globals and evaluated annotations at interpreter\nshutdown, producing nanobind leak warnings. Move the annotation-only\nimport under `TYPE_CHECKING` and postpone annotations. Both changes are\nneeded: deferring annotations alone or removing only the global\nreference still reproduces the leak.\n\nValidated both the PyTorch-import and native-argument-specialization\nshutdown reproductions on a fresh Python 3.12 build. Both fail before\nthe fix and pass afterward. The Gluon frontend suite passed 604 tests\nwith 184 skips.\n\n---------\n\nCo-authored-by: Alex Karpenko <alexk@openai.com>"
+    },
+    {
+      "sha": "2c4734af22b154a20fc6886e76e93439c2a016aa",
+      "comment": "修正 python/triton/testing.py::get_dram_gbps 对 RDNA 架构的 DRAM 带宽估算：原公式恒用 ×2 transfers/clock，对 GDDR6（gfx1100/1101/1102/1200/1201，16 transfers）与 LPDDR5X（gfx1151，8 transfers）会低估。新增 `_AMD_MEMORY_TRANSFERS_PER_CLOCK` 通过 driver.active.get_current_target() 读取 target.backend=='hip' 与 target.arch 做选择，CUDA/CDNA/未知架构保持 ×2。同时在 python/test/unit/test_utils.py 中新增测试通过 monkeypatch driver._active 覆盖多种架构和 CUDA 场景。该函数被 benchmarker 用于计算 GB/s 打印，属通用工具函数改动，签名未变。风险低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "amd",
+        "testing"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Fix RDNA DRAM bandwidth estimates (#11922)\n\n`get_dram_gbps()` computes peak bandwidth as memory clock × bus width ×\n2, which assumes two data transfers per clock.\n\nThe HIP driver reports the DRAM clock and bus width correctly, but current RDNA\nproducts use GDDR6 or LPDDR5X. Their effective memory data rates require\nlarger transfer multipliers:\n\n- gfx1100, gfx1101, gfx1102, gfx1200 and gfx1201 use GDDR6: 16 transfers\n  per clock\n- gfx1151 uses LPDDR5X: 8 transfers per clock\n\nUse the normalized Triton target architecture to select the RDNA multiplier.\nCUDA, CDNA and unknown HIP architectures retain the existing ×2 behavior.\n\ngfx1150 and gfx1152 are intentionally excluded because their platforms\nmay use either DDR5 or LPDDR5X, which cannot be distinguished from the\nproperties currently exposed to this helper."
+    },
+    {
+      "sha": "ef68b539a4c30dacaa6fcbbb209a0ecdc7c2c166",
+      "comment": "将 packed arith 降低一般化以支持任意数量操作数，并在 gfx1250 上为 math::FmaOp 注册 PackedArithOpConversion<math::FmaOp, LLVM::FMAOp>，使 gl.fma/tl.fma 的 f32/bf16 能降低为 <2 x T> llvm.fma 进而选 v_pk_fma_f32/v_pk_fma_bf16。测试改用 Gluon 编写小 kernel 并检查 LLIR/ASM 中出现 packed fma 与不存在 scalar v_fma_f32/v_dual_fma。改动仅限 AMD 后端 lowering 与测试，属平台特定实现，不影响通用 TritonGPU/后端抽象。风险低。",
+      "tags": [
+        "feature",
+        "performance",
+        "low-risk",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][gfx1250] Lower math.fma to packed FMA (#12154)\n\nGeneralize PackedArithOpConversion to pack an arbitrary number of\noperands and register it for math::FmaOp on gfx1250, so gl.fma / tl.fma\non f32 and bf16 lower to <2 x T> llvm.fma and select v_pk_fma_f32 /\nv_pk_fma_bf16 instead of scalar (dual-issue) FMAs.\n\nAlso rewrite the existing tests to use Gluon along the way."
+    },
+    {
+      "sha": "0d4e0a0ceae18cecacf582b9c6f557847a772bdf",
+      "comment": "修复 triton_amd_codegen 与所链接 LLVM 的 NDEBUG 不一致：LLVM 头文件在 NDEBUG 下会切换 MCSchedClassDesc/ScheduleDAG 的成员布局，导致 ABI 不一致。CMakeLists 根据 LLVM_ENABLE_ASSERTIONS 显式追加 -UNDEBUG 或 NDEBUG 定义；新增 LLVMABIGuard.h 在编译期用 #error 拒绝不匹配（可定义 TRITON_AMD_SKIP_LLVM_ABI_GUARD 跳过），并在 amdgpu_codegen.cc 中包含该头；同时更新 amd-llvm-build-info.json 的 build_number。这是纯 AMD codegen 库的构建配置修复，不涉及 Python 接口或后端抽象。风险低，但为后续使用 MCSchedClassDesc 的 MIR 工作奠定基础。",
+      "tags": [
+        "bugfix",
+        "ci",
+        "low-risk",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Match the standalone code generator's NDEBUG to its LLVM's (#12123)\n\nlibtriton_amd_codegen is configured independently of the LLVM it links,\nso\nnothing makes their NDEBUG settings agree. LLVM's public headers gate\ndata\nmembers on NDEBUG, so when the two disagree they lay out\nMCSchedClassDesc and\nScheduleDAG differently. LLVMABIGuard.h has the details.\n\nThey are already mismatched: llvm-build.yml builds this library Release\n(-DNDEBUG) against an LLVM configured -DLLVM_ENABLE_ASSERTIONS=ON.\n\nThis adds -UNDEBUG when the linked LLVM has assertions (-DNDEBUG when it\ndoes\nnot), plus a compile-time guard so the next mismatch is a build error\ninstead of\na runtime one.\n\nThis is latent today: amdgpu_codegen.cc never touches MCSchedClassDesc\nor\nScheduleDAG, so the wrong layout is never used. The generated AMDGCN is\nbyte-identical before and after, and compiling the file with -fno-inline\nshows\nno scheduling symbols at all. It stops being latent as soon as this\nlibrary\ncompiles a file that does use those types. The follow-up MIR work adds\none (https://github.com/triton-lang/triton/pull/12122), and\nwith today's flags it segfaults; -UNDEBUG is what fixes it."
+    },
+    {
+      "sha": "ec1672ba0f6f3f720e0eab9f784a513b4879bc30",
+      "comment": "修复 AMD FpSan 对 compact scaled FP4 upcast 的支持：原 ScaledUpcastFp4OpPattern 直接对 scale 做 ttg.convert_layout（不能改变 shape）导致 IR 验证失败。新增逻辑检测 scale 形状与目标不匹配时，先在 axis 后插入长度 1 的维度做 repeat 扩展，再 broadcast 到 dst shape，最后 reshape 回 dst，再执行原 convert_layout。附带 test/TritonGPU/amd/amd-fpsan.mlir 两个 axis 方向的 lit 测试和 python/test/gluon/test_fpsan.py 的 FP16/BF16 端到端测试。改动仅限 AMD FpSan pass 与相关测试，不影响通用接口。风险低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][FpSan] Support compact scaled FP4 upcasts (#12140)\n\nFpSan converted compact scales directly to the output type with\nttg.convert_layout, which cannot change tensor shape. The resulting IR\nfailed verification, so any kernel using compact scales failed to\ncompile with FpSan. Expand compact scales with reshape and broadcast\nbefore the layout conversion. Add lit tests and a Gluon test for\nFP16/BF16 outputs."
+    },
+    {
+      "sha": "1666e85e189a96db0890ccc5ba5572a40e5f1180",
+      "comment": "为 AMD gfx1250 MXFP GEMM gluon 示例补上沿非 broadcasted 维度切片的 CTA-local 支持：新增 get_cta_split/load_cta_local_slice/concat_cta_local 三个辅助函数，通过对 CTA partition 坐标 reshape 出独立维度再切/拼，避免跨 CTA 交错。替换示例中 SliceNK/SliceMNK 程序的直接 slice 与 join 逻辑，并调整测试参数（新增 sliceNK n-async-scales、sliceMNK-m-partial-tdm、2x4-fp4 等 case）。纯示例文件修改，不涉及编译基础设施或后端接口。风险低。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "amd-gluon-example"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][gfx1250] Support CTA-local slicing in MXFP GEMM example (#12143)\n\nhttps://github.com/triton-lang/triton/pull/12119 added multi-cta support\nfor basic schedules for our mxfp gemm gluon example on cdna5. This PR\nadds the missing cases where we slice along a non broadcasted dimension.\n\nConceptually, we need to first partition the cluster-sized tensor\naccording to cga_layout, then slice each CTA’s local tile. However,\ndirectly doing this in a single dimnesion will first slice the cluster\nwide dimension and then split each slice across CTAs, so it's the\nreverse which means we have interleaved slices on each CTA. Similarly,\nconcatenating accumulator subtiles along that dimension can produce an\nordering that would require cross-CTA redistribution to restore the full\ntile.\n\nInstead, the logical order of operations is fixed by reshaping the CTA\npartition coordinate into a separate dimension. This lets us slice and\nconcatenate within each CTA’s local tile while preserving CTA ownership,\nthen reshape back to the cluster-wide shape."
+    },
+    {
+      "sha": "65acdb9fcaf4a2a5897f47fc3c517a10472f7751",
+      "comment": "移除第三方 AMD 后端 compiler.py 中基于字符串替换的 _upgrade_legacy_named_barrier_address_spaces，改为依赖 codegen 库（PR #12145 引入的 upgradeLegacyNamedBarriers），并统一用 llvm.to_bitcode 输出 bitcode。新增 test_amd_codegen.py 中的多个 legacy named barrier 转换用例（函数参数、intrinsic、SSA 转发、不支持用法报错、与 shared memory 混用报错）与 test_gluon_cdna5.py 的 warp-specialize 非内联 helper 用例。纯 AMD 后端实现细节调整，仅涉及 AMD 编译器的 IR 预处理逻辑。风险低。",
+      "tags": [
+        "refactor",
+        "test",
+        "low-risk",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Use the codegen library to upgrade legacy named barriers (#12147)\n\nUse the codegen library to upgrade legacy named barriers (ref:\nhttps://github.com/triton-lang/triton/pull/12145).\nSince the library now handles the conversion, remove the python\naddress-space rewrite in `compiler.py` and always pass LLVM IR to the\nlibrary as bitcode.\nAdd tests for the conversion in `test_amd_codegen.py`, plus a gfx1250\ncompile test where two warp-specialize partitions call the same\nnon-inlined function. The lowering passes each partition's named barrier\nhandle as an extra argument, which exercises the codegen library's\nconversion of function signatures and call sites."
+    },
+    {
+      "sha": "ac37c71f15e6f67cf4f3b2484a0f43ec513d1171",
+      "comment": "扩展 triton_kernels NVIDIA Hopper MXFP4 的非持久化 kernel 寄存器预算策略：原仅对 persistent kernel 施加 maxnreg，新策略基于 accumulator 寄存器占用（block_m*block_n）、grid_size/n_sms 的 grid 限制、以及 scaled-input 路径额外的 BF16 RHS shared memory tile 计算 occupancy_target，仅在目标可行时设定 maxnreg，并在 scaled-input 时评估 shared memory 上限。引入 pipeline_occupancy_target 与 occupancy_target 分离，保留持久化 kernel 现有行为。新增 test_opt_flags_nvidia.py 编译期占用率回归测试。改动集中在 python/triton_kernels 的 NVIDIA Hopper 启发式，不影响 Triton 编译器或后端抽象。风险中（涉及资源预算决策逻辑）。",
+      "tags": [
+        "performance",
+        "medium-risk",
+        "triton-kernels",
+        "nvidia"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[triton_kernels] Preserve feasible Hopper MXFP4 occupancy (#12132)\n\nCUDA 13.3 and 13.4 ptxas can increase the register usage of\nnon-persistent Hopper MXFP4 matmuls enough to halve block residency. The\nlaunch heuristic already budgets shared memory for 16 resident warps,\nbut only persistent kernels received the matching register constraint.\n\nApply the register budget to regular Hopper MXFP4 kernels when that\noccupancy is feasible. Account for the accumulator footprint, available\ngrid waves, and the extra BF16 shared-memory tile used by scaled-input\nlowering. Leave register allocation unconstrained when those resources\nprevent the target, and preserve existing tile selection, pipeline\ndepths, and persistent-kernel behavior.\n\nThis replaces the single BF16 tile special case with a resource-based\npolicy; it does not change the Triton compiler, CUDA version, or\nnumerical operations. Regression tests check real compiled resources and\nnumerical results for four/eight-warp kernels, large accumulators, small\ngrids, and scaled inputs.\n\nValidation on H100 with Triton fa8415bdf8 and ptxas 13.4.59:\n- 13 Hopper tests pass, including the compiled-resource regressions.\n- 80 numerical cases cover BF16/FP16/MXFP8 input/output paths, ragged\ngather/scatter, K tails, and plain/fused SwiGLU.\n- Nine compiled-resource cases pass device memcheck with zero errors;\nAPI-error reporting is disabled for the runtime's handled capability\nprobe.\n- 24 scaled-input controls compile to identical kernels as baseline.\n- The packaged wheel passes all 13 Hopper tests; representative matmul\nmedians improve 18.1% plain and 4.4% with fused SwiGLU.\n- Baseline/candidate comparisons verify bitwise parity; reference checks\nuse the existing dtype-specific tolerances.\n\n### Controlled benchmark results\n\nThe regression is already present in ptxas 13.3; it is not specific to\nthe 13.3-to-13.4 update. An assembler-only comparison holds the Triton\ncompiler at `a34c2ab7c9700e33085aedc732352e7ce4c7ddfc`, kernel sources\nat this PR's `c7f0bf56bf32c0cca58959b70b944fa41f2038f2`, PTX 8.7, H100,\ndriver, runtime, and random inputs fixed. Only the selected ptxas\nexecutable changes. The baseline disables this PR's new nonpersistent\nregister constraint.\n\nFor the affected BF16 × MXFP4 grouped matmul (256 experts, K=2048,\nN=4096, plain epilogue), ptxas 13.2.51 and 13.3.33 receive\nbyte-identical PTX and produce bitwise-identical outputs:\n\n| Activation rows | ptxas 13.2.51 | ptxas 13.3.33 | Median paired\nslowdown (95% bootstrap interval) |\n| --- | ---: | ---: | ---: |\n| 64 | 121.511 µs | 142.338 µs | +17.2% (+16.8% to +18.3%) |\n| 512 | 431.534 µs | 500.485 µs | +15.8% (+15.7% to +16.4%) |\n\nNine interleaved timing rounds use shuffled order. The same kernel uses\n121 registers/thread and two resident blocks/SM with tested ptxas\n12.9.86, 13.0.88, 13.1.80, and 13.2.51; 13.3.33 and 13.4.59 use 153\nregisters and one block. The register constraint produces 122 registers,\ntwo blocks, and no spills on the newer assemblers. Separate profiler\nobservations corroborate the mechanism: active-warp occupancy rises from\n12.48% to 23.55%. These observations are not repeated latency estimates.\n\nA random-weight synthetic encoder benchmark also compares the immediate\nTriton enablement boundary: `a34c2ab7` versus parent `83a381bb`. The\nentire source difference is the Hopper assembler selector. The parent\nselector was reconstructed exactly on the upgrade package's unchanged\nnative compiler binary; this is not a separately rebuilt parent wheel.\nThe parent selects ptxas 12.9.86 and the upgrade selects 13.4.59. All\nother components stay fixed.\n\n| Input tokens | Parent baseline | Upgrade without fix | Upgrade with\nfix | Fixed vs parent |\n| --- | ---: | ---: | ---: | ---: |\n| 64 | 5.118 ms | 5.881 ms | 4.964 ms | −3.01% |\n| 512 | 8.050 ms | 9.441 ms | 7.828 ms | −2.75% |\n| 1024 | 10.992 ms | 11.419 ms | 10.148 ms | −7.68% |\n| 2048 | 14.644 ms | 15.160 ms | 14.506 ms | −0.94% |\n| 4096 | 23.419 ms | 24.363 ms | 23.247 ms | −0.73% |\n\nThese are median GPU latencies from three independent process runs per\nconfiguration, 30 measured steps per batch per run, with shuffled\nconfiguration order and CUDA graphs. All five tested encoder sizes\nrecover. This is synthetic encoder evidence, not production-load\nqualification.\n\nAdditional coverage comprises 18 cases × 8 configurations × 9 rounds\n(1,296 timing measurements). All 144 numerical cases pass reference\ntolerances and are bitwise identical across the compared configurations.\n\n**Separate coverage limitation:** a 32,768-row case using a 128×256×128\ntile remains unconstrained by this policy. Newer assemblers introduce\n32/56 bytes of local stack storage with spill loads/stores for\nplain/SwiGLU variants, versus none on older assemblers. An independent\nH100 repeat measures approximately 2.1%/2.6% slowdown; dynamic clocks\nlimit effect-size precision. This is additional kernel coverage, not an\nestablished bottleneck in the target encoder workload. It is a separate\nassembler-performance reproducer, not evidence that the five encoder\ncases above failed to recover. No broader tuning is included in this PR."
+    },
+    {
+      "sha": "4daa27c97f93aaca1e74d38d51d23f2ac2cc5908",
+      "comment": "为 NVIDIA Blackwell matmul 新增 NVFP4 激活 × MXFP4 权重路径：在 matmul 内部用 FP32 算术将 NVFP4 tile 融合转换为 MXFP8（不落全局内存），通过新增 nvfp4_to_mxfp8_tile（含 inline_asm_elementwise 实现的 packed-magnitude 最大值归约）实现，并在 _matmul/_p_matmul 中通过 REQUANTIZE_X/X_MX_BLOCK_SIZE 分支接入。matmul.py 中调整 microblock_size 校验、dot_a_dtype 与 SWAP_XW 计算；opt_flags_nvidia.py 增加 fused requantization 的 shared memory 与 epilogue smem 预算。新增 test_mxfp.py 与 test_matmul.py 的 NVFP4×MXFP4 覆盖。属 triton_kernels 特有数值路径，不涉及编译器与后端接口。风险中（新增数值路径，舍入误差需靠测试覆盖）。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "triton-kernels",
+        "nvidia"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[KERNELS] Support NVFP4 activations with MXFP4 weights by upcasting via MXFP8 (#12135)\n\n## Summary\n\nAdd Blackwell matmul support for NVIDIA FP4 (NVFP4) activations and\nmicroscaled FP4 (MXFP4) weights. Convert activation tiles to microscaled\nFP8 (MXFP8) inside matmul using FP32 arithmetic, without writing\nintermediate activations to global memory. This conversion adds rounding\nerror.\n\nThis path is currently significantly slower than MXFP8 × MXFP4 matmul.\nIt provides correctness support for NVFP4 activations with MXFP4\nweights; performance optimization remains future work.\n\n### Desired features\n\n- Fused NVFP4 → MXFP8 conversion in groups of 32.\n- Unswizzled or Blackwell activation-swizzled NVFP4 scales; strided or\nBlackwell-swizzled MXFP4 weights.\n- Plain, batched, ragged, and gathered inputs, including combined\nragged/gathered inputs.\n- Outer tensor/row scales applied once in the epilogue.\n- BF16 output by default, with explicit output dtypes and supplied\noutput tensors supported.\n\n## Validation\n\nTested on NVIDIA GB300:\n\n```bash\npython -m pytest -x -s --tb=short -q \\\n  python/triton_kernels/tests/test_mxfp.py::test_nvfp4_to_mxfp8_tile \\\n  python/triton_kernels/tests/test_mxfp.py::test_nvfp4_to_mxfp8_tile_scale_pairs \\\n  python/triton_kernels/tests/test_matmul.py::test_nvfp4_acts_mxfp4_weights \\\n  python/triton_kernels/tests/test_matmul.py::test_nvfp4_acts_mxfp4_weights_nonpersistent\n```\n\n## Lines Changed\n\n| Type | Added | Removed | Net |\n| --- | ---: | ---: | ---: |\n| Tests | 136 | 1 | +135 |\n| Core Logic | 120 | 28 | +92 |\n| AutoGenerated | 0 | 0 | 0 |\n| Total | 256 | 29 | +227 |\n\n## Reviewers Guide\n\n- `_upcast_from_mxfp.py`: fused conversion and packed-magnitude\nreduction.\n- `matmul.py`, `_matmul.py`, `_p_matmul.py`: dispatch, scale loading,\ngathered row bounds, and kernel integration.\n- `opt_flags_nvidia.py`: shared-memory accounting for conversion.\n- `test_mxfp.py`, `test_matmul.py`: regression tests.\n\nNo files are primarily movements."
+    },
+    {
+      "sha": "4a5147d919defd3064388d4cdd202fb5e9403b61",
+      "comment": "移除 AMD pre-CDNA2 目标支持：在 TritonGPUAttrDefs.td、Dialect.cpp 中收紧 AMDMfmaEncodingAttr 版本校验（不再允许 version=1），Gluon AMDMFMALayout.verify 同步；TargetFeatures.h/.cpp 删除 GCN5_1/CDNA1 枚举与相关 arch 判定，TargetInfo 删除 getIsaVersion 与 DPP warp reduce 的 pre-CDNA2 分支检查；MfmaGroup.cpp 删除 v1 相关的 MFMA 数据库条目与宏；AccelerateAMDMatmul.cpp、LoadStoreOpToLLVM.cpp、Utility.cpp、test/invalid-attributes.mlir、test_lowerings.py、test_scalarize_packed_fops.py、python/tutorials/02-fused-softmax.py 同步清理。该变更会使携带 version=1 的旧 IR 无法通过验证，属有意不兼容，但所有受影响路径均是 AMD 平台特定，核心接口不变。风险中（对旧 AMD 目标不兼容，但不影响其他后端）。",
+      "tags": [
+        "refactor",
+        "medium-risk",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Remove pre-CDNA2 target support (#12146)"
+    },
+    {
+      "sha": "9448f5bf1da6cea9050e714a411e4941469705f5",
+      "comment": "将 LLVM PTX version cap 从 90 提升到 94（对应 LLVM b010a18d），并移除 SM107 的 cap_llvm=100 映射直接使用 capability。get_ptx_version_from_options 中新增对 arch==107 要求 ptx_version>=94 的校验。改动仅 third_party/nvidia/backend/compiler.py，属纯 NVIDIA 后端平台特定逻辑，不影响 BaseBackend 抽象与其他后端。风险低。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "nvidia"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Raise the LLVM PTX version cap to 9.4 (#12087)\n\nStack (oldest at bottom):\n\n* #12093\n* #12092\n* #12091\n* #12090\n* #12089\n* #12088\n* __->__ #12087\n\nRaise LLVM's PTX version cap to 9.4 and target SM107 directly, requiring\nPTX 9.4 or later for SM107.\n\n<!-- codex-thread: 01a1002b-7abf-7c41-9ba1-49b1f5d649ed -->"
+    },
+    {
+      "sha": "d384927313d01b3be466fabad70ff5a8cb0800f0",
+      "comment": "在 AMD codegen 库中新增 upgradeLegacyNamedBarriers，用 LLVM IR API 将 addrspace(3) 的 named barrier handle（含通过非内联 helper 传入/返回以及 SSA 转发、PHI/select/freeze）转换为 addrspace(15)，并重写 helper 函数签名与调用点；同时把 parse/verify 与 UpgradeDebugInfo 的顺序调整为先 parse（禁用 auto-upgrade debug info）→升级 barrier→verifyModule→ScopedLLVMOptions→UpgradeDebugInfo，避免升级前解析报错中止进程。新增 test_amd_codegen.py 覆盖 helper 转发、intrinsic、SSA 转发、不支持用法报错以及与 shared memory 混用报错，并在 test_gluon_cdna5.py 增加 warp-specialize 非内联 helper 调用相同 barrier 的编译测试。变更仅限 AMD codegen 库与测试。风险中（涉及 IR 重写与函数签名调整的逻辑复杂度），但对 ascend 无影响。",
+      "tags": [
+        "feature",
+        "bugfix",
+        "medium-risk",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Convert legacy named barriers in the codegen library (#12145)\n\nTriton’s LLVM emits named barrier handles in address space 3, while AMD\ncodegen’s LLVM (`6bc4aaf6`) includes `5bf967cb132b` and expects address\nspace 15. The existing python text rewrite in\n`third_party/amd/backend/compiler.py` does not handle helper signatures\nand call sites, causing verification failures for warp-specialized\nkernels that pass barrier handles through non-inlined helpers, including\n`ConSan` instrumentation.\n\nAdd `upgradeLegacyNamedBarriers` to the codegen library to convert\nbarrier handles and their uses through LLVM IR APIs, returning an error\nfor unsupported uses. A `TODO` marks the conversion for removal once\nTriton’s LLVM includes `5bf967cb132b`."
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

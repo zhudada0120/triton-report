@@ -1,0 +1,31 @@
+{
+  "date": "2026-10-07",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-10-08T06:21:39.490236+08:00",
+  "daily_summary": "当日仅有一个 commit，是对此前 PR #2418（DiscreteMask fix: 在 SIMD 模式下用连续指针 + 离散掩码运行 atomic_rmw）的 revert（回退）操作。该回退撤销了在 DiscreteMaskAtomicConversionPass 中新增的 routeToSIMD 逻辑（基于 OffsetAnalysis 的 PtrOffsetInfo 判断指针是否结构化，从而决定 atomic_rmw 走 SIMD 还是 SIMT 路径），并移除 Utils.h 中新增的 ExplicitRouteToSIMDAttrName 属性常量，同时将结构化离散掩码 atomic_rmw 的 lit 测试期望从 'select + atomic_rmw' 改回 'atomic_rmw 保留原 lane mask + MixCompileDiscreteMask 标记'（即 SIMT 模板 ABI 直接消费原始 mask）。整体上是修复 #2418 引入的回归问题后回退到更保守的语义。",
+  "test_impact_summary": "本次回退直接改动了 Ascend 离散掩码 atomic_rmw 路径上的 lit 测试期望（third_party/ascend/unittest/Conversion/General/DiscreteMaskAccess/indirect_atomic.mlir 与 …/TritonToUnstructure/indirect_atomic.mlir），涉及结构化指针在 SIMD/SIMT 混合模式下 atomic_rmw 的 IR 形态。测试影响是关键性的：现有测试用例已被同步修改以匹配回退后的 IR 输出，因此回退本身不引入新的未覆盖测试点，但需要看护两点——(1) SIMT 模板模式下结构化离散掩码 atomic_rmw 必须保留原始 lane mask 而不能再被转成 arith.select；(2) i16 fallback 场景必须重新走 scf.for/scf.if 的 unstructure 路径并使用 DiscreteMemAccess 标记。建议在回归测试中补充 SIMD 模式下结构化指针 atomic_rmw 的端到端算子级用例，避免未来再次因 '混合路径选择' 引起同类回归。",
+  "commits": [
+    {
+      "sha": "803fdf9471873f805387526d48e758e316f4a154",
+      "comment": "本次是对 PR #2418 的回退。PR #2418 曾在 DiscreteMaskAccessConversionPass 中为 AtomicRMWOp 新增 routeToSIMD() 方法：当 op 上存在 ExplicitRouteToSIMDAttrName 属性时直接采用其 bool 值，否则通过 triton::parse() + PtrOffsetInfo::isStructured() 判断指针是否结构化来决定 atomic_rmw 应走 SIMD 还是 SIMT 路径，并把判定结果以 ExplicitRouteToSIMDAttrName 属性缓存到 op 上。回退后该逻辑被完全删除：DiscreteMaskAtomicConversion 在 compileOn91095Flag && isSimtTemplateMode 时无条件将 op 标记为 MixCompileDiscreteMask 并返回 failure()，即把结构化指针的离散掩码 atomic_rmw 也重新交给 SIMT 模板 ABI 处理，让 TritonToUnstructure 阶段保留原始 lane mask，而不再在此阶段提前改写为 arith.select + 无 mask 的 atomic_rmw。同时删除了 Utils.h 中的 explicitRouteToSIMDAttrName 常量以及 #include OffsetAnalysis.h 依赖。对应地，两个 lit 测试的 CHECK 期望同步回退：结构化离散掩码 atomic_rmw 重新要求出现 {MixCompileDiscreteMask} 且带 tensor<...xi1> mask 的 atomic_rmw，并显式 CHECK-NOT arith.select；i16 fallback 用例恢复为走 scf.for/scf.if 并以 DiscreteMemAccess 标记收尾。\n\n风险评估：该回退会改变 Ascend 编译链中 discrete_mask_access_conversion → triton_to_unstructure 之间 IR 的形态，进而影响 linalg 阶段生成的原子操作 lowering；如果下游对 MixCompileDiscreteMask 的语义处理不完整（例如 SIMT 模板未真正消费 lane mask），可能重新暴露 PR #2418 试图修复的那类原子操作在 SIMD 下丢 mask 的问题。这是 Ascend 相关 pass 与方言属性的改动，不涉及上游通用接口（BaseBackend/DriverBase/TritonSemantic/CodeGenerator 等），因此对上游兼容性无影响，属于低-中风险的 Ascend 内部语义回退。需要留意这是否是临时性回退（是否还会以别的方案重新修复 #2418 所解决的问题）。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "medium-risk",
+        "ascend-backend"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "回退改变了 DiscreteMaskAccessConversionPass 对结构化离散掩码 atomic_rmw 的 IR 输出形态（从 select+atomic_rmw 改回保留 lane mask 的 atomic_rmw + MixCompileDiscreteMask 标记；i16 fallback 重新走 scf.for/scf.if + DiscreteMemAccess）。仓库内两个相关 lit 测试的 CHECK 期望已随本 commit 同步修改，因此需要将这些测试用例的变更纳入看护范围，确保后续对该 pass 的任何修改都保持回退后的语义（不要意外恢复 arith.select 或 ExplicitRouteToSIMD）。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DiscreteMaskAccess/indirect_atomic.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToUnstructure/indirect_atomic.mlir",
+          "third_party/ascend/lib/DiscreteMaskAccessConversion/DiscreteMaskAccessConversionPass.cpp 对应的 lit 覆盖"
+        ]
+      },
+      "message": "Revert \"[DiscreteMask](fix) run atomic_rmw with cont-ptr and disc-mask in SIMD mode (#2418)\" (#2455)\n\nThis reverts commit 286a9a89af049d0cfbc356a917508c657c631afc."
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}
