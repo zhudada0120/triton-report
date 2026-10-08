@@ -843,6 +843,18 @@
       "interface_changes": "正确性修复：lib/Dialect/Triton/Transforms/Combine.cpp 删除 CombineReshapeReducePatterns 模式及其注册。该模式会把所有 user 均为 tt.reduce/tt.histogram 的一维 tt.reshape 的 allow_reorder 置为 true，在多操作数 reduce 或带 mask 的 histogram 场景下会破坏操作数之间的逐元素对应关系。删除后 reshape 保持元素顺序语义。同步更新 test/Triton/combine.mlir 的 test_reshape_reduce 期望（CHECK 不再含 allow_reorder），并在 test/TritonGPU/combine.mlir 新增 4 个用例（单/多操作数标量 reduce、histogram、masked histogram）验证 remove_layout_conversions 能在不依赖 allow_reorder 的情况下消除输入输出 layout 转换且保持元素顺序。这是 TTIR 层语义收紧，属于 Trit",
       "change_summary": "[Optimizer] Remove reshape reduction reordering pattern (#12124)",
       "ascend_impact": false
+    },
+    "e50b186e8bd2d16ae3f564311ef868aa3bd45a2d": {
+      "date": "2026-10-08",
+      "affected_modules": [
+        "python/triton/backends/driver.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/backends/driver.py"
+      ],
+      "interface_changes": "运行时接口整理：在 python/triton/backends/driver.py 中引入 TensorDescABI 枚举（DECOMPOSED=None / CUDA_TMA='nvTmaDesc' / HIP_TDM='tensordesc'），将原先靠 has_tensordesc_meta 布尔 + descriptor_type 字符串双重参数驱动的 _expand_descriptor 改为按 ABI 枚举分支；新增 driver 无关的 get_kernel_argument_layout(signature, tensordesc_abi)，基于 find_paths_if + get_iterable_path 返回 (source_path, parameter_type) 对的列表，支持嵌套 tuple signature 与 tensor descriptor 展开、跳过 constexpr 叶子、排除 launcher 追加的 scratch 参数。CUDA (CudaLauncher) 与 HIP (HIPLauncher) 两个 launcher 删除",
+      "change_summary": "[Runtime] Expose kernel argument layout (#12158)",
+      "ascend_impact": false
     }
   }
 }

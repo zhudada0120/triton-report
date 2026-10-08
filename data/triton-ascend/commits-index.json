@@ -1,4 +1,20 @@
 {
+  "47970898c84ca9db02ad9545af30c85e0b409c9b": {
+    "date": "2026-10-08",
+    "msg": "[ssbuffer](fix) nd2nz int8/fp8 shape (#2420) (#2470)"
+  },
+  "c131a737c4183d17ca168f96db413ad2be130a39": {
+    "date": "2026-10-08",
+    "msg": "[docs](fix) Architecture Design Document Structure Optimization (#2467)"
+  },
+  "5cc609ac3ffd74a7aae211626ff6f12b4311f4ff": {
+    "date": "2026-10-08",
+    "msg": "[Docs](fix) Unified Document Subheadings (#2444)"
+  },
+  "abcd03d82455db059cff36563df33fc998ed77f0": {
+    "date": "2026-10-08",
+    "msg": "Revert \"[compiler](feat) Pass --save-temps to bishengir-compile (#1616)\" (#2462)"
+  },
   "803fdf9471873f805387526d48e758e316f4a154": {
     "date": "2026-10-07",
     "msg": "Revert \"[DiscreteMask](fix) run atomic_rmw with cont-ptr and disc-mask in SIMD mode (#2418)\" (#2455)"

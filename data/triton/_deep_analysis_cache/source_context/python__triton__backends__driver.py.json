@@ -1,0 +1,21 @@
+{
+  "content_hash": "3aaa775f592533d0",
+  "analysis": {
+    "interface_summary": "定义 3 个类；定义 19 个函数",
+    "key_interfaces": [
+      "Benchmarker",
+      "DriverBase",
+      "GPUDriver",
+      "Benchmarker.__call__",
+      "DriverBase.is_active",
+      "DriverBase.map_python_to_cpp_type",
+      "DriverBase.get_current_target",
+      "DriverBase.get_active_torch_device",
+      "DriverBase.get_benchmarker",
+      "GPUDriver.__init__",
+      "GPUDriver.assemble_tensormap_to_arg",
+      "GPUDriver.allocate_default_profile_scratch"
+    ]
+  },
+  "cached_at": "2026-10-09T06:34:11.160069+08:00"
+}

@@ -1,0 +1,80 @@
+{
+  "date": "2026-10-08",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-10-09T06:35:19.031563+08:00",
+  "daily_summary": "当日变更以文档整理与一个小范围编译流水线 bugfix 为主：一是修复 DynamicCVPipeline 中 nd2nz（ND→NZ 格式转换）对 int8/fp8 等窄位宽类型在 matmul 操作数（A/B、是否 transpose）下的 shape 推导错误，引入 analyzeMatmulOperand/getNzDimWidth 按 blk=32 场景将 NZ 维度宽度翻倍并新增对应 lit 测试；二是对架构设计文档做结构与归属原则的优化（明确非侵入式 patch 落地方式、目录职责、编译选项分类与 Ascend 亲和算子分类），并将 API 细节外链到 Python API 参考；三是统一文档子标题风格（示例文档的 Output/Compute Kernel 等标题、README 链接替换）、删除 FAQ 中关于控制流 load/store 的过时问答，并为 triton.Config 在 Ascend 后端补充 replace_docstring；四是 revert 此前 #1616 为 bishengir-compile 添加的 --save-temps（在 910_95 与 A2/A3 路径上引发回归）。整体属于文档维护 + 定向修复 + 一次回退，无后端契约或前端接口变更。",
+  "test_impact_summary": "本日变更对测试看护的影响集中在一点：nd2nz int8/fp8 shape 修复改变了 DynamicCVPipeline 下 ND→NZ 转换的 IR 形态（插入 insert_slice、reshape、hivm.hir.copy、convert_layout 等），新增的 test_unaligned_int8_transpose.mlir 已直接覆盖该路径，但该修复按元素类型与 matmul 操作数位置（A/B）及 transpose 组合分支判别，现有用例仅覆盖 int8 transpose 场景，对 fp8、非 transpose、B 操作数、blk=16 等分支缺少直接看护，建议补充参数化 lit 用例以防回归。--save-temps 回退仅移除调试期临时文件输出，不影响编译产物语义，现有测试无需更新但编译命令改动若未来重新引入需回归验证。文档类变更（结构优化、子标题统一、删除 FAQ 条目、triton.Config docstring）不涉及行为变更，测试无需更新；但 FAQ 中删除的控制流 load/store 限制说明对应的是已知支持不完备的能力，若该能力现状发生变化，宜在 A2/A3 相关算子测试或文档中另行确认，避免文档与实现信息脱节。总体看，当日测试策略层面需重点关注 DynamicCV 数据搬运路径的窄位宽分支覆盖。",
+  "commits": [
+    {
+      "sha": "47970898c84ca9db02ad9545af30c85e0b409c9b",
+      "comment": "修复 DynamicCVPipeline 中 SplitDataflow 的 Nd2NzNormalize 对 int8/fp8（窄位宽）张量在 matmul 操作数场景下 NZ 块宽度推导错误的问题。原实现将 NzDimWidth 硬编码为常量 16，且 computeExpectedShape 不接受宽度参数；getBlockElemsFor32BAlign 对 int8 返回 32（32B/1B），但原逻辑未按操作数角色区分。新实现将常量更名为 iniNzDimWidth，新增 analyzeMatmulOperand（沿 user chain 遍历，定位所属 block 的 linalg::MatmulOp，判断当前 value 是 A 还是 B 操作数及是否由 linalg::TransposeOp 定义）与 getNzDimWidth（当 blk==32 且 isA == isTransposed 时返回 16*2=32，否则返回 16），并把 computeExpectedShape 签名扩展为接受 NzDimWidth。同时将 elemType/blk 的取得提前到 Nd2NzNormalize 校验阶段，避免 srcTensorType 覆盖后取错类型。该修复命中 DynamicCVPipeline/SplitDataflow（triton-to-annotation 之后、triton_to_linalg 之前的 inter-core-transfer-and-sync pass），影响 ND→NZ 格式转换生成的 insert_slice/reshape/copy/convert_layout shape。潜在风险：analyzeMatmulOperand 对跨越多个 block 的 user chain 以 iniConsumerBlockId 过滤，若 matmul 操作数链复杂或多消费者，可能提前返回默认 {isMatmulA=true, isTranspose=false}，导致宽度回退；对 CU 非 32B 对齐类型仍沿用 16，未覆盖 fp8 的 32 元素块场景需靠新增用例验证。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "compiler",
+        "mlir-pass"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "本次修复改变了 Nd2NzNormalize 对 int8/fp8 在 blk=32（且 isA==isTransposed）条件下的 NZ 维度宽度推导逻辑，会改变 DynamicCVPipeline 生成 IR 的 shape（含 insert_slice/reshape/copy/convert_layout）。新增的 test_unaligned_int8_transpose.mlir 仅覆盖 int8 + transpose + A 操作数这一条分支，其他组合（fp8、非 transpose、B 操作数、blk=16）尚无直接看护。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow/",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/"
+        ]
+      },
+      "message": "[ssbuffer](fix) nd2nz int8/fp8 shape (#2420) (#2470)\n\n(cherry picked from commit 1c47fe12d91508f5bb58b53aa200eecb174df4d2)\n\nCo-authored-by: lrf22 <112365706+lrf22@users.noreply.github.com>"
+    },
+    {
+      "sha": "c131a737c4183d17ca168f96db413ad2be130a39",
+      "comment": "对架构设计文档（中英文）进行结构优化与内容重组，属纯文档变更。核心改动有四点：(1) 在 2.1 代码原则中新增『落地方式：非侵入社区代码、统一以 patch 承载』条目，明确 Ascend 专属逻辑优先置于 third_party/ascend/，必要时对社区 Triton/LLVM 的改动以 .patch 形式放在 third_party/ascend/patch/ 并在构建准备阶段 git apply，补丁需对应明确社区基线版本；同时把原『target affinitive』表述改为『strongly Ascend-target affinitive』。(2) 目录结构表新增 third_party/ascend/patch/ 行，与架构上下文中 setup_ascend.py::_apply_triton_ascend_patch 的补丁维护机制一致。(3) 将语言扩展算子（insert_slice/extract_slice/get_element）与 Ascend 亲和算子（custom_op/compile_hint/sync_block_*）说明从逐条签名描述改为分类表 + 外链到 Python API 参考，并把 tl.xxx 前缀改为 extension.xxx（对应 triton.language.extra.cann.extension），以消除文档与 API 参考两处维护的不一致。(4) 将编译器选项表由 22 项逐条列举改为按用途分类的 8 类汇总表，并外链到环境变量与编译选项参考文档；同时在两份 environment_variable_and_compiler_options_reference.md 中插入 #compiler-options-reference 锚点以支持跨文档链接。(5) 顺带更新 mermaid 流程图的样式类（低饱和度配色）并补充 mode 类绑定。风险极低，但需确保外链 URL 与锚点有效，否则文档引用会失效；extension.xxx 的改名若与实际 API 不一致可能误导用户，需与 triton.language.extra.cann.extension 现状核对。",
+      "tags": [
+        "docs",
+        "low-risk",
+        "documentation"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯 Markdown 文档重构与叙述整理，不涉及 Python/C++/MLIR 代码路径或编译行为，现有测试不受影响，也无需为文档变更新增测试。",
+        "suggested_test_areas": []
+      },
+      "message": "[docs](fix) Architecture Design Document Structure Optimization (#2467)\n\nSigned-off-by: LH-123L <liuhuan261@huawei.com>"
+    },
+    {
+      "sha": "5cc609ac3ffd74a7aae211626ff6f12b4311f4ff",
+      "comment": "统一文档子标题与部分内容的文档维护提交，共 21 个文件。主要改动：(1) 中英文示例文档（01-05、07-09）将裸文本小标题改为 Markdown 标题（如『Compute kernel:』→『## 计算内核』、『Output』→『## 输出结果』），并把 08_max_autotune 的『进阶使用：精确控制调优参数』改为『进阶使用示例』，09_costmodel 的『示例输出』统一为『输出结果』，保证文档内标题层级一致。(2) README.md/README_zh.md 将『Operator Development User Journey / 算子开发用户旅程』链接从 readthedocs 的 programming_guide 改为 hiascend.com/cn/developer/operator?tag=triton，属外部链接更新。(3) 删除 FAQ.md（中英文）中关于『在 if/for/while/scope 控制流中使用 tl.load/tl.store 的限制』的整段问答，该内容是已知支持不完备时期的过渡说明，移除表明该限制已不再作为官方文档结论或已迁至别处。(4) 在 docs/{en,zh}/python-api/_ascend_constraints.py 中为 triton.Config 增加 replace_docstring，补充 Ascend 后端语义：num_warps 仅在纯 SIMT 模式生效、num_stages 仅支持 1/2 并与 multibuffer 对应（num_stages 优先）、num_ctas/maxnreg 被忽略、ir_override 支持 ttir/ttadapter/mlirbc/bcmlir/npubin 扩展名。其中 (4) 虽为文档字符串，但会改变生成的 Python API 文档内容，与 Ascend 后端 compile_mode/multibuffer 的实际语义相关，需与 AscendBackend.parse_options 和 NPUOptions 实际实现保持一致，若不一致可能误导自动调优用户对 num_stages/num_warps 的取值。风险低。",
+      "tags": [
+        "docs",
+        "low-risk",
+        "documentation",
+        "python-api"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "变更全部为文档标题、链接、FAQ 内容删除以及 Python API docstring 覆盖，不改变任何可执行代码路径。triton.Config 的 replace_docstring 仅影响文档字符串输出，不改变运行时行为，现有测试无需更新。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](fix) Unified Document Subheadings (#2444)\n\nCo-authored-by: wangxiaohua12345 <1350989037@qq.com>"
+    },
+    {
+      "sha": "abcd03d82455db059cff36563df33fc998ed77f0",
+      "comment": "回退 #1616 为 bishengir-compile 添加的 --save-temps 选项，涉及 linalg_to_bin_enable_npu_compile_910_95 与 linalg_to_bin_enable_npu_compile_A2_A3 两条编译收尾路径。原提交在 opt.debug 时通过 _get_dump_paths 解析出 dump 目录并追加 --save-temps=<dir>，以保留毕昇编译中间产物便于调试；但据报告该选项引发回归（可能是中间文件落盘/路径冲突或影响下游产物生成），故整体回退，恢复原始 npu_compiler_path + ttadapter_path + _compile_option_list + -o bin_file 的命令构造。该改动只影响 debug 模式下的编译命令行，不改变非 debug 路径及最终 npubin 产物语义。注意：回退后 opt.debug 分支仍保留 _compile_option_list += ['--mlir-print-stacktrace-on-diagnostic', '--bishengir-print-ir-after=hivm-graph-sync-solver']（A2/A3 路径）以及后续的调试打印/log 分支，_get_dump_paths 在 debug 分支中可能变为未使用而仅剩其他调用点，需留意是否有未使用变量或死代码告警。风险中低，主要在于调试期 IR dump 能力暂时缺失，可能影响后续定位问题。",
+      "tags": [
+        "bugfix",
+        "revert",
+        "medium-risk",
+        "compiler"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "回退仅移除 debug 模式下的 --save-temps 编译参数，不改变 kernel 编译与执行语义，也不改变默认（非 debug）路径，现有回归测试无需更新；但若存在依赖 --save-temps 落盘中间产物做断言或调试的测试/脚本，需要同步调整。",
+        "suggested_test_areas": [
+          "third_party/ascend/backend/compiler.py",
+          "third_party/ascend/unittest/pytest_ut/"
+        ]
+      },
+      "message": "Revert \"[compiler](feat) Pass --save-temps to bishengir-compile (#1616)\" (#2462)\n\nThis reverts commit d6944006dc24abbdb2f55731acf8151a61670d21.\n\nRevert the debug-mode --save-temps additions from #1616 after a\nreported regression, restoring the previous bishengir-compile command\nfor the 910_95 and A2/A3 paths."
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

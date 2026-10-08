@@ -1,0 +1,194 @@
+{
+  "date": "2026-10-08",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-09T06:34:10.853385+08:00",
+  "daily_summary": "当日变更以「运行时接口整理 + AMD 后端 FP8 硬件转换扩展」为主：(1) 在 python/triton/backends/driver.py 新增 driver 无关的 get_kernel_argument_layout/TensorDescABI，统一 CUDA/HIP launcher 的签名展开与参数布局计算，暴露给用户与测试；(2) 将 AMD assertFail 的 trap 从打印机条件块中拆出为新增的 TargetInfoBase::assertTrap + requiresAssertTrap 钩子，修复发散控制流下的屏障配对问题；(3) 大规模清理 AMD 后端死代码并把 scaled upcast HW helper 收敛进 ScaledUpcastToLLVM.cpp；(4) 为 gfx1170/gfx1200/gfx1201 等 RDNA4 架构启用 OCP FP8 的硬件 cvt upcast/downcast；(5) Proton 移除过时的 Py_NewRef/Py_XNewRef 兼容定义，并修复 CUDA graph 在 profiling 开始前创建时 chrome trace 报错；(6) 修复测试进程内 driver 单例被 reload 后不一致导致的测试失败。整体是接口收紧 + AMD 后端能力增强 + 稳定性修复的组合。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 的影响集中在两处平台无关接口：一是 python/triton/backends/driver.py 新增了 TensorDescABI 枚举和 get_kernel_argument_layout，并把 expand_signature 的签名从 (signature, tensordesc_meta, descriptor_type) 改为 (signature, tensordesc_abi)，这属于 AscendBackend/NPUDriver 所在的『必然影响』文件范围——虽然新增的 helper 是纯新增的、非破坏性的，但 expand_signature 的参数语义变化需要 Ascend 侧（若在 launcher/driver 中调用该函数）同步适配；测试侧需关注 python/test/unit/runtime/test_driver.py 的新接口用例是否被 triton-ascend 复用。二是 include/triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h 新增 requiresAssertTrap()/assertTrap()，该接口按规则属于『Ascend 无 TargetInfo 实现、不调用』的绝不影哋路径，因此对 triton-ascend 编译链无影响；其余 AMD/Proton/测试修复均为平台特定或测试专属变更，不影响 Ascend。总体而言本日变更对 triton-ascend 是低风险、以接口新增为主，仅需关注 driver.py 中 expand_signature 参数形式变更带来的潜在同步需求。",
+  "commits": [
+    {
+      "sha": "e50b186e8bd2d16ae3f564311ef868aa3bd45a2d",
+      "comment": "运行时接口整理：在 python/triton/backends/driver.py 中引入 TensorDescABI 枚举（DECOMPOSED=None / CUDA_TMA='nvTmaDesc' / HIP_TDM='tensordesc'），将原先靠 has_tensordesc_meta 布尔 + descriptor_type 字符串双重参数驱动的 _expand_descriptor 改为按 ABI 枚举分支；新增 driver 无关的 get_kernel_argument_layout(signature, tensordesc_abi)，基于 find_paths_if + get_iterable_path 返回 (source_path, parameter_type) 对的列表，支持嵌套 tuple signature 与 tensor descriptor 展开、跳过 constexpr 叶子、排除 launcher 追加的 scratch 参数。CUDA (CudaLauncher) 与 HIP (HIPLauncher) 两个 launcher 删除了各自重复的 make_kernel_signature 与 constants/arg_idx 计算（这些在原实现中根本没被使用），改用 utils.build_signature_metadata([ty for _, ty in get_kernel_argument_layout(...)])。expand_signature 的签名由 (signature, tensordesc_meta, descriptor_type) 改为 (signature, tensordesc_abi: TensorDescABI)，属于破坏性签名变更——但调用方仅 CUDA/HIP launcher（同 commit 已同步），且新增 helper 为纯新增。风险中等：任何外部调用 expand_signature 的代码（含 triton-ascend 若复用）需要同步；同时 get_kernel_argument_layout 被暴露为公共 API，未来需保持向后兼容。测试方面新增 test_kernel_argument_layout_nested / test_kernel_argument_layout_tensordesc，并更新 test_expand_signature_with_aggregate_tensordesc 用新的 ABI 枚举调用。",
+      "tags": [
+        "refactor",
+        "feature",
+        "medium-risk",
+        "runtime",
+        "backends"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "变更落在 python/triton/backends/driver.py，这是 triton-ascend 的硬契约文件（DriverBase/NPUDriver 所在）。具体影响：(1) expand_signature 的签名由 (signature, tensordesc_meta, descriptor_type) 改为 (signature, tensordesc_abi)，参数语义与调用形式不兼容，若 triton-ascend 的 AscendDriver/launcher 或 patch 中调用了 expand_signature，需要按新枚举形式改写调用；(2) 新增的 TensorDescABI 枚举与 get_kernel_argument_layout 为公共 API，triton-ascend 若需要在 NPU launcher 中计算参数布局，可直接复用该 driver 无关 helper，避免自行实现扁平化；(3) CUDA/HIP launcher 中删除的 make_kernel_signature 属于各后端私有函数，triton-ascend 不受影响。(4) 注意 TensorDescABI 目前没有 NPU 专属 ABI 取值，若 Ascend 有自己的 descriptor 传递 ABI，需要评估是否扩展该枚举（但属增量非破坏）。",
+        "testing": "python/test/unit/runtime/test_driver.py 新增并修改了针对 get_kernel_argument_layout / expand_signature 的测试。若 triton-ascend 在 patch 中复用或覆写这些函数，需要同步测试；若仅复用 JIT 层则可直接受益于上游测试覆盖。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/backend/driver.py（若调用 expand_signature）",
+          "third_party/ascend/unittest/（NPU launcher 参数布局/嵌套 signature 用例）",
+          "python/test/unit/runtime/test_driver.py（对齐上游新接口测试）"
+        ]
+      },
+      "message": "[Runtime] Expose kernel argument layout (#12158)\n\nExpose a driver-independent helper that maps kernel arguments to their\nsource paths and physical parameter types, including nested arguments\nand tensor descriptors.\n\nReuse it in the CUDA and HIP launchers, removing duplicated signature\nflattening and unused argument setup.\n\n<!-- codex-thread: 01a11605-c1f0-7923-9de1-cbca826c74e2 -->",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/backends/driver.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "17201243be33d9f982c44e1723de0aa0f30be77c",
+      "comment": "AMD assert 修复：原先 AMD 的 assertFail 在 per-thread if(failed) 块内同时执行 printf 和 s_trap，并在中间插入 barrier，导致只有失败 lane 的 wave 才会到达该 barrier；由于 AMD s_barrier 实例不可区分，这会与通过 wave 的 post-assert barrier 错误配对，可能造成死锁或行为异常。本 commit 在 include/triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h 新增纯虚 assertTrap(rewriter, loc) 与带默认 false 的 requiresAssertTrap()；共享 AssertOpToLLVM.cpp 现在：先在 per-thread 条件下 llAssert 打印，若条件为 RankedTensorType 或 requiresAssertTrap() 则插入 block barrier（统一由所有线程到达），随后在相同条件下用 createIfBlock 新建块调用 assertTrap。AMD TargetInfo 实现 requiresAssertTrap()=true 并抽出 assertTrap（只做 s_trap 2，不再包含 barrier），assertFail 只保留 printf 调用；NVIDIA 实现 requiresAssertTrap()=false（继承默认），assertTrap 用 llvm_unreachable 兜底（因为 __assertfail 自身会 abort）。AMD lit 测试新增 assert_tensor / assert_scalar 用例，用 COMMON-NOT/COMMON-NEXT 严格校验『print 块内无 barrier/s_trap、join 处 barrier 后才 trap』的顺序。风险：assertTrap 是新的纯虚方法，任何 TargetInfoBase 的具体子类必须实现，否则编译失败（NVIDIA 已实现；若不使用 TargetInfoBase 的后端如 Ascend 不受影响）。语义上 barrier 的插入位置变化会影响 assert 后续代码的收敛行为，需注意 ConSan 锁释放路径（commit 说明中已明确处理 llvm.trap 的 noreturn 问题）。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "conversion",
+        "amd",
+        "target-info"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更涉及 include/triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h 与 lib/Conversion/TritonGPUToLLVM/AssertOpToLLVM.cpp，按架构规则 TargetInfoBase 及其 lowering 路径属于 triton-ascend 完全不使用的部分（Ascend 走 TritonToLinalg，不实现也不调用 TargetInfoBase，不做 TritonGPU→LLVM lowering）。AMD/NVIDIA 的 TargetInfo 实现为平台特定代码。assertTrap 是纯虚新增，但只有当某后端继承 TargetInfoBase 并实例化时才需要实现，Ascend 无此路径，因此不会产生编译或运行问题。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Move assert barrier out of divergent control flow (#12166)\n\nThe AMD assertFail lowering emitted a block barrier inside the\nper-thread `if (failed)` block so that all failing waves finish printing\nbefore any of them traps. For tensor conditions that barrier is reached\nonly by waves with a failing lane, and only pairs with the passing\nwaves' post-assert barrier because AMD s_barrier instances are\nindistinguishable.\n\nSplit the abort out of assertFail into a new\n`TargetInfoBase::assertTrap` hook, gated by `requiresAssertTrap()`. The\nshared AssertOp lowering now prints under the per-thread condition,\nexecutes a uniform barrier, and then traps under the same condition.\nNVIDIA is unchanged since `__assertfail` aborts on its own."
+    },
+    {
+      "sha": "c22f8106df8f4a2a1e3c7954d1b639045aa6a78c",
+      "comment": "AMD NFC 重构：把 TritonAMDGPUToLLVM/Utility.h 中的 upcast8xMxfp4_HW、upcast4xMxfp8_HW、upcast8xMxfp8fp4_HW 三个模板（仅被 scaled upcast lowering 使用）搬进 TritonAMDGPUDialectToLLVM/ScaledUpcastToLLVM.cpp，并新增 packI8x4ToI32 / scaleExponentToF32 / unpackPairs 三个 helper 去重三个模板中重复的字节打包、指数缩放与结果解包逻辑；同时把返回值语义统一为『已解包的标量结果数组』（此前 upcast8xMxfp4_HW/upcast4xMxfp8_HW 返回 packed pair，由调用点自行 bitcast+extract_element），调用点相应简化为 results.append(converted.begin(), converted.end()).getLength。这是纯代码搬移与去重，作者声明 gfx942/gfx950/gfx1250 上 scaled upcast、scaled downcast、fp_to_fp lit 测试 IR 不变。风险：模板由返回 packed 变为返回 unpacked，若未来有其他调用点（如 dot_scaled 之外的路径）仍按旧语义使用需注意，但本 commit 已改全部调用点。",
+      "tags": [
+        "refactor",
+        "low-risk",
+        "amd",
+        "conversion"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更全部位于 third_party/amd/lib/TritonAMDGPUDialectToLLVM 与 third_party/amd/lib/TritonAMDGPUToLLVM/Utility.h，是 AMD 专属 scaled upcast lowering 的私有 helper 搬移，triton-ascend 不引用 AMD 的这些 C++ helper。",
+        "testing": "无影响。AMD lit 测试的 FileCheck 结果预期不变，不需要 triton-ascend 侧同步。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] NFC: Move scaled upcast HW helpers out of Utility.h (#12164)\n\nThe upcast8xMxfp4_HW, upcast4xMxfp8_HW, and upcast8xMxfp8fp4_HW\ntemplates in TritonAMDGPUToLLVM/Utility.h are only used by the scaled\nupcast lowering, so move them into ScaledUpcastToLLVM.cpp.\n\nWhile here, deduplicate the byte packing and exponent scale computation\nshared by upcast8xMxfp4_HW and upcast4xMxfp8_HW, and have both return\nthe unpacked scalar results like upcast8xMxfp8fp4_HW does instead of\nleaving that to each call site. The lowered IR for the scaled upcast,\nscaled downcast, and fp_to_fp lit tests on gfx942, gfx950, and gfx1250\nis unchanged."
+    },
+    {
+      "sha": "7e239bb6fe4e8e48a552fa2dc38f4e360bed2c93",
+      "comment": "AMD RDNA4 FP8 硬件 upcast：RDNA4（gfx1200/gfx1201）实现 v_cvt_pk_f32_fp8 且为 OCP E4M3FN 语义，但 Triton AMD lowering 此前只为 CDNA4/GFX1250 选择硬件路径（scaled 指令），导致 gfx1200 上 OCP E4M3FN upcast 退化为体积很大的软件解码。本 commit 新增 hasUnscaledOcpFp8Cvt(family) 返回 family==RDNA4m||RDNA4，并引入 UnscaledF8x4ToFp32<PkConvertOp, ConvertOp> 统一分派：FNUZ 目标走 PkF4ToFp32（packed cvt），OCP 目标走新的 F8x4ToFp32（逐字节 v_cvt_f32_fp8/bf8，因为 LLVM 生成的 packed upcast 形式会被 true16 汇编器拒绝）。Fp8E4M3fnuzToFp16HW/Bf16HW 与 Fp8E5M2fnuzToBf16HW 重命名为 Fp8E4M3ToFp16HW 等以反映其对 FNUZ/OCP 双语义的复用；Fp8→f16/bf16 路径在 CDNA4 之后再补一条 hasUnscaledOcpFp8Cvt 分支，f8→bf16 的精确性由 E4M3 三位尾数 < BF16 七位保证。测试侧在 test_conversions.py 放宽 float8e4nv upcast 的平台判定到 RDNA4m/RDNA4，并在 ocp_fp8_cvt_lowering.mlir 中把 gfx1200 从 NOHW 改为 HWCVT 前缀，新增对 upcast fp8→f16 走 rocdl.cvt.f32.fp8 + llvm.fptrunc、fp8→bf16 走 rocdl.cvt.f32.fp8/bf8 的计数断言。",
+      "tags": [
+        "performance",
+        "bugfix",
+        "medium-risk",
+        "amd",
+        "conversion"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/amd/lib/TritonAMDGPUToLLVM/ConvertFpCastOpToLLVM.cpp、test/Conversion/amd/*.mlir 与 python/test/unit/language/test_conversions.py，全部是 AMD 专属 FP8 转换 lowering 与 AMD 平台测试，与 triton-ascend 的 TritonToLinalg 路径无耦合。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Use hardware OCP FP8 upcasts on RDNA4 (#11809)\n\nRDNA4 implements `v_cvt_pk_f32_fp8` with OCP E4M3FN semantics, but\nTriton's AMD lowering currently selects hardware paths only for CDNA4\nand GFX1250. On gfx1200/gfx1201, OCP E4M3FN upcasts therefore fall back\nto the much larger software decoder, including in inner loops that\nupcast FP8 inputs before arithmetic.\n\nEnable the packed hardware conversion for all three supported OCP E4M3FN\nupcasts:\n\n- FP8 -> FP32 uses the packed FP32 result directly.\n- FP8 -> FP16 converts the packed FP32 result to FP16.\n- FP8 -> BF16 converts the packed FP32 result to BF16. This leg is exact\n  because E4M3 has three mantissa bits while BF16 has seven.\n\nFixes #11497.\n\n---------\n\nCo-authored-by: Lei Zhang <antiagainst@gmail.com>"
+    },
+    {
+      "sha": "ce867e0f284ef818f50d4d72816c61b393e875af",
+      "comment": "AMD NFC 死代码清理，涉及 18 个文件：(1) 删除 third_party/amd/include/TritonAMDGPUTransforms/TritonGPUConversion.h（核心 TritonGPUConversion.h 的过时副本，无定义、除 RegisterTritonDialects.h 一个 include 外无使用者）并移除该 include；(2) 删除 TritonIntegerRangeAnalysis 中从未被读取的 assumeNoArithOverflow / signedIntValues 成员及只为清理后者的 initialize() override；(3) 删除 ConvertTritonAMDGPUToLLVM 中重新计算但从未使用的 ModuleAllocation，并顺带从 populate*Patterns（FpCast/Elementwise/Dot）中移除已无用的 allocation、ftz 参数与 axisInfoAnalysis（DotOp）参数，同步更新 PatternTritonGPUOpToLLVM.h 声明；(4) canCoalesceWriteIntoSharedMemory 改为 file-local（仅 canLoadDirectToLDS 使用），从 Utility.h 删除声明；(5) 清理各处未使用的 using-declaration、namespace alias、type alias（ConverterT、OpAdaptor）、DEBUG_TYPE/DBGS/LDBG 宏以及一处指向 #7326 已移除 checkPairs 选项的过时注释。风险低：populateFpCastOpToLLVMPatterns/populateElementwiseOpToLLVMPatterns/populateDotOpToLLVMPatterns 的签名被缩减，若下游 AMD 插件有外部调用点需同步，但属 AMD 私有 API。RegisterTritonDialects.h 的 include 删除影响 bin/ 工具中 AMD pass 注册（TritonAMDGPUTransforms/Passes.h 仍在，功能不受影响）。",
+      "tags": [
+        "refactor",
+        "chore",
+        "low-risk",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。全部变更位于 third_party/amd/** 与 bin/RegisterTritonDialects.h 中对 AMD 头文件的 include，属 AMD 后端私有实现与死代码清理，triton-ascend 不加载 AMD 方言/pass，也不引用这些 AMD 头文件。bin/RegisterTritonDialects.h 中删除的 TritonAMDGPUTransforms/TritonGPUConversion.h 是 AMD 专属头（triton-ascend 使用 bin/triton-mlir-opt.cpp 一类自有工具，不依赖该头）。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] NFC: Remove dead code in the AMD backend (#12163)\n\n- Remove TritonAMDGPUTransforms/TritonGPUConversion.h. It is a stale\ncopy of the core TritonGPUConversion.h with no definitions and no users\nbesides an include in RegisterTritonDialects.h.\n- Remove the never-read assumeNoArithOverflow and signedIntValues\nmembers of TritonIntegerRangeAnalysis, and the initialize() override\nthat only cleared the latter.\n- Remove the ModuleAllocation that ConvertTritonAMDGPUToLLVM recomputed\nbut never used, and drop the unused allocation, ftz, and axis info\nparameters it was threaded through in the populate*Patterns functions.\n- Make canCoalesceWriteIntoSharedMemory file-local; it is only used by\ncanLoadDirectToLDS.\n- Remove unused using-declarations, namespace aliases, type aliases, and\ndebug macros, and a comment referring to the checkPairs option removed\nin #7326."
+    },
+    {
+      "sha": "0f648b92175cef91799a41fae00503c99416d850",
+      "comment": "Proton 清理：删除 third_party/proton/csrc/lib/Context/Python.cpp 中为 Python < 3.10.0a3 定义的 Py_NewRef/Py_XNewRef 兼容实现（bpo-42262）。由于 Triton 已要求 Python 3.10+（Py_NewRef 在 3.10 起为标准 API），这些 fallback 定义既不再被使用、也会与标准头文件冲突。纯删除，无逻辑变更，风险极低。",
+      "tags": [
+        "chore",
+        "low-risk",
+        "proton"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。third_party/proton 是独立于后端的 profiling 框架，triton-ascend 默认不使用；且该变更仅删除过时的 Python 兼容宏定义。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Proton] Remove unused `Py_NewRef` and `Py_XNewRef` definitions (#12160)"
+    },
+    {
+      "sha": "31cfd99aba08840301d92208e683601ca0ab96c0",
+      "comment": "Proton chrome trace 修复：当 CUDA graph 在 proton.start 之前创建（例如在 warmup 中捕获）时，其 kernel 记录在 graph launch op 之下，而该 launch op 没有 CPU 时间范围，导致 dumpChromeTrace 在查找 launch event 时抛出 'Cannot find CPU scope event for kernel launch event id'。修复方式是在 third_party/proton/csrc/lib/Data/TraceData.cpp 的 dumpChromeTrace 中查 launchEventId 对应 event，若存在但 !hasCpuTimeRange()，则把 launchEventId 置为 Trace::Event::DummyId，使该 kernel 不生成 launch 箭头（flow event），从而对本来能正常 dump 的场景零改动。测试层面把 test_cudagraph_not_captured_by_profiler 参数化为 data='tree'/'trace'，trace 分支校验 traceEvents 中每个 replay scope 下 kernel 数量 >=3、存在 dur>0 的 kernel，并断言没有任何 cat=='flow' 事件。风险低，属输出格式容错增强。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "proton",
+        "test"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/proton 的 trace dump 逻辑与 Proton 测试，是 CUDA graph + profiling 的专属问题修复，triton-ascend 默认不使用 Proton，也不受 chrome trace 格式变更影响。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[PROTON] Fix chrome trace for graphs created before profiling starts (#12142)\n\nDumping a chrome trace throws `Cannot find CPU scope event for kernel\nlaunch event id` when a CUDA graph was created before `proton.start`\n(e.g. captured during warmup): its kernels are recorded under the graph\nlaunch op, which has no CPU time range. Such kernels now get no launch\narrow, so dumps that work today are unchanged.\n\n`test_cudagraph_not_captured_by_profiler` now also covers the trace\nformat.\n\n---------\n\nCo-authored-by: Keren Zhou <kerenzhou@openai.com>"
+    },
+    {
+      "sha": "fa2e589b55706d0de73d25641840e134f20a2c65",
+      "comment": "AMD gfx1170 OCP FP8 硬件 cvt：gfx1170 具备 FeatureFP8ConversionInsts 与 v_cvt_/v_cvt_pk_ 指令，且在该目标上编码为 OCP fp8（E4M3FN/E5M2），但此前 OCP fp8 cast 因两条既有硬件路径都不匹配而全部退化为软件位操作（CDNA4/gfx1250 用 scaled 指令而 gfx1170 没有；plain 指令只接在 CDNA3 的 FNUZ 转换器上）。本 commit 让 gfx1170 的 f8E4M3FN/f8E5M2 与 f32/f16/bf16 互转走 plain 指令：新增 hasUnscaledOcpFp8Cvt(family)==（RDNA4m），新增 F8x4ToFp32<ConvertOp>（逐字节 v_cvt_f32_fp8/bf8 从 packed dword 中取字节），在 Fp32↔Fp8/Bf8、Fp16↔Fp8/Bf8、Bf16↔Fp8/Bf8 的各 OCP 分支补 hasUnscaledOcpFp8Cvt 路径；把 FNUZ 专用命名 Fp8E4M3fnuzToFp16HW 等改为 Fp8E4M3ToFp16HW 等通用命名（FNUZ 与 OCP 共用同一实现，仅是目标决定语义）；Fp32ToFp8E4M3fnuzHW 改为 Fp32ToFp8E4M3HW。同时新增完整 lit 测试 test/Conversion/amd/ocp_fp8_cvt_lowering.mlir（212 行，gfx1170 走 HWCVT，gfx1100/gfx1200 走 NOHW），覆盖 f32→f8 用 rocdl.cvt.pk.fp8.f32、fp8→f32 用 rocdl.cvt.f32.fp8 逐字节、RTZ 必须保持软件路径、FNUZ 不得误用 plain 指令等。在 tritongpu_to_llvm_gfx1250.mlir 中新增 ocp_fp8_to_f32 用例确认 gfx1250 仍走 rocdl.cvt.scale.pk8.f32。风险中等：新增了 F8x4ToFp32 与多个分支，需依赖 lit 计数断言保障；同时一次 upcast 4 个字节需要 insert_element 打包与 4 次单字节转换，性能提升但指令形态变化较大。",
+      "tags": [
+        "performance",
+        "feature",
+        "medium-risk",
+        "amd",
+        "conversion"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/amd/lib/TritonAMDGPUToLLVM/ConvertFpCastOpToLLVM.cpp 与 test/Conversion/amd/*.mlir，是 AMD gfx1170 专属的 OCP fp8 转换 lowering 与 AMD lit 测试，triton-ascend 不加载 AMD 方言与 AMD 转换 pass。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Use hardware cvt instructions for OCP fp8 casts on gfx1170 (#11486)\n\ngfx1170 has `FeatureFP8ConversionInsts`, the `v_cvt_`, and `v_cvt_pk_'\ninstructions, and on that target they encode OCP fp8. Until now every\nOCP fp8 cast on gfx1170 fell back to the software bit-manipulation path\nanyway, because neither existing hardware path fit: CDNA4 and gfx1250\nuse the *scaled* ops (`v_cvt_scalef32_pk_*`), which gfx1170 does not\nhave, and the plain ops were wired only into the CDNA3 FNUZ converters,\nthe wrong fp8 flavor for gfx1170's E4M3FN/E5M2.\n\nThis PR routes `f8E4M3FN`/`f8E5M2` <-> `f32`/`f16`/`bf16` casts on\ngfx1170 to the plain instructions.\n\n---------\n\nCo-authored-by: Lei Zhang <antiagainst@gmail.com>"
+    },
+    {
+      "sha": "b0bfa8d501f8ad86b890e74776edcd04c44bac4a",
+      "comment": "测试稳定性修复：test_is_lazy 通过 reload(triton.runtime.driver) 与 reload(triton.runtime) 验证 driver 延迟创建，但 reload 会构造第二个 DriverConfig 而不恢复原始的；由于 triton.compiler.compiler、triton.language.semantic、target_info 等模块在导入时按值绑定了第一个 driver 单例，此后同一 worker 进程中两个 config 并存且不一致，导致 patch 一个 config 对读另一个的代码不可见（具体表现为 test_get_dram_gbps_memory_data_rate 打桩 driver._active 后 get_dram_gbps 因函数内解析名字而读到真实设备，多个不同 fake 输入返回同一常量）。修复：在 try/finally 中保存原 driver_module.driver，finally 里恢复 driver_module.driver 与 triton.runtime.driver 两处，并新增断言 triton.runtime.driver is triton.compiler.compiler.driver 确保一致性。风险低，仅影响测试隔离性。",
+      "tags": [
+        "bugfix",
+        "test",
+        "low-risk",
+        "runtime"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅在 python/test/unit/runtime/test_driver.py，修复测试进程内 driver 单例隔离问题，不涉及任何 triton-ascend 需要实现或复用的接口。",
+        "testing": "无影响。triton-ascend 若在测试中同样对 triton.runtime.driver 做 reload/importlib 操作，可参考此 finally 恢复模式避免单例分裂，但不需要因本 commit 修改自身测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[CI] Restore the driver singleton after test_is_lazy reloads it (#12161)\n\ntest_is_lazy reloads triton.runtime.driver and triton.runtime to prove the\ndriver is created lazily, but never puts the original DriverConfig back. The\nreloads build a second one, and modules that imported the singleton by value\n(triton.compiler.compiler, triton.language.semantic, target_info, and tests\ndoing the same) keep the first. For the rest of that worker process the two\ndisagree, so patching one config is invisible to code reading the other.\n\ntest_get_dram_gbps_memory_data_rate surfaces it: it patches driver._active\nwith fake device properties, but get_dram_gbps resolves the name inside\nthe function and so reads the real device. Two jobs on one commit, each\nreporting a single constant for several different fake inputs:\n\n  gfx942   assert 2662.4 == 322.048   (and 640.0, 64.0)\n  gfx90a   assert 1638.4 == 863.232   (and 624.0, 288.0, 256.0)\n\n2662.4 is MI300X and 1638.4 MI200, and the two jobs failed on disjoint\nparameters, so all that matters is whether the worker ran test_is_lazy\nfirst.\n\nRestore the original on both the module and the package in a finally\nblock."
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

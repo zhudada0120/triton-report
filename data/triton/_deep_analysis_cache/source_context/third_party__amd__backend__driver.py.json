@@ -1,0 +1,21 @@
+{
+  "content_hash": "179fd8a0d9953f5e",
+  "analysis": {
+    "interface_summary": "定义 3 个类；定义 23 个函数",
+    "key_interfaces": [
+      "HIPUtils",
+      "HIPLauncher",
+      "HIPDriver",
+      "HIPUtils.__new__",
+      "HIPUtils.__init__",
+      "HIPLauncher.__init__",
+      "HIPLauncher.__call__",
+      "HIPDriver.__init__",
+      "HIPDriver.get_device_interface",
+      "HIPDriver.is_active",
+      "HIPDriver.map_python_to_cpp_type",
+      "HIPDriver.get_current_target"
+    ]
+  },
+  "cached_at": "2026-10-09T06:34:11.164501+08:00"
+}

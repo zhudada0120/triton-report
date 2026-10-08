@@ -1,0 +1,20 @@
+{
+  "content_hash": "aa08508c776c584f",
+  "analysis": {
+    "interface_summary": "定义 3 个类；定义 49 个函数",
+    "key_interfaces": [
+      "Kernel",
+      "Scratch",
+      "DeviceInterface",
+      "Kernel.warmup",
+      "Scratch.__init__",
+      "Scratch.record_stream",
+      "DeviceInterface.__init__",
+      "DeviceInterface.ExternalStream",
+      "DeviceInterface.stream",
+      "DeviceInterface.default_stream",
+      "DeviceInterface.__enter__"
+    ]
+  },
+  "cached_at": "2026-10-09T06:34:11.149828+08:00"
+}

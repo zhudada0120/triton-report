@@ -1,4 +1,40 @@
 {
+  "e50b186e8bd2d16ae3f564311ef868aa3bd45a2d": {
+    "date": "2026-10-08",
+    "msg": "[Runtime] Expose kernel argument layout (#12158)"
+  },
+  "17201243be33d9f982c44e1723de0aa0f30be77c": {
+    "date": "2026-10-08",
+    "msg": "[AMD] Move assert barrier out of divergent control flow (#12166)"
+  },
+  "c22f8106df8f4a2a1e3c7954d1b639045aa6a78c": {
+    "date": "2026-10-08",
+    "msg": "[AMD] NFC: Move scaled upcast HW helpers out of Utility.h (#12164)"
+  },
+  "7e239bb6fe4e8e48a552fa2dc38f4e360bed2c93": {
+    "date": "2026-10-08",
+    "msg": "[AMD] Use hardware OCP FP8 upcasts on RDNA4 (#11809)"
+  },
+  "ce867e0f284ef818f50d4d72816c61b393e875af": {
+    "date": "2026-10-08",
+    "msg": "[AMD] NFC: Remove dead code in the AMD backend (#12163)"
+  },
+  "0f648b92175cef91799a41fae00503c99416d850": {
+    "date": "2026-10-08",
+    "msg": "[Proton] Remove unused `Py_NewRef` and `Py_XNewRef` definitions (#12160)"
+  },
+  "31cfd99aba08840301d92208e683601ca0ab96c0": {
+    "date": "2026-10-08",
+    "msg": "[PROTON] Fix chrome trace for graphs created before profiling starts (#12142)"
+  },
+  "fa2e589b55706d0de73d25641840e134f20a2c65": {
+    "date": "2026-10-08",
+    "msg": "[AMD] Use hardware cvt instructions for OCP fp8 casts on gfx1170 (#11486)"
+  },
+  "b0bfa8d501f8ad86b890e74776edcd04c44bac4a": {
+    "date": "2026-10-08",
+    "msg": "[CI] Restore the driver singleton after test_is_lazy reloads it (#12161)"
+  },
   "32f06df4bf1c30885ff61ee3488836ca81ed65f0": {
     "date": "2026-10-07",
     "msg": "[AMD][gfx1250] Use explicit fma in mxfp FA example (#12156)"
