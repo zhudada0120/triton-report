@@ -1,4 +1,76 @@
 {
+  "8627ec5be64b6d5767edf313668de2e145a2718b": {
+    "date": "2026-10-09",
+    "msg": "[INTERPRETER] More comprehensive floating point conversion for types not supported in numpy (#12168)"
+  },
+  "6dd1f8401b3bf133f0681a73b993993a22a426ad": {
+    "date": "2026-10-09",
+    "msg": "[INTERPRETER] Fix comparison result types (#12174)"
+  },
+  "56b8f54d7941c21179f7b9476330fd73e831b031": {
+    "date": "2026-10-09",
+    "msg": "[PROTON] Better flow handling (#12165)"
+  },
+  "6f07e08e2f39b2bce44a8a587f0a6a938192a11f": {
+    "date": "2026-10-09",
+    "msg": "[NVIDIA] Use NVVM operations for elementwise lowering (#12088)"
+  },
+  "342281885b16c0015a5a264d5e6da3224a7b3a28": {
+    "date": "2026-10-09",
+    "msg": "[NVIDIA] Use NVVM operations for tensor-memory loads (#12091)"
+  },
+  "e5e0f747e43010f30f9bfdadd546668e6b191fa0": {
+    "date": "2026-10-09",
+    "msg": "[NVIDIA] Use NVVM operations for tensor-map updates (#12092)"
+  },
+  "d100b119ac5105f417d4d4c76148f31f87343f60": {
+    "date": "2026-10-09",
+    "msg": "[NVIDIA] Use NVVM operations for CUDA control and queries (#12093)"
+  },
+  "c56c62c5239b85f8c7e79cc9580a3d1d80879480": {
+    "date": "2026-10-09",
+    "msg": "[NVIDIA] Use NVVM operations for synchronous MMA (#12090)"
+  },
+  "a8cf9053a0cac88c3a2da9cde573c06b994d5356": {
+    "date": "2026-10-09",
+    "msg": "[NVIDIA] Use NVVM intrinsics for TF32 rounding (#12089)"
+  },
+  "0b221fbda42787c4304df11080fdae72fceaf288": {
+    "date": "2026-10-09",
+    "msg": "[NVIDIA] Expose sqrt and approximate division to LLVM (#12111)"
+  },
+  "497970dbaa05e8068a2546b40911719205853d6e": {
+    "date": "2026-10-09",
+    "msg": "[NVIDIA] Expose precise division to LLVM (#11839)"
+  },
+  "2a514c0f887bf2cab52feee681eab94a797e0cdb": {
+    "date": "2026-10-09",
+    "msg": "[BAKCEND] Preserve FPSan NaN payloads in NVPTX fabs (#12194)"
+  },
+  "b7729198638bbd0c947784d2057267c5def00d4e": {
+    "date": "2026-10-09",
+    "msg": "[AMD] Switch MI250 jobs to amd-gfx90a (#12162)"
+  },
+  "454175a4297d433f45a5d299c5a42c13f8dfeae1": {
+    "date": "2026-10-09",
+    "msg": "[NVIDIA] Use CUDA 13.4 ptxas for all targets (#12188)"
+  },
+  "abfa53d26a7311e527c2d18942dfe91ac85c1647": {
+    "date": "2026-10-09",
+    "msg": "[NVIDIA] Guard oversized shared-memory setup in loadBinary (#12128)"
+  },
+  "426b081740bcfcc7abdf0c5a9620722933e77b87": {
+    "date": "2026-10-09",
+    "msg": "[AMD] Saturate infinities in RDNA4 HW OCP FP8 downcasts (#12167)"
+  },
+  "c4ad3a17e0bbdad1d5eb5b9fc8c3d04098bd9239": {
+    "date": "2026-10-09",
+    "msg": "[AMD] Enable ConSan on gfx1250 rocjitsu (#12157)"
+  },
+  "332c72a78597ca2ccf9f71cf6e20bd4480143345": {
+    "date": "2026-10-09",
+    "msg": "[AMD] Fix s_memrealtime waitcnt for gfx9 (#12179)"
+  },
   "e50b186e8bd2d16ae3f564311ef868aa3bd45a2d": {
     "date": "2026-10-08",
     "msg": "[Runtime] Expose kernel argument layout (#12158)"

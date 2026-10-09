@@ -1,4 +1,16 @@
 {
+  "ebef084711f96f7c21c09cb77574dc18b45a029e": {
+    "date": "2026-10-09",
+    "msg": "[compiler](fix) add enable-optimized-metaop options (#2483)"
+  },
+  "112a6d466d273afa21394a9c34adaa10d02d73af": {
+    "date": "2026-10-09",
+    "msg": "test: complete compiler layout memory contract mocks (#2494)"
+  },
+  "5aef383de06b5acae83d7a41bd00488cf697f3e1": {
+    "date": "2026-10-09",
+    "msg": "[DiscreteMask](fix) run atomic_rmw with structured ptr and discrete mask in SIMD mode (#2461)"
+  },
   "47970898c84ca9db02ad9545af30c85e0b409c9b": {
     "date": "2026-10-08",
     "msg": "[ssbuffer](fix) nd2nz int8/fp8 shape (#2420) (#2470)"

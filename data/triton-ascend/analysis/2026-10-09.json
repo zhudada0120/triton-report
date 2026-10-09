@@ -1,0 +1,69 @@
+{
+  "date": "2026-10-09",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-10-10T05:57:19.060698+08:00",
+  "daily_summary": "当日共 3 个 commit，围绕 Ascend 后端的编译选项适配、CMake 依赖升级和离散掩码原子操作的路由修复展开。commit ebef0847 将毕昇 ascendnpu-ir 依赖从 1.2.0-0910 升级到 2.0.0-pr_3967，并新增 --enable-optimized-metaop 编译选项（910-95 走 CANN 版本判定 is_cann_version_at_least(9,2,0)，A2/A3 固定 false），同时为 get_cann_version 加 lru_cache。commit 112a6d46 补全了 test_compiler_layout_memory_contract 测试中的 mock 桩（cache stub 增加 _make_path/cache_dir，metadata 增加 hash 字段）。commit 5aef383d 修复了 SIMD 模式下带结构性指针与离散掩码的 atomic_rmw 路由逻辑，通过 OffsetAnalysis（triton::parse）判定指针结构，仅对非结构化指针保留 MixCompileDiscreteMask bail-out（SIMT 间接原子 ABI），结构化指针改走 SIMD select+atomic 重写路径，并引入 ExplicitRouteToSIMD 属性做判决缓存。整体方向是让 Ascend 后端更好地对接新版毕昇工具链，并修正 SIMD 模式下结构化离散掩码原子操作的 lowering。",
+  "test_impact_summary": "当日变更对测试影响分两部分：编译选项与依赖升级（ebef0847）主要影响编译流水线，新增了 is_cann_version_at_least 导入和 --enable-optimized-metaop 编译参数，现有 test_compiler_layout_memory_contract 已通过增加 mock 桩覆盖（112a6d46 补全），但缺少对 --enable-optimized-metaop 参数在 910-95/A2/A3 分支下具体取值的直接断言测试，建议补充。离散掩码原子路由修复（5aef383d）改动直接影响 triton-opt lit 测试的 FileCheck 断言——structured 结构化指针的 atomic_rmw 期望从 MixCompileDiscreteMask 属性+原样 mask 变为 arith.select + 去 mask 的 atomic_rmw（ExplicitRouteToSIMD 属性出现在 xchg 用例），并将 i16 fallback 从 scf.for/scf.if 变为 arith.select 直通；两处 .mlir lit 测试已同步更新，覆盖了结构化指针的 SIMD 路由行为，但缺少非结构化指针（保持 MixCompileDiscreteMask/SIMT 间接 ABI）的对照用例，建议补充以看护分支逻辑的完整性。",
+  "commits": [
+    {
+      "sha": "ebef084711f96f7c21c09cb77574dc18b45a029e",
+      "comment": "本次变更将 Ascend 后端依赖的毕昇 ascendnpu-ir 从前代 1.2.0-0910 升级到 2.0.0-pr_3967（同时更新 aarch64/x86_64 的 run 包名与 sha256），并新增 --enable-optimized-metaop 编译选项：在 910-95 分支（linalg_to_bin_enable_npu_compile_910_95）根据 CANN 版本判定 is_cann_version_at_least(9, 2, 0) 动态开启，在 A2/A3 分支（linalg_to_bin_enable_npu_compile_A2_A3）固定传 false。实现上从 triton.backends.ascend.utils 导入 is_cann_version_at_least，并为 get_cann_version 增加 functools.lru_cache(None) 缓存避免重复探测 CANN 版本文件。风险点：1) 主版本从 1.2.0 跳到 2.0.0 是较大的工具链升级，downstream pass/IR 兼容性需要评估；2) 编译选项仅基于 CANN 版本号做条件，若 CANN 版本探测失败（get_cann_version 返回 None 或抛异常）需确认 is_cann_version_at_least 的容错行为，否则可能影响 910-95 编译；3) A2/A3 硬编码 false 表示该优化暂不支持，需与工具链升级预期一致。该改动属于编译流水线（third_party/ascend/backend/compiler.py）与 toolchain 依赖（cmake/bisheng-version.txt）范畴。",
+      "tags": [
+        "chore",
+        "ci",
+        "medium-risk",
+        "compiler"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 is_cann_version_at_least 导入与 --enable-optimized-metaop 编译参数，test_compiler_layout_memory_contract 的 mock 桩需要同步（已在本 commit 加入 is_cann_version_at_least 到 return_false 列表）；但当前测试仅桩掉该函数，未断言 --enable-optimized-metaop 参数值，也缺乏对 910-95（依据 CANN 版本返回 True/False）与 A2/A3（固定 false）分支的参数透传覆盖。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "third_party/ascend/backend/compiler.py (linalg_to_bin_enable_npu_compile_910_95 / _A2_A3)",
+          "third_party/ascend/backend/utils.py (is_cann_version_at_least / get_cann_version)"
+        ]
+      },
+      "message": "[compiler](fix) add enable-optimized-metaop options (#2483)\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>"
+    },
+    {
+      "sha": "112a6d466d273afa21394a9c34adaa10d02d73af",
+      "comment": "本 commit 是对 test_compiler_layout_memory_contract 测试用例的补全修正，属于测试基础设施修复。改动点：1) 将 cache_stub.get_dump_manager 的返回值从仅含 cache_dir/put 扩展为同时提供 _make_path 方法（基于 /fake/dump 目录拼接文件名），以匹配被测代码在编译流程中对 dump manager 接口的实际调用；2) 在 _run_linalg_to_npubin 与 _capture_multibuffer_command 构造的 metadata 中显式加入 hash 字段（'layout-memory-contract-test'），因为编译器路径（如 npubin 输出/临时文件命名或缓存键）会读取 metadata['hash']，缺失会导致 KeyError 或路径拼接异常。这是对上一 commit（ebef0847）改动编译路径后测试桩不完整的必要跟随修复，降低了测试因 mock 不完整而误报/漏报的风险。风险较低，纯测试改动，但反映出编译路径对 dump_manager 与 metadata 字段的契约依赖，后续若契约变化需同步维护。",
+      "tags": [
+        "test",
+        "low-risk",
+        "compiler"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "本 commit 本身即为测试文件更新，修复了 mock 桩的完整性问题，使 test_compiler_layout_memory_contract 能正确运行。后续测试覆盖将由该文件自行看护。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py"
+        ]
+      },
+      "message": "test: complete compiler layout memory contract mocks (#2494)"
+    },
+    {
+      "sha": "5aef383de06b5acae83d7a41bd00488cf697f3e1",
+      "comment": "本 commit 修复 SIMD 模式下离散掩码 atomic_rmw 的路由逻辑。背景：DiscreteMaskAtomicConversion 中原先对所有情况在 910-95 + SIMT 模板模式下都保留原 lane mask 并打上 MixCompileDiscreteMask 属性（bail-out，交由 TritonToUnstructure 走 __builtin_indirect_atomic 的 SIMT 间接原子 ABI）。但结构化指针不需要该间接 ABI，会丢失走 SIMD select+atomic 重写的机会。修复引入 routeToSIMD 辅助函数：先检查 op 是否已有 ExplicitRouteToSIMD 属性（作为 per-op 判决缓存，避免同一 applyPatternsGreedily 运行内重复分析），否则用 OffsetAnalysis 的 triton::parse(ptr, loc, rewriter, offsetMap) 判定该指针所有维度是否均为 PtrOffsetInfo::AxisInfo::structured，随后将判决写回属性并返回；matchAndRewrite 中仅当 isSimtTemplateMode 且 !routeToSIMD 时才走原 bail-out，结构化指针则落到 SIMD select+atomic 路径。关键设计点是复用 TritonToUnstructure 依赖的同一 OffsetAnalysis，保证两 pass 判决一致，结构化访问仍能到达结构化 lowering。新增 Utils.h 中的 explicitRouteToSIMDAttrName 常量。风险点：1) 依赖 triton::parse 判决的正确性与缓存属性在同一 pattern 多次应用间的一致性；2) i16 等 fallback 路径行为改变（从 scf.for/scf.if 变为 arith.select 直通），需确认下游 HIVM/linalg lowering 对无 mask 的 atomic_rmw 处理正确；3) 缓存属性 ExplicitRouteToSIMD 会残留在 IR 中，需确认其不会干扰后续 pass。该改动位于 TritonToLinalg/DiscreteMaskAccessConversion 转换链。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "compiler",
+        "TritonToLinalg"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "该修复改变了 DiscreteMaskAtomicConversion 与 TritonToUnstructure 两处 lit 测试的期望结果：结构化指针的 atomic_rmw 从保留 mask+MixCompileDiscreteMask 变为 arith.select + 去 mask（xchg 用例出现 ExplicitRouteToSIMD = true），i16 fallback 从 scf.for/scf.if 变为 arith.select 直通，两个 .mlir 文件已同步更新。但缺少对非结构化指针（应继续走 MixCompileDiscreteMask/SIMT 间接 ABI）的对照用例，无法看护 routeToSIMD 返回 false 的分支。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DiscreteMaskAccess/indirect_atomic.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToUnstructure/indirect_atomic.mlir",
+          "third_party/ascend/lib/DiscreteMaskAccessConversion/DiscreteMaskAccessConversionPass.cpp",
+          "third_party/ascend/include/Utils/Utils.h"
+        ]
+      },
+      "message": "[DiscreteMask](fix) run atomic_rmw with structured ptr and discrete mask in SIMD mode (#2461)\n\nKeep the mixCompileDiscreteMask bail-out in DiscreteMaskAtomicConversion\nonly for unstructured pointers: they need the SIMT indirect atomic ABI,\nwhich consumes the original lane mask. Structured pointers do not need\nthe indirect ABI and take the plain SIMD select+atomic rewrite instead.\n\nPointer structure is decided with OffsetAnalysis (triton::parse), the\nsame analysis TritonToUnstructure relies on, so both passes agree on\nthe verdict and structured accesses still reach the structured lowering.\nVerdicts are cached per pointer in the pattern for one\napplyPatternsGreedily run."
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

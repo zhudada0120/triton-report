@@ -1,0 +1,349 @@
+{
+  "date": "2026-10-09",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-10T05:57:06.362463+08:00",
+  "daily_summary": "当日变更集中在两个方向：(1) [INTERPRETER] 修复与增强解释器的浮点转换与比较结果类型，覆盖 bf16/fp8/fp64/int64 等 numpy 不支持类型的转换路径，以及比较算子的返回类型统一为 int1；(2) 一系列 NVIDIA 后端向 NVVM 类型化操作迁移的重构（elementwise、tensor-memory load、tensormap update、CUDA 控制/查询、同步 MMA、TF32 rounding、precise sqrt/div），用 MLIR NVVM dialect 的 typed op 替换 inline PTX，并相应调整 warp-specialization 调度代价、packed arith 转换等；此外还有 Proton flow 处理改进、NVIDIA ptxas 统一到 CUDA 13.4、共享内存 setup 保护、AMD RDNA4 FP8 下溢饱和等。整体是测试/解释器修复 + NVIDIA 后端 NVVM 化的重构为主，无跨后端接口契约变更。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 基本无影响。绝大多数提交是纯 NVIDIA 后端（third_party/nvidia/**、lib/Conversion/TritonGPUToLLVM、lib/Dialect/TritonGPU/Transforms）的 NVVM 化重构与 PTX 指令替换，以及 AMD 后端 RDNA4 FP8 饱和处理（third_party/amd/**），这些均属于“绝不影哴”路径。Interpreter 的两个提交仅修改 python/triton/runtime/interpreter.py 内部实现（cast_impl/comparison_op/binary_op 的 ret_type 参数）及其单测，未改动 InterpreterBuilder 的 op 注册协议或 ReduceOps/ScanOps 基类接口，AscendInterpreterBuilder 继承基类行为不变。Proton 提交为独立 profiler 内部 flow id 处理，Ascend 不启用 Proton。NVIDIA ptxas 版本统一与 driver.c 共享内存保护为构建/运行时局部改动。均判定为不影响 triton-ascend。",
+  "commits": [
+    {
+      "sha": "8627ec5be64b6d5767edf313668de2e145a2718b",
+      "comment": "[INTERPRETER] 增强解释器的浮点转换路径。cast_impl 从原来仅特判 bf16<->fp32，扩展为通用处理：将 numpy 不支持的类型（fp8/float64 等）通过 _convert_float 中转，int->float 时若目标 numpy dtype 是整数（表示 fp8 等）则先转 float64 并对 64 位整数做 round-to-odd 处理，避免 int64->fp8/bf16 的精度损失；同时把 create_fp_to_fp 从独立方法改为 lambda 复用 cast_impl，统一了 rounding_mode 处理。测试端大幅扩展 test_cast_bf16_rounding 与 test_cast_fp8_rounding，新增 float64/int64/uint64 参数化及 GPU 目标的 skip 条件。变更仅限解释器内部实现，未改动 op 注册协议或基类接口。",
+      "tags": [
+        "bugfix",
+        "test",
+        "low-risk",
+        "interpreter"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅在 python/triton/runtime/interpreter.py 的 InterpreterBuilder.cast_impl 与 create_fp_to_fp 内部，未改动 InterpreterBuilder 的 op 解释执行注册协议、方法签名或 ReduceOps/ScanOps 基类接口，AscendInterpreterBuilder/AscendReduceOps/AscendScanOps 的继承契约不变。",
+        "testing": "无影响。修改的是 python/test/unit/language/test_core.py（上游 CUDA/AMD 解释器测试），与 ascend 的 CPU 解释器测试集无交集。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[INTERPRETER] More comprehensive floating point conversion for types not supported in numpy (#12168)",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/runtime/interpreter.py"
+        ],
+        "recommend_refresh": true
+      }
+    },
+    {
+      "sha": "6dd1f8401b3bf133f0681a73b993993a22a426ad",
+      "comment": "[INTERPRETER] 修正比较算子结果类型。binary_op 新增 ret_type 可选参数，配合新增 comparison_op 将 lhs/rhs 的 dtype 覆盖为 tl.int1，使 icmp/fcmp 系列返回 TensorHandle 的 dtype 为 tl.int1 而非输入 dtype；相应地所有 create_icmp*/create_fcmp* 从直接调用 binary_op 改为调用 comparison_op。配套新增 test_compare_op_return_type 覆盖 7 种 dtype/prefix 与 6 种比较运算，并验证结果可被 create_ui_to_fp 正确转换为 float16。这是纯解释器语义修正，不影响编译路径。",
+      "tags": [
+        "bugfix",
+        "test",
+        "low-risk",
+        "interpreter"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动限定在 python/triton/runtime/interpreter.py 的 binary_op/comparison_op 与 create_icmp*/create_fcmp* lambda，InterpreterBuilder 的 op 注册机制与公共接口未变，AscendInterpreterBuilder 继承使用不受破坏。",
+        "testing": "无影响。新增测试位于 python/test/unit/runtime/test_interpreter.py，为上游通用解释器测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[INTERPRETER] Fix comparison result types (#12174)",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/runtime/interpreter.py"
+        ],
+        "recommend_refresh": true
+      }
+    },
+    {
+      "sha": "56b8f54d7941c21179f7b9476330fd73e831b031",
+      "comment": "[PROTON] 改进 flow 处理。ChromeTrace.cpp 中 CPU->GPU flow event 的 id 从 event.launchEventId 改为独立的单调递增 nextFlowId，确保 flow id 唯一不重复（解决多 kernel 共用 launchEventId 导致 flow 配对冲突）。TraceData.cpp 中当 graph 未被 profiler 捕获时，把 kernel 的 launchEventId 从 DummyId 改为指向 grandparent（即 replay 时活跃的 CPU scope），使未捕获的 graph kernel 也能归属于父 scope。测试相应更新：test_cudagraph_not_captured_by_profiler 改为校验 flow start 落在 replay scope 上，test_trace_cudagraph_graph_scope_ranges 增加 flow start/finish id 集合一致性断言。仅影响 Proton profiler 内部数据表示。",
+      "tags": [
+        "bugfix",
+        "test",
+        "low-risk",
+        "proton"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 third_party/proton/csrc 与 third_party/proton/test，属于独立于后端的性能剖析框架；Ascend 不启用 Proton，不依赖其事件/flow 数据结构。",
+        "testing": "无影响。测试为 third_party/proton/test/test_profile.py，CUDA 专属。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[PROTON] Better flow handling (#12165)\n\n1. flow ids cannot be duplicate\n2. even if a graph is not captured, we can attribute kernels to the\ntheir grandparents if any."
+    },
+    {
+      "sha": "6f07e08e2f39b2bce44a8a587f0a6a938192a11f",
+      "comment": "[NVIDIA] elementwise lowering 迁移到 NVVM typed ops。ElementwiseOpToLLVM.cpp 中 f32->fp8/bf16/fp16 转换改用 NVVM::ConvertF32x2ToF8x2Op、ConvertF16x2ToF8x2Op、ConvertBF16x2ToF8x2Op、ConvertF8x2ToF16x2Op 等 typed op，移除大量 inline PTX 模板；Fp4ToFpOpToLLVM.cpp 中 FP4->FP16 改用 ConvertF4x2ToF16x2Op；Utility.cpp 的 permute 改用 NVVM::PermuteOp；convertFp32ToBf16/convertFp32ToFp16 合并为 convertFp32To16BitFloat；PackedArithOpConversion 对同质 half/bf16 采用 NVVM AddF/SubF/FmaOp 与 fmin/fmax intrinsic。同时在 PartitionSchedulingUtility.cpp 的 computeCost 中识别 symbol 以 llvm.nvvm.ex2. 开头的 ExternElementwiseOp 作为 exp2 计代价，并新增 unittest/Analysis/UtilityTest.cpp 覆盖该代价计算。python/src/ir.cc 未涉及。风险：移除 outVecWidthBits 参数后 makeConverterFromPtx 的约束固定为 \"=r\"，需保证所有剩余 PTX 路径输出均为 32 位寄存器。",
+      "tags": [
+        "refactor",
+        "medium-risk",
+        "nvidia",
+        "tritongpu-to-llvm"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动全部位于 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM（NVVM/PTX 专属 lowering）、lib/Dialect/TritonGPU/Transforms/WarpSpecialization（NVIDIA warp-spec 调度）与 test/Conversion 的 NVIDIA lit 测试。Ascend 走 TritonToLinalg 路径，不使用 TritonGPUToLLVM 与 NVVM dialect。",
+        "testing": "无影响。新增/修改的测试为 test/Conversion/tritongpu_to_llvm*.mlir、python/test/gluon/test_core.py、python/test/unit/cuda/test_libdevice_cuda.py、unittest/Analysis/UtilityTest.cpp（NVIDIA warp-spec 代价），均非 ascend 路径。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Use NVVM operations for elementwise lowering (#12088)\n\nUse typed NVVM operations for supported floating-point conversions,\npacked arithmetic, math, and permutations. Keep numerical helpers in\nCUDA utilities and account for NVVM exp2 calls in warp-specialization\nscheduling.\n\n<!-- codex-thread: 01a1002b-7abf-7c41-9ba1-49b1f5d649ed -->"
+    },
+    {
+      "sha": "342281885b16c0015a5a264d5e6da3224a7b3a28",
+      "comment": "[NVIDIA] tensor-memory load 迁移到 NVVM typed ops。TensorMemoryToLLVM.cpp 的 createTensorMemoryLoad 从手写 PTXBuilder 改为 NVVM::Tcgen05LdOp / Tcgen05LdRedOp，使用 Tcgen05LdStShapeAttr 表达 shape、以指针与 offset 表达列偏移、以 ReductionKindAttr/abs/nan 表达 reduce 修饰，并改用 unpackLLVector 展开；移除 unpackResults 辅助函数。matmul.py/_p_matmul.py 引入 _scaled_add 与 FUSE_ALPHA/FUSE_TENSOR_SCALE 常量，在 persistent kernel 中显式表达 FMA 以保持舍入，并将 enable_fp_fusion 设为 not is_persistent。测试新增 persistent matmul 舍入用例并更新 blackwell lit 断言。风险：GEP 偏移与 inttoptr 到 addrspace 6 的表示需与后端约定一致；warp-specialize 场景下 ptr 与 offset 的降级顺序被 lit 强校验。",
+      "tags": [
+        "refactor",
+        "medium-risk",
+        "nvidia",
+        "tmem",
+        "tritongpu-to-llvm"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/TensorMemoryToLLVM.cpp（Blackwell tensor memory 专属）与 python/triton_kernels 的 NVIDIA persistent matmul 实现，Ascend 不使用 tmem 也不加载 TritonNvidiaGPU dialect。",
+        "testing": "无影响。测试为 test/Conversion/tritongpu_to_llvm_blackwell.mlir、lower_tensor_memory_to_llvm.mlir 与 triton_kernels/tests/test_matmul.py，CUDA/Blackwell 专属。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Use NVVM operations for tensor-memory loads (#12091)\n\nUse typed NVVM operations for tensor-memory loads and load reductions,\npreserving packing, offsets, and reduction modifiers. Use explicit FMA\noperations in persistent matmul and disable automatic fusion to preserve\nrounding.\n\n<!-- codex-thread: 01a1002b-7abf-7c41-9ba1-49b1f5d649ed -->"
+    },
+    {
+      "sha": "e5e0f747e43010f30f9bfdadd546668e6b191fa0",
+      "comment": "[NVIDIA] tensor-map 字段更新迁移到 NVVM typed ops。TMAToLLVM.cpp 中删除大量 tensormap_replace_generic/global_address/rank/box_dim 等手写 PTX 包装，统一为 NVVM::TensormapReplaceOp，使用 NVVM::TensormapFieldAttr 与整数/属性操作数，并通过模板 tensormap_replace_attr 保留零值字段省略行为；rank 字段仅在 op.getRank() > 1 时写入（与旧行为一致）。lit 测试断言从 PTX 字符串改为 nvvm.tensormap.replace。风险点在于 attr 类型到 NVVM::TensormapElemtype/InterleaveLayout/SwizzleMode/FillMode 的 static_cast 需与上游枚举一一对应。",
+      "tags": [
+        "refactor",
+        "low-risk",
+        "nvidia",
+        "tma",
+        "tritongpu-to-llvm"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/TMAToLLVM.cpp 与 test/Conversion/tritonnvidiagpu_to_llvm.mlir，纯 NVIDIA TMA 描述符生成路径。",
+        "testing": "无影响。测试为 NVIDIA TMA lit 测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Use NVVM operations for tensor-map updates (#12092)\n\nUse typed NVVM operations for tensor-map field updates while preserving\nthe omission of zero-valued fields.\n\n<!-- codex-thread: 01a1002b-7abf-7c41-9ba1-49b1f5d649ed -->"
+    },
+    {
+      "sha": "d100b119ac5105f417d4d4c76148f31f87343f60",
+      "comment": "[NVIDIA] CUDA 控制与查询迁移到 NVVM ops/intrinsics。BarrierOpToLLVM.cpp 中 GridDependencyOpConversion 改用 NVVM::GriddepcontrolOp，CLCIsCanceled/CLCGetProgramId 改用 NVVM::ClusterLaunchControlQueryCancelOp；ConvertWarpSpecializeToLLVM.cpp 的 createAllBarrier 改用 NVVM::BarrierOp；TargetInfo::getGlobalTimer 与 Proton NvidiaGPUToLLVM 的 globalTime 改用 NVVM::GlobalTimerOp；cuda/utils.py 的 smid 从 inline asm 改为 core.extern_elementwise 绑定 llvm.nvvm.read.ptx.sreg.smid。对应更新 atomic_ldst/clc_to_llvm/warp_specialize_to_llvm/protongpu_to_llvm 等 lit 断言。变更均为 NVIDIA 特有指令，不影响跨后端抽象。",
+      "tags": [
+        "refactor",
+        "low-risk",
+        "nvidia",
+        "tritongpu-to-llvm"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM、third_party/nvidia/language/cuda/utils.py 与 third_party/proton/Dialect/lib/ProtonGPUToLLVM/ProtonNvidiaGPUToLLVM，NVVM/PTX 专有。Ascend 使用 third_party/ascend/language/cann/libdevice.py，不依赖 cuda 语言扩展。",
+        "testing": "无影响。测试为 NVIDIA lit 测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Use NVVM operations for CUDA control and queries (#12093)\n\nReplace inline PTX for grid-dependency control, cluster-launch\ncancellation queries, SM ID reads, timers, and named barriers with NVVM\noperations and intrinsics.\n\n<!-- codex-thread: 01a1002b-7abf-7c41-9ba1-49b1f5d649ed -->"
+    },
+    {
+      "sha": "c56c62c5239b85f8c7e79cc9580a3d1d80879480",
+      "comment": "[NVIDIA] 同步与 block-scaled MMA 迁移到 NVVM typed ops。MMAv2.cpp 删除 mmaInstrPtxAmpere/mmaInstrPtxScaled 字符串表，改为 getMmaPtxType 映射 + NVVM::MmaOp / NVVM::MmaBlockScaleOp，新增 getMmaOperands 统一 A/B/C 操作数构造与 declareConvergentMma 显式声明收敛（因 pinned LLVM MMA intrinsic 缺少 convergent 属性）；DotI8Op 的符号性映射到 MMAIntOverflow wrapped 与 s8/u8 类型；block scale 的 scaleVecSize/BlockScaleFormat/Kind 由 NVVM attr 表达。lit 断言从 PTX 字符串改为 nvvm.mma.sync 形态。风险点：convergent 属性缺失可能导致 warp 级优化错误，代码已显式补声明。",
+      "tags": [
+        "refactor",
+        "medium-risk",
+        "nvidia",
+        "mma",
+        "tritongpu-to-llvm"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/DotOpToLLVM/MMAv2.cpp 与 CUDA 专属 lit 测试，属 NV/AMD 的 TritonGPUToLLVM MMA 路径；Ascend 用 TritonToLinalg 替代且不加载 NVVM dialect。",
+        "testing": "无影响。测试为 test/Conversion/tritongpu_to_llvm*.mlir。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Use NVVM operations for synchronous MMA (#12090)\n\nUse typed NVVM operations for synchronous and block-scaled MMA,\npreserving convergence and operand layouts.\n\n<!-- codex-thread: 01a1002b-7abf-7c41-9ba1-49b1f5d649ed -->"
+    },
+    {
+      "sha": "a8cf9053a0cac88c3a2da9cde573c06b994d5356",
+      "comment": "[NVIDIA] TF32 rounding 迁移到 NVVM intrinsics。ExternElementwiseOpConversion 新增 bitcastTf32 特判：当 funcName 为 llvm.nvvm.f2tf32.rn/rna 且返回 elemTy 为 f32 时，声明 funcType 返回 i32 并 bitcast 回 f32（NB：由于已补充 i32 变体用例，符合“keep values as f32”意图）。F32DotTC.cpp 中 f32ToTF32 从 ElementwiseInlineAsmOp(\"cvt.rna.tf32.f32\") 改为 ExternElementwiseOp(\"llvm.nvvm.f2tf32.rna\")。cuda/utils.py 新增 round_f32_to_tf32 extern；triton_kernels 的 _common.py 新增统一 round_f32_to_tf32 并在 _matmul/_p_matmul 中改用。新增 test_libdevice_cuda 的 tf32 rounding 用例、test_core 的 extern_tf32 用例及 fpsan/tf32x3-matmul lit 断言更新。风险：ExternElementwiseOpConversion 的 i32/f32 分派条件需与 libcalls 签名严格匹配。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "medium-risk",
+        "nvidia",
+        "tf32"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。核心改动在 third_party/nvidia/language/cuda/utils.py（新增 extern 与 __all__）、third_party/nvidia 关联 lowering、lib/Dialect/TritonGPU/Transforms/F32DotTC.cpp（NVIDIA TF32 dot 转换）与 lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp（TF32 extern 特判）。Ascend 的 TritonSemantic.dot patch 涉及 tf32->hf32 回退，但本 commit 未触及该 monkey-patch 所依赖的 dot 签名或语义层，且 F32DotTC 属 TritonGPU 通用 pass 但仅对 TF32 dot 生效，Ascend 走 TritonToLinalg。",
+        "testing": "无影响。测试为 CUDA 专属 lit 与 python 测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Use NVVM intrinsics for TF32 rounding (#12089)\n\nUse NVVM intrinsics for TF32 rounding and keep Triton values as `f32` by\nhandling the `i32` result in shared extern lowering.\n\n<!-- codex-thread: 01a1002b-7abf-7c41-9ba1-49b1f5d649ed -->"
+    },
+    {
+      "sha": "0b221fbda42787c4304df11080fdae72fceaf288",
+      "comment": "[NVIDIA] 向上游 LLVM 暴露 sqrt 与近似除法。ElementwiseOpConversionBase.h 为 ElementwiseOpConversion 模板新增 Customize 回调参数（默认空 lambda），允许在创建目标 op 后设置属性。ElementwiseOpToLLVM.cpp 删除 AbsIOpConversion、将 math::AbsIOp 改用 POPULATE_UNARY_OP + setIsIntMinPoison(false) 回调；移除 PreciseSqrtOp/ApproxDivFOp 的 intrinsic 映射，新增 POPULATE_OP(triton::PreciseSqrtOp, LLVM::SqrtOp) 与 POPULATE_OP(triton::ApproxDivFOp, LLVM::FDivOp, afn)。AMD 侧同样删 FDivOpConversion 改用通用 ElementwiseOpConversion<arith::DivFOp, LLVM::FDivOp>。test_core 新增 sqrt_rn 特殊值测试并扩展 test_fdiv_approx 参数化 enable_fp_fusion。风险：afn fastmath flag 在 NVIDIA 上映射到 rcp.approx.f32 的行为需 ptxas 支持。",
+      "tags": [
+        "refactor",
+        "medium-risk",
+        "nvidia",
+        "amd",
+        "tritongpu-to-llvm"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 include/triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h（TritonGPUToLLVM 专用基础模板，Ascend 未使用）、lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp、third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/ElementwiseOpToLLVM.cpp、third_party/amd/lib/TritonAMDGPUToLLVM/ElementwiseOpToLLVM.cpp。Ascend 走 TritonToLinalg，不消费该 ElementwiseOpConversionBase。",
+        "testing": "无影响。测试为 CUDA/HIP lit 与 python/test/unit/language/test_core.py 中的 CUDA 分支。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Expose sqrt and approximate division to LLVM (#12111)\n\nLower NVIDIA precise square root to LLVM sqrt and approximate division\nto LLVM fdiv with `afn`. Reuse generic elementwise conversions for\nsimple operations, with lambdas for operation attributes.\n\nStacked on #11839.\n\n<!-- codex-thread: 01a10a4e-8767-7810-8943-bb8aa6ef9bc3 -->"
+    },
+    {
+      "sha": "497970dbaa05e8068a2546b40911719205853d6e",
+      "comment": "[NVIDIA] 向上游 LLVM 暴露 precise division。删除 ElementwiseToIntrinsicOpConversion<triton::PreciseDivFOp>(\"llvm.nvvm.div.rn.f\") 映射，改为 POPULATE_OP(triton::PreciseDivFOp, LLVM::FDivOp)，由 LLVM 侧将 1/x 优化为 rcp.rn.f32（lit 验证 precise_divf/precise_divf_f64 分别产生 div.rn.f32+rcp.rn.f32 与 div.rn.f64+rcp.rn.f64）。test_core 的 test_fdiv_constant_in_range 断言相应从显式 PTX div.rn 字符串改为仅检查 approx 分支行为。属于 #12111 的前置提交。",
+      "tags": [
+        "refactor",
+        "low-risk",
+        "nvidia",
+        "tritongpu-to-llvm"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/ElementwiseOpToLLVM.cpp 与 CUDA 专属 test/Conversion lit 与 test_core 的 is_cuda 分支，属 NVIDIA 专用 lowering。",
+        "testing": "无影响。测试为 NVIDIA lit 与 CUDA python 测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Expose precise division to LLVM (#11839)\n\nUse constrained LLVM fdiv to preserve rounding and select rcp.rn.f32 for\n1/x.\nCloses https://github.com/triton-lang/triton/pull/11773\n\n<!-- codex-thread: 01a10a4e-8767-7810-8943-bb8aa6ef9bc3 -->"
+    },
+    {
+      "sha": "2a514c0f887bf2cab52feee681eab94a797e0cdb",
+      "comment": "[BACKEND] 保留 FPSan NaN payload 于 NVPTX fabs。python/src/llvm.cc 的 translateLLVMIRToASM 新增 enableFpSan 参数，并在 cleanup pass 之后调用新增 lowerNVPTXFAbs：仅对 NVPTX triple 且返回类型标量为 float 的 fabs intrinsic、且调用无 no-nan 属性的场景，将其重写为位与 0x7fffffff 的整数操作，从而在 Lower FPSan 时避免 PTX abs.f32 规范化 NaN payload。pybind 增 enable_fpsan 关键字参数，CUDABackend.make_ptx 相应传入。新增 test_compile_only_nvptx_fabs_preserves_nan_payload 参数化测试。风险：该重写依赖 IR 优化后阶段执行，且对向量类型分别处理 int32 与 vector<i32>。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "nvidia",
+        "llvm-lowering"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动在 python/src/llvm.cc（translate_to_asm 新增可选参数）与 third_party/nvidia/backend/compiler.py 的 make_ptx；新增参数带默认值，未破坏既有调用签名，且 Ascend 不使用该 NVPTX 专用 FPSan 路径。",
+        "testing": "无影响。新增测试为 python/test/unit/language/test_compile_only.py 中 CUDA only 用例。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BAKCEND] Preserve FPSan NaN payloads in NVPTX fabs (#12194)"
+    },
+    {
+      "sha": "b7729198638bbd0c947784d2057267c5def00d4e",
+      "message": "[AMD] Switch MI250 jobs to amd-gfx90a (#12162)",
+      "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 triton-ascend。",
+      "tags": [
+        "chore"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "454175a4297d433f45a5d299c5a42c13f8dfeae1",
+      "comment": "[NVIDIA] 统一 ptxas 到 CUDA 13.4.59。移除 ptxas-blackwell 专属包：cmake/nvidia-toolchain-version.json 中 ptxas 升为 13.4.59 并删除 ptxas-blackwell 条目；CMakeLists.txt、python/build_helpers.py、python/triton/knobs.py、setup.py 全部删除 ptxas_blackwell/ptxas-blackwell build 参数、knobs 项以及 BackendInstaller 处理；third_party/nvidia/backend/compiler.py 的 get_ptxas 不再按 arch 分支，统一返回 knobs.nvidia.ptxas。属于构建/工具链维护性清理；若仍有依赖 TRITON_PTXAS_BLACKWELL_PATH 环境变量或 ptxas-blackwell 二进制的下游脚本，需要同步移除。",
+      "tags": [
+        "chore",
+        "low-risk",
+        "nvidia",
+        "build"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动为 NVIDIA 工具链打包与 knobs（python/triton/knobs.py 的 nvidia_knobs 内项）清理；Ascend 后端不使用 ptxas，也不读取 TRITON_PTXAS_BLACKWELL_PATH。",
+        "testing": "无影响。不涉及测试逻辑。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Use CUDA 13.4 ptxas for all targets (#12188)"
+    },
+    {
+      "sha": "abfa53d26a7311e527c2d18942dfe91ac85c1647",
+      "comment": "[NVIDIA] 保护 loadBinary 中的超大共享内存设置。third_party/nvidia/backend/driver.c 中当 shared > 49152 且 shared_optin > 49152 时，先查询 CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR/MINOR，仅当 CC 10.7（SM107）时通过 CU_FUNC_ATTRIBUTE_SHARED_MEMORY_MODE + CU_SHARED_MEMORY_MODE_ALLOW_OVERSIZED_SHARED_MEMORY 开启超大共享内存并传播错误；否则走原有 legacy cuFuncSetCacheConfig 路径。修复 GB200（compute capability 10.0，driver 580）在属性 17 上返回 CUDA_ERROR_INVALID_VALUE 的问题，使 memcheck API 错误从 2 降到 0；数值行为不变（legacy fallback 原本已能正确执行）。变更范围仅限定在该实现文件中的函数。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "nvidia",
+        "runtime-driver"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动只修改 third_party/nvidia/backend/driver.c 中的 loadBinary（NVIDIA CudaDriver 的 C 实现），Ascend 的 NPUDriver 走 backend_register.py + npu_utils.cpp 的 CANN 路径，不加载该 C 源。",
+        "testing": "无影响。仅 NVIDIA runtime，Ascend 无对应测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Guard oversized shared-memory setup in loadBinary (#12128)\n\nWhen loading kernels that require more than 48 KiB of shared memory, the\naffected `loadBinary` implementation attempts to enable oversized shared\nmemory through `CU_FUNC_ATTRIBUTE_SHARED_MEMORY_MODE`. On GB200 with\ndriver 580.105.08, this call returns `CUDA_ERROR_INVALID_VALUE`. The\nlegacy fallback allows the kernel to execute correctly, but Compute\nSanitizer reports the failed API call.\n\nThis change uses explicit architecture branches, matching the oversized\nshared-memory device-attribute query guarded by\n[#10957](https://github.com/triton-lang/triton/pull/10957). On compute\ncapability 10.7, it enables oversized shared memory through\n`CU_FUNC_ATTRIBUTE_SHARED_MEMORY_MODE` and propagates any CUDA API\nerror. Other devices use the existing shared-memory opt-in path\ndirectly.\n\nValidation of\n[`d7be71c00`](https://github.com/triton-lang/triton/commit/d7be71c0025392809070b744acb966f93a2e1b81)\n(2026-10-08): `make`, pre-commit (including clang-format), and all **11\ntargeted runtime tests** passed on H100 (CC 9.0, driver 580.126.09;\n`cuDriverGetVersion() == 13000`). The existing source-built compiler at\n`b1c34b00` was reused with the updated runtime-compiled `driver.c`. In\nfive fresh processes with separate Triton/CUDA caches, the unchanged\nstandalone small kernel and matmul passed ordinary execution and CUDA\n13.0 memcheck (0 errors / exit 0); the intentional out-of-bounds control\nremained detectable (3 errors / exit 86). The matmul used 131,072\nshared-memory bytes and validated all 65,536 output values, with maximum\nabsolute error `2.86102294921875e-06`. SM107 was not available, so the\nSM107 branch was not exercised on hardware.\n\nThe original GB200 comparison below uses the upstream\n`3.8.0+gitc01b6774` wheel and a separate copy with only the original\nguard patch in `driver.c`. On both GB200 GPUs, the 131,088-byte\nshared-memory matmul changes from two API diagnostics / exit 86 to zero\nerrors / exit 0 under CUDA 13.4 Compute Sanitizer. Numerical validation\npasses in both variants, and the intentional out-of-bounds control\nremains detectable. The other 411 upstream package files are unchanged.\n\nThe original guard patch was also validated against upstream main at\n[`b1c34b00`](https://github.com/triton-lang/triton/commit/b1c34b00c7f6a6819927577c00a98c0753c1709f).\nA separate source-build comparison on H100 reproduces the same failed\nAPI call: memcheck changes from one API error / exit 86 to zero errors /\nexit 0, with numerical validation passing in both variants. Details are\nbelow.\n\nThe original wheel revision resolves to\n[`c01b6774b1865984607d89d89d3a10833de92037`](https://github.com/triton-lang/triton/commit/c01b6774b1865984607d89d89d3a10833de92037);\nits `driver.c` is byte-identical to the original wheel's baseline\nsource. Neither experiment establishes a minimum supported driver\nversion or an SM107-only hardware restriction; SM107 was not available\nfor testing.\n\nThe dated 2026-10-05 reports, embedded patch, and SHA-256 values below\nare historical snapshots of the original guard implementation\n([`83f60106`](https://github.com/triton-lang/triton/commit/83f60106a90dcba6de5fc4bcdfea26135410d429),\nor its pinned-wheel equivalent). That implementation retained a fallback\nafter an SM107 API failure; the current implementation propagates that\nerror. Validation of the current implementation is reported above.\n\n<details>\n<summary>Additional validation: current-main source build and H100\n(2026-10-05)</summary>\n\nThis is a separate experiment from the original GB200 wheel comparison\nbelow. The patch was applied to upstream main\n[`b1c34b00`](https://github.com/triton-lang/triton/commit/b1c34b00c7f6a6819927577c00a98c0753c1709f)\nand built from source. The imported Python package, native `libtriton`,\nand NVIDIA driver source were verified to come from that checkout. The\nbaseline and patched runs used this same source-built compiler; only\n`driver.c` differed, and it was compiled by the normal Triton runtime in\na fresh cache for each process.\n\n| Item | New H100 validation |\n| --- | --- |\n| Platform / GPU | Linux x86_64; NVIDIA H100, CC 9.0 |\n| NVIDIA driver / driver API | 580.126.09; `cuDriverGetVersion() ==\n13000` |\n| Python / PyTorch | Python 3.14.4; PyTorch `2.13.0.dev20260505+cu130`,\nCUDA 13.0 |\n| Triton distribution | Upstream source build `3.9.0+gitb1c34b00` |\n| Assembler | Upstream's `ptxas` 12.9.86 for H100 |\n| Compute Sanitizer | CUDA 13.0, version 2025.3.1.0, build 36400806 |\n| Matmul configuration | Same standalone `repro.py` below; 256 x 256 x\n256, tile 128 x 128 x 64, eight warps, four stages |\n| Compiled shared memory | 131,072 bytes on this compiler/device\ncombination |\n\nAn editable source build and subsequent `make` both passed. The build\nused the repository-pinned LLVM\n`b010a18d2b648cab83c83967ff26b8fde11acdc6` (`almalinux-x64` archive),\nClang/LLD 22.1.3, both default compiler backends, and\n`TRITON_BUILD_PROTON=OFF`. The AlmaLinux LLVM archive was selected for\ncompatibility with the host C++ runtime. This validates a source build;\nno distributable wheel or full test suite was validated.\n\nRelevant build commands, with `python` resolving to the isolated\nvalidation environment:\n\n```bash\nexport TRITON_LLVM_SYSTEM_SUFFIX=almalinux-x64\nexport TRITON_BUILD_WITH_CLANG_LLD=true\nexport TRITON_BUILD_PROTON=OFF\nexport TRITON_PARALLEL_LINK_JOBS=2\nexport MAX_JOBS=32\nmake dev-install-triton PYTHON=python\nmake PYTHON=python\n```\n\nTen fresh-process runs were completed, five per variant:\n\n| Run | Unmodified main | Patched main |\n| --- | --- | --- |\n| Ordinary small kernel | Correct; exit 0 | Correct; exit 0 |\n| Ordinary matmul | Correct; exit 0 | Correct; exit 0 |\n| Memcheck small kernel (0 shared bytes) | 0 errors; exit 0 | 0 errors;\nexit 0 |\n| Memcheck matmul (131,072 shared bytes) | 1 API error; exit 86;\nnumerical validation passes | 0 errors; exit 0; numerical validation\npasses |\n| Memcheck intentional OOB | Invalid global write detected; 3 errors;\nexit 86 | Invalid global write detected; 3 errors; exit 86 |\n\nAll ordinary and instrumented matmul runs validated all 65,536 output\nvalues against the CPU FP32 reference, with maximum absolute error\n`2.86102294921875e-06` in both variants.\n\nThe complete H100 baseline matmul memcheck output was:\n\n```text\n========= COMPUTE-SANITIZER\n========= Program hit CUDA_ERROR_INVALID_VALUE (error 1) due to \"invalid argument\" on CUDA API call to cuFuncSetAttribute.\n========= \n========= ERROR SUMMARY: 1 error\n```\n\nThe complete patched output was:\n\n```text\n========= COMPUTE-SANITIZER\n========= ERROR SUMMARY: 0 errors\n```\n\nCUDA 13.0 accepts `--report-api-errors all`; it does not accept the\n`extended` value used with CUDA 13.4 in the original GB200 report. The\nnew H100 memcheck command used `all`, with fresh Triton and CUDA caches\nfor each run:\n\n```bash\nCUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 \\\n  TRITON_CACHE_DIR=\"$(mktemp -d)\" CUDA_CACHE_PATH=\"$(mktemp -d)\" \\\n  compute-sanitizer --tool memcheck --show-backtrace yes \\\n  --report-api-errors all --error-exitcode 86 \\\n  --target-processes application-only \\\n  python -I repro.py --case matmul\n```\n\nThe same command with `--case small` and `--case oob` produced the\ncontrol results above. Ordinary runs omitted `compute-sanitizer` and its\noptions. Every invocation used the unchanged standalone reproducer\nbelow. The OOB control is expected to fail.\n\nAfter restoring the patched source, the following existing runtime tests\npassed: **11 passed**, covering lazy driver initialization, threaded\nkernel launch, occupancy/shared-memory reservations, and preservation of\na kernel's required 64 KiB shared memory:\n\n```bash\npython -m pytest -s --tb=short \\\n  python/test/unit/runtime/test_driver.py::test_is_lazy \\\n  python/test/unit/runtime/test_driver.py::test_kernel_in_thread \\\n  python/test/unit/runtime/test_launch.py::test_max_occupancy_launch \\\n  python/test/unit/runtime/test_launch.py::test_max_occupancy_preserves_required_shared_memory\n```\n\n`git diff --check` and `pre-commit run --from-ref upstream/main --to-ref\nHEAD` passed, including clang-format. The committed change is limited to\n`third_party/nvidia/backend/driver.c`. SM107 was not available for\ntesting.\n\n</details>\n\nThe reproduction setup and complete GB200 report below describe the\noriginal pinned-wheel experiment. Their source-build and platform\nlimitations refer to that experiment; the current-main H100 results\nabove are additional validation.\n\n<details>\n<summary>Original GB200 reproduction setup and commands</summary>\n\nSave the standalone Python example below as `repro.py`. It requires\nPyTorch, upstream Triton, and an NVIDIA GPU. It does not replace the\ncompiler, loader, or launcher, and has no dependency on a particular\ncheckout or environment path.\n\nFor the same package versions used in this report, create a fresh\nenvironment:\n\n```bash\nconda create --name triton-smem-repro --yes python=3.14 pip\nconda activate triton-smem-repro\npython -m pip download --no-deps --only-binary=:all: \\\n  --index-url https://download.pytorch.org/whl/nightly/cu130 \\\n  --dest wheels \\\n  'torch==2.15.0.dev20260903+cu130' \\\n  'triton==3.8.0+gitc01b6774'\npython -m pip install --index-url https://pypi.org/simple \\\n  ./wheels/torch-*.whl ./wheels/triton-*.whl numpy\n```\n\nThe package downloads are split from dependency installation so that\nCUDA dependencies can be obtained from PyPI. This preserves the official\nPyTorch nightly Torch/Triton wheels. Nightly wheel availability can\nchange; the tested upstream revision is `c01b6774`. When using an\nexisting upstream development environment, skip installation and run the\nsame example with that environment's Python.\n\nSelect the CUDA 13.4 `compute-sanitizer` executable on `PATH`. Its\nreported version in this experiment was `2026.3.0.0` (build `38637409`):\n\n```bash\ncompute-sanitizer --version\n```\n\nRun without instrumentation first; the expected exit code is 0:\n\n```bash\nCUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 \\\n  python -I repro.py --case matmul\n```\n\nThen run the same kernel under memcheck. On the tested unmodified\nrevision and driver, numerical validation still passes, but memcheck\nreports the attribute-17 errors and exits 86:\n\n```bash\nCUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 \\\n  compute-sanitizer --tool memcheck --show-backtrace yes \\\n  --report-api-errors extended --error-exitcode 86 \\\n  --target-processes application-only \\\n  python -I repro.py --case matmul\n```\n\nUse `CUDA_VISIBLE_DEVICES=1` to test a second GPU. Each command must\nstart a fresh process so that the loader runs again. The script prints\nthe imported Triton distribution version, GPU capability, and\n`cuDriverGetVersion()` result.\n\nFor controls, run the same memcheck command with:\n\n- `--case small`: a kernel with zero shared memory; expected memcheck\nsummary 0 and exit 0.\n- `--case oob`: an intentional out-of-bounds write; expected `Invalid\n__global__ write`, a nonzero error summary, and exit 86. This control\ndeliberately fails.\n\nThe matmul configuration is fixed at shape 256 x 256 x 256, tile 128 x\n128 x 64, eight warps, and four stages. It uses FP16 inputs with FP32\naccumulation/output and a CPU FP32 reference. The example asserts\n`kernel.metadata.shared > 49152`; if that assertion fails on a different\ncompiler/device configuration, the oversized-memory setup branch was not\nexercised.\n\nThe candidate comparison used a separate clone of the same environment,\nwith only upstream's runtime-compiled `driver.c` changed. To repeat this\ncomparison, save the candidate diff below as\n`guard-oversized-shared-memory.patch`, then clone the baseline\nenvironment:\n\n```bash\nconda create --name triton-smem-guard --clone triton-smem-repro --yes\nconda activate triton-smem-guard\n```\n\nApply the patch to the cloned package. The assertions prevent applying\nit to an unexpected source revision:\n\n```bash\npython - <<'PY'\nimport hashlib\nimport importlib.metadata\nimport subprocess\nfrom pathlib import Path\n\ndistribution = importlib.metadata.distribution('triton')\nassert distribution.version == '3.8.0+gitc01b6774'\ndriver = Path(distribution.locate_file('triton/backends/nvidia/driver.c'))\npatch = Path('guard-oversized-shared-memory.patch').resolve()\nassert hashlib.sha256(driver.read_bytes()).hexdigest() == \\\n    'c32586d1814fc6770f966087b88fce0611db5e10e96d95579ba51631576d533c'\nsubprocess.run(['git', 'apply', '--check', '-p4', str(patch)],\n               cwd=driver.parent, check=True)\nsubprocess.run(['git', 'apply', '-p4', str(patch)],\n               cwd=driver.parent, check=True)\nassert hashlib.sha256(driver.read_bytes()).hexdigest() == \\\n    '69322d55e9b004f067abdc9823303a41be01897777f61b6a51d880aa4f8e8937'\nPY\n```\n\nRepeat the ordinary and memcheck commands with the cloned environment's\nPython, using a fresh process for every invocation. On both tested GB200\nGPUs, the patched matmul produced correct output, memcheck summary 0,\nand exit 0; the intentional OOB control still produced an invalid-write\ndiagnostic and exit 86. The compiler and launcher remained the original\nupstream wheel files. This comparison did not rebuild a complete Triton\nwheel or validate a current-main source build.\n\n</details>\n\n<details>\n<summary>Standalone reproducer — save as repro.py</summary>\n\n```python\n\"\"\"Standalone upstream Triton shared-memory loader reproducer.\n\nDefault: correct matmul requiring more than 48 KiB shared memory.\n--case small: clean small-memory control.\n--case oob: intentionally invalid write; run only as a sanitizer control.\n\"\"\"\n\nimport argparse\nimport ctypes\nimport importlib.metadata\nimport json\nfrom pathlib import Path\n\nimport torch\nimport triton\nimport triton.language as tl\n\n\n# Fixed configurations keep the number of loader calls reproducible.\n@triton.jit  # noqa: TR001\ndef add_one(x, y, N: tl.constexpr, BLOCK: tl.constexpr):\n    offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)\n    values = tl.load(x + offsets, offsets < N, 0)\n    tl.store(y + offsets, values + 1, offsets < N)\n\n\n# This configuration is intended to exceed the loader's 48 KiB threshold.\n@triton.jit  # noqa: TR001\ndef matmul(a, b, c, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr,\n           BM: tl.constexpr, BN: tl.constexpr, BK: tl.constexpr):\n    rows = tl.program_id(0) * BM + tl.arange(0, BM)\n    cols = tl.program_id(1) * BN + tl.arange(0, BN)\n    inner = tl.arange(0, BK)\n    accumulator = tl.full((BM, BN), 0, tl.float32)\n    for block in range(tl.cdiv(K, BK)):\n        ks = block * BK + inner\n        av = tl.load(a + rows[:, None] * K + ks[None, :],\n                     (rows[:, None] < M) & (ks[None, :] < K), 0)\n        bv = tl.load(b + ks[:, None] * N + cols[None, :],\n                     (ks[:, None] < K) & (cols[None, :] < N), 0)\n        accumulator = tl.dot(av, bv, accumulator, allow_tf32=False)\n    tl.store(c + rows[:, None] * N + cols[None, :], accumulator,\n             (rows[:, None] < M) & (cols[None, :] < N))\n\n\n@triton.jit\ndef intentional_oob(x):\n    # Deliberate positive control: outside a 16-element allocation.\n    tl.store(x + 1048576, 123)\n\n\nEVENTS = []\n\n\ndef emit(event, **values):\n    record = {\"event\": event, **values}\n    EVENTS.append(record)\n    print(json.dumps(record, sort_keys=True), flush=True)\n\n\ndef driver_version():\n    cuda = ctypes.CDLL(\"libcuda.so.1\")\n    cuda.cuInit.argtypes, cuda.cuInit.restype = [ctypes.c_uint], ctypes.c_int\n    cuda.cuDriverGetVersion.argtypes = [ctypes.POINTER(ctypes.c_int)]\n    cuda.cuDriverGetVersion.restype = ctypes.c_int\n    assert cuda.cuInit(0) == 0\n    version = ctypes.c_int()\n    assert cuda.cuDriverGetVersion(ctypes.byref(version)) == 0\n    return version.value\n\n\ndef run(case):\n    emit(\"ENVIRONMENT\", torch=torch.__version__, torch_cuda=torch.version.cuda,\n         triton=triton.__version__,\n         triton_distribution_version=importlib.metadata.version(\"triton\"),\n         driver_api_version=driver_version(), gpu=torch.cuda.get_device_name(),\n         capability=torch.cuda.get_device_capability())\n    if case == \"small\":\n        source = torch.arange(1024, dtype=torch.float32)\n        x = source.cuda()\n        y = torch.empty_like(x)\n        kernel = add_one[(4,)](x, y, 1024, 256)\n        torch.cuda.synchronize()\n        torch.testing.assert_close(y.cpu(), source + 1, rtol=0, atol=0)\n        assert kernel.metadata.shared <= 49152, kernel.metadata.shared\n        emit(\"SMALL_VERIFIED\", shared=kernel.metadata.shared,\n             kernel=kernel.name, values=source.numel())\n    elif case == \"matmul\":\n        torch.manual_seed(7235)\n        a_cpu = (torch.randn((256, 256)) * 0.25).to(torch.float16)\n        b_cpu = (torch.randn((256, 256)) * 0.25).to(torch.float16)\n        a, b = a_cpu.cuda(), b_cpu.cuda()\n        c = torch.empty((256, 256), dtype=torch.float32, device=\"cuda\")\n        kernel = matmul[(2, 2)](a, b, c, 256, 256, 256, 128, 128, 64,\n                                num_warps=8, num_stages=4)\n        torch.cuda.synchronize()\n        # Failing this assertion means this configuration did not test the branch.\n        assert kernel.metadata.shared > 49152, kernel.metadata.shared\n        expected = a_cpu.float() @ b_cpu.float()\n        actual = c.cpu()\n        torch.testing.assert_close(actual, expected, rtol=1e-3, atol=2e-4)\n        emit(\"MATMUL_VERIFIED\", shared=kernel.metadata.shared, kernel=kernel.name,\n             values=actual.numel(), max_abs_error=(actual - expected).abs().max().item())\n    else:\n        allocation = torch.empty((16,), dtype=torch.int32, device=\"cuda\")\n        emit(\"OOB_BEGIN\", allocation_elements=16, write_index=1048576)\n        intentional_oob[(1,)](allocation)\n        torch.cuda.synchronize()\n    emit(\"TEST_COMPLETE\", case=case)\n\n\ndef main():\n    parser = argparse.ArgumentParser(description=__doc__)\n    parser.add_argument(\"--case\", choices=(\"small\", \"matmul\", \"oob\"), default=\"matmul\")\n    parser.add_argument(\"--result\", type=Path, help=\"Optional JSON event output\")\n    args = parser.parse_args()\n    try:\n        run(args.case)\n    except BaseException as error:\n        emit(\"TEST_FAILED\", case=args.case, error=repr(error))\n        raise\n    finally:\n        if args.result:\n            args.result.write_text(json.dumps(EVENTS, indent=2) + \"\\n\")\n\n\nif __name__ == \"__main__\":\n    main()\n```\n\n</details>\n\n<details>\n<summary>Original GB200 candidate diff (historical) — save as\nguard-oversized-shared-memory.patch</summary>\n\n```diff"
+    },
+    {
+      "sha": "426b081740bcfcc7abdf0c5a9620722933e77b87",
+      "comment": "[AMD] RDNA4 OCP FP8 下溢时对无穷做饱和。Pk4Fp32ToF8 新增 isaFamily 参数与 hasUnscaledOcpFp8Cvt 判断：在 OCP fp8/bf8 目标上，对每个输入用 NaN-propagating llvm.minimum/maximum 夹到目标格式最大有限值（fp8=4.48e2，bf8=5.7344e4），使 ±inf 转为 ±max 而非 fp8 的 NaN/bf8 的 inf；FNUZ（CDNA3）不受影响。同时放宽 test_cast/test_cast_fp8_rounding/test_typeconvert_downcast_clamping 中对 RDNA4 的 skip（原跳过 inf clamp 与 float8_e4m3fn），并清掉 InThreadTranspose.cpp 中一条过时的 wmma TODO（同时修正日志文案）。均为 AMD 后端专属行为。",
+      "tags": [
+        "bugfix",
+        "test",
+        "low-risk",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 third_party/amd/lib/TritonAMDGPUToLLVM/ConvertFpCastOpToLLVM.cpp 与 third_party/amd/lib/TritonAMDGPUTransforms/InThreadTranspose.cpp，属 AMD/HIP 专属 lowering 与测试，Ascend 不加载 AMD 后端。",
+        "testing": "无影响。测试为 AMD lit 测试与 test_core 中 is_hip 分支。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Saturate infinities in RDNA4 HW OCP FP8 downcasts (#12167)\n\nRDNA4 lowers fp32/fp16/bf16 -> OCP fp8/bf8 RTNE downcasts with the\nunscaled `v_cvt_pk_{fp8,bf8}_f32` instructions. The `fp16_ovfl` mode bit\nmakes them saturate finite overflow, but infinities are kept: fp8\nproduces NaN and bf8 produces inf. This deviates from the saturating\nsemantics used by the software fallback, CDNA4, and NVIDIA\n(`satfinite`), where +-inf converts to +-max.\n\nClamp the inputs to the destination's finite range with NaN-propagating\n`llvm.minimum`/`llvm.maximum` before the conversion on OCP targets. This\nselects to a single `v_minimummaximum_f32` per element on gfx12. FNUZ\nconversion on CDNA3 is unchanged since those formats map inf to NaN by\ndesign.\n\nAlso:\n- Enable the inf clamping tests in `test_typeconvert_downcast_clamping`\n  on RDNA4.\n- Enable the `float8_e4m3fn` cases of `test_cast` and\n`test_cast_fp8_rounding` on RDNA4.\n- Drop a stale \"support wmma\" TODO in `InThreadTranspose.cpp`."
+    },
+    {
+      "sha": "c4ad3a17e0bbdad1d5eb5b9fc8c3d04098bd9239",
+      "comment": "修复 ConSan（TritonInstrument 一致性 Sanitizer）在 gfx1250/rocjitsu 上的锁释放语义问题。原实现中 LockReleaseOpConversion 让所有线程都执行 xchg 释放锁（每个线程都写入 0），导致晚到的 warp 可能清除另一个分区刚获取的锁，破坏 ConSan 状态并造成测试 flaky。改动在 lib/Conversion/TritonInstrumentToLLVM/InstrumentationToLLVM.cpp 中抽取 createLockOwnerPredicate 辅助函数：CUDA 目标使用 LLVM::NVIDIA::createElectPredicateWarp0，非 CUDA 目标使用 laneId==0 && warpId==0 的谓词；该谓词在 LockAcquireOpConversion 与 LockReleaseOpConversion 中复用，非 CUDA 的释放路径新增 createIfBlock 包裹，只有锁持有者（lane0/warp0）才执行原子 xchg 释放。同时强化测试：test_gluon_cdna5_consan.py 新增 _run_consan_command 统一校验子进程超时、非零退出、未打印完成标记等异常情况，避免测试静默通过；断言从严格匹配 'outstanding reads'/'outstanding writes' 放宽为匹配 'outstanding' 前缀，并在 MISSING_BAR=2/3 时允许 'Deadlock detected' 诊断，因为缺失 wait 时两个分区谁先访问由执行顺序决定；cdna5_consan_helper.py 增加输出张量校验（mode==store 时校验结果全为 7）与完成标记打印。CI 配置新增 run_rocjitsu_pytest 4 4 运行 test_gluon_cdna5_consan.py。风险较低：改动限定在非 CUDA 分支的锁释放代码生成与 AMD 测试，但 XFAIL/FileCheck 固定了 gfx1250 生成 IR 的形状，若后续修改谓词构造需同步更新 test/Conversion/amd/tritongpu_to_llvm_gfx1250.mlir。",
+      "tags": [
+        "bugfix",
+        "test",
+        "ci",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Conversion/TritonInstrumentToLLVM/InstrumentationToLLVM.cpp（TritonInstrument 的 ConSan/GSan 检查器 lowering，属于 NVIDIA/AMD 使用的路径，Ascend 不使用该 lowering 链）以及 third_party/amd/ 与 .github/workflows 的 AMD 专属测试/CI 文件。未触及 python/triton/backends/{compiler,driver,__init__}.py、python/triton/language/semantic.py、python/triton/compiler/code_generator.py、python/triton/compiler/compiler.py、python/src/ir.cc、python/triton/runtime/interpreter.py、autotuner.py、jit.py 或 tt/ttg 方言定义等 triton-ascend 依赖的接口面。",
+        "testing": "无影响。cdna5_consan_helper.py 与 test_gluon_cdna5_consan.py 均位于 third_party/amd/python/test/ 下，是 AMD CDNA5 (gfx1250) 专属测试，triton-ascend 不运行、不依赖这些测试文件。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Enable ConSan on gfx1250 rocjitsu (#12157)\n\nEnable the existing CDNA5 ConSan tests on gfx1250 rocjitsu CI and fix\nruntime issues found while running them under rocjitsu and on real\ngfx1250 hardware.\n\n- Release the ConSan lock only from the thread that acquired it.\nPreviously, every thread released it, so a late warp could clear a lock\nanother partition had just acquired, corrupting ConSan's state and\nmaking some tests flaky.\n- Make test assertions timing-independent, since for some tests the\ndiagnostic reported depends on the partition execution order.\n\nAlso strengthen the test harness so timeouts and unexpected early exits\ncannot silently pass."
+    },
+    {
+      "sha": "332c72a78597ca2ccf9f71cf6e20bd4480143345",
+      "comment": "修复 gfx9 上 tl.extra.hip.memrealtime() 的等待计数器错误。s_memrealtime 属于标量内存（scalar memory）指令，其结果由 lgkmcnt 计数器跟踪，而原实现使用 s_waitcnt vmcnt(0)（向量内存计数器）等待，导致编译器无法感知内联汇编内部依赖，认为目标 SGPR pair 已就绪并提前复用该寄存器，结果晚到写入时会覆盖无关 SGPR。改动在 third_party/amd/language/hip/utils.py 中将 memrealtime 默认路径的 s_waitcnt vmcnt(0) 改为 s_waitcnt lgkmcnt(0)；gfx11/gfx12 分支（s_sendmsg_rtn_b64 + s_waitcnt lgkmcnt(0)）本已正确，未改动。这是典型的内联汇编等待计数器语义修复，正确性关键但改动面极小（单行），风险低，仅影响 AMD HIP 语言扩展的 memrealtime 算子。",
+      "tags": [
+        "bugfix",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更文件 third_party/amd/language/hip/utils.py 是 AMD HIP 后端专属语言扩展（tl.extra.hip.*），属于架构上下文中明确列出的『绝不影哕』路径（third_party/amd/** 纯 ROCm 专属，与 Ascend 无耦合；Ascend 使用 third_party/ascend/language/cann/libdevice.py 而非 HIP 扩展）。未触及 BaseBackend/DriverBase/TargetInfoBase 等抽象接口，也未触及 TritonSemantic/CodeGenerator 等 monkey-patch 挂载点。",
+        "testing": "无影响。变更仅涉及 AMD memrealtime 内联汇编等待计数器，triton-ascend 不加载 hip 语言扩展，也无对应测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Fix s_memrealtime waitcnt for gfx9 (#12179)\n\ns_memrealtime is a scalar-memory instruction, so its result is tracked\nby lgkmcnt, not vmcnt. tl.extra.hip.memrealtime() waited with s_waitcnt\nvmcnt(0) on gfx9. The compiler can't see inside inline asm, so it treats\nthe destination SGPR pair as ready and reuses it while the result is\nstill in flight. The late write then overwrites an unrelated SGPR.\n\nThe gfx11 and gfx12 paths already wait on the scalar counter."
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

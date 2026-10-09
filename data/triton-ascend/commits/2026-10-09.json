@@ -1,0 +1,127 @@
+{
+  "date": "2026-10-09",
+  "repo": "triton-lang/triton-ascend",
+  "branch": "main",
+  "commits": [
+    {
+      "sha": "ebef084711f96f7c21c09cb77574dc18b45a029e",
+      "author": {
+        "name": "LH-123L",
+        "email": "liuhuan261@huawei.com"
+      },
+      "date": "2026-10-09T20:04:41+08:00",
+      "message": "[compiler](fix) add enable-optimized-metaop options (#2483)\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>",
+      "parents": [
+        "112a6d466d273afa21394a9c34adaa10d02d73af"
+      ],
+      "stats": {
+        "total_additions": 12,
+        "total_deletions": 4,
+        "files_changed": 4
+      },
+      "files": [
+        {
+          "filename": "cmake/bisheng-version.txt",
+          "status": "modified",
+          "additions": 4,
+          "deletions": 4,
+          "patch": "@@ -1,4 +1,4 @@\n-aarch64: ascendnpu-ir_1.2.0-0910_linux-aarch64.run\n-aarch64_sha256: 284206df4e975e04f1ff4918cd8d17a78ecf49ffb2275cceeed1253af8786161\n-x86_64: ascendnpu-ir_1.2.0-0910_linux-x86.run\n-x86_64_sha256: 03ae4672cf296d3a63437fad090ffa5c9299309ef2ed3347235640930afdbfe9\n+aarch64: ascendnpu-ir_2.0.0_linux-aarch64-pr_3967.run\n+aarch64_sha256: 524385FDD6E570EEB7F92D789741BDFD7FDA49811B1A1CEE8155E7A16C25E10D\n+x86_64: ascendnpu-ir_2.0.0_linux-x86-pr_3967.run\n+x86_64_sha256: 535368A33AFA7A1E33DA5325066DF7C9F0CD95943AD7C04008B1C42EAEA92935"
+        },
+        {
+          "filename": "third_party/ascend/backend/compiler.py",
+          "status": "modified",
+          "additions": 6,
+          "deletions": 0,
+          "patch": "@@ -68,6 +68,7 @@ from triton.backends.ascend.utils import (\n     graph_ub_budget_bytes_for_arch,\n     ub_size_in_kbytes_for_arch,\n     get_cann_version_file_hash,\n+    is_cann_version_at_least,\n )\n from triton.backends.ascend.driver import (NPUUtils)\n from triton.backends.ascend.program_grid import (\n@@ -779,6 +780,9 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):\n         _compile_option_list += [\n             f\"--enable-auto-bind-sub-block={get_auto_bind_sub_block_option(metadata)}\",\n         ]\n+\n+        _compile_option_list += [f\"--enable-optimized-metaop={is_cann_version_at_least(9, 2, 0)}\"]\n+\n         npu_utils = NPUUtils()\n         if npu_utils.has_device_limit():\n             _compile_option_list += [\n@@ -1021,6 +1025,8 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):\n             f\"--enable-auto-bind-sub-block={get_auto_bind_sub_block_option(metadata)}\",\n         ]\n \n+        _compile_option_list += [f\"--enable-optimized-metaop=false\"]\n+\n         if _is_ascend_sanitizer_enabled():\n             _compile_option_list += [\"--enable-sanitizer=true\"]\n         if not _is_debug_line_info_disabled():"
+        },
+        {
+          "filename": "third_party/ascend/backend/utils.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 0,
+          "patch": "@@ -860,6 +860,7 @@ def _find_cann_version_file():\n     return None\n \n \n+@functools.lru_cache(None)\n def get_cann_version():\n     _cann_version = None\n     try:"
+        },
+        {
+          "filename": "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 0,
+          "patch": "@@ -126,6 +126,7 @@ def compiler_module():\n             \"_is_debug_line_info_disabled\",\n             \"_is_auto_map_parallel_blocks_enabled\",\n             \"force_disable_ffts\",\n+            \"is_cann_version_at_least\",\n     ):\n         setattr(utils_stub, name, return_false)\n     for name in (\n"
+        }
+      ]
+    },
+    {
+      "sha": "112a6d466d273afa21394a9c34adaa10d02d73af",
+      "author": {
+        "name": "zhan wei",
+        "email": "493694187@qq.com"
+      },
+      "date": "2026-10-09T17:14:50+08:00",
+      "message": "test: complete compiler layout memory contract mocks (#2494)",
+      "parents": [
+        "5aef383de06b5acae83d7a41bd00488cf697f3e1"
+      ],
+      "stats": {
+        "total_additions": 9,
+        "total_deletions": 3,
+        "files_changed": 1
+      },
+      "files": [
+        {
+          "filename": "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "status": "modified",
+          "additions": 9,
+          "deletions": 3,
+          "patch": "@@ -156,8 +156,12 @@ def compiler_module():\n \n     cache_stub = types.ModuleType(cache_name)\n     cache_stub._base32 = lambda value: str(value)\n-    cache_stub.get_dump_manager = lambda *_args, **_kwargs: SimpleNamespace(cache_dir=\"\", put=lambda *_args, **_kwargs:\n-                                                                            None)\n+    dump_dir = Path(\"/fake/dump\")\n+    cache_stub.get_dump_manager = lambda *_args, **_kwargs: SimpleNamespace(\n+        cache_dir=str(dump_dir),\n+        _make_path=lambda filename: str(dump_dir / filename),\n+        put=lambda *_args, **_kwargs: None,\n+    )\n \n     # Initialize the installed Triton package before temporarily replacing its\n     # cache module below.  Loading compiler.py starts from triton._C; doing it\n@@ -422,6 +426,7 @@ def _run_linalg_to_npubin(compiler, monkeypatch, function_name, has_blacklist_op\n     commands = []\n     parsed_metadata = defaultdict(\n         lambda: None, {\n+            \"hash\": \"layout-memory-contract-test\",\n             \"target\": SimpleNamespace(arch=\"Ascend910B\"),\n             \"program_grid_transforms\": None,\n             \"program_grid_mapping_applied\": False,\n@@ -935,7 +940,8 @@ def test_multibuffer_legacy_options_are_preserved_without_ta_warnings(compiler_m\n \n def _capture_multibuffer_command(compiler, monkeypatch, is_a5, requested, derived=None):\n     options = _parse_options(compiler, \"Ascend950PR\" if is_a5 else \"Ascend910B4\", requested)\n-    metadata = dict(options.__dict__, mix_mode=\"mix\", bitcodes=None, auto_blockify_enabled=False)\n+    metadata = dict(options.__dict__, hash=\"layout-memory-contract-test\", mix_mode=\"mix\", bitcodes=None,\n+                    auto_blockify_enabled=False)\n     metadata.update(derived or {})\n     monkeypatch.setattr(compiler, \"_parse_linalg_metadata\", lambda source, meta: (source, meta))\n     monkeypatch.setattr(compiler, \"_finalize_program_launch_policy\", lambda *_args: None)\n"
+        }
+      ]
+    },
+    {
+      "sha": "5aef383de06b5acae83d7a41bd00488cf697f3e1",
+      "author": {
+        "name": "liwei",
+        "email": "leewill1120@gmail.com"
+      },
+      "date": "2026-10-08T21:44:23+08:00",
+      "message": "[DiscreteMask](fix) run atomic_rmw with structured ptr and discrete mask in SIMD mode (#2461)\n\nKeep the mixCompileDiscreteMask bail-out in DiscreteMaskAtomicConversion\nonly for unstructured pointers: they need the SIMT indirect atomic ABI,\nwhich consumes the original lane mask. Structured pointers do not need\nthe indirect ABI and take the plain SIMD select+atomic rewrite instead.\n\nPointer structure is decided with OffsetAnalysis (triton::parse), the\nsame analysis TritonToUnstructure relies on, so both passes agree on\nthe verdict and structured accesses still reach the structured lowering.\nVerdicts are cached per pointer in the pattern for one\napplyPatternsGreedily run.",
+      "parents": [
+        "47970898c84ca9db02ad9545af30c85e0b409c9b"
+      ],
+      "stats": {
+        "total_additions": 50,
+        "total_deletions": 23,
+        "files_changed": 4
+      },
+      "files": [
+        {
+          "filename": "third_party/ascend/include/Utils/Utils.h",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 0,
+          "patch": "@@ -50,6 +50,7 @@ namespace ConverterUtils {\n const std::string GeneratedByMakeTensorPtrTAG = \"GeneratedByMakeTensorPtr\";\n const std::string discreteMaskAttrName = \"DiscreteMask\";\n const std::string mixCompileDiscreteMaskAttrName = \"MixCompileDiscreteMask\";\n+const std::string explicitRouteToSIMDAttrName = \"ExplicitRouteToSIMD\";\n // The access must consume the actual loop mask; full-load/select is unsafe.\n const std::string runtimeLoopMaskAttrName = \"RuntimeLoopMask\";\n const std::string discreteAttrName = \"DiscreteMemAccess\";"
+        },
+        {
+          "filename": "third_party/ascend/lib/DiscreteMaskAccessConversion/DiscreteMaskAccessConversionPass.cpp",
+          "status": "modified",
+          "additions": 30,
+          "deletions": 3,
+          "patch": "@@ -27,6 +27,7 @@\n #include \"ascend/include/TritonToLinalg/LoadStoreConverter.h\"\n #include \"ascend/include/TritonToLinalg/MaskAnalysis.h\"\n #include \"ascend/include/TritonToStructured/MemOpConverter.h\"\n+#include \"ascend/include/TritonToUnstructure/OffsetAnalysis.h\"\n #include \"bishengir/Dialect/HIVM/IR/HIVM.h\"\n #include \"mlir/Dialect/SCF/IR/SCF.h\"\n #include \"mlir/IR/Attributes.h\"\n@@ -626,6 +627,28 @@ struct DiscreteMaskAtomicConversion\n     : OpRewritePattern<mlir::triton::AtomicRMWOp> {\n   using OpRewritePattern<mlir::triton::AtomicRMWOp>::OpRewritePattern;\n \n+  bool routeToSIMD(mlir::triton::AtomicRMWOp op,\n+                   PatternRewriter &rewriter) const {\n+    if (op->hasAttr(ConverterUtils::explicitRouteToSIMDAttrName)) {\n+      return op\n+          ->getAttrOfType<BoolAttr>(ConverterUtils::explicitRouteToSIMDAttrName)\n+          .getValue();\n+    }\n+\n+    auto loc = op.getLoc();\n+    auto ptr = op.getPtr();\n+    llvm::DenseMap<Value, PtrOffsetInfo> offsetMap;\n+    triton::parse(ptr, loc, rewriter, offsetMap);\n+    auto it = offsetMap.find(ptr);\n+    auto toSimd = it != offsetMap.end() &&\n+                  llvm::all_of(it->second.getStructuredRef(), [](auto dim) {\n+                    return dim == PtrOffsetInfo::AxisInfo::structured;\n+                  });\n+    op->setAttr(ConverterUtils::explicitRouteToSIMDAttrName,\n+                rewriter.getBoolAttr(toSimd));\n+    return toSimd;\n+  }\n+\n   LogicalResult matchAndRewrite(mlir::triton::AtomicRMWOp op,\n                                 PatternRewriter &rewriter) const final {\n     auto loc = op.getLoc();\n@@ -637,10 +660,14 @@ struct DiscreteMaskAtomicConversion\n     if (failed(isDiscreteMask(op, mask, rewriter)))\n       return failure();\n \n-    // The template atomic ABI consumes the original lane mask.  Do not turn it\n-    // into a select before TritonToUnstructure has the chance to preserve it.\n+    // Keep the original mask for the SIMT atomic template when the pointer\n+    // needs the indirect atomic ABI. The unstructure pass flattens it together\n+    // with offsets and values; replacing it with a select here would lose that\n+    // lane mask. Structured pointers do not need the indirect ABI, so fall\n+    // through to the SIMD select+atomic rewrite below instead.\n     if (compileOn91095Flag &&\n-        triton::ascend::isSimtTemplateMode(compileModeFlag)) {\n+        triton::ascend::isSimtTemplateMode(compileModeFlag) &&\n+        !routeToSIMD(op, rewriter)) {\n       op->setAttr(ConverterUtils::mixCompileDiscreteMaskAttrName,\n                   rewriter.getUnitAttr());\n       return failure();"
+        },
+        {
+          "filename": "third_party/ascend/unittest/Conversion/General/DiscreteMaskAccess/indirect_atomic.mlir",
+          "status": "modified",
+          "additions": 13,
+          "deletions": 13,
+          "patch": "@@ -1,8 +1,8 @@\n // RUN: triton-opt '--discrete-mask-access-conversion=compile-on-910-95=True compile-mode=simd_simt_template' --split-input-file %s | FileCheck %s\n \n // CHECK-LABEL: tt.func @structured_disc_mask_atomic_add_2d\n-// CHECK-NOT: arith.select {{.*}} : tensor<4x4xi1>, tensor<4x4xi32>\n-// CHECK: tt.atomic_rmw add, acq_rel, gpu, {{.*}} {MixCompileDiscreteMask} : (tensor<4x4x!tt.ptr<i32>>, tensor<4x4xi32>, tensor<4x4xi1>) -> tensor<4x4xi32>\n+// CHECK: arith.select {{.*}} : tensor<4x4xi1>, tensor<4x4xi32>\n+// CHECK: tt.atomic_rmw add, acq_rel, gpu, {{.*}} : (tensor<4x4x!tt.ptr<i32>>, tensor<4x4xi32>) -> tensor<4x4xi32>\n // CHECK: tt.store {{.*}} {MixCompileDiscreteMask} : tensor<4x4x!tt.ptr<i32>>\n tt.func @structured_disc_mask_atomic_add_2d(%arg0: !tt.ptr<i32>, %arg1: !tt.ptr<i32>, %arg2: !tt.ptr<i32>) {\n \t%cst = arith.constant dense<16> : tensor<4x4xi32>\n@@ -32,8 +32,8 @@ tt.func @structured_disc_mask_atomic_add_2d(%arg0: !tt.ptr<i32>, %arg1: !tt.ptr<\n // -----\n \n // CHECK-LABEL: tt.func @structured_disc_mask_atomic_and_2d\n-// CHECK-NOT: arith.select {{.*}} : tensor<4x4xi1>, tensor<4x4xi32>\n-// CHECK: tt.atomic_rmw and, acq_rel, gpu, {{.*}} {MixCompileDiscreteMask} : (tensor<4x4x!tt.ptr<i32>>, tensor<4x4xi32>, tensor<4x4xi1>) -> tensor<4x4xi32>\n+// CHECK: arith.select {{.*}} : tensor<4x4xi1>, tensor<4x4xi32>\n+// CHECK: tt.atomic_rmw and, acq_rel, gpu, {{.*}} : (tensor<4x4x!tt.ptr<i32>>, tensor<4x4xi32>) -> tensor<4x4xi32>\n // CHECK: tt.store {{.*}} {MixCompileDiscreteMask} : tensor<4x4x!tt.ptr<i32>>\n tt.func @structured_disc_mask_atomic_and_2d(%arg0: !tt.ptr<i32>, %arg1: !tt.ptr<i32>, %arg2: !tt.ptr<i32>) {\n \t%cst = arith.constant dense<16> : tensor<4x4xi32>\n@@ -63,8 +63,8 @@ tt.func @structured_disc_mask_atomic_and_2d(%arg0: !tt.ptr<i32>, %arg1: !tt.ptr<\n // -----\n \n // CHECK-LABEL: tt.func @structured_disc_mask_atomic_or_2d\n-// CHECK-NOT: arith.select {{.*}} : tensor<4x4xi1>, tensor<4x4xi32>\n-// CHECK: tt.atomic_rmw or, acq_rel, gpu, {{.*}} {MixCompileDiscreteMask} : (tensor<4x4x!tt.ptr<i32>>, tensor<4x4xi32>, tensor<4x4xi1>) -> tensor<4x4xi32>\n+// CHECK: arith.select {{.*}} : tensor<4x4xi1>, tensor<4x4xi32>\n+// CHECK: tt.atomic_rmw or, acq_rel, gpu, {{.*}} : (tensor<4x4x!tt.ptr<i32>>, tensor<4x4xi32>) -> tensor<4x4xi32>\n // CHECK: tt.store {{.*}} {MixCompileDiscreteMask} : tensor<4x4x!tt.ptr<i32>>\n tt.func @structured_disc_mask_atomic_or_2d(%arg0: !tt.ptr<i32>, %arg1: !tt.ptr<i32>, %arg2: !tt.ptr<i32>) {\n \t%cst = arith.constant dense<16> : tensor<4x4xi32>\n@@ -94,8 +94,8 @@ tt.func @structured_disc_mask_atomic_or_2d(%arg0: !tt.ptr<i32>, %arg1: !tt.ptr<i\n // -----\n \n // CHECK-LABEL: tt.func @structured_disc_mask_atomic_xor_2d\n-// CHECK-NOT: arith.select {{.*}} : tensor<4x4xi1>, tensor<4x4xi32>\n-// CHECK: tt.atomic_rmw xor, acq_rel, gpu, {{.*}} {MixCompileDiscreteMask} : (tensor<4x4x!tt.ptr<i32>>, tensor<4x4xi32>, tensor<4x4xi1>) -> tensor<4x4xi32>\n+// CHECK: arith.select {{.*}} : tensor<4x4xi1>, tensor<4x4xi32>\n+// CHECK: tt.atomic_rmw xor, acq_rel, gpu, {{.*}} : (tensor<4x4x!tt.ptr<i32>>, tensor<4x4xi32>) -> tensor<4x4xi32>\n // CHECK: tt.store {{.*}} {MixCompileDiscreteMask} : tensor<4x4x!tt.ptr<i32>>\n tt.func @structured_disc_mask_atomic_xor_2d(%arg0: !tt.ptr<i32>, %arg1: !tt.ptr<i32>, %arg2: !tt.ptr<i32>) {\n \t%cst = arith.constant dense<16> : tensor<4x4xi32>\n@@ -125,7 +125,7 @@ tt.func @structured_disc_mask_atomic_xor_2d(%arg0: !tt.ptr<i32>, %arg1: !tt.ptr<\n // -----\n \n // CHECK-LABEL: tt.func @structured_disc_mask_atomic_xchg_2d\n-// CHECK: tt.atomic_rmw exch, acq_rel, gpu, {{.*}} {MixCompileDiscreteMask} : (tensor<4x4x!tt.ptr<i32>>, tensor<4x4xi32>, tensor<4x4xi1>) -> tensor<4x4xi32>\n+// CHECK: tt.atomic_rmw exch, acq_rel, gpu, {{.*}} {DiscreteMask, ExplicitRouteToSIMD = true} : (tensor<4x4x!tt.ptr<i32>>, tensor<4x4xi32>, tensor<4x4xi1>) -> tensor<4x4xi32>\n // CHECK: tt.store {{.*}} {MixCompileDiscreteMask} : tensor<4x4x!tt.ptr<i32>>\n tt.func @structured_disc_mask_atomic_xchg_2d(%arg0: !tt.ptr<i32>, %arg1: !tt.ptr<i32>, %arg2: !tt.ptr<i32>) {\n \t%cst = arith.constant dense<16> : tensor<4x4xi32>\n@@ -155,8 +155,8 @@ tt.func @structured_disc_mask_atomic_xchg_2d(%arg0: !tt.ptr<i32>, %arg1: !tt.ptr\n // -----\n \n // CHECK-LABEL: tt.func @structured_disc_mask_atomic_max_2d\n-// CHECK-NOT: arith.select {{.*}} : tensor<4x4xi1>, tensor<4x4xi32>\n-// CHECK: tt.atomic_rmw max, acq_rel, gpu, {{.*}} {MixCompileDiscreteMask} : (tensor<4x4x!tt.ptr<i32>>, tensor<4x4xi32>, tensor<4x4xi1>) -> tensor<4x4xi32>\n+// CHECK: arith.select {{.*}} : tensor<4x4xi1>, tensor<4x4xi32>\n+// CHECK: tt.atomic_rmw max, acq_rel, gpu, {{.*}} : (tensor<4x4x!tt.ptr<i32>>, tensor<4x4xi32>) -> tensor<4x4xi32>\n // CHECK: tt.store {{.*}} {MixCompileDiscreteMask} : tensor<4x4x!tt.ptr<i32>>\n tt.func @structured_disc_mask_atomic_max_2d(%arg0: !tt.ptr<i32>, %arg1: !tt.ptr<i32>, %arg2: !tt.ptr<i32>) {\n \t%cst = arith.constant dense<16> : tensor<4x4xi32>\n@@ -186,8 +186,8 @@ tt.func @structured_disc_mask_atomic_max_2d(%arg0: !tt.ptr<i32>, %arg1: !tt.ptr<\n // -----\n \n // CHECK-LABEL: tt.func @structured_disc_mask_atomic_min_2d\n-// CHECK-NOT: arith.select {{.*}} : tensor<4x4xi1>, tensor<4x4xi32>\n-// CHECK: tt.atomic_rmw min, acq_rel, gpu, {{.*}} {MixCompileDiscreteMask} : (tensor<4x4x!tt.ptr<i32>>, tensor<4x4xi32>, tensor<4x4xi1>) -> tensor<4x4xi32>\n+// CHECK: arith.select {{.*}} : tensor<4x4xi1>, tensor<4x4xi32>\n+// CHECK: tt.atomic_rmw min, acq_rel, gpu, {{.*}} : (tensor<4x4x!tt.ptr<i32>>, tensor<4x4xi32>) -> tensor<4x4xi32>\n // CHECK: tt.store {{.*}} {MixCompileDiscreteMask} : tensor<4x4x!tt.ptr<i32>>\n tt.func @structured_disc_mask_atomic_min_2d(%arg0: !tt.ptr<i32>, %arg1: !tt.ptr<i32>, %arg2: !tt.ptr<i32>) {\n \t%cst = arith.constant dense<16> : tensor<4x4xi32>"
+        },
+        {
+          "filename": "third_party/ascend/unittest/Conversion/General/TritonToUnstructure/indirect_atomic.mlir",
+          "status": "modified",
+          "additions": 6,
+          "deletions": 7,
+          "patch": "@@ -1,9 +1,8 @@\n // RUN: triton-opt '--discrete-mask-access-conversion=compile-on-910-95=True compile-mode=simd_simt_template' '--triton-to-unstructure=compile-on-910-95=True compile-mode=simd_simt_template' --split-input-file %s | FileCheck %s\n \n // CHECK-LABEL: tt.func public @structured_discrete_mask_atomic_add_1d\n-// CHECK-NOT: arith.select {{.*}} : tensor<8xi1>, tensor<8xi32>\n-// CHECK: %[[MASK_I8:.*]] = arith.extui {{.*}} : tensor<8xi1> to tensor<8xi8>\n-// CHECK: hivm.hir.custom {extra_attr = \"operate=add\"{{.*}}} \"__builtin_indirect_atomic\" ins(%arg1, {{.*}}, {{.*}}, %[[MASK_I8]]\n+// CHECK: arith.select {{.*}} : tensor<8xi1>, tensor<8xi32>\n+// CHECK: tt.atomic_rmw add, acq_rel, gpu, {{.*}} : (tensor<8x!tt.ptr<i32>>, tensor<8xi32>) -> tensor<8xi32>\n tt.func public @structured_discrete_mask_atomic_add_1d(%arg0: !tt.ptr<i32>, %arg1: !tt.ptr<i32>) {\n \t%cst = arith.constant dense<2> : tensor<8xi32>\n \t%cst_0 = arith.constant dense<8> : tensor<8xi32>\n@@ -22,10 +21,10 @@ tt.func public @structured_discrete_mask_atomic_add_1d(%arg0: !tt.ptr<i32>, %arg\n // -----\n \n // CHECK-LABEL: tt.func public @structured_discrete_mask_atomic_add_i16_fallback\n-// CHECK-NOT: arith.select {{.*}} : tensor<8xi1>, tensor<8xi16>\n-// CHECK: scf.for\n-// CHECK: scf.if\n-// CHECK: tt.atomic_rmw add, acq_rel, gpu, {{.*}} {DiscreteMemAccess}\n+// CHECK: arith.select {{.*}} : tensor<8xi1>, tensor<8xi16>\n+// CHECK-NOT: scf.for\n+// CHECK-NOT: scf.if\n+// CHECK: tt.atomic_rmw add, acq_rel, gpu, {{.*}} : (tensor<8x!tt.ptr<i16>>, tensor<8xi16>) -> tensor<8xi16>\n tt.func public @structured_discrete_mask_atomic_add_i16_fallback(%arg0: !tt.ptr<i16>, %arg1: !tt.ptr<i16>) {\n \t%cst = arith.constant dense<2> : tensor<8xi32>\n \t%cst_0 = arith.constant dense<8> : tensor<8xi32>\n"
+        }
+      ]
+    }
+  ]
+}
