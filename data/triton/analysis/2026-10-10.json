@@ -1,0 +1,104 @@
+{
+  "date": "2026-10-10",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-11T04:47:39.066640+08:00",
+  "daily_summary": "当日变更集中在 AMD/ROCm 后端与 Gluon 生态：(1) 用 llvm.amdgcn.s.getreg 内建替换 Proton AMD 硬件寄存器读取的 GCNBuilder 内联汇编，并彻底删除已无用户的 GCNAsmFormat 工具链；(2) 新增一个 opt-in 的 gfx950 MFMA 调度 LLVM-IR pass，通过 sched.barrier 固定 MFMA 与访存的交织顺序以提升 GEMM 热循环矩阵单元利用率；(3) 修复 ConSan 共享 commit-counter 的溢出与 wait-count 负值处理，统一将所有 commit 计数器饱和到 127 并将等待阈值 clamp 到 [0,127]，同时覆盖 NVIDIA/AMD 通用路径；(4) triton_kernels 的 Blackwell activation MX scale 布局支持 4 列对齐并做 4/8 对齐间的重打包；(5) Gluon 前向注意力示例为 Rubin 做 knob 调优、修复 causal + TMEM reduction 的 bug 并新增 benchmark 专用 config 选择器。整体为 AMD 后端性能/正确性打磨 + 示例调优，核心 Python 编译器接口与平台无关契约未变。",
+  "ascend_impact_summary": "当日 5 个 commit 对 triton-ascend 均无实质影响。三个涉及 AMD 平台特定代码（third_party/amd/**、third_party/proton/ProtonAMDGPUToLLVM）的变更属 AMD 专属路径，triton-ascend 不加载、不依赖；commit 89166b5 与 3238b3e 分别只改 python/triton_kernels 的 layout 数据类与 python/examples/gluon 示例，不触碰 BaseBackend/DriverBase/TritonSemantic/CodeGenerator/compiler.parse 等后端契约或 monkey-patch 挂载点。其中 11523f3 修改了 lib/Dialect/TritonInstrument 与 test/TritonGPU/consan.mlir，该目录在 triton-ascend 的‘必然影响/可能影响’清单中未列出（TritonInstrument 属 ConSan sanitizer，Ascend 未启用），且改动仅在 instrument 方言内部生成饱和/clamp 逻辑，不改变 TTIR/TTGIR 定义，因此 Ascend 的 TritonToLinalg 输入不受影响。综上，无需为当日变更更新 triton-ascend 测试。",
+  "commits": [
+    {
+      "sha": "3078daa76bbd55c1c3509f7ee8e899b1ed6a127e",
+      "comment": "移除 Proton AMD TargetInfo 中基于 GCNBuilder 的 s_getreg_b32 内联汇编，改用 llvm.amdgcn.s.getreg 内建（通过 LLVM::createLLVMIntrinsicCallOp 调用）。新增静态辅助函数 getHwReg(id, offset, size)，将 HW_REG 编码为指令的打包 simm16 操作数（id[5:0] | offset[10:6] | (size-1)[15:11]），并断言 id<64、offset<32、size∈[1,32]。因为 GCNBuilder 已无其它用户，一并删除 third_party/amd/include/TritonAMDGPUToLLVM/GCNAsmFormat.h 与 lib/TritonAMDGPUToLLVM/GCNAsmFormat.cpp（共约 490 行）及 CMakeLists 引用；同时删除了 processorId() 中一个只构造却从未 launch 的 s_waitcnt lgkmcnt(0) 死代码。实现上等价，仅替换寄存器读取的编码方式并清理死代码，风险低；需注意 getHwReg 中硬编码的 id/offset/size 常量与注释需与 AMD 手册保持一致（测试已用 SH0DW-CHECK 校验三种 HWREG 的解码值 6164/6660/4932 与 gfx1250 的 63511）。",
+      "tags": [
+        "refactor",
+        "chore",
+        "low-risk",
+        "proton",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][Proton] Use llvm.amdgcn.s.getreg for hwreg reads (#12216)\n\nReplace the GCNBuilder-based s_getreg_b32 inline asm in the Proton AMD\nTargetInfo with the llvm.amdgcn.s.getreg intrinsic, and drop a dead\ns_waitcnt instruction that was built but never launched. GCNBuilder has\nno remaining users, so remove GCNAsmFormat.{h,cpp}."
+    },
+    {
+      "sha": "3b0c7f081a3fc8471cae4941d1c579f2348bcbca",
+      "comment": "为 gfx950 新增 opt-in 的 MFMA 调度 LLVM-IR pass（third_party/amd/lib/Target/MFMASchedule/MFMASchedule.{h,cpp}，约 640 行）。pass 以基本块为单位切分 span（首个 MFMA 后出现的 MFMA 开启新 span，使 span 内重排依赖安全），在 span 内 hoist MFMA 输入 prep（shufflevector/insertelement）、sink 结果 extract，并用吞吐模型围绕访存锚点（GR=64 周期、LDS 按访问宽度比例）排布 MFMA，最后在每个锚点前插入 llvm.amdgcn.sched.barrier 钉住顺序；Gluon cd_regclass 的 C/D pin 随 MFMA 移动并加 fence。每块事务化调度（snapshot → schedule → verifyFunction → 失败回滚）。通过 HIPOptions.schedule_hint='mfma-schedule' 启用（parse_options 校验非法值抛 ValueError），仅在 make_llir 中 options.arch=='gfx950' 时调用，非 gfx950 接受 hint 但无效。新增 python/triton_amd.cc 的 add_mfma_schedule_pass 绑定与 TritonAMDMFMASchedule 链接库，并补充 CMakeLists、示例测试 test_schedule_hint.py（8 个用例：默认关闭/非法 hint 拒绝/交织生效/pin 保留/预置 barrier 分段/非 MFMA kernel 不动/其他 arch 忽略）。属 AMD 专属优化路径，对核心与其它后端零影响。",
+      "tags": [
+        "performance",
+        "feature",
+        "medium-risk",
+        "amd",
+        "scheduler"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Add an opt-in MFMA scheduler for gfx950 (#12209)\n\nAn opt-in LLVM-IR pass for gfx950 that interleaves the MFMAs of a\nmatrix-core hot loop with the memory operations that are independent of\nthem, so the matrix unit stays busy while loads and LDS accesses issue.\nIt is enabled per kernel through the existing `schedule_hint` option:\n\n```python\nkernel[grid](..., schedule_hint=\"mfma-schedule\")\n```\n\n### Why\n\nOn gfx950 the stock machine schedulers leave the MFMA pipe idle for\nabout 30% of a GEMM hot loop: the `buffer_load`s and `ds_read`s of the\nnext K tile end up clustered, and the MFMAs wait on them. The LLVM pass\nbelow spaces the MFMAs around those memory ops at the rate each op's\nissue port needs, and pins the result so the machine schedulers keep it.\nOn the intra-wave GEMMs of the [gfx950 Gluon\ntutorials](https://github.com/ROCm/gfx950-gluon-tutorials) this takes\nthe in-loop MFMA utilization from about 70% to 96% and TFLOPS up by\n10–16% (table below). The same pass has been shipped there as an\nout-of-tree LLVM plugin since the tutorials' v2.0; this PR proposes it\nin-tree, where it needs no plugin loading and sees the kernel's own\n`cd_regclass` pins.\n\n### What the pass does\n\n`third_party/amd/lib/Target/MFMASchedule/MFMASchedule.cpp`, run from\n`HIPBackend.make_llir` after `optimize_module`, only for gfx950 and only\nwith the hint.\n\n- **Spans.** Per basic block, the instructions are cut into spans: a\nspan is a run of MFMAs that ends at the first MFMA after a memory op.\nThe loads feeding a span's MFMAs therefore sit in an earlier span, and\nreordering inside a span is dependency-safe. A block that already\ncarries `llvm.amdgcn.sched.barrier`s (an explicit\n`gl.amd.hint.sched_barrier`, or a block-pingpong cluster boundary) is\nscheduled range by range between them; nothing moves across a barrier.\n- **Inside a span.** The MFMA-input prep (`shufflevector`,\n`insertelement`) is hoisted to the span start and the MFMA-result\n`extractelement`s are sunk past the last memory op, so the MFMA run in\nbetween can be reordered freely. The MFMAs are then spaced around the\nspan's memory anchors with a throughput model: a global load gets\n`ceil(64 / mfma_cycles)` MFMAs of cover (its issue path is busy for\nabout 64 cycles), an LDS read or write gets MFMAs at one byte of access\nwidth per cycle with a running balance across the span's accesses, two\nMFMAs drain the tail, and surplus compute is split between the span's\nhead and tail. The MFMA cost is the pass count × 4 cycles from\n`SISchedule.td`, with the scaled f8f6f4 shapes priced by their\n`cbsz`/`blgp` operands.\n- **Pinning.** A `sched.barrier(0)` goes in front of each memory anchor,\nso every window between fences is `anchor, mfma...` and LLVM's pre- and\npost-RA schedulers keep the interleave. Machine scheduling stays enabled\neverywhere else, including the prologue, the epilogue and any span the\npass skipped. MFMA accumulators pinned with Gluon's `cd_regclass` (an\nempty tied inline asm on C and D) travel with their MFMA and get a fence\nafter the D pin; without it the machine scheduler reorders the pinned\nMFMAs between anchors and leaves the pins behind as `v_accvgpr` copies.\n- **Safety.** A span whose MFMA shape is not in the cycle table, or that\nhas no memory op to interleave with, is left alone. Every block is\nscheduled transactionally: snapshot, schedule, `verifyFunction`, and\nroll the block back if the IR is invalid.\n\n### Results\n\nMI355X, this branch on upstream `main` at 8627ec5be, the tutorial's\nintra-wave GEMMs (M x N x K below, 256 workgroups), measured with the\ntutorial harness: kernel time from a `rocprofv3` kernel trace, in-loop\nMFMA utilization from a thread trace of the hot loop. Each cell is\nTFLOPS (in-loop MFMA utilization); one run each, same GPU, stock and\nscheduled back to back.\n\n| Kernel | M x N x K | stock LLVM schedule | `mfma-schedule` | TFLOPS |\n|---|---|---:|---:|---:|\n| a16w16 v9 fp16 | 4096 x 4096 x 8192 | 1415 (71.77%) | 1590 (96.15%) |\n+12% |\n| a16w16 v9 bf16 | 4096 x 4096 x 8192 | 1452 (71.78%) | 1651 (96.15%) |\n+14% |\n| a8w8 | 4096 x 4096 x 16384 | 2902 (72.12%) | 3371 (96.29%) | +16% |\n| a4w4 v1 | 4096 x 4096 x 32768 | 5166 (68.02%) | 5677 (84.16%) | +10% |"
+    },
+    {
+      "sha": "11523f38065f52a8117dc3c4d74a2ac59936c19e",
+      "comment": "修复 lib/Dialect/TritonInstrument/IR/FunctionBuilder.cpp 中共享 commit-counter 辅助函数的两个 bug：(1) 计数器溢出——此前只有 AsyncCp 记录（retainCopies）才饱和到 127，其他 commit 类型（含 empty group）在多次 commit 后可回绕为负，导致合法 wait 后仍报 false race；现引入 getMaxCommitAge(commitsType)（llvm::maxIntN(位宽)）并对所有 commit kind 统一做饱和，删除 retainCopies 特判，同时将缓存函数键由 {commitsType, retainCopies} 简化为 {commitsType}；(2) wait-count 处理——大 wait count 转 i8 可变负导致 ConSan 误判为已完成、负 wait count 还会选中空 commit 表项；在 createClearOutstandingCommitsTransferCall 中对 outstandingNum 做 std::clamp(outstandingNum, 0, getMaxCommitAge(commitsType))。改动通过 llvm/Support/MathExtras.h 引入工具。该逻辑被 NVIDIA 与 AMD 共用，故新增 test/TritonGPU/consan.mlir 与 test/TritonGPU/amd/amd-consan.mlir 的 lit 用例，并在 third_party/amd 的 ConSan helper/单测中补充 async_wait_count_bounds（empty_groups/large_count/negative_count 三模式）。属 bugfix，仅影响 sanitizer 生成的检查代码，不改变 TTIR/TTGIR op 定义。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "sanitizer",
+        "instrument"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。lib/Dialect/TritonInstrument/IR/FunctionBuilder.cpp 属 ConSan sanitizer 的 commit/wait 计数簿记，triton-ascend 未启用 TritonInstrument instrument pass，不经此路径；改动未涉及任何 TTIR/TTGIR op 定义（tt 方言 op/类型/属性未变），Ascend 复用的 TTIR→TritonToLinalg 转换链输入不受影响。",
+        "testing": "无影响。新增/修改的 lit 与 AMD ConSan 单测仅覆盖上游 Instrument sanitizer，不影响 triton-ascend 现有测试覆盖或构建。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][ConSan] Fix commit-counter overflow and wait-count handling (#12208)\n\nFix two bugs in the shared commit-counter helpers, found while extending\ngfx1250 ConSan async-copy support:\n\n- Counter overflow: Only async-copy records retained for mbarriers\nsaturated at 127. Other counters could wrap negative after enough\ncommits, including empty groups, so later waits could not clear them.\nThis caused false race reports after valid waits. See representative\ntest:\n`third_party/amd/python/test/test_gluon_cdna5_consan.py::test_async_wait_count_bounds`\nwith mode `\"empty_groups\"`.\n\n- Wait-count handling: Large counts could become negative when converted\nto the signed 8-bit counter type, causing ConSan to incorrectly consider\npending copies complete. Negative wait counts also selected empty\ncommit-table entries, causing ConSan to consider accesses synchronized\neven though the wait did not cover them. See representative tests:\n`third_party/amd/python/test/test_gluon_cdna5_consan.py::test_async_wait_count_bounds`\nwith modes `\"large_count\"` and `\"negative_count\"`, respectively.\n\nSaturate ages at 127 for all commit kinds and clamp ConSan's wait\nthresholds to [0, 127]. These fixes apply to the common bookkeeping used\nby AMD and NVIDIA."
+    },
+    {
+      "sha": "89166b5038d6ed19e8183c1901f13534a1e147a4",
+      "comment": "为 triton_kernels 的 BlackwellActMXScaleLayout 增加 column_alignment 字段（默认 8，仅允许 4 或 8，__post_init__ 中校验非法值抛 ValueError），允许 Blackwell activation scale 使用 4 列 padding 以节省存储；can_preserve_storage_as 增加 column_alignment 比较，make_transformation 将 ALIGN_K 传为 column_alignment，使 4↔8 转换时自动重打包存储。新增两个 CPU 回归测试（test_blackwell_act_four_column_roundtrip、test_blackwell_act_column_alignment_conversion）。属 triton_kernels 纯 Python 数据类扩展，不触及编译器后端接口，与 GPU 后端无关；128×4 swizzle 未变，默认行为（alignment=8）向后兼容。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "triton_kernels"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。python/triton_kernels 是独立于编译后端的 tensor/layout 工具库，其 Layout 数据类不在 triton-ascend 的接口面（BaseBackend/DriverBase/TritonSemantic/CodeGenerator/compiler.parse/TritonOpBuilder 等）内，也不影响 TTIR/TTGIR 定义。",
+        "testing": "无影响。新增测试位于 python/triton_kernels/tests/test_tensor.py，与 triton-ascend 测试套件无关。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[triton_kernels] Support four-column Blackwell activation scale alignment (#12213)\n\nAllow Blackwell activation scales to use four-column padding when\neight-column padding would waste storage. Callers can opt in with\n`BlackwellActMXScaleLayout(None, column_alignment=4)`; the default\nremains 8 and the 128×4 swizzle is unchanged. Reject alignments other\nthan 4 or 8, and repack storage when converting between the two\nalignments.\n\nAdd CPU regression tests for the compact layout's storage shape and\nround trip, plus conversion from 4 to 8 and back. The two new tests and\nnearby storage-shape, symbolic-shape, ragged-shape, and no-op conversion\ntests pass: 37 cases, using the local `triton_kernels` code with the\ninstalled Triton package. No GPU tests were run.\n\n# New contributor declaration\n\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following the [description\nguidelines](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`\n(passed).\n- [x] I have added tests in\n`python/triton_kernels/tests/test_tensor.py`.\n- [x] I have not added any `lit` tests."
+    },
+    {
+      "sha": "3238b3edc6e338a10798bfea1d41ddababe09fcf",
+      "comment": "为 Rubin（sm_107）调优 Gluon 前向注意力示例：新增 is_rubin() 与 select_kernel_config 中的 Rubin 分支（head_dim 64/128、fp8/fp16、causal/非 causal 的 group_size_n、split_exp_factor、maxnreg、num_kv_buffers、use_exp2_turnstile、cga_layout 组合）。同时修复两处问题：(1) causal 与 use_tmem_red 同时启用时，TMEM load reduction 对未加 mask 的 scores 计算行 max，故在 _softmax_inner_loop 中引入 use_tmem_red_for_tile = use_tmem_red and STAGE != 2，对角块回退到寄存器 masked 计算；(2) select_kernel_config 不尊重 benchmark driver 传入的 use_tmem_red，导致对比实验无差异，新增 select_benchmark_kernel_config（用 dataclasses.replace 强制 USE_TMEM_RED=use_tmem_red）并让 attention_forward/test_op 支持 config_selector 参数，bench 与新增 test_causal_tmem_red 走该入口。属示例/被调优代码变更，不影响 Triton 编译器核心；config_selector 默认值保持 select_kernel_config，向后兼容。",
+      "tags": [
+        "performance",
+        "bugfix",
+        "test",
+        "low-risk",
+        "attention",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅限 python/examples/gluon/01-attention-forward.py 示例脚本（Gluon/NVIDIA Blackwell/Rubin 相关），不涉及 BaseBackend/DriverBase 契约、TritonSemantic/CodeGenerator monkey-patch 挂载点或编译器阶段；Gluon 编译到 TTGIR，Ascend 默认不使用。",
+        "testing": "无影响。新增/修改测试均在示例脚本内部（pytest 收集该示例），不进入 triton-ascend 测试范围。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Tune Gluon FA example for Rubin (#12200)\n\nFollowing [the existing style of kernel-knobs\ntuning](https://github.com/triton-lang/triton/blob/main/python/examples/gluon/01-attention-forward.py#L1039-L1088),\nI did a sweep for Rubin. This forms the baseline for Rubin attention\noptimizations.\n\nAlso fixed unrelated issues:\n* The combination of `causal = True` and `use_tmem_red = True` has been\nbuggy. TMEM load reduction computes row max over unmasked scores, but\nrow max needs to be computed on masked score. So the correct\nimplementation skips using TMEM load reduction for diagonal blocks. cc\n@3gx\n* `select_kernel_config` function does not honor the value of\n`use_tmem_red` from the benchmark driver. When we run\n`01-attention-forward.py`, we want to see the speedup from `use_tmem_red\n= True`. But since `select_kernel_config` may select `use_tmem_red =\nTrue` even if the benchmark driver wants to evaluate `use_tmem_red =\nFalse`, for example, the benchmark results look like the choice of\n`use_tmem_red = True / False` has no effect. Fixed by introducing a\nwrapper `select_benchmark_kernel_config` which always selects the value\nof `use_tmem_red` as requested by the benchmark driver."
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

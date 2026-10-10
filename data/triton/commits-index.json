@@ -1,4 +1,24 @@
 {
+  "3078daa76bbd55c1c3509f7ee8e899b1ed6a127e": {
+    "date": "2026-10-10",
+    "msg": "[AMD][Proton] Use llvm.amdgcn.s.getreg for hwreg reads (#12216)"
+  },
+  "3b0c7f081a3fc8471cae4941d1c579f2348bcbca": {
+    "date": "2026-10-10",
+    "msg": "[AMD] Add an opt-in MFMA scheduler for gfx950 (#12209)"
+  },
+  "11523f38065f52a8117dc3c4d74a2ac59936c19e": {
+    "date": "2026-10-10",
+    "msg": "[AMD][ConSan] Fix commit-counter overflow and wait-count handling (#12208)"
+  },
+  "89166b5038d6ed19e8183c1901f13534a1e147a4": {
+    "date": "2026-10-10",
+    "msg": "[triton_kernels] Support four-column Blackwell activation scale alignment (#12213)"
+  },
+  "3238b3edc6e338a10798bfea1d41ddababe09fcf": {
+    "date": "2026-10-10",
+    "msg": "Tune Gluon FA example for Rubin (#12200)"
+  },
   "8627ec5be64b6d5767edf313668de2e145a2718b": {
     "date": "2026-10-09",
     "msg": "[INTERPRETER] More comprehensive floating point conversion for types not supported in numpy (#12168)"

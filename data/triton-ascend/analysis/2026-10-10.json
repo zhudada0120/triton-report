@@ -1,0 +1,65 @@
+{
+  "date": "2026-10-10",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-10-11T04:47:48.647645+08:00",
+  "daily_summary": "当日三个 commit 分别涉及：(1) 文档修正：删除 docs/zh/installation_guide.md 中重复的 Triton-Ascend 介绍段落，纯文档维护；(2) 自动调优输出增强：AutoTilingTuner 的 autotuning 结束打印信息从简单的 best_config 输出升级为带命名字段的 key 展示（cache_key/input.dtype/compile_mode/multibuffer_mode），并同步更新 autotune_ut 测试；(3) DynamicCVPipeline 的 mergeCube 缺陷修复：在 OpClassifier 中新增别名链解析（getAliasSource/getViewSource）与 MemoryEffectOpInterface 检测，识别 loop 内对 GM（func BlockArgument）的写操作，从而将此类循环正确排除出 Cube loader 判定，同时补充 scf.for 零结果保护，并新增 4 个 lit 测试用例覆盖 materialize_in_destination、memref.copy、合法 Cube loader 与多级别名链场景。整体方向为文档修正 + 调优可观测性 + 动态 CV pipeline 正确性修复。",
+  "test_impact_summary": "本日变更对测试看护的影响集中在 DynamicCVPipeline 的 Cube loader 分类正确性上：Commit 3 引入了新的别名链解析与 GM 写检测逻辑，并新增了 test_merge_cube_for.mlir 的 4 个 lit 用例，覆盖了 materialize_in_destination 写 GM、memref.copy 直写 GM、合法 Cube loader 保留 CUBE 标记以及多级别名链（subview -> reinterpret_cast -> func BlockArgument）等场景，属于对修复的正面看护，现有 matmul-based lit 测试可覆盖主路径，但建议关注 scf.for 零结果保护、scf.if 内 fill 等边界是否被现有用例命中。Commit 2 增加了 autotuner 打印字段逻辑，已有 test_do_bench_compat.py 同步更新并断言输出格式，覆盖充分。Commit 1 为纯文档，无测试影响。综合评估：DynamicCVPipeline 的修复属于 pass 行为变化，建议回归 ssbuffer/DynamicCVPipeline 相关端到端测试以及 sparse_flash_attention_grad 类 kernel 以确认原 faulty 场景不再触发；其余变更测试覆盖已足够。",
+  "commits": [
+    {
+      "sha": "533c9056f0c11c6f7af95d369efe6283b8b60491",
+      "comment": "纯文档修正：删除 docs/zh/installation_guide.md 中重复的 Triton-Ascend 项目介绍段落（该段落在文件中出现两次，内容完全一致）。改动仅涉及文档，无代码或架构影响。属于低风险维护性变更。",
+      "tags": [
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅删除文档中重复的介绍段落，不涉及任何代码、测试或架构逻辑，无需测试变更。",
+        "suggested_test_areas": []
+      },
+      "message": "update installation_guide.md (#2507)\n\nCo-authored-by: yanggaofeng (C) <y60124509@china.huawei.com>"
+    },
+    {
+      "sha": "0eabf4af310c29226a995208ae03373da49c3e2b",
+      "comment": "自动调优可观测性增强：AutoTilingTuner.run() 在 print_autotuning 开启时，将原先仅打印 best_config 的输出改为打印完整的 key 字段清单。实现上通过合并 self.nargs 与 kwargs 得到 all_args，筛选出 arg_names 中的参数，拼接 self.keys、带 dtype 的参数名以及固定的 compile_mode/multibuffer_mode，再用 zip(key_names, key) 生成 'name=value' 形式字段串，对 tuple 类型（如 multibuffer_mode=(2,3)）做解包处理避免重复命名。风险较低，但需注意 zip 依赖 key_names 与 key 的长度/顺序一致，若 self.keys 或 key 组成发生变化可能导致字段错配；同时该打印逻辑使用了 self.user_specified_multibuffer_mode 属性，若某些 tuner 子类未定义该属性会 AttributeError。测试文件 test_do_bench_compat.py 已同步补充 arg_names/keys/nargs/generate_key_and_configs 的 mock 值并断言新输出格式，覆盖到位。",
+      "tags": [
+        "feature",
+        "refactor",
+        "low-risk",
+        "autotune"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "打印输出格式发生变更（由 best config 单行改为带 key 字段的多行输出），既有断言需要同步更新；commit 已更新 test_do_bench_compat.py 以匹配新格式，并新增对 'with key as ' 旧格式不出现的断言。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/autotune_ut/test_do_bench_compat.py",
+          "third_party/ascend/backend/runtime/autotuner.py"
+        ]
+      },
+      "message": "[Autotune](feat) Print named fields for Ascend tuning keys (#2486)\n\n* [Autotune](feat) Print named fields for Ascend tuning keys\n\n* [Autotune](refactor) Keep key naming inside debug output\n\n* [Autotune](refactor) Print named key fields once\n\n* [Autotune](style) Apply repository YAPF formatting\n\n(cherry picked from commit d49ccb6aa847db6c7e041bce8a6cb5be4643dd15)"
+    },
+    {
+      "sha": "8aa15d92d42bd935bb777e00039c948920231c74",
+      "comment": "DynamicCVPipeline 中 mergeCube 缺陷修复（ssbuffer）。问题背景：OpClassifierPass 将某些含 GM 写操作的循环误判为 Cube loader 循环，导致 sparse_flash_attention_grad_kernel 等场景下被错误着色为 CUBE。修复内容分三部分：(1) 移除 AnalyzeName.cpp 中 interceptrFunc 对 'sparse_flash_attention_grad_kernel' 的特例拦截，说明根因已在分类逻辑中修复而非靠函数名白名单兜底；(2) OpClassifier.cpp 新增 getAliasSource/getViewSource 通过 ViewLikeOpInterface 与 bufferization::ToTensorOp 递归解析别名链到源头；在 isDisqualifyingLoaderOp 中引入 MemoryEffectOpInterface，检测对 func::FuncOp BlockArgument（即 GM 函数参数）的写操作并判定 disqualify；同时为 isCubeLoaderForOp 增加 forOp.getNumResults()==0 的保护，避免无结果循环被当作 Cube loader；(3) 新增 test_merge_cube_for.mlir 包含 4 个 lit 用例，覆盖 materialize_in_destination 写 GM、memref.copy 直写 GM、合法 Cube loader 保留 CUBE、以及 subview->reinterpret_cast->GM 的多级别名链场景。这是 pass 行为变更，需关注对既有 DynamicCVPipeline 测试的影响；别名链解析与 MemoryEffect 检测逻辑较为复杂，可能存在未覆盖的别名/写路径（如 to_memref、cast 等），建议回归端到端 CV pipeline 用例。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "DynamicCVPipeline",
+        "ssbuffer"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "pass 分类逻辑发生变更（新增 GM 写检测、别名链解析、scf.for 零结果保护），需新增 lit 测试覆盖这些路径；commit 已新增 test_merge_cube_for.mlir 包含 4 个用例。同时移除函数名白名单后需回归 sparse_flash_attention_grad 相关端到端场景，确认原误判不再出现。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/PlanComputeBlock/test_merge_cube_for.mlir",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/",
+          "third_party/ascend/lib/DynamicCVPipeline/PlanComputeBlock/OpClassifier.cpp",
+          "third_party/ascend/lib/DynamicCVPipeline/AnalyzeDataFlow/AnalyzeName.cpp"
+        ]
+      },
+      "message": "[ssbuffer](fix) mergeCube faulty scenario (#2402)\n\nSigned-off-by: chenwuyang <chenwuyang1@huawei.com>\n(cherry picked from commit 1f53ecc80701a88ad08c74e5202b0cc0fa1b38e4)"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

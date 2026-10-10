@@ -1,4 +1,16 @@
 {
+  "533c9056f0c11c6f7af95d369efe6283b8b60491": {
+    "date": "2026-10-10",
+    "msg": "update installation_guide.md (#2507)"
+  },
+  "0eabf4af310c29226a995208ae03373da49c3e2b": {
+    "date": "2026-10-10",
+    "msg": "[Autotune](feat) Print named fields for Ascend tuning keys (#2486)"
+  },
+  "8aa15d92d42bd935bb777e00039c948920231c74": {
+    "date": "2026-10-10",
+    "msg": "[ssbuffer](fix) mergeCube faulty scenario (#2402)"
+  },
   "ebef084711f96f7c21c09cb77574dc18b45a029e": {
     "date": "2026-10-09",
     "msg": "[compiler](fix) add enable-optimized-metaop options (#2483)"
