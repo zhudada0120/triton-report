@@ -1,4 +1,16 @@
 {
+  "9fbab754d1341f715bdd4218e480afd38af443c9": {
+    "date": "2026-10-11",
+    "msg": "[AMD] Remove the ScalarizePackedFOps LLVM pass (#12218)"
+  },
+  "ac9fc7ab6c0630bdb8735ea91933ac547ab85b8a": {
+    "date": "2026-10-11",
+    "msg": "[AMD] NFC: Tidy up comments, header guards, and declarations (#12220)"
+  },
+  "ab198e4f2094e412f4a9a608a202a261387b4b9d": {
+    "date": "2026-10-11",
+    "msg": "[KERNELS] Preserve row-scale bias fusion for full epilogues (#12204)"
+  },
   "3078daa76bbd55c1c3509f7ee8e899b1ed6a127e": {
     "date": "2026-10-10",
     "msg": "[AMD][Proton] Use llvm.amdgcn.s.getreg for hwreg reads (#12216)"

@@ -1,0 +1,568 @@
+{
+  "date": "2026-10-11",
+  "repo": "triton-lang/triton",
+  "branch": "main",
+  "commits": [
+    {
+      "sha": "9fbab754d1341f715bdd4218e480afd38af443c9",
+      "author": {
+        "name": "Lixun Zhang",
+        "email": "Lixun.Zhang@amd.com"
+      },
+      "date": "2026-10-11T16:21:37+08:00",
+      "message": "[AMD] Remove the ScalarizePackedFOps LLVM pass (#12218)\n\nRemove `AMDGCN_SCALARIZE_PACKED_FOPS`\n(`knobs.amd.scalarize_packed_fops`) and the LLVM IR pass behind it\n(#6656), with its Python binding and test.\n\nThe pass scalarized every vector `fmul`/`fadd`/`fsub` in a basic block\ncontaining an MFMA, so that none of them were emitted as `v_pk_*_f32`,\nwhich cannot co-issue with an MFMA.\n\nThe AMDGPU backend now does this itself. `SIPreEmitPeephole`\n(llvm/llvm-project#157968) unpacks the `V_PK_{MUL,ADD,FMA}_F32` that\nfall inside an MFMA's latency window into scalar instructions, so they\nco-issue with the MFMA, and leaves the ones outside the window packed,\nwhere one packed instruction is cheaper than two scalar ones. It decides\nafter scheduling, when it is known which instructions sit in an MFMA's\nshadow, so the Triton pass is no longer needed. The knob was off by\ndefault.\n\nTests: `test_scalarize_packed_fops.py` and its CI steps are removed; the\nother AMD Python tests and `test_knobs.py` pass on gfx950.",
+      "parents": [
+        "ac9fc7ab6c0630bdb8735ea91933ac547ab85b8a"
+      ],
+      "stats": {
+        "total_additions": 0,
+        "total_deletions": 250,
+        "files_changed": 8
+      },
+      "files": [
+        {
+          "filename": ".github/workflows/integration-tests-amd.yml",
+          "status": "modified",
+          "additions": 0,
+          "deletions": 2,
+          "patch": "@@ -181,11 +181,9 @@ jobs:\n \n           TRITON_CI_CACHE_PHASE=attention pytest --capture=tee-sys -rfs python/tutorials/06-fused-attention.py\n           pytest --capture=tee-sys -rfs -n 8 third_party/amd/python/test/ \\\n-                --ignore=third_party/amd/python/test/test_scalarize_packed_fops.py \\\n                 --ignore=third_party/amd/python/test/test_address_sanitizer.py \\\n                 --ignore=third_party/amd/python/test/test_gluon_cdna5.py\n           pytest --capture=tee-sys -rfs -n 8 third_party/amd/python/test/test_gluon_cdna5.py -k \"test_compile\"\n-          TRITON_ALWAYS_COMPILE=1 pytest --capture=tee-sys -rfs third_party/amd/python/test/test_scalarize_packed_fops.py\n           pytest --capture=tee-sys -rfs -n 8 python/test/backend/\n           cd python/test/unit\n           TRITON_CI_CACHE_PHASE=unit pytest --capture=tee-sys -rfs -n 12 \\"
+        },
+        {
+          "filename": "python/triton/knobs.py",
+          "status": "modified",
+          "additions": 0,
+          "deletions": 2,
+          "patch": "@@ -533,8 +533,6 @@ class amd_knobs(base_knobs):\n     use_coexec_scheduler: env_opt_bool = env_opt_bool(\"TRITON_HIP_USE_COEXEC_SCHEDULER\")\n     use_expert_scheduling: env_opt_bool = env_opt_bool(\"TRITON_HIP_USE_EXPERT_SCHEDULING\")\n \n-    scalarize_packed_fops: env_bool = env_bool(\"AMDGCN_SCALARIZE_PACKED_FOPS\")\n-\n     # Path to dump MIR files for debugging/analysis\n     dump_mir: env_opt_str = env_opt_str(\"TRITON_DUMP_MIR\")\n     # Path to externally-provided MIR files to use instead of generated ones"
+        },
+        {
+          "filename": "third_party/amd/backend/compiler.py",
+          "status": "modified",
+          "additions": 0,
+          "deletions": 3,
+          "patch": "@@ -718,9 +718,6 @@ class HIPBackend(BaseBackend):\n             kernel_fn.remove_fn_attr(\"amdgpu-no-workgroup-id-y\")\n             kernel_fn.remove_fn_attr(\"amdgpu-no-workgroup-id-z\")\n \n-        if knobs.amd.scalarize_packed_fops:\n-            amd.add_scalarize_packed_fops_llvm_pass(kernel_fn)\n-\n         # Opt-in MFMA scheduler, see the schedule_hint option (validated in parse_options).\n         if options.schedule_hint == \"mfma-schedule\" and options.arch == \"gfx950\":\n             amd.add_mfma_schedule_pass(kernel_fn)"
+        },
+        {
+          "filename": "third_party/amd/include/TritonAMDGPUToLLVM/Passes.h",
+          "status": "modified",
+          "additions": 0,
+          "deletions": 1,
+          "patch": "@@ -29,7 +29,6 @@ std::unique_ptr<OperationPass<ModuleOp>>\n createConvertWarpPipelinePass(StringRef gfxArch);\n std::unique_ptr<OperationPass<ModuleOp>>\n createTritonAMDGPUConvertWarpSpecializeToLLVMPass(StringRef gfxArch);\n-void runScalarizePackedFOpsPass(llvm::Function &F);\n \n } // namespace mlir::triton::AMD\n "
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUToLLVM/CMakeLists.txt",
+          "status": "modified",
+          "additions": 0,
+          "deletions": 1,
+          "patch": "@@ -25,7 +25,6 @@ add_triton_library(TritonAMDGPUToLLVM\n     SPMDOpToLLVM.cpp\n     Fp4ToFpOpToLLVM.cpp\n     MembarUtility.cpp\n-    ScalarizePackedFOps.cpp\n     TDMUtility.cpp\n     BarrierOpToLLVM.cpp\n     WarpIdOpToLLVM.cpp"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUToLLVM/ScalarizePackedFOps.cpp",
+          "status": "removed",
+          "additions": 0,
+          "deletions": 128,
+          "patch": "deleted file mode 100644\n@@ -1,128 +0,0 @@\n-#include \"TritonAMDGPUToLLVM/Passes.h\"\n-#include \"llvm/IR/IRBuilder.h\"\n-#include \"llvm/IR/Instructions.h\"\n-#include \"llvm/IR/PatternMatch.h\"\n-#include \"llvm/IR/Verifier.h\"\n-#include \"llvm/Passes/PassBuilder.h\"\n-\n-#define DEBUG_TYPE \"tritonamdgpu-scalarize-packed-fops\"\n-\n-using namespace llvm;\n-using namespace llvm::PatternMatch;\n-\n-namespace {\n-\n-bool isMFMAorWMMA(Instruction &inst) {\n-  auto *callInst = llvm::dyn_cast<CallInst>(&inst);\n-  if (!callInst)\n-    return false;\n-  // E.g., tail call void asm sideeffect \"s_waitcnt lgkmcnt(0) \", \"\"()\n-  if (callInst->isInlineAsm())\n-    return false;\n-  Function *calledFunc = callInst->getCalledFunction();\n-  if (!calledFunc->isIntrinsic())\n-    return false;\n-  StringRef intrinName = calledFunc->getName();\n-  if (intrinName.contains(\"mfma\") || intrinName.contains(\"wmma\"))\n-    return true;\n-  return false;\n-}\n-\n-bool maybeReplaceVectorFOpWithScalarFOps(Instruction *inst,\n-                                         IRBuilder<> &builder) {\n-  Value *lhs, *rhs;\n-  if (!match(inst, m_BinOp(m_Value(lhs), m_Value(rhs))))\n-    return false;\n-  auto *VecLhs = dyn_cast<VectorType>(lhs->getType());\n-  if (!VecLhs)\n-    return false;\n-  assert(!VecLhs->isScalableTy() && \"expected fixed-len vector\");\n-  builder.SetInsertPoint(inst);\n-  Value *newVec = llvm::UndefValue::get(VecLhs);\n-  for (int i = 0; i < VecLhs->getElementCount().getFixedValue(); ++i) {\n-    Value *newLhs = builder.CreateExtractElement(lhs, i);\n-    Value *newRhs = builder.CreateExtractElement(rhs, i);\n-    Value *res;\n-    if (inst->getOpcode() == Instruction::FMul)\n-      res = builder.CreateFMul(newLhs, newRhs);\n-    else if (inst->getOpcode() == Instruction::FAdd)\n-      res = builder.CreateFAdd(newLhs, newRhs);\n-    else if (inst->getOpcode() == Instruction::FSub)\n-      res = builder.CreateFSub(newLhs, newRhs);\n-    else\n-      llvm::report_fatal_error(\"only fadd, fmul, fsub supported\");\n-    newVec = builder.CreateInsertElement(newVec, res, i);\n-  }\n-  LLVM_DEBUG(dbgs() << \"ScalarizePackedFOps: Replacing: \" << inst << '\\n');\n-  LLVM_DEBUG(dbgs() << \"                     With: \" << newVec << '\\n');\n-  inst->replaceAllUsesWith(newVec);\n-  return true;\n-}\n-\n-//  This Pass scalarizes vector `fmul`s and `fadd`s in basic blocks that contain\n-//  MFMAs. The point/purpose/value of doing is that these get codegened to\n-//  \"packed\" ops (`v_pk_mul_f32`/`v_pk_add_f32`) and while packed ops use\n-//  separate VALUs from MFMA tensor cores (no problem there), the instructions\n-//  themselves cannot be *issued* in parallel, thus there is a performance cost\n-//  to having such packed ops \"near\" MFMAs. Concretely/specifically this\n-//  eliminates `v_pk_mul_f32`/`v_pk_add_f32` operations in the final asm in bbs\n-//  with MFMAs.\n-//\n-//  Note, these \"scalar\" floating point ops will still get lowered to vector\n-//  instructions like `v_mul_f32_e32 v1, v163, v114` and\n-//  `v_add_u32_e32 v1, s16, v12`, just not the \"packed\" variants.\n-//\n-//  Note, these vectorized `fmul`s aren't actually emitted by triton per se -\n-//  they are introduced/inserted by the VectorCombine::foldPermuteOfBinops\n-//  pattern during the `optimize_module` pipeline (hence why this LLVM pass\n-//  needs to follow that pipeline).\n-struct ScalarizePackedFOps : FunctionPass {\n-  ScalarizePackedFOps() : FunctionPass(ID) {}\n-\n-  bool runOnFunction(Function &F) override {\n-    IRBuilder<> builder(F.getContext());\n-    bool changed = false;\n-    SmallVector<Instruction *> instsToErase;\n-    for (BasicBlock &BB : F) {\n-      if (!llvm::any_of(BB, isMFMAorWMMA))\n-        continue;\n-      for (Instruction &inst : BB) {\n-        if (inst.getOpcode() != Instruction::FMul &&\n-            inst.getOpcode() != Instruction::FAdd &&\n-            inst.getOpcode() != Instruction::FSub)\n-          continue;\n-        if (maybeReplaceVectorFOpWithScalarFOps(&inst, builder)) {\n-          instsToErase.push_back(&inst);\n-          changed = true;\n-        }\n-      }\n-    }\n-\n-    if (changed) {\n-      for (Instruction *inst : instsToErase) {\n-        if (inst)\n-          inst->eraseFromParent();\n-      }\n-    }\n-\n-    // We don't do anything with this but this is a virtual function override\n-    // and the signature requires it.\n-    return changed;\n-  }\n-\n-  static char ID;\n-};\n-\n-} // end anonymous namespace\n-\n-char ScalarizePackedFOps::ID = 0;\n-\n-namespace mlir::triton::AMD {\n-void runScalarizePackedFOpsPass(Function &F) {\n-  ScalarizePackedFOps pass;\n-  pass.runOnFunction(F);\n-  // If there are no errors, the function returns false.\n-  assert(!llvm::verifyFunction(F) &&\n-         \"expected function to verify successfully\");\n-}\n-} // namespace mlir::triton::AMD"
+        },
+        {
+          "filename": "third_party/amd/python/test/test_scalarize_packed_fops.py",
+          "status": "removed",
+          "additions": 0,
+          "deletions": 109,
+          "patch": "deleted file mode 100644\n@@ -1,109 +0,0 @@\n-import re\n-from pathlib import Path\n-\n-import pytest\n-import triton\n-\n-current_target = triton.runtime.driver.active.get_current_target()\n-if current_target.arch not in (\"gfx950\", \"gfx942\", \"gfx90a\"):\n-    pytest.skip(allow_module_level=True)\n-\n-\n-def get_func_body(llir):\n-    func_body = re.findall(r\"define amdgpu_kernel void .*? \\{(.* ret void.*?)}\", llir, flags=re.DOTALL)\n-    assert len(func_body) == 1, \"couldn't find kernel body\"\n-    return func_body[0]\n-\n-\n-def get_func_body_asm(amdgcn):\n-    amdgcn = re.findall(r\"^attn_fwd:(.*); -- End function\", amdgcn, flags=re.DOTALL | re.MULTILINE)\n-    assert len(amdgcn) == 1, \"couldn't find kernel body\"\n-    return amdgcn[0]\n-\n-\n-# check there are actually instances of colliding/adjacent fops and mfma without scalarization\n-def test_check_not_scalarize():\n-    triton.knobs.amd.scalarize_packed_fops = False\n-    kernel = triton.compile(str(Path(__file__).parent / \"attn_fwd.ttir\"), target=current_target)\n-    llir = kernel.asm[\"llir\"]\n-    func_body = get_func_body(llir)\n-\n-    # check for specific patterns that we'll be rewriting in the pass\n-    def checked_packed_fops_ir_bbs():\n-        bbs = list(re.split(r\"^\\d+:\\s+; preds = %.*?$\", func_body, flags=re.MULTILINE))\n-        assert len(bbs) > 1, \"didn't split func body correctly\"\n-        found_colliding_packed_fop = False\n-        packed_fop = re.compile(r\"= f(add|sub|mul) <\")\n-        for bb in bbs:\n-            if (\"mfma\" in bb or \"wmma\" in bb) and packed_fop.search(bb):\n-                found_colliding_packed_fop = True\n-        assert found_colliding_packed_fop, \"couldn't find adjacent packed fop and mfma\"\n-\n-    # check that the pattern has the pessimistic effect on the assembly\n-    amdgcn = get_func_body_asm(kernel.asm[\"amdgcn\"])\n-\n-    def checked_packed_fops_asm_bbs():\n-        bbs = list(re.split(r\"^.L\\w+:\", amdgcn, flags=re.MULTILINE))\n-        assert len(bbs) > 1, \"didn't split func body correctly\"\n-        found_mfma = False\n-        found_colliding_packed_fop = False\n-        packed_fop = re.compile(r\"v_pk_\\w+\")\n-        for bb in bbs:\n-            if \"mfma\" in bb or \"wmma\" in bb:\n-                found_mfma = True\n-            if packed_fop.search(bb) and (\"mfma\" in bb or \"wmma\" in bb):\n-                found_colliding_packed_fop = True\n-\n-        assert (found_mfma and found_colliding_packed_fop\n-                ), f\"couldn't find mfma or packed fop {found_mfma=} {found_colliding_packed_fop=}\"\n-\n-    checked_packed_fops_ir_bbs()\n-    checked_packed_fops_asm_bbs()\n-\n-\n-# check scalarization \"fixes\"\n-def test_check_scalarized():\n-    triton.knobs.amd.scalarize_packed_fops = True\n-    kernel = triton.compile(str(Path(__file__).parent / \"attn_fwd.ttir\"), target=current_target)\n-\n-    # check the specific IR pattern was rewritten\n-    llir = kernel.asm[\"llir\"]\n-    func_body = get_func_body(llir)\n-\n-    def checked_packed_fops_ir_bbs():\n-        bbs = list(re.split(r\"^\\d+:\\s+; preds = %.*?$\", func_body, flags=re.MULTILINE))\n-        assert len(bbs) > 1, \"didn't split func body correctly\"\n-        found_mfma = False\n-        packed_fop = re.compile(r\"= f(add|sub|mul) <\")\n-        for bb in bbs:\n-            if \"mfma\" in bb or \"wmma\" in bb:\n-                assert not packed_fop.search(bb)\n-                found_mfma = True\n-            if packed_fop.search(bb):\n-                assert not (\"mfma\" in bb or \"wmma\" in bb)\n-\n-        assert found_mfma, \"couldn't find packed mfma\"\n-\n-    # check that it had the profitable effect on the assembly\n-    amdgcn = get_func_body_asm(kernel.asm[\"amdgcn\"])\n-\n-    def checked_packed_fops_asm_bbs():\n-        bbs = list(re.split(r\"^.L\\w+:\", amdgcn, flags=re.MULTILINE))\n-        assert len(bbs) > 1, \"couldn't split amdgcn bbs\"\n-        found_mfma = False\n-        found_packed_fop = False\n-        packed_fop = re.compile(r\"v_pk_(add|sub|mul)\\w+\")\n-        for bb in bbs:\n-            if \"mfma\" in bb or \"wmma\" in bb:\n-                assert not packed_fop.search(bb)\n-                found_mfma = True\n-            if packed_fop.search(bb):\n-                assert not (\"mfma\" in bb or \"wmma\" in bb)\n-                found_packed_fop = True\n-            # we don't check for v_pk_add because for this kernel,\n-            # there are no remaining v_pk_adds (the remaining v_pk_muls are in the epilogue)\n-\n-        assert found_mfma and found_packed_fop, f\"couldn't find mfma or packed fop: {found_mfma=}, {found_packed_fop=}\"\n-\n-    checked_packed_fops_ir_bbs()\n-    checked_packed_fops_asm_bbs()"
+        },
+        {
+          "filename": "third_party/amd/python/triton_amd.cc",
+          "status": "modified",
+          "additions": 0,
+          "deletions": 4,
+          "patch": "@@ -591,10 +591,6 @@ void init_triton_amd(py::module_ &m) {\n       // hold the GIL meanwhile.\n       py::call_guard<py::gil_scoped_release>());\n \n-  m.def(\"add_scalarize_packed_fops_llvm_pass\", [](llvm::Function *fn) {\n-    mlir::triton::AMD::runScalarizePackedFOpsPass(*fn);\n-  });\n-\n   m.def(\"add_mfma_schedule_pass\", [](llvm::Function *fn) -> bool {\n     return mlir::triton::AMD::runMFMASchedulePass(*fn);\n   });\n"
+        }
+      ]
+    },
+    {
+      "sha": "ac9fc7ab6c0630bdb8735ea91933ac547ab85b8a",
+      "author": {
+        "name": "Lei Zhang",
+        "email": "antiagainst@gmail.com"
+      },
+      "date": "2026-10-11T14:08:20+08:00",
+      "message": "[AMD] NFC: Tidy up comments, header guards, and declarations (#12220)\n\n- Fix codespell typos, including the misspelled\ngetTDMGatherScatterInstrinsicCount and deduceMinCountBetweeOps names.\n- Fix stale or copy-pasted pass/op descriptions and references to\nrenamed entities; drop leftover gfx10 mentions.\n- Rename the Passes.td include guard, which collided with TritonGPU's.\n- Name all header guards after their path, per #5244.\n- Move TDMUtility.h's global using-declarations to their users and drop\nits TargetInfo.h include.\n- Declare all TritonAMDGPUTransforms passes as TritonAMDGPU<Name>Pass\nstructs, and move optimize-dot-operands into the mlir namespace like the\nrest.\n- Drop the defaulted special members from the MFMA/WMMA intrinsic\nstructs.\n- Define the trivial TargetInfo -> TargetFeatures forwarders inline.",
+      "parents": [
+        "ab198e4f2094e412f4a9a608a202a261387b4b9d"
+      ],
+      "stats": {
+        "total_additions": 260,
+        "total_deletions": 347,
+        "files_changed": 62
+      },
+      "files": [
+        {
+          "filename": "bin/RegisterTritonDialects.h",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -136,7 +136,7 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {\n   mlir::registerTritonAMDGPUWarpPipeline();\n   mlir::registerTritonAMDFoldTrueCmpI();\n   mlir::registerTritonAMDGPUFpSanitizer();\n-  mlir::triton::amdgpu::registerTritonAMDGPUOptimizeDotOperands();\n+  mlir::registerTritonAMDGPUOptimizeDotOperands();\n   mlir::registerConSanAMDHooks();\n \n   // NVWS passes"
+        },
+        {
+          "filename": "python/test/unit/runtime/test_launch.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -342,7 +342,7 @@ def test_interpreter_implicit_cvt_bool() -> None:\n @pytest.mark.skipif(not is_hip(), reason=\"requires HIP\")\n def test_wgp_cu_mode_launch_argument():\n     arch = triton.runtime.driver.active.get_current_target().arch\n-    if not arch.startswith((\"gfx10\", \"gfx11\", \"gfx120\")):\n+    if not arch.startswith((\"gfx11\", \"gfx120\")):\n         pytest.skip(\"target has no WGP/CU mode distinction\")\n \n     @triton.jit"
+        },
+        {
+          "filename": "python/triton/experimental/gluon/language/amd/_ops.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -184,7 +184,7 @@ def _mma_scaled(a, a_scale, a_format, b, b_scale, b_format, acc, scale_fn, seman\n             return ttgl.uint8, 0x7F\n \n         if a_format == b_format == \"e2m1\":\n-            # Fp4 x Fp4 requries to use the same scale dtype for both operands.\n+            # Fp4 x Fp4 requires to use the same scale dtype for both operands.\n             other_scale = b_scale if op_idx == 0 else a_scale\n             return other_scale.dtype, default_value_by_dtype[other_scale.dtype]\n "
+        },
+        {
+          "filename": "python/triton/experimental/gluon/language/amd/cdna3/__init__.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -233,7 +233,7 @@ def scaled_upcast(src, scale, elem_type, axis=None, _semantic=None):\n \n \"\"\"\n AMD Buffer Atomic RMW operations.\n-The supported operatios are max, min, add, and, or, xor, xchg.\n+The supported operations are max, min, add, and, or, xor, xchg.\n Similar to normal atomic ops: it loads data at ptr plus offsets, do `op` with `value`, and store result to `ptr` plus `offsets` with\n the specified memory semantics and scope.\n "
+        },
+        {
+          "filename": "python/triton/experimental/gluon/language/amd/cdna4/async_copy.py",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 2,
+          "patch": "@@ -146,7 +146,7 @@ def buffer_load_to_shared(dest, ptr, offsets, mask=None, other=None, cache_modif\n @builtin\n def commit_group(_semantic=None):\n     \"\"\"\n-    Commit oustanding async operations.\n+    Commit outstanding async operations.\n \n     This finalizes a set of async copy operations which can be waited upon via :func:`wait_group`.\n     \"\"\"\n@@ -159,7 +159,7 @@ def wait_group(num_outstanding=0, _semantic=None):\n     Wait for outstanding commit groups.\n \n     It will block until the number of outstanding commit groups is less than or equal to\n-    ``num_outstanding``. Note that uncommited async operations will be waited upon even if\n+    ``num_outstanding``. Note that uncommitted async operations will be waited upon even if\n     ``num_outstanding`` is 0.\n \n     Args:"
+        },
+        {
+          "filename": "python/triton/experimental/gluon/language/amd/cdna5/async_copy.py",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 2,
+          "patch": "@@ -11,7 +11,7 @@ def global_to_shared(smem, pointer, mask=None, other=None, cache_modifier=\"\", _s\n     \"\"\"\n     Asynchronously copy elements from global memory to shared memory.\n \n-    Requires manual syncronization via :func:`wait_group` before accessing the loaded data.\n+    Requires manual synchronization via :func:`wait_group` before accessing the loaded data.\n \n     Args:\n         smem (shared_memory_descriptor): Destination shared memory descriptor.\n@@ -48,7 +48,7 @@ def shared_to_global(pointer, smem, mask=None, cache_modifier=\"\", _semantic=None\n     \"\"\"\n     Asynchronously copy elements from shared memory to global memory.\n \n-    Requires manual syncronization via :func:`wait_group` before accessing the stored data.\n+    Requires manual synchronization via :func:`wait_group` before accessing the stored data.\n \n     Args:\n         pointer (tensor): Destination pointer tensor."
+        },
+        {
+          "filename": "third_party/amd/backend/compiler.py",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 2,
+          "patch": "@@ -274,7 +274,7 @@ class HIPOptions:\n     # Example: llvm_fn_attrs=\"amdgpu-sched-strategy=iterative-ilp,noinline\"\n     llvm_fn_attrs: str | Tuple[Tuple[str, str], ...] = \"\"\n \n-    # WGP/CU execution mode for gfx10, gfx11 and gfx120x; ignored on other targets.\n+    # WGP/CU execution mode for gfx11 and gfx120x; ignored on other targets.\n     wgp_cu_mode: str = \"wgp\"\n \n     def __post_init__(self):\n@@ -596,7 +596,7 @@ class HIPBackend(BaseBackend):\n             # insert dbg intrinsic with several DI Attribute including source\n             # var name and type info note: unknown reason for now, but this\n             # pass and add_di_scope has to be run separately, otherwise if we\n-            # put them into previous pipline, it trigger a segmentfault without\n+            # put them into previous pipeline, it trigger a segmentfault without\n             # any error message; could be due to a bug in mlir or pybind11\n             pm = ir.pass_manager(mod.context)\n             pm.enable_debug()"
+        },
+        {
+          "filename": "third_party/amd/backend/driver.c",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -419,7 +419,7 @@ static inline void gpuAssert(hipError_t code, const char *file, int line) {\n         const char *prefix = \"Triton Error [HIP]: \";\n         const char *str = hipSymbolTable.hipGetErrorString(code);\n         char err[TRITON_HIP_MSG_BUFF_SIZE] = {0};\n-        snprintf(err, sizeof(err), \"%s Code: %d, Messsage: %s\", prefix, code,\n+        snprintf(err, sizeof(err), \"%s Code: %d, Message: %s\", prefix, code,\n                  str);\n         PyGILState_STATE gil_state;\n         gil_state = PyGILState_Ensure();"
+        },
+        {
+          "filename": "third_party/amd/include/Analysis/AMDGPUAllocation.h",
+          "status": "modified",
+          "additions": 3,
+          "deletions": 3,
+          "patch": "@@ -1,5 +1,5 @@\n-#ifndef TRITONAMD_ANALYSIS_AMDGPU_ALLOCATION_H\n-#define TRITONAMD_ANALYSIS_AMDGPU_ALLOCATION_H\n+#ifndef TRITON_THIRD_PARTY_AMD_INCLUDE_ANALYSIS_AMDGPUALLOCATION_H_\n+#define TRITON_THIRD_PARTY_AMD_INCLUDE_ANALYSIS_AMDGPUALLOCATION_H_\n \n #include \"mlir/IR/BuiltinTypes.h\"\n #include \"mlir/IR/Operation.h\"\n@@ -20,4 +20,4 @@ unsigned AMDAllocationAnalysisScratchSizeFn(Operation *op,\n \n } // namespace mlir::triton::AMD\n \n-#endif // TRITONAMD_ANALYSIS_AMDGPU_ALLOCATION_H\n+#endif // TRITON_THIRD_PARTY_AMD_INCLUDE_ANALYSIS_AMDGPUALLOCATION_H_"
+        },
+        {
+          "filename": "third_party/amd/include/Analysis/AxisInfoExt.h",
+          "status": "modified",
+          "additions": 4,
+          "deletions": 4,
+          "patch": "@@ -1,7 +1,7 @@\n-#ifndef TRITONAMD_ANALYSIS_AXIS_INFO_EXT_H\n-#define TRITONAMD_ANALYSIS_AXIS_INFO_EXT_H\n+#ifndef TRITON_THIRD_PARTY_AMD_INCLUDE_ANALYSIS_AXISINFOEXT_H_\n+#define TRITON_THIRD_PARTY_AMD_INCLUDE_ANALYSIS_AXISINFOEXT_H_\n \n-#include \"include/triton/Analysis/AxisInfo.h\"\n+#include \"triton/Analysis/AxisInfo.h\"\n \n namespace mlir::triton::AMD {\n \n@@ -20,4 +20,4 @@ public:\n };\n } // namespace mlir::triton::AMD\n \n-#endif\n+#endif // TRITON_THIRD_PARTY_AMD_INCLUDE_ANALYSIS_AXISINFOEXT_H_"
+        },
+        {
+          "filename": "third_party/amd/include/Analysis/RangeAnalysis.h",
+          "status": "modified",
+          "additions": 3,
+          "deletions": 3,
+          "patch": "@@ -1,5 +1,5 @@\n-#ifndef TRITONAMD_ANALYSIS_RANGE_ANALYSIS_H\n-#define TRITONAMD_ANALYSIS_RANGE_ANALYSIS_H\n+#ifndef TRITON_THIRD_PARTY_AMD_INCLUDE_ANALYSIS_RANGEANALYSIS_H_\n+#define TRITON_THIRD_PARTY_AMD_INCLUDE_ANALYSIS_RANGEANALYSIS_H_\n \n #include \"mlir/Analysis/DataFlow/IntegerRangeAnalysis.h\"\n #include \"mlir/Analysis/DataFlow/SparseAnalysis.h\"\n@@ -185,4 +185,4 @@ void initializeFuncOps(Operation *op,\n \n } // namespace mlir::triton::AMD\n \n-#endif\n+#endif // TRITON_THIRD_PARTY_AMD_INCLUDE_ANALYSIS_RANGEANALYSIS_H_"
+        },
+        {
+          "filename": "third_party/amd/include/Dialect/TritonAMDGPU/IR/TritonAMDGPUOps.td",
+          "status": "modified",
+          "additions": 9,
+          "deletions": 6,
+          "patch": "@@ -326,7 +326,8 @@ def BufferLoadToLocalOp : TT_AMDGPU_Op<\"buffer_load_to_local\", [\n ]>{\n     let summary = \"Load from a scalar base pointer and a tensor offset to shared memory\";\n     let description = [{\n-      AMD Buffer load operation. Similar to amdg.buffer_load op but directly wirtes to shared memory instead of into registers.\n+      AMD Buffer load operation. Similar to amdg.buffer_load op but directly\n+      writes to shared memory instead of into registers.\n       Contiguity is the maximum number of elements that can be loaded in a single vector with the given layout and mask.\n       This allows to use buffer_load_to_local even if the alignment cannot be proven based on IR.\n     }];\n@@ -1267,9 +1268,10 @@ def UpdateTensorDescriptorOp : TT_AMDGPU_Op<\"update_tensor_descriptor\", [Pure,\n def AsyncWaitOp : TT_AMDGPU_Op<\"async_wait\", [MemWaitOpTrait]> {\n   let summary = \"Wait until there are less than or equal to the given number of outstanding async intrinsics\";\n   let description = [{\n-    Similar to ttg.async_wait but instead of waiting on oustanding ttg.async_commit_groups\n-    this op waits on the number of outstanding async instructions/intrinsics as required for the\n-    lowering to LLVM on the AMD backend.\n+    Similar to ttg.async_wait but instead of waiting on outstanding\n+    ttg.async_commit_groups this op waits on the number of outstanding async\n+    instructions/intrinsics as required for the lowering to LLVM on the AMD\n+    backend.\n   }];\n \n   let arguments = (ins Variadic<TTG_AsyncToken>:$asyncToken, I32Attr:$num_inst);\n@@ -1374,13 +1376,14 @@ def AsyncCopyMbarrierArriveOp : TT_AMDGPU_Op<\"async_copy_mbarrier_arrive\", [\n }\n \n //===----------------------------------------------------------------------===//\n-// ClusterBarrierSignalOp\n+// ClusterBarrierArriveOp\n //===----------------------------------------------------------------------===//\n \n def ClusterBarrierArriveOp : TT_AMDGPU_Op<\"cluster_barrier_arrive\"> {\n   let summary = \"Arrive at a cluster barrier\";\n   let description = [{\n-    Signals that the cluster has arrived at a barrier, used to synchronizing CTAs within a cluster.\n+    Signals that the cluster has arrived at a barrier, used to synchronize\n+    CTAs within a cluster.\n \n     See ClusterBarrierWaitOp for how to wait on the arrived cluster barrier.\n   }];"
+        },
+        {
+          "filename": "third_party/amd/include/TritonAMDGPUToLLVM/MembarUtility.h",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -41,4 +41,4 @@ bool membarFilter(Operation *op1, Operation *op2, bool op1IsRead,\n                   const AllocationSlice &, const AllocationSlice &);\n } // namespace mlir::triton::AMD\n \n-#endif\n+#endif // TRITON_THIRD_PARTY_AMD_INCLUDE_TRITONAMDGPUTOLLVM_MEMBARUTILITY_H_"
+        },
+        {
+          "filename": "third_party/amd/include/TritonAMDGPUToLLVM/TypeConverter.h",
+          "status": "modified",
+          "additions": 3,
+          "deletions": 3,
+          "patch": "@@ -1,5 +1,5 @@\n-#ifndef TRITON_CONVERSION_TRITONAMDGPU_TO_LLVM_TYPECONVERTER_H\n-#define TRITON_CONVERSION_TRITONAMDGPU_TO_LLVM_TYPECONVERTER_H\n+#ifndef TRITON_THIRD_PARTY_AMD_INCLUDE_TRITONAMDGPUTOLLVM_TYPECONVERTER_H_\n+#define TRITON_THIRD_PARTY_AMD_INCLUDE_TRITONAMDGPUTOLLVM_TYPECONVERTER_H_\n \n #include \"Dialect/TritonAMDGPU/IR/Dialect.h\"\n #include \"mlir/Conversion/LLVMCommon/TypeConverter.h\"\n@@ -54,4 +54,4 @@ public:\n   }\n };\n \n-#endif\n+#endif // TRITON_THIRD_PARTY_AMD_INCLUDE_TRITONAMDGPUTOLLVM_TYPECONVERTER_H_"
+        },
+        {
+          "filename": "third_party/amd/include/TritonAMDGPUTransforms/MfmaGroup.h",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 6,
+          "patch": "@@ -6,14 +6,14 @@\n #include \"llvm/ADT/StringRef.h\"\n \n namespace mlir {\n-// Returns true if the given type is an OCP FP8/FP6/FP6 type.\n+// Returns true if the given type is an OCP FP8/FP6/FP4 type.\n inline bool isF8F6F4(mlir::Type type) {\n   return llvm::isa<Float8E4M3FNType, Float8E5M2Type, Float6E3M2FNType,\n                    Float6E2M3FNType, Float4E2M1FNType>(type);\n }\n \n struct MfmaIntrinsic {\n-  // Chooses a suitable mfma instrinsic for the given input case.\n+  // Chooses a suitable mfma intrinsic for the given input case.\n   static FailureOr<MfmaIntrinsic> selectFor(Location loc, int version,\n                                             unsigned mDim, unsigned nDim,\n                                             unsigned inputKDim, Type aElemType,\n@@ -29,10 +29,6 @@ struct MfmaIntrinsic {\n                 unsigned kB, Type aET, Type bET)\n       : name(symbol), mDim(m), nDim(n), kDim(k), kBase(kB), aElementType(aET),\n         bElementType(bET) {}\n-  MfmaIntrinsic(const MfmaIntrinsic &other) = default;\n-  MfmaIntrinsic(MfmaIntrinsic &&other) = default;\n-  MfmaIntrinsic() = default;\n-  MfmaIntrinsic &operator=(MfmaIntrinsic &&other) = default;\n \n   llvm::StringRef name;\n "
+        },
+        {
+          "filename": "third_party/amd/include/TritonAMDGPUTransforms/Passes.h",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 12,
+          "patch": "@@ -13,21 +13,10 @@ namespace mlir {\n \n void registerConSanAMDHooks();\n \n-} // namespace mlir\n-\n-namespace mlir::triton::amdgpu {\n-\n-// Generate the pass class declarations.\n-#define GEN_PASS_DECL_TRITONAMDGPUOPTIMIZEDOTOPERANDS\n-#include \"TritonAMDGPUTransforms/Passes.h.inc\"\n-\n-void registerTritonAMDGPUOptimizeDotOperands();\n-} // namespace mlir::triton::amdgpu\n-\n-namespace mlir {\n /// Generate the code for registering passes.\n #define GEN_PASS_REGISTRATION\n #include \"TritonAMDGPUTransforms/Passes.h.inc\"\n+\n } // namespace mlir\n \n #endif // TRITON_THIRD_PARTY_AMD_INCLUDE_TRITONAMDGPUTRANSFORMS_PASSES_H_"
+        },
+        {
+          "filename": "third_party/amd/include/TritonAMDGPUTransforms/Passes.td",
+          "status": "modified",
+          "additions": 33,
+          "deletions": 15,
+          "patch": "@@ -1,5 +1,5 @@\n-#ifndef TRITONGPU_PASSES\n-#define TRITONGPU_PASSES\n+#ifndef TRITONAMDGPU_PASSES\n+#define TRITONAMDGPU_PASSES\n \n include \"mlir/Pass/PassBase.td\"\n \n@@ -63,13 +63,18 @@ def TritonAMDGPUAccelerateMatmul : Pass<\"tritonamdgpu-accelerate-matmul\", \"mlir:\n }\n \n def TritonAMDGPUOptimizeEpilogue : Pass<\"tritonamdgpu-optimize-epilogue\", \"mlir::ModuleOp\"> {\n-  let summary = \"Optimize epilogue: (1) Store accumulators directly without going thorough SMEM in epilogue.\";\n+  let summary = \"Store MMA accumulators directly, avoiding shared memory\";\n \n   let description = [{\n+    For a tt.store whose value is converted from an MFMA/WMMA layout to a\n+    blocked layout, optionally followed by single-operand elementwise ops, this\n+    pass moves the layout conversion to the pointer and mask operands so that\n+    the value is stored directly from the MMA layout. This avoids the shared\n+    memory round trip of the layout conversion. When possible, the store layout\n+    is further adjusted to enable wide 128-bit global stores.\n   }];\n \n   let dependentDialects = [];\n-\n }\n \n def TritonAMDGPUHoistLayoutConversions : Pass<\"tritonamdgpu-hoist-layout-conversions\", \"mlir::triton::FuncOp\"> {\n@@ -78,7 +83,7 @@ def TritonAMDGPUHoistLayoutConversions : Pass<\"tritonamdgpu-hoist-layout-convers\n   let description = [{\n   This pass tries to hoist a convert_layout op out of the loop if 1) its dst is a tensor\n   of dotOperand layout, and 2) its src is defined out of the loop.\n-  The rational is as follows:\n+  The rationale is as follows:\n   1. When the defining op of the src is out of the loop, it means the src is loop-invariant.\n      Then we can potentially hoist this convert_layout op, since it's also loop-invariant.\n   2. The drawback of this LICM is higher register pressure. However, on AMD GPUs, we have\n@@ -170,7 +175,10 @@ def TritonAMDGPUMoveUpPrologueLoads\n def TritonAMDGPUConvertToBufferOps : Pass<\"tritonamdgpu-convert-buffer-ops\", \"mlir::ModuleOp\"> {\n   let summary = \"Convert memory operations to buffer operations\";\n \n-  let description = \"This pass converts memory and atomic operations (e.g., tt.load/tt.store/tt.atomic_rmw) to  amdgpu buffer operations, if possible\";\n+  let description = [{\n+    This pass converts memory and atomic operations (e.g., tt.load/tt.store/\n+    tt.atomic_rmw) to amdgpu buffer operations, if possible.\n+  }];\n \n   let dependentDialects = [\"mlir::triton::amdgpu::TritonAMDGPUDialect\"];\n \n@@ -183,7 +191,10 @@ def TritonAMDGPUConvertToBufferOps : Pass<\"tritonamdgpu-convert-buffer-ops\", \"ml\n            \"Allow buffer atomic operations when the hardware supports it.\">,\n     Option<\"analyzeSmallTensorOfst\", \"analyze-small-tensor-ofst\",\n           \"bool\", /*default=*/\"false\",\n-           \"Whether to still analyze index range for tensors whose base has tt.pointer_range = 32 specialization. If false load/store from such tensors will go down buffer ops without analzying index range.\">\n+           \"Whether to still analyze index range for tensors whose base has \"\n+           \"tt.pointer_range = 32 specialization. If false load/store from \"\n+           \"such tensors will go down buffer ops without analyzing index \"\n+           \"range.\">\n   ];\n }\n \n@@ -199,13 +210,15 @@ def TritonAMDGPUBlockPingpong: Pass<\"tritonamdgpu-block-pingpong\", \"mlir::Module\n   let summary = \"Interleaving instructions from two warps on the same SIMD to better utilize matrix core\";\n \n   let description = [{\n-    This pass reorder instructions to interleave instructions from two warps on the same SIMD unit.\n-    We call this a ping-pong scheduling pattern, where two warps run concurrently in the synchronized fashion\n+    This pass reorders instructions to interleave instructions from two warps\n+    on the same SIMD unit. We call this a ping-pong scheduling pattern, where\n+    two warps run concurrently in the synchronized fashion.\n     This block ping-pong pattern could be beneficial under few conditions including\n     occupancy and number of warps.\n   }];\n \n-  let dependentDialects = [\"mlir::ROCDL::ROCDLDialect, mlir::triton::amdgpu::TritonAMDGPUDialect\"];\n+  let dependentDialects = [\"mlir::ROCDL::ROCDLDialect\",\n+                           \"mlir::triton::amdgpu::TritonAMDGPUDialect\"];\n \n   let options = [\n     Option<\"numStages\", \"num-stages\",\n@@ -220,7 +233,7 @@ def TritonAMDGPUInThreadTranspose: Pass<\"tritonamdgpu-in-thread-transpose\", \"mli\n   let description = [{\n     Pass looks for inefficient load->local_store->local_load chains.\n     In particular, this pass optimizes dot operand loading from shared memory\n-    in cases when operand is stored in global memory in non-K-continous way.\n+    in cases when operand is stored in global memory in non-K-contiguous way.\n \n     ```\n       #blocked = #ttg.blocked<{sizePerThread = [1, 8], ..., order = [1, 0]}>\n@@ -254,7 +267,8 @@ def TritonAMDGPUInThreadTranspose: Pass<\"tritonamdgpu-in-thread-transpose\", \"mli\n     ```\n \n     After transformation tt.load stays coalesced, because optimization do not change anything across fastest dimension.\n-    local_alloc is vectorized and uses swizzled memory, number of bank conflics reduced\n+    local_alloc is vectorized and uses swizzled memory, number of bank\n+    conflicts reduced.\n     local_load is vectorized, because shared memory order matches destination layout register order.\n \n     This pass introduces two ttg.convert_layouts to properly cover cases when between ttg.load and ttg.local_alloc/ttg.local_store\n@@ -353,13 +367,17 @@ def TritonAMDGPUConvertToTensorOps : Pass<\"tritonamdgpu-convert-tensor-ops\", \"ml\n }\n \n def TritonAMDGPUWarpPipeline: Pass<\"tritonamdgpu-warp-pipeline\", \"mlir::ModuleOp\"> {\n-  let summary = \"partition and pipeline\";\n+  let summary = \"Partition loops into warp-pipeline stages\";\n \n   let description = [{\n-    This pass reorder instructions to interleave instructions from two warps on the same SIMD unit.\n+    This pass groups the operations between warp-pipeline border markers into\n+    pipeline stage clusters, each materialized as an scf.execute_region. The\n+    clusters are later lowered by the convert-warp-pipeline pass, which staggers\n+    warps across the stages with conditional barriers.\n   }];\n \n-  let dependentDialects = [\"mlir::ROCDL::ROCDLDialect, mlir::triton::amdgpu::TritonAMDGPUDialect\"];\n+  let dependentDialects = [\"mlir::ROCDL::ROCDLDialect\",\n+                           \"mlir::triton::amdgpu::TritonAMDGPUDialect\"];\n }\n \n def TritonAMDGPUFpSanitizer : Pass<\"tritonamdgpu-fp-sanitizer\", \"mlir::ModuleOp\"> {"
+        },
+        {
+          "filename": "third_party/amd/include/TritonAMDGPUTransforms/WmmaGroup.h",
+          "status": "modified",
+          "additions": 0,
+          "deletions": 8,
+          "patch": "@@ -23,10 +23,6 @@ struct WmmaIntrinsic {\n       : name(symbol), mDim(m), nDim(n), kDim(k), kBase(kB), aElementType(aET),\n         bElementType(bET), dElementType(dET), requiredFeature(requiredFeature) {\n   }\n-  WmmaIntrinsic(const WmmaIntrinsic &other) = default;\n-  WmmaIntrinsic(WmmaIntrinsic &&other) = default;\n-  WmmaIntrinsic() = default;\n-  WmmaIntrinsic &operator=(WmmaIntrinsic &&other) = default;\n \n   llvm::StringRef name;\n \n@@ -59,10 +55,6 @@ struct WmmaScaleIntrinsic {\n                      StringRef requiredFeature = \"\")\n       : name(symbol), mDim(m), nDim(n), kDim(kDim), kBaseA(kBaseAVal),\n         kBaseB(kBaseBVal), dElemType(dET), requiredFeature(requiredFeature) {}\n-  WmmaScaleIntrinsic(const WmmaScaleIntrinsic &other) = default;\n-  WmmaScaleIntrinsic(WmmaScaleIntrinsic &&other) = default;\n-  WmmaScaleIntrinsic() = default;\n-  WmmaScaleIntrinsic &operator=(WmmaScaleIntrinsic &&other) = default;\n \n   llvm::StringRef name;\n   // m, n, and k refer to the shapes of the two operands of an wmma intrinsic:"
+        },
+        {
+          "filename": "third_party/amd/lib/Analysis/RangeAnalysis.cpp",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 2,
+          "patch": "@@ -550,7 +550,7 @@ LogicalResult TritonIntegerRangeAnalysis::visitOperationHelper(\n   LDBG(\"Inferring ranges for \" << *op);\n \n   // This callback is almost exactly like the callback in\n-  // IntegerRangeAnalysis::visitOperation except we do not \"short-cicruit\" the\n+  // IntegerRangeAnalysis::visitOperation except we do not \"short-circuit\" the\n   // analysis by inferring a maximum range for loop results (instead we\n   // perform a check based on visit counts in visitRegionSuccessors).\n   auto joinCallback = [&op, &operands, &resultsLattices,\n@@ -659,7 +659,7 @@ void TritonIntegerRangeAnalysis::visitRegionSuccessors(\n     RegionSuccessor successor,\n     ArrayRef<dataflow::AbstractSparseLattice *> abstractLattices) {\n   LLVM_DEBUG({\n-    DBGS() << \"Visit Region Succesors of \";\n+    DBGS() << \"Visit Region Successors of \";\n     OpPrintingFlags flags;\n     flags.skipRegions(true);\n     branch.print(llvm::dbgs(), flags);"
+        },
+        {
+          "filename": "third_party/amd/lib/Dialect/TritonAMDGPU/IR/Dialect.cpp",
+          "status": "modified",
+          "additions": 4,
+          "deletions": 2,
+          "patch": "@@ -42,11 +42,13 @@\n #include \"Dialect/TritonAMDGPU/IR/Dialect.cpp.inc\"\n // clang-format on\n \n+#include \"third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h\"\n #include \"third_party/amd/include/Dialect/TritonAMDGPU/Utility/CommonUtils.h\"\n #include \"third_party/amd/lib/TritonAMDGPUToLLVM/TDMUtility.h\"\n \n using namespace mlir;\n using namespace mlir::triton::amdgpu;\n+using mlir::triton::gpu::PartitionedSharedEncodingAttr;\n \n void mlir::triton::amdgpu::TritonAMDGPUDialect::initialize() {\n   addAttributes<\n@@ -1588,7 +1590,7 @@ LogicalResult AsyncTDMGatherOp::verify() {\n     // Because indices only describe rows the CGA layout of the indices and the\n     // destination must only match on the row dimension.\n     // How the tensor is distributed across the columns is not relevant for the\n-    // indicies and is only encoded in the CGA layout of the destination.\n+    // indices and is only encoded in the CGA layout of the destination.\n     auto sharedLL = paddedEnc ? paddedEnc.getLinearComponent()\n                               : triton::gpu::toLinearLayout(smemTy);\n     auto kDim0 = mlir::StringAttr::get(getContext(), \"dim0\");\n@@ -1735,7 +1737,7 @@ LogicalResult TDMPrefetchOp::inferReturnTypes(\n   return success();\n }\n \n-// -- ClusterBarrierSignalOp --\n+// -- ClusterBarrierArriveOp --\n LogicalResult ClusterBarrierArriveOp::verify() {\n   int numCTAs = triton::gpu::lookupNumCTAs(getOperation());\n   if (numCTAs <= 1)"
+        },
+        {
+          "filename": "third_party/amd/lib/Target/MFMASchedule/MFMASchedule.h",
+          "status": "modified",
+          "additions": 3,
+          "deletions": 3,
+          "patch": "@@ -6,8 +6,8 @@\n //\n //===----------------------------------------------------------------------===//\n \n-#ifndef TRITON_AMD_TARGET_MFMASCHEDULE_H\n-#define TRITON_AMD_TARGET_MFMASCHEDULE_H\n+#ifndef TRITON_THIRD_PARTY_AMD_LIB_TARGET_MFMASCHEDULE_MFMASCHEDULE_H_\n+#define TRITON_THIRD_PARTY_AMD_LIB_TARGET_MFMASCHEDULE_MFMASCHEDULE_H_\n \n namespace llvm {\n class Function;\n@@ -20,4 +20,4 @@ bool runMFMASchedulePass(llvm::Function &F);\n \n } // namespace mlir::triton::AMD\n \n-#endif // TRITON_AMD_TARGET_MFMASCHEDULE_H\n+#endif // TRITON_THIRD_PARTY_AMD_LIB_TARGET_MFMASCHEDULE_MFMASCHEDULE_H_"
+        },
+        {
+          "filename": "third_party/amd/lib/Target/MIRDAG/DAGBuilder.h",
+          "status": "modified",
+          "additions": 3,
+          "deletions": 3,
+          "patch": "@@ -6,8 +6,8 @@\n //\n //===----------------------------------------------------------------------===//\n \n-#ifndef TRITON_MIR_DAG_DAGBUILDER_H\n-#define TRITON_MIR_DAG_DAGBUILDER_H\n+#ifndef TRITON_THIRD_PARTY_AMD_LIB_TARGET_MIRDAG_DAGBUILDER_H_\n+#define TRITON_THIRD_PARTY_AMD_LIB_TARGET_MIRDAG_DAGBUILDER_H_\n \n #include \"llvm/ADT/SmallVector.h\"\n #include \"llvm/CodeGen/MachineBasicBlock.h\"\n@@ -168,4 +168,4 @@ const char *livePipelineDAGPassName();\n } // namespace mir_dag\n } // namespace llvm\n \n-#endif // TRITON_MIR_DAG_DAGBUILDER_H\n+#endif // TRITON_THIRD_PARTY_AMD_LIB_TARGET_MIRDAG_DAGBUILDER_H_"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUDialectToLLVM/ScaledUpcastToLLVM.cpp",
+          "status": "modified",
+          "additions": 3,
+          "deletions": 3,
+          "patch": "@@ -11,7 +11,7 @@ using namespace mlir::triton;\n using mlir::LLVM::AMD::convertF8ToF32_SW;\n using mlir::LLVM::AMD::upcast8xMxfp4_SW;\n \n-// TODO: using if-then-else to repalce ternary operator on template\n+// TODO: using if-then-else to replace ternary operator on template\n namespace {\n \n // For each v_cvt_scale_pk8 group of 8 fp4 (4 consecutive input bytes) that a\n@@ -174,8 +174,8 @@ SmallVector<Value> upcast4xMxfp8_HW(RewriterBase &rewriter, Location loc,\n // it is already transformed via `reshape(broadcast_to(expand_dims(a_scale, 2),\n // (32, 4, 32)), (32, 128))` and output layout in the wave is `register = [[0,\n // 1], [0, 2], [0, 4], [0, 8], [0, 16]], lane = [[0, 32], [0, 64], [1, 0], [2,\n-// 0], [4, 0]]` which means every lane will hold continous 32 elements and these\n-// 32 elements share one scale since the block mode is 32.\n+// 0], [4, 0]]` which means every lane will hold continuous 32 elements and\n+// these 32 elements share one scale since the block mode is 32.\n //\n // 3) for `opSel` used in the rocdl.cvt.scale.pk8\n //"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUToLLVM/AsyncUtility.h",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -48,4 +48,4 @@ fitToValidDirectToLdsVecSize(unsigned maxVecSize, unsigned elemBitwidth,\n \n } // namespace mlir::triton::AMD\n \n-#endif\n+#endif // TRITON_THIRD_PARTY_AMD_LIB_TRITONAMDGPUTOLLVM_ASYNCUTILITY_H_"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUToLLVM/AtomicRMWOpsEmitter.h",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -40,4 +40,4 @@ private:\n \n } // namespace mlir::LLVM::AMD\n \n-#endif // TRITON_THIRD_PARTY_AMD_LIB_TRITONAMDGPUTOLLVM_ATOMICRMWEMITTER_H_\n+#endif // TRITON_THIRD_PARTY_AMD_LIB_TRITONAMDGPUTOLLVM_ATOMICRMWOPSEMITTER_H_"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUToLLVM/BarrierOpToLLVM.cpp",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -69,7 +69,7 @@ struct ArriveBarrierOpConversion\n         typeConverter->convertType(op.getAlloc().getType().getElementType()),\n         rewriter);\n     auto count = adaptor.getCount();\n-    // NOTE: The LLVM intrisic expects an i64_ty for count (update value)\n+    // NOTE: The LLVM intrinsic expects an i64_ty for count (update value)\n     // But count cannot be more than 32bits according to ISA docs.\n     Value priorState = ROCDL::DsAtomicBarrierArriveRtnOp::create(\n         rewriter, loc, i64_ty, smemObj.getBase(), b.i64_val(count), {}, {}, {});"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUToLLVM/BufferOpsEmitter.cpp",
+          "status": "modified",
+          "additions": 3,
+          "deletions": 3,
+          "patch": "@@ -171,7 +171,7 @@ Value BufferEmitter::emitAtomicRMW(RMWOp rmwType, Type type, Value rsrcDesc,\n \n   // TODO:\n   //   The ops in ROCDL (e.g., RawPtrBufferAtomicFaddOp) have no return value,\n-  //   but they lower to instrinsics that can return values. This causes the\n+  //   but they lower to intrinsics that can return values. This causes the\n   //   LLVM verifier to fail. When this is fixed, the ROCDL ops should be used\n   //   here.\n   auto rmwOpStr = stringifyRMWOp(rmwType).str();\n@@ -187,11 +187,11 @@ Value BufferEmitter::emitAtomicRMW(RMWOp rmwType, Type type, Value rsrcDesc,\n     StringRef prefix = isa<FloatType>(getElementTypeOrSelf(type)) ? \"f\" : \"s\";\n     rmwOpStr = (prefix + rmwOpStr).str();\n   }\n-  auto instrinsic = \"llvm.amdgcn.raw.ptr.buffer.atomic.\" + rmwOpStr;\n+  auto intrinsic = \"llvm.amdgcn.raw.ptr.buffer.atomic.\" + rmwOpStr;\n   SmallVector<Value, 6> intrinsicArgs = args;\n   intrinsicArgs.push_back(b.i32_val(aux));\n   auto bufferAtomicRMW = LLVM::createLLVMIntrinsicCallOp(\n-      rewriter, loc, instrinsic, bufferType, intrinsicArgs);\n+      rewriter, loc, intrinsic, bufferType, intrinsicArgs);\n \n   return b.bitcast(bufferAtomicRMW.getResult(0), type);\n }"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUToLLVM/ConvertFpCastOpToLLVM.h",
+          "status": "modified",
+          "additions": 3,
+          "deletions": 3,
+          "patch": "@@ -1,5 +1,5 @@\n-#ifndef TRITON_THIRD_PARTY_AMD_LIB_CONVERTFPCASTOPTOLLVM_H_\n-#define TRITON_THIRD_PARTY_AMD_LIB_CONVERTFPCASTOPTOLLVM_H_\n+#ifndef TRITON_THIRD_PARTY_AMD_LIB_TRITONAMDGPUTOLLVM_CONVERTFPCASTOPTOLLVM_H_\n+#define TRITON_THIRD_PARTY_AMD_LIB_TRITONAMDGPUTOLLVM_CONVERTFPCASTOPTOLLVM_H_\n \n #include \"mlir/Transforms/DialectConversion.h\"\n #include \"third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h\"\n@@ -17,4 +17,4 @@ SmallVector<Value> convertFp32ToF16rtne(Location loc,\n                                         amdgpu::ISAFamily isaFamily);\n } // namespace mlir::triton::AMD\n \n-#endif // TRITON_THIRD_PARTY_AMD_LIB_CONVERTFPCASTOPTOLLVM_H_\n+#endif // TRITON_THIRD_PARTY_AMD_LIB_TRITONAMDGPUTOLLVM_CONVERTFPCASTOPTOLLVM_H_"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUToLLVM/ConvertLayoutOpToLLVM.cpp",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 2,
+          "patch": "@@ -316,7 +316,7 @@ public:\n   // Converts full layout mapping to more convenient form.\n   // Mapping each output register byte to some input byte:\n   // regContents[output reg no][output reg byte no] -> ByteLocation(input\n-  // regiser no, byte index in this register)\n+  // register no, byte index in this register)\n   static std::vector<std::array<ByteLocation, regBytes>>\n   generateDstRegContents(const std::vector<int> &fullLayout) {\n     int numRegs = fullLayout.size() / regBytes;\n@@ -730,7 +730,7 @@ public:\n     for (const auto &base : conversion.getBases().at(kRegister)) {\n       assert(base.size() == 1);\n       // Currently swizzled distributed layouts are forbidden.\n-      // This is a safety check in case such layouts are permited.\n+      // This is a safety check in case such layouts are permitted.\n       // Main concern is processFourWayDependencies function.\n       // It assumes each src byte is paired with at most one src byte,\n       // which is not true for broadcasted + swizzled layouts."
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUToLLVM/ElementwiseOpToLLVM.cpp",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -378,7 +378,7 @@ struct SqrtOpConversion\n     }\n \n     // llvm.amdgcn.sqrt.f32 provides direct access to v_sqrt_f32, which provides\n-    // 1ULP accuracy and flushs denorms.\n+    // 1ULP accuracy and flushes denorms.\n     Value intrinsicsOutput =\n         ROCDL::ROCDLSqrt::create(rewriter, loc, elemTy, scaledSrc);\n "
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUToLLVM/LoadStoreOpToLLVM.cpp",
+          "status": "modified",
+          "additions": 4,
+          "deletions": 3,
+          "patch": "@@ -26,6 +26,7 @@ using namespace mlir::triton::gpu;\n using ::mlir::LLVM::AMD::getVectorSize;\n using ::mlir::LLVM::AMD::llLoad;\n using ::mlir::LLVM::AMD::llStore;\n+using ::mlir::triton::AMD::TargetInfo;\n using ::mlir::triton::gpu::getTotalElemsPerThread;\n using triton::amdgpu::ISAFamily;\n \n@@ -2368,9 +2369,9 @@ struct AtomicRMWOpConversion\n         // llvm.atomic_rmw, and we set the ordering for each to aql_rel (the\n         // default if no sem value is explicitly set in the DSL level\n         // tl.atomic_add. The llvm backend will insert extra buffer invalidates\n-        // and L2 write backs causing a perforance degration. To avoid this we\n-        // set the ordering to release for the first, acquire for the last, and\n-        // relaxed for anything in between so that only a single set of\n+        // and L2 write backs causing a performance degradation. To avoid this\n+        // we set the ordering to release for the first, acquire for the last,\n+        // and relaxed for anything in between so that only a single set of\n         // buffer_inv and buffer_wbl2 instructions are inserted by the backend\n         // for any \"cluster\" of atomic ops.\n         if ((vec > 1 || elemsPerThread > 1) &&"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUToLLVM/TDMUtility.cpp",
+          "status": "modified",
+          "additions": 5,
+          "deletions": 3,
+          "patch": "@@ -11,6 +11,8 @@\n // Include shared C-compatible TDM utilities\n #include \"../../backend/include/TDMCommon.h\"\n \n+using mlir::triton::gpu::PartitionedSharedEncodingAttr;\n+\n namespace mlir::LLVM::AMD {\n \n namespace {\n@@ -149,7 +151,7 @@ std::pair<SmallVector<unsigned>, unsigned> distributeTDMWarpsAlignToPartition(\n }\n \n // Shared layout analysis for TDM gather/scatter, used by both\n-// getTDMGatherScatterInstrinsicCount (wait-count pass) and\n+// getTDMGatherScatterIntrinsicCount (wait-count pass) and\n // emitTDMGatherScatter (lowering) so the instruction-count logic\n // cannot get out of sync.\n //\n@@ -1383,7 +1385,7 @@ void emitTDMLoadStore(RewriterBase &rewriter, Location loc,\n   }\n }\n \n-size_t getTDMGatherScatterInstrinsicCount(RankedTensorType indicesType) {\n+size_t getTDMGatherScatterIntrinsicCount(RankedTensorType indicesType) {\n   return analyzeGatherScatterLayout(indicesType).numInstructions;\n }\n \n@@ -1565,7 +1567,7 @@ SmallVector<Value> emitTDMPrefetch(RewriterBase &rewriter, Location loc,\n   // need bounds checks. We currently only guard based on the whole tensor\n   // extent, so some prefetched chunks might never be used if masking trims\n   // inner dimensions. To add inner-dimension bounds checks we would need to\n-  // expose the CTA offsets from the tensor descriptor, which is currenlty\n+  // expose the CTA offsets from the tensor descriptor, which is currently\n   // directly applied to the base pointer.\n   auto b = TritonLLVMOpBuilder(loc, rewriter);\n   int numDims = blockShape.size();"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUToLLVM/TDMUtility.h",
+          "status": "modified",
+          "additions": 4,
+          "deletions": 9,
+          "patch": "@@ -1,16 +1,11 @@\n-#ifndef TRITON_THIRD_PARTY_AMD_LIB_TRITONAMDGPUTOLLVM_TDMUTILITY_H\n-#define TRITON_THIRD_PARTY_AMD_LIB_TRITONAMDGPUTOLLVM_TDMUTILITY_H\n+#ifndef TRITON_THIRD_PARTY_AMD_LIB_TRITONAMDGPUTOLLVM_TDMUTILITY_H_\n+#define TRITON_THIRD_PARTY_AMD_LIB_TRITONAMDGPUTOLLVM_TDMUTILITY_H_\n \n-#include \"TargetInfo.h\"\n #include \"mlir/Conversion/LLVMCommon/TypeConverter.h\"\n #include \"mlir/IR/Operation.h\"\n #include \"triton/Dialect/TritonGPU/IR/Dialect.h\"\n #include <optional>\n \n-using mlir::triton::AMD::TargetInfo;\n-using PartitionedSharedEncodingAttr =\n-    mlir::triton::gpu::PartitionedSharedEncodingAttr;\n-\n namespace mlir::LLVM::AMD {\n \n // TDM descriptor groups (lowering-pass-only; the MLIR-visible struct stays\n@@ -143,7 +138,7 @@ distributeTDMWarpsAlignToPartition(ArrayRef<int64_t> blockShape, int numWarps,\n // Calculate the number of TDM gather/scatter instructions needed using the\n // same LinearLayout analysis as emitTDMGatherScatter: broadcasts are removed\n // and contiguity is considered when batching indices per instruction.\n-size_t getTDMGatherScatterInstrinsicCount(RankedTensorType indicesType);\n+size_t getTDMGatherScatterIntrinsicCount(RankedTensorType indicesType);\n \n // Emit a TDM gather or scatter operation for non-contiguous row access.\n // Gather: reads from non-contiguous global rows into LDS\n@@ -183,4 +178,4 @@ SmallVector<Value> emitTDMPrefetch(RewriterBase &rewriter, Location loc,\n \n } // namespace mlir::LLVM::AMD\n \n-#endif // TRITON_THIRD_PARTY_AMD_LIB_TRITONAMDGPUTOLLVM_TDMUTILITY_H\n+#endif // TRITON_THIRD_PARTY_AMD_LIB_TRITONAMDGPUTOLLVM_TDMUTILITY_H_"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUToLLVM/TargetInfo.cpp",
+          "status": "modified",
+          "additions": 0,
+          "deletions": 112,
+          "patch": "@@ -129,12 +129,6 @@ llvm::AMDGPU::GPUKind TargetInfo::getGPUKind() const {\n   return llvm::AMDGPU::parseArchAMDGCN(getArch());\n }\n \n-int TargetInfo::getWarpSize() const { return targetFeatures.getWarpSize(); }\n-\n-int TargetInfo::getSharedMemorySize() const {\n-  return targetFeatures.getSharedMemorySize();\n-}\n-\n int TargetInfo::getSharedMemoryBanks() const {\n   switch (getISAFamily()) {\n   case ISAFamily::GFX1250:\n@@ -145,14 +139,6 @@ int TargetInfo::getSharedMemoryBanks() const {\n   }\n }\n \n-size_t TargetInfo::getSharedMemoryPartitionSize() const {\n-  return targetFeatures.getSharedMemoryPartitionSize();\n-}\n-\n-bool TargetInfo::supportMaximumMinimum() const {\n-  return targetFeatures.supportMaximumMinimum();\n-}\n-\n Value TargetInfo::getClusterCTAId(RewriterBase &rewriter, Location loc) const {\n   if (triton::gpu::lookupNumCTAs(&rewriter.getInsertionBlock()->front()) == 1)\n     return arith::ConstantIntOp::create(rewriter, loc, 0, 32);\n@@ -762,14 +748,6 @@ bool TargetInfo::supportVectorizedAtomics() const {\n   return true;\n }\n \n-bool TargetInfo::supportBitwidth16Elementwise() const {\n-  return targetFeatures.supportBitwidth16Elementwise();\n-}\n-\n-bool TargetInfo::supportBitwidth32Elementwise() const {\n-  return targetFeatures.supportBitwidth32Elementwise();\n-}\n-\n unsigned TargetInfo::getReductionTreeArity(Operation *combinerOp) const {\n   // AMD has native ternary max/min instructions: v_max3/v_min3 on all GFX9+,\n   // and v_maximum3/v_minimum3 additionally on GFX950 and GFX1250.\n@@ -780,96 +758,6 @@ unsigned TargetInfo::getReductionTreeArity(Operation *combinerOp) const {\n   return 2;\n }\n \n-bool TargetInfo::supportsDirectToLdsScatter() const {\n-  return targetFeatures.supportsDirectToLdsScatter();\n-}\n-\n-bool TargetInfo::requiresAliasInfoForAsyncOps() const {\n-  return targetFeatures.requiresAliasInfoForAsyncOps();\n-}\n-\n-bool TargetInfo::supportsDirectToLdsLoadBitWidth(int bitWidth) const {\n-  return targetFeatures.supportsDirectToLdsLoadBitWidth(bitWidth);\n-}\n-\n-bool TargetInfo::supportsMultiCTALaunch() const {\n-  return targetFeatures.supportsMultiCTALaunch();\n-}\n-\n-bool TargetInfo::supportsMulticast() const {\n-  return targetFeatures.supportsMulticast();\n-}\n-\n-unsigned TargetInfo::getMaxMulticastMaskPopcount() const {\n-  return targetFeatures.getMaxMulticastMaskPopcount();\n-}\n-\n-bool TargetInfo::supportsTDM() const { return targetFeatures.supportsTDM(); }\n-\n-bool TargetInfo::supportsClusterLoadBitWidth(int biwWidth) const {\n-  return targetFeatures.supportsClusterLoadBitWidth(biwWidth);\n-}\n-\n-bool TargetInfo::supportsDirectFromLdsStoreBitWidth(int bitWidth) const {\n-  return targetFeatures.supportsDirectFromLdsStoreBitWidth(bitWidth);\n-}\n-\n-bool TargetInfo::supportsBufferLoadToLocal() const {\n-  return targetFeatures.supportsBufferLoadToLocal();\n-}\n-\n-bool TargetInfo::useAsyncMarks() const {\n-  return targetFeatures.useAsyncMarks();\n-}\n-\n-bool TargetInfo::supportsBufferAtomicRMW() const {\n-  return targetFeatures.supportsBufferAtomicRMW();\n-}\n-\n-bool TargetInfo::supportsBufferAtomicFadd(mlir::Type elementType) const {\n-  return targetFeatures.supportsBufferAtomicFadd(elementType);\n-}\n-\n-int32_t TargetInfo::getBufferAtomicCachePolicy(bool hasUsers) const {\n-  return targetFeatures.getBufferAtomicCachePolicy(hasUsers);\n-}\n-\n-bool TargetInfo::supportsWaveId() const {\n-  return targetFeatures.supportsWaveId();\n-}\n-\n-bool TargetInfo::supportsPermlaneSwap() const {\n-  return targetFeatures.supportsPermlaneSwap();\n-}\n-\n-bool TargetInfo::supportsCvtPkScalePk8() const {\n-  return targetFeatures.supportsCvtPkScalePk8();\n-}\n-\n-bool TargetInfo::supportsCvtPkScalePk8Upcast() const {\n-  return targetFeatures.supportsCvtPkScalePk8Upcast();\n-}\n-\n-bool TargetInfo::supportsCvtPkScalePk8Block16() const {\n-  return targetFeatures.supportsCvtPkScalePk8Block16();\n-}\n-\n-bool TargetInfo::supportsHwScaledUpcast() const {\n-  return targetFeatures.supportsHwScaledUpcast();\n-}\n-\n-bool TargetInfo::supportsHwScaledDowncast() const {\n-  return targetFeatures.supportsHwScaledDowncast();\n-}\n-\n-bool TargetInfo::supportDppBroadcast() const {\n-  return targetFeatures.supportDppBroadcast();\n-}\n-\n-bool TargetInfo::isGFX1250Strict() const {\n-  return targetFeatures.isGFX1250Strict();\n-}\n-\n std::pair<mlir::triton::gpu::LocalMemOpTile, mlir::triton::gpu::LocalMemOpTile>\n TargetInfo::getSharedLdStTiles(int32_t vecBitwidth) const {\n   switch (getISAFamily()) {"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUToLLVM/TargetInfo.h",
+          "status": "modified",
+          "additions": 77,
+          "deletions": 31,
+          "patch": "@@ -21,19 +21,27 @@ public:\n \n   llvm::AMDGPU::GPUKind getGPUKind() const;\n \n-  int getWarpSize() const;\n+  int getWarpSize() const { return targetFeatures.getWarpSize(); }\n \n-  int getSharedMemorySize() const;\n+  int getSharedMemorySize() const {\n+    return targetFeatures.getSharedMemorySize();\n+  }\n \n   int getSharedMemoryBanks() const override;\n \n-  size_t getSharedMemoryPartitionSize() const override;\n+  size_t getSharedMemoryPartitionSize() const override {\n+    return targetFeatures.getSharedMemoryPartitionSize();\n+  }\n \n-  bool supportMaximumMinimum() const override;\n+  bool supportMaximumMinimum() const override {\n+    return targetFeatures.supportMaximumMinimum();\n+  }\n \n-  bool supportDppBroadcast() const;\n+  bool supportDppBroadcast() const {\n+    return targetFeatures.supportDppBroadcast();\n+  }\n \n-  bool isGFX1250Strict() const;\n+  bool isGFX1250Strict() const { return targetFeatures.isGFX1250Strict(); }\n \n   Value getClusterCTAId(RewriterBase &rewriter, Location loc) const override;\n \n@@ -111,40 +119,62 @@ public:\n \n   bool supportVectorizedAtomics() const override;\n \n-  bool supportBitwidth16Elementwise() const override;\n-  bool supportBitwidth32Elementwise() const override;\n+  bool supportBitwidth16Elementwise() const override {\n+    return targetFeatures.supportBitwidth16Elementwise();\n+  }\n+  bool supportBitwidth32Elementwise() const override {\n+    return targetFeatures.supportBitwidth32Elementwise();\n+  }\n \n   unsigned getReductionTreeArity(Operation *combinerOp) const override;\n \n   // Returns true if the target supports per lane addresses into LDS for\n   // direct-to-lds loads. Some architectures (e.g. GFX9) do not support\n   // scattering and instead have to write warp coalesced into LDS\n-  bool supportsDirectToLdsScatter() const;\n+  bool supportsDirectToLdsScatter() const {\n+    return targetFeatures.supportsDirectToLdsScatter();\n+  }\n \n   // Some architectures (GFX9) require alias information on direct-to-lds loads\n   // and loads from LDS so LLVM does not add conservative waits between those\n-  // ops. For such case we ensure syncronization between data hazards via\n+  // ops. For such case we ensure synchronization between data hazards via\n   // ttg.async_wait\n-  bool requiresAliasInfoForAsyncOps() const;\n-  bool supportsDirectToLdsLoadBitWidth(int bitWidth) const;\n-  bool supportsDirectFromLdsStoreBitWidth(int bitWidth) const;\n-  bool supportsBufferLoadToLocal() const;\n+  bool requiresAliasInfoForAsyncOps() const {\n+    return targetFeatures.requiresAliasInfoForAsyncOps();\n+  }\n+  bool supportsDirectToLdsLoadBitWidth(int bitWidth) const {\n+    return targetFeatures.supportsDirectToLdsLoadBitWidth(bitWidth);\n+  }\n+  bool supportsDirectFromLdsStoreBitWidth(int bitWidth) const {\n+    return targetFeatures.supportsDirectFromLdsStoreBitWidth(bitWidth);\n+  }\n+  bool supportsBufferLoadToLocal() const {\n+    return targetFeatures.supportsBufferLoadToLocal();\n+  }\n \n   // Whether this target uses asyncmark/wait_asyncmark intrinsics for\n   // async memory ops synchronization instead of waitcnt-based intrinsics waits.\n-  bool useAsyncMarks() const;\n+  bool useAsyncMarks() const { return targetFeatures.useAsyncMarks(); }\n \n-  bool supportsMultiCTALaunch() const;\n-  bool supportsMulticast() const;\n-  unsigned getMaxMulticastMaskPopcount() const;\n-  bool supportsTDM() const;\n-  bool supportsClusterLoadBitWidth(int biwWidth) const;\n+  bool supportsMultiCTALaunch() const {\n+    return targetFeatures.supportsMultiCTALaunch();\n+  }\n+  bool supportsMulticast() const { return targetFeatures.supportsMulticast(); }\n+  unsigned getMaxMulticastMaskPopcount() const {\n+    return targetFeatures.getMaxMulticastMaskPopcount();\n+  }\n+  bool supportsTDM() const { return targetFeatures.supportsTDM(); }\n+  bool supportsClusterLoadBitWidth(int bitWidth) const {\n+    return targetFeatures.supportsClusterLoadBitWidth(bitWidth);\n+  }\n \n   // Whether this target supports buffer atomic read-modify-write (RMW)\n   // operations. This gates all buffer RMW conversions (BUFFER_ATOMIC_ADD,\n   // _AND, _OR, _XOR, _UMIN, _UMAX, _SWAP, _ADD_F32, _PK_ADD_F16, etc.).\n   // CAS (BUFFER_ATOMIC_CMPSWAP) is handled separately.\n-  bool supportsBufferAtomicRMW() const;\n+  bool supportsBufferAtomicRMW() const {\n+    return targetFeatures.supportsBufferAtomicRMW();\n+  }\n   // Additional per-type gate for buffer atomic FADD. Integer RMW ops (ADD,\n   // AND, etc.) work on i32/i64 universally, but float FADD has ISA-specific\n   // type restrictions for BUFFER_ATOMIC_ADD_{F32,F64} and\n@@ -153,19 +183,35 @@ public:\n   //   - RDNA3: BUFFER_ATOMIC_ADD_F32 only\n   //   - RDNA4: no BUFFER_ATOMIC_ADD_F64\n   //   - CDNA4, GFX1250: all float types supported (GFX1250 adds PK_ADD_BF16)\n-  bool supportsBufferAtomicFadd(mlir::Type elementType) const;\n+  bool supportsBufferAtomicFadd(mlir::Type elementType) const {\n+    return targetFeatures.supportsBufferAtomicFadd(elementType);\n+  }\n   // Returns the cache policy (cpol) immediate for buffer atomic instructions.\n   // When hasUsers is true, sets SC0/TH_ATOMIC_RETURN to return pre-op value.\n   // On gfx1250, also sets SCOPE_DEV for device-wide visibility.\n-  int32_t getBufferAtomicCachePolicy(bool hasUsers) const;\n-\n-  bool supportsWaveId() const;\n-  bool supportsPermlaneSwap() const;\n-  bool supportsCvtPkScalePk8() const;\n-  bool supportsCvtPkScalePk8Upcast() const;\n-  bool supportsCvtPkScalePk8Block16() const;\n-  bool supportsHwScaledUpcast() const;\n-  bool supportsHwScaledDowncast() const;\n+  int32_t getBufferAtomicCachePolicy(bool hasUsers) const {\n+    return targetFeatures.getBufferAtomicCachePolicy(hasUsers);\n+  }\n+\n+  bool supportsWaveId() const { return targetFeatures.supportsWaveId(); }\n+  bool supportsPermlaneSwap() const {\n+    return targetFeatures.supportsPermlaneSwap();\n+  }\n+  bool supportsCvtPkScalePk8() const {\n+    return targetFeatures.supportsCvtPkScalePk8();\n+  }\n+  bool supportsCvtPkScalePk8Upcast() const {\n+    return targetFeatures.supportsCvtPkScalePk8Upcast();\n+  }\n+  bool supportsCvtPkScalePk8Block16() const {\n+    return targetFeatures.supportsCvtPkScalePk8Block16();\n+  }\n+  bool supportsHwScaledUpcast() const {\n+    return targetFeatures.supportsHwScaledUpcast();\n+  }\n+  bool supportsHwScaledDowncast() const {\n+    return targetFeatures.supportsHwScaledDowncast();\n+  }\n \n   // Returns the hardware-specific tiles for shared memory loads and stores.\n   // The returned pair is in the format {LoadTile, StoreTile}."
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 2,
+          "patch": "@@ -757,7 +757,7 @@ public:\n       kWidth = packedKWidth;\n \n     // For FA fwd kernel with f16 elementTy, we limit the 2nd dot to have\n-    // kWidth = 4 so that the coversion from #mma (result of 1st dot)\n+    // kWidth = 4 so that the conversion from #mma (result of 1st dot)\n     // to #dotOp (operand 0 of 2nd dot) is a no-op.\n     // TODO (lixun): relax the condition for 8-bit elementTy.\n     if (is16BitElemTy && isDotChainTail) {\n@@ -1577,7 +1577,7 @@ public:\n     auto kWidth = kBase;\n     if (wmmaVersion == 3) {\n       const bool isF32 = operandTypes[0].isF32();\n-      // kBase always consits of several groups of 8 elments except F32 case\n+      // kBase always consists of several groups of 8 elements except F32 case\n       kWidth = isF32 ? 2 : 8;\n     }\n     assert(kWidth != 0);"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUTransforms/BlockPingpong.cpp",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -712,7 +712,7 @@ LogicalResult Pingponger::transformTwoClusterWithAsyncAndAll(OpBuilder &builder,\n // For ChainedDots with num_stage==4 the pipeliner already places ops in the\n // correct order to allow for efficient pingpong. The loop contains 2 pairs of\n // compute and memory clusters so we only have to place barriers/sched.barriers\n-// at the bounaries and give higher priority to memory clusters.\n+// at the boundaries and give higher priority to memory clusters.\n // See ScheduleLoops.cpp:ChainedDotSchedule for details about the schedule.\n //\n // Notes"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUTransforms/CanonicalizePointers.cpp",
+          "status": "modified",
+          "additions": 6,
+          "deletions": 7,
+          "patch": "@@ -856,7 +856,7 @@ private:\n     ValueRange nonRemappedOffset = adaptor.getOffset();\n \n     assert(remappedPtr.size() == 2 && nonRemappedOffset.size() == 1 &&\n-           \"expected to be satisified in caller \"\n+           \"expected to be satisfied in caller \"\n            \"ConvertAddPtrOp::matchAndRewrite_\");\n \n     Value fatPtrBase = remappedPtr[0];\n@@ -1828,7 +1828,7 @@ public:\n       return success();\n     }\n     // Exhaustive checking we're converting ONLY unrealized_casts inserted (by\n-    // the 1:N conversion) in ConvertFuncOp.\n+    // the 1:N conversion) in InitFuncPtrArgs.\n     ArrayRef<ValueRange> remappedOperands = adaptor.getOperands();\n     if (remappedOperands.size() != 2 || remappedOperands[0].size() != 1 ||\n         remappedOperands[1].size() != 1)\n@@ -1921,12 +1921,11 @@ public:\n /// 3. Clean up remaining `unrealized_casts` (currently only handling one\n /// category of such remaining casts but can be extended to handle all; see\n /// bullet 1 in TODOs).\n-class TritonAMDGPUCanonicalizePointersPass\n-    : public impl::TritonAMDGPUCanonicalizePointersBase<\n+struct TritonAMDGPUCanonicalizePointersPass\n+    : impl::TritonAMDGPUCanonicalizePointersBase<\n           TritonAMDGPUCanonicalizePointersPass> {\n   using Base::Base;\n \n-public:\n   void runOnOperation() override;\n };\n \n@@ -1934,7 +1933,7 @@ public:\n /// This is a port/adaptation of upstream's getForwardSliceImpl\n /// that operates on values instead of ops so that we can track tt.ptr through\n /// the operands/args of region ops like scf.for/scf.while.\n-/// It also handles scf.if in a special way beacuse scf.if does not have\n+/// It also handles scf.if in a special way because scf.if does not have\n /// operands.\n ///\n /// TODO(max): this is still just a heuristic approximation to a \"dataflow\n@@ -1956,7 +1955,7 @@ static void getForwardSliceImpl(OpOperand *use, Operation *op,\n   };\n \n   // all of this is necessary because both the LoopLikeInterface and\n-  // BrancOpInterface are bad...\n+  // BranchOpInterface are bad...\n   auto addBlockArgUses = [&use, &addUses](\n                              const Block::BlockArgListType &blockArgs,\n                              unsigned argOffset = 0, unsigned useOffset = 0) {"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUTransforms/CoalesceAsyncCopy.cpp",
+          "status": "modified",
+          "additions": 3,
+          "deletions": 4,
+          "patch": "@@ -147,7 +147,7 @@ struct CoalesceAsyncCopyWrites\n       // tensor indices. This mapping might reorder elements resulting in\n       // scattered writes into LDS which is not supported on GFX9. To ensure\n       // coalesced writes we change the src layout to a linear encoding which\n-      // effectivly copies/mimicks the linear_component so each warp (reg+lane\n+      // effectively copies/mimics the linear_component so each warp (reg+lane\n       // bases) map to consecutive LDS offsets resulting in coalesced writes\n       // The new linear encoding is build by taking bases from the\n       // linear_component and assigning them to reg/lane/warp bases in the\n@@ -252,10 +252,9 @@ private:\n \n } // anonymous namespace\n \n-class TritonAMDGPUCoalesceAsyncCopyPass\n-    : public impl::TritonAMDGPUCoalesceAsyncCopyBase<\n+struct TritonAMDGPUCoalesceAsyncCopyPass\n+    : impl::TritonAMDGPUCoalesceAsyncCopyBase<\n           TritonAMDGPUCoalesceAsyncCopyPass> {\n-public:\n   using Base::Base;\n \n   void runOnOperation() override {"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUTransforms/ConvertToTensorOps.cpp",
+          "status": "modified",
+          "additions": 3,
+          "deletions": 3,
+          "patch": "@@ -182,9 +182,9 @@ struct TensorScatterLowering : public OpRewritePattern<DescriptorScatterOp> {\n   }\n };\n \n-struct TritonAMDGPUConvertToTensorOps\n-    : impl::TritonAMDGPUConvertToTensorOpsBase<TritonAMDGPUConvertToTensorOps> {\n-\n+struct TritonAMDGPUConvertToTensorOpsPass\n+    : impl::TritonAMDGPUConvertToTensorOpsBase<\n+          TritonAMDGPUConvertToTensorOpsPass> {\n   void runOnOperation() override {\n     MLIRContext *context = &getContext();\n     ModuleOp m = getOperation();"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUTransforms/FoldTrueCmpIOp.cpp",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 3,
+          "patch": "@@ -10,9 +10,8 @@ namespace mlir {\n #define GEN_PASS_DEF_TRITONAMDFOLDTRUECMPI\n #include \"TritonAMDGPUTransforms/Passes.h.inc\"\n \n-struct TritonAMDFoldTrueCmpIOpPass\n-    : impl::TritonAMDFoldTrueCmpIBase<TritonAMDFoldTrueCmpIOpPass> {\n-\n+struct TritonAMDFoldTrueCmpIPass\n+    : impl::TritonAMDFoldTrueCmpIBase<TritonAMDFoldTrueCmpIPass> {\n   void runOnOperation() override {\n     DenseMap<Value, SetVector<Operation *>> assumptions =\n         AMD::TritonIntegerRangeAnalysis::collectAssumptions(getOperation());"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUTransforms/FpSanitizer.cpp",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 3,
+          "patch": "@@ -141,9 +141,8 @@ void populateAmdFpSanPatterns(RewritePatternSet &patterns) {\n       patterns.getContext());\n }\n \n-class TritonAMDGPUFpSanitizerPass\n-    : public impl::TritonAMDGPUFpSanitizerBase<TritonAMDGPUFpSanitizerPass> {\n-public:\n+struct TritonAMDGPUFpSanitizerPass\n+    : impl::TritonAMDGPUFpSanitizerBase<TritonAMDGPUFpSanitizerPass> {\n   void runOnOperation() override {\n     RewritePatternSet patterns(&getContext());\n     populateAmdFpSanPatterns(patterns);"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUTransforms/HoistLayoutConversions.cpp",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 2,
+          "patch": "@@ -40,9 +40,8 @@ static void hoistCvtDotOpOutOfLoop(ttg::ConvertLayoutOp cvtOp) {\n } // anonymous namespace\n \n struct TritonAMDGPUHoistLayoutConversionsPass\n-    : public impl::TritonAMDGPUHoistLayoutConversionsBase<\n+    : impl::TritonAMDGPUHoistLayoutConversionsBase<\n           TritonAMDGPUHoistLayoutConversionsPass> {\n-\n   void runOnOperation() override {\n     tt::FuncOp funcOp = getOperation();\n "
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUTransforms/InThreadTranspose.cpp",
+          "status": "modified",
+          "additions": 7,
+          "deletions": 9,
+          "patch": "@@ -485,7 +485,7 @@ findReachableSMemOps(ttg::LocalLoadOp root) {\n   // because we can visit one value in two directions\n   SetVector<Value> visitedValsForward;\n   SetVector<Value> visitedValsBackward;\n-  // breadth-first search for reachable opeations\n+  // breadth-first search for reachable operations\n   GlobalToSharedMemoryOpChain foundNetwork;\n   SmallVector<Operation *> traversalStep{root};\n   while (!traversalStep.empty()) {\n@@ -514,15 +514,15 @@ findReachableSMemOps(ttg::LocalLoadOp root) {\n       } else if (isa<ttg::LocalLoadOp, ttg::LocalDeallocOp>(candidate)) {\n         smemOperand = candidate->getOperand(0);\n       } else if (candidate->hasTrait<mlir::OpTrait::GlobalToLocalCopyTrait>()) {\n-        // InTheadTranspose cannot be used with direct-to-lds loads\n+        // InThreadTranspose cannot be used with direct-to-lds loads\n         LDBG(\" skip because of direct-to-lds load\");\n         return failure();\n       } else {\n         // this operation is not part of shared memory def-use network,\n         // algorithm should not reach this point\n-        LDBG(\"  catched operation unrelated to shared memory\" << *candidate);\n+        LDBG(\"  caught operation unrelated to shared memory\" << *candidate);\n         // this is critical error, assert in debug mode.\n-        assert(false && \"  catched operation unrelated to shared memory\");\n+        assert(false && \"  caught operation unrelated to shared memory\");\n         return failure();\n       }\n \n@@ -599,7 +599,7 @@ matchInThreadTransposePattern(ttg::LocalLoadOp lLoad) {\n   // operations\n   auto sharedMemSearch = findReachableSMemOps(lLoad);\n   if (failed(sharedMemSearch)) {\n-    LDBG(\"Failed to traverse shared memmory operation network\");\n+    LDBG(\"Failed to traverse shared memory operation network\");\n     return failure();\n   }\n   auto pattern = sharedMemSearch.value();\n@@ -779,11 +779,9 @@ public:\n \n } // anonymous namespace\n \n-class TritonAMDGPUInThreadTransposePass\n-    : public impl::TritonAMDGPUInThreadTransposeBase<\n+struct TritonAMDGPUInThreadTransposePass\n+    : impl::TritonAMDGPUInThreadTransposeBase<\n           TritonAMDGPUInThreadTransposePass> {\n-\n-public:\n   void runOnOperation() override {\n     tt::FuncOp f = getOperation();\n "
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 2,
+          "patch": "@@ -711,7 +711,7 @@ void scheduleTDMOps(Operation *tdmOp, Operation *waitOp,\n   // to ensure all warps are finished reading the shared buffer we will write\n   // into. This is done by scheduling AsyncWait as the first cluster.\n   // If AsyncCopy and LocalLoads are in the same stage we do not assign a\n-  // schdule so they are placed before the LocalLoads\n+  // schedule so they are placed before the LocalLoads\n   if (loadStage != stages[SCHED_LOCAL_LOAD])\n     schedule.insert(waitOp, stages[SCHED_ASYNC_WAIT],\n                     clusters[SCHED_ASYNC_WAIT]);\n@@ -736,7 +736,7 @@ void scheduleAsyncCopy(const AsyncCopyChainOps &asyncOps, tt::LoadOp loadOp,\n   // to ensure all warps are finished reading the shared buffer we will write\n   // into. This is done by scheduling AsyncWait as the first cluster.\n   // If AsyncCopy and LocalLoads are in the same stage we do not assign a\n-  // schdule so they are placed before the LocalLoads\n+  // schedule so they are placed before the LocalLoads\n   if (loadStage != stages[SCHED_LOCAL_LOAD])\n     schedule.insert(waitOp, stages[SCHED_ASYNC_WAIT],\n                     clusters[SCHED_ASYNC_WAIT]);"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUTransforms/MfmaGroup.cpp",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -273,7 +273,7 @@ MfmaIntrinsic::selectFor(Location loc, int version, unsigned mDim,\n \n   const SmallVector<MfmaMapValue, 2> &values = it->second;\n \n-  // If We have more than one instrinsics, prefer those with a larger K.\n+  // If we have more than one intrinsic, prefer those with a larger K.\n   for (const auto [symbol, k, kBase] : llvm::drop_end(values)) {\n     if (inputKDim >= k)\n       return MfmaIntrinsic(symbol, mDim, nDim, k, kBase, aElemType, bElemType);"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUTransforms/MoveUpPrologueLoads.cpp",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -89,7 +89,7 @@ static void moveUpLoad(tt::LoadOp load) {\n } // namespace\n \n struct TritonAMDGPUMoveUpPrologueLoadsPass\n-    : public impl::TritonAMDGPUMoveUpPrologueLoadsBase<\n+    : impl::TritonAMDGPUMoveUpPrologueLoadsBase<\n           TritonAMDGPUMoveUpPrologueLoadsPass> {\n   void runOnOperation() override {\n     // Collect load ops with \"amd.pipeliner_part\" attribute."
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUTransforms/OptimizeBufferOpPtr.cpp",
+          "status": "modified",
+          "additions": 6,
+          "deletions": 6,
+          "patch": "@@ -50,7 +50,7 @@ namespace {\n //\n // Goal of this transformation is to decrease amount of work done by vector\n // instructions(decrease number of v_add). This could save cycles in a loop, and\n-// give more parallelism on architectures where MFMA and vector instrcutions\n+// give more parallelism on architectures where MFMA and vector instructions\n // executed on the same hardware module.\n struct AdvanceBasePointer : public OpRewritePattern<scf::ForOp> {\n \n@@ -60,7 +60,7 @@ struct AdvanceBasePointer : public OpRewritePattern<scf::ForOp> {\n \n   // Check if same value is stored in every element of tensor val\n   // Return true if all elelemts are equal, false if not or it was not able for\n-  // proove it.\n+  // prove it.\n   static bool isScalarizableValue(mlir::Value val) {\n     if (isa<IntegerType>(val.getType()))\n       return true;\n@@ -118,7 +118,7 @@ struct AdvanceBasePointer : public OpRewritePattern<scf::ForOp> {\n     const auto *stepRange =\n         solver->lookupState<dataflow::IntegerValueRangeLattice>(value);\n     if (stepRange->getValue().isUninitialized()) {\n-      LDBG(\"Rejected: value range is unintialized\");\n+      LDBG(\"Rejected: value range is uninitialized\");\n       return {};\n     }\n     return stepRange->getValue().getValue();\n@@ -154,14 +154,14 @@ struct AdvanceBasePointer : public OpRewritePattern<scf::ForOp> {\n     const auto *blockArgRange =\n         solver->lookupState<dataflow::IntegerValueRangeLattice>(blockArg);\n     if (blockArgRange->getValue().isUninitialized()) {\n-      LDBG(\"Rejected: blockArg range is unintialized\");\n+      LDBG(\"Rejected: blockArg range is uninitialized\");\n       return {};\n     }\n \n     const auto *stepRange =\n         solver->lookupState<dataflow::IntegerValueRangeLattice>(advanceStep);\n     if (stepRange->getValue().isUninitialized()) {\n-      LDBG(\"Rejected: step range is unintialized\");\n+      LDBG(\"Rejected: step range is uninitialized\");\n       return {};\n     }\n \n@@ -171,7 +171,7 @@ struct AdvanceBasePointer : public OpRewritePattern<scf::ForOp> {\n     // Use limit to crop MSB from negative indexing\n     constexpr uint64_t maxOffsetValue = 0xff'ff'ff'ff;\n \n-    // Range analysys for block argument and step should not return values\n+    // Range analysis for block argument and step should not return values\n     // larger than maximum uint32_t\n     assert(blockArgRangeValue.umax().getLimitedValue() <= maxOffsetValue &&\n            \"expect block argument to be a 32 bit value\");"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUTransforms/OptimizeDescriptorEncoding.cpp",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 3,
+          "patch": "@@ -187,10 +187,9 @@ bool AMDGPUAssignDescriptorMemoryLayouts::isCompatibleSharedEncoding(\n //     scf.yield %di                    ; same encoding is propagated\n //   }\n //\n-class TritonAMDGPUOptimizeDescriptorEncodingPass\n-    : public impl::TritonAMDGPUOptimizeDescriptorEncodingBase<\n+struct TritonAMDGPUOptimizeDescriptorEncodingPass\n+    : impl::TritonAMDGPUOptimizeDescriptorEncodingBase<\n           TritonAMDGPUOptimizeDescriptorEncodingPass> {\n-public:\n   void runOnOperation() override {\n     mlir::ModuleOp m = getOperation();\n "
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUTransforms/OptimizeDotOperands.cpp",
+          "status": "modified",
+          "additions": 7,
+          "deletions": 14,
+          "patch": "@@ -21,13 +21,13 @@\n namespace tt = mlir::triton;\n namespace ttg = mlir::triton::gpu;\n \n-namespace mlir::triton::amdgpu {\n+namespace mlir {\n \n namespace {\n \n // This pattern creates LocalAllocOp and LocalLoadOp with unswizzled shared\n // layout for the scale operand used in ScaledUpcastFp4Op/ScaledUpcastFp8Op.\n-// StreamPipeliner will respect the layout created here and pipeline ops\n+// The AMD pipeliner will respect the layout created here and pipeline ops\n // according to the need.\n //\n // It matches\n@@ -111,10 +111,9 @@ private:\n #define GEN_PASS_DEF_TRITONAMDGPUOPTIMIZEDOTOPERANDS\n #include \"TritonAMDGPUTransforms/Passes.h.inc\"\n \n-class TritonAMDGPUOptimizeDotOperands\n-    : public impl::TritonAMDGPUOptimizeDotOperandsBase<\n-          TritonAMDGPUOptimizeDotOperands> {\n-public:\n+struct TritonAMDGPUOptimizeDotOperandsPass\n+    : impl::TritonAMDGPUOptimizeDotOperandsBase<\n+          TritonAMDGPUOptimizeDotOperandsPass> {\n   using Base::Base;\n \n   void runOnOperation() override {\n@@ -122,7 +121,7 @@ public:\n     ModuleOp m = getOperation();\n \n     mlir::RewritePatternSet patterns(context);\n-    TargetFeatures targetFeatures{llvm::StringRef(gfxArch)};\n+    triton::amdgpu::TargetFeatures targetFeatures{llvm::StringRef(gfxArch)};\n     patterns\n         .add<AllocSharedMemForUpcastedScales<tt::amdgpu::ScaledUpcastFp8Op>,\n              AllocSharedMemForUpcastedScales<tt::amdgpu::ScaledUpcastFp4Op>>(\n@@ -133,10 +132,4 @@ public:\n   }\n };\n \n-void registerTritonAMDGPUOptimizeDotOperands() {\n-  ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {\n-    return createTritonAMDGPUOptimizeDotOperands();\n-  });\n-}\n-\n-} // namespace mlir::triton::amdgpu\n+} // namespace mlir"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUTransforms/OptimizeEpilogue.cpp",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 5,
+          "patch": "@@ -200,11 +200,8 @@ public:\n \n } // anonymous namespace\n \n-class TritonAMDGPUOptimizeEpiloguePass\n-    : public impl::TritonAMDGPUOptimizeEpilogueBase<\n-          TritonAMDGPUOptimizeEpiloguePass> {\n-\n-public:\n+struct TritonAMDGPUOptimizeEpiloguePass\n+    : impl::TritonAMDGPUOptimizeEpilogueBase<TritonAMDGPUOptimizeEpiloguePass> {\n   void runOnOperation() override {\n     MLIRContext *context = &getContext();\n     ModuleOp m = getOperation();"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUTransforms/Pipeline.cpp",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 1,
+          "patch": "@@ -190,7 +190,8 @@ void combineWaitOps(ModuleOp moduleOp, bool useAsyncCopy) {\n }\n } // namespace\n \n-struct PipelinePass : impl::TritonAMDGPUPipelineBase<PipelinePass> {\n+struct TritonAMDGPUPipelinePass\n+    : impl::TritonAMDGPUPipelineBase<TritonAMDGPUPipelinePass> {\n   using Base::Base;\n \n   void runOnOperation() override {"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUTransforms/PrepareIfCombining.cpp",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 2,
+          "patch": "@@ -61,9 +61,8 @@ static void handleIfPair(scf::IfOp currentIf, scf::IfOp nextIf,\n } // namespace\n \n struct TritonAMDGPUPrepareIfCombiningPass\n-    : public impl::TritonAMDGPUPrepareIfCombiningBase<\n+    : impl::TritonAMDGPUPrepareIfCombiningBase<\n           TritonAMDGPUPrepareIfCombiningPass> {\n-\n   void runOnOperation() override {\n     triton::FuncOp funcOp = getOperation();\n     DominanceInfo domInfo(funcOp);"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUTransforms/ScheduleLoops.cpp",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 1,
+          "patch": "@@ -579,7 +579,8 @@ void pipelineLoop(scf::ForOp forOp, int numStages) {\n }\n } // namespace\n \n-struct ScheduleLoops : impl::TritonAMDGPUScheduleLoopsBase<ScheduleLoops> {\n+struct TritonAMDGPUScheduleLoopsPass\n+    : impl::TritonAMDGPUScheduleLoopsBase<TritonAMDGPUScheduleLoopsPass> {\n   using Base::Base;\n \n   void runOnOperation() override {"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUTransforms/SinkLayoutConversions.cpp",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 2,
+          "patch": "@@ -45,9 +45,8 @@ static void sinkLayoutConversions(triton::FuncOp funcOp) {\n } // namespace\n \n struct TritonAMDGPUSinkLayoutConversionsPass\n-    : public impl::TritonAMDGPUSinkLayoutConversionsBase<\n+    : impl::TritonAMDGPUSinkLayoutConversionsBase<\n           TritonAMDGPUSinkLayoutConversionsPass> {\n-\n   void runOnOperation() override { sinkLayoutConversions(getOperation()); }\n };\n "
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUTransforms/TDMStoresPipeline.cpp",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 2,
+          "patch": "@@ -134,8 +134,8 @@ bool mlir::pipelineTDMStores(scf::ForOp forOp) {\n   }\n \n   // Seed one \"empty\" loop-carried token per allocation; this is slightly\n-  // conservative but the best we can do as we do not have an unitialized token\n-  // state.\n+  // conservative but the best we can do as we do not have an uninitialized\n+  // token state.\n   OpBuilder preBuilder(forOp);\n   SmallVector<Value> initTokens;\n   initTokens.reserve(uniqueAllocs.size());"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUTransforms/UpdateAsyncWaitCount.cpp",
+          "status": "modified",
+          "additions": 3,
+          "deletions": 3,
+          "patch": "@@ -20,7 +20,7 @@\n // number of hardware instructions/intrinsics corresponding to the outstanding\n // async operations. For waits that carry async tokens, the pass walks the\n // def-use chains of each token and sums the number of async intrinsics\n-// oustanding excluding the producer of the async token. Tokens may be copied\n+// outstanding excluding the producer of the async token. Tokens may be copied\n // across loop boundaries (e.g., passed as loop initial arguments and yielded\n // from the loop body); in such cases, the pass takes the minimum count across\n // the possible paths. The final wait count is the minimum over all tokens and\n@@ -367,7 +367,7 @@ void updateWaitCount(WaitType waitOp,\n     // tokens\n     for (auto token : waitOp.getOperands()) {\n       // Traverse def chain from waitOp to the producer of the token and count\n-      // the minumum number of vmcnt instructions\n+      // the minimum number of vmcnt instructions\n       auto tokenWaitCnt =\n           deduceMinCountOnDefChain(token, waitOp, computeCountForOp);\n       waitCnt = std::min(waitCnt, tokenWaitCnt);\n@@ -496,7 +496,7 @@ struct TritonAMDGPUUpdateAsyncWaitCountPass\n         } else if (isa<AsyncTDMScatterOp, AsyncTDMGatherOp>(op)) {\n           auto rowIndicesType =\n               cast<RankedTensorType>(op->getOperandTypes()[1]);\n-          return mlir::LLVM::AMD::getTDMGatherScatterInstrinsicCount(\n+          return mlir::LLVM::AMD::getTDMGatherScatterIntrinsicCount(\n               rowIndicesType);\n         } else {\n           return 0;"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUTransforms/Utility.cpp",
+          "status": "modified",
+          "additions": 7,
+          "deletions": 7,
+          "patch": "@@ -21,8 +21,8 @@ int deduceMinCountInBlock(Block &block,\n \n // Returns the minimum found when accumulating countFunc(op) between begin and\n // end (inclusive)\n-int deduceMinCountBetweeOps(Operation *beginOp, Operation *endOp,\n-                            const std::function<int(Operation *)> &countFunc) {\n+int deduceMinCountBetweenOps(Operation *beginOp, Operation *endOp,\n+                             const std::function<int(Operation *)> &countFunc) {\n   assert(beginOp && endOp);\n   assert(beginOp == endOp || beginOp->isBeforeInBlock(endOp));\n   int count = 0;\n@@ -60,7 +60,7 @@ int deduceMinCountInBlock(Block &block,\n                           const std::function<int(Operation *)> &countFunc) {\n   if (block.empty())\n     return 0;\n-  return deduceMinCountBetweeOps(&block.front(), &block.back(), countFunc);\n+  return deduceMinCountBetweenOps(&block.front(), &block.back(), countFunc);\n }\n \n int deduceMinCountOnDefChain(Value defValue, Operation *consumerOp,\n@@ -69,8 +69,8 @@ int deduceMinCountOnDefChain(Value defValue, Operation *consumerOp,\n   // If the value is not defined in the same region as the consumer we need to\n   // peel the parent region of consumer until we arrive at value's region\n   while (consumerOp->getParentRegion() != defValue.getParentRegion()) {\n-    pathSum += deduceMinCountBetweeOps(&consumerOp->getBlock()->front(),\n-                                       consumerOp, countFunc);\n+    pathSum += deduceMinCountBetweenOps(&consumerOp->getBlock()->front(),\n+                                        consumerOp, countFunc);\n     consumerOp = consumerOp->getParentOp();\n   }\n \n@@ -78,7 +78,7 @@ int deduceMinCountOnDefChain(Value defValue, Operation *consumerOp,\n   // ops between producer and consumer\n   if (Operation *defOp = defValue.getDefiningOp()) {\n     pathSum +=\n-        deduceMinCountBetweeOps(defOp->getNextNode(), consumerOp, countFunc);\n+        deduceMinCountBetweenOps(defOp->getNextNode(), consumerOp, countFunc);\n     foundMin = std::min(foundMin, pathSum);\n     return foundMin;\n   }\n@@ -94,7 +94,7 @@ int deduceMinCountOnDefChain(Value defValue, Operation *consumerOp,\n     }\n \n     Operation *firstOpInLoop = &*forOp.getBody()->begin();\n-    pathSum += deduceMinCountBetweeOps(firstOpInLoop, consumerOp, countFunc);\n+    pathSum += deduceMinCountBetweenOps(firstOpInLoop, consumerOp, countFunc);\n \n     // Break recursion early if we exceed previous min\n     if (pathSum >= foundMin)"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUTransforms/Utility.h",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -92,4 +92,4 @@ T getDotEncoding(Value inputValue, unsigned *opIdx, unsigned *vecSize) {\n   return getDotEncoding<T>(user->getResult(0), opIdx, vecSize);\n }\n \n-#endif\n+#endif // TRITON_THIRD_PARTY_AMD_LIB_TRITONAMDGPUTRANSFORMS_UTILITY_H_"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUTransforms/WmmaGroup.cpp",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -229,7 +229,7 @@ WmmaIntrinsic::selectFor(int version, unsigned mDim, unsigned nDim,\n   if (values.empty())\n     return failure();\n \n-  // If We have more than one instrinsics, prefer those with a larger K.\n+  // If we have more than one intrinsic, prefer those with a larger K.\n   for (const auto [symbol, k, kBase, feature] : llvm::drop_end(values)) {\n     if (inputKDim >= k)\n       return WmmaIntrinsic(symbol, mDim, nDim, k, kBase, aElemType, bElemType,"
+        },
+        {
+          "filename": "third_party/amd/python/test/test_gluon_cdna5.py",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 2,
+          "patch": "@@ -2155,7 +2155,7 @@ def tensor_device_tdm_multi_cta_load_and_store_kernel(a_ptr, b_ptr, M, N,  #\n def test_runtime_tensor_load_and_store_multi_cta(M, N, BLOCK_M, BLOCK_N, NUM_WARPS, CGALayout, USE_TDM_LOAD,\n                                                  USE_TDM_STORE):\n     torch.manual_seed(42)\n-    # Overallocate to catch out of bounds writes, the padding of our input is random and the pading of the output is 0\n+    # Overallocate to catch out of bounds writes, the padding of our input is random and the padding of the output is 0\n     # to catch out of bounds writes.\n     overallocation_factor = 4\n     a = torch.randint(0x0, 0xFFFF, (M * overallocation_factor, N), dtype=torch.uint16)\n@@ -2415,7 +2415,7 @@ def test_compile_tensor_descriptor_prefetch_nd(dtype, ndim, INNER_BLOCK, SPECULA\n             \"PREFETCH_SPECULATIVE\": \"constexpr\",\n         }\n         constexprs = {\n-            # For tuples we need to specifiy the parameter index\n+            # For tuples we need to specify the parameter index\n             **{(2, i): STRIDES[i]\n                for i in range(ndim)},\n             **{(3, i): BLOCK_SHAPE[i]"
+        },
+        {
+          "filename": "third_party/amd/python/triton_amd.cc",
+          "status": "modified",
+          "additions": 3,
+          "deletions": 4,
+          "patch": "@@ -95,10 +95,9 @@ void init_triton_amd_passes_ttgpuir(py::module_ &m) {\n   ADD_PASS_OPTION_WRAPPER_1(\"add_warp_pipeline_conversion\",\n                             mlir::triton::AMD::createConvertWarpPipelinePass,\n                             const std::string &);\n-  ADD_PASS_OPTION_WRAPPER_1(\n-      \"add_optimize_dot_operands\",\n-      mlir::triton::amdgpu::createTritonAMDGPUOptimizeDotOperands,\n-      const std::string &);\n+  ADD_PASS_OPTION_WRAPPER_1(\"add_optimize_dot_operands\",\n+                            mlir::createTritonAMDGPUOptimizeDotOperands,\n+                            const std::string &);\n   m.def(\"add_hoist_layout_conversions\", [](mlir::PassManager &pm) {\n     pm.addNestedPass<mlir::triton::FuncOp>(\n         mlir::createTritonAMDGPUHoistLayoutConversions());\n"
+        }
+      ]
+    },
+    {
+      "sha": "ab198e4f2094e412f4a9a608a202a261387b4b9d",
+      "author": {
+        "name": "Mario Lezcano Casado",
+        "email": "3291265+lezcano@users.noreply.github.com"
+      },
+      "date": "2026-10-11T07:18:56+08:00",
+      "message": "[KERNELS] Preserve row-scale bias fusion for full epilogues (#12204)\n\nFuse row scales with bias when the epilogue is not subdivided,\npreserving the original matmul rounding.\n\n<!-- codex-thread: 01a12105-56db-7652-90c2-0783f6dbddcc -->",
+      "parents": [
+        "3078daa76bbd55c1c3509f7ee8e899b1ed6a127e"
+      ],
+      "stats": {
+        "total_additions": 3,
+        "total_deletions": 2,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "python/triton_kernels/tests/test_matmul.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 0,
+          "patch": "@@ -843,6 +843,7 @@ def test_matmul_mixed_fp8_preserves_fp16_precision(fp8_lhs, is_persistent, devic\n @pytest.mark.parametrize(\"scale_source, epilogue_subtile, has_beta, expected\", [\n     (\"global\", 2, False, 0.00787353515625),\n     (\"global\", 2, True, 0.0079345703125),\n+    (\"row\", 1, False, 0.00787353515625),\n     (\"row\", 2, False, 0.0079345703125),\n     (\"row\", 2, True, 0.0079345703125),\n     (\"column\", 1, False, 0.00787353515625),"
+        },
+        {
+          "filename": "python/triton_kernels/triton_kernels/matmul_details/_p_matmul.py",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 2,
+          "patch": "@@ -253,11 +253,11 @@ def _p_matmul(\n     OUT_BLOCK_N: tl.constexpr = EPILOGUE_BLOCK_N // ACTIVATION_REDUCTION_N\n     # Fuse alpha with the residual when activation and gamma are absent.\n     FUSE_ALPHA: tl.constexpr = OutAcc is not None and Gammas is None and ACTIVATION_FN is None and out_alpha is not None\n-    # Preserve rounding for dense sub-tiles and unswapped row scales.\n+    # Preserve separate scale/bias rounding for dense sub-tiles.\n     FUSE_TENSOR_SCALE: tl.constexpr = (\n         (XTensorScale is not None or WTensorScale is not None)\n         and XScale is None and WScale is None and B is not None and Betas is None\n-        and (is_out_microscaled or (SUBTILE_FACTOR == 1 and (SWAP_XW or WTensorScale is not None)))\n+        and (is_out_microscaled or SUBTILE_FACTOR == 1)\n     )\n     yN = N // ACTIVATION_REDUCTION_N\n \n"
+        }
+      ]
+    }
+  ]
+}

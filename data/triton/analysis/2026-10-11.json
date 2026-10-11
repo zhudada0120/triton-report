@@ -1,0 +1,66 @@
+{
+  "date": "2026-10-11",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-12T05:09:02.855334+08:00",
+  "daily_summary": "当日三个 commit 集中在 AMD 后端与 triton_kernels：一是彻底移除已由 LLVM AMDGPU 后端（SIPreEmitPeephole）替代的 ScalarizePackedFOps LLVM pass 及其 knob、绑定和测试（净删 250 行）；二是对 AMD 后端进行大规模 NFC 整理（62 文件，修正拼写、统一头文件保护宏命名规范、将 TargetInfo 的简单转发函数内联、把 TritonAMDGPUTransforms 的 pass 统一为 TritonAMDGPU<Name>Pass 结构体并归入 mlir 命名空间、重命名 getTDMGatherScatterInstrinsicCount/deduceMinCountBetweeOps 等拼写错误符号）；三是 triton_kernels 的 _p_matmul 修复行缩放（row scale）在完整 epilogue（SUBTILE_FACTOR==1）下的 bias 融合条件，恢复原始 matmul 舍入行为。总体是 AMD 后端清理收敛与内核数值精度修复，无核心平台无关接口（BaseBackend/DriverBase/TargetInfoBase/JIT/编译器主流程）的签名变更。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 无影响。第一个 commit 删除的是 third_party/amd 专属的 LLVM pass（AMDGCN_SCALARIZE_PACKED_FOPS）、其 triton_amd.cc 绑定与 AMD knob，属于纯 AMD 平台特定路径；第二个 commit 是 AMD 后端内部的注释、头文件保护宏、pass 命名与声明重排，虽触及 TargetInfo 与 Passes.h/.td，但均位于 third_party/amd 及 mlir::triton::AMD 命名空间内，Ascend 不使用 AMD 后端也不继承其 TargetInfo；第三个 commit 只改 triton_kernels 的 matmul 融合条件常量与对应测试，属内核层实现。三者都未触及 BaseBackend/DriverBase/GPUDriver、backends 发现机制、TritonSemantic.dot、CodeGenerator.__init__、compiler.parse、TritonOpBuilder 等 triton-ascend 的必然影响路径，也无 TTIR/tt 方言定义变更。",
+  "commits": [
+    {
+      "sha": "9fbab754d1341f715bdd4218e480afd38af443c9",
+      "comment": "移除 AMD 后端的 ScalarizePackedFOps LLVM pass（#6656 引入），包含：删除 LLVM pass 实现 ScalarizePackedFOps.cpp（128 行）、其 CMake 注册、Passes.h 中的 runScalarizePackedFOpsPass 声明、python/triton/knobs.py 中的 amd_knobs.scalarize_packed_fops（AMDGCN_SCALARIZE_PACKED_FOPS）、triton_amd.cc 的 add_scalarize_packed_fops_llvm_pass 绑定、HIPBackend 中对应的调用分支，以及 test_scalarize_packed_fops.py 与 CI 步骤。该 pass 原本对含 MFMA 的基本块内的向量 fmul/fadd/fsub 做标量化，以避免无法与 MFMA 共同发射的 v_pk_*_f32。移除理由是 LLVM 侧 SIPreEmitPeephole（llvm/llvm-project#157968）现在会在调度后按 MFMA 延迟窗口决定拆包，效果更好且该 knob 默认关闭。变更属于纯 AMD 后端路径的清理，未触及任何跨后端抽象接口，风险可控；唯一需要注意的是对仍在依赖该 knob 名或被删除 pass 名称的下游用户/脚本会直接失效（建议在 release note 中标注），以及删除了 CI 中 TRITON_ALWAYS_COMPILE=1 的专项测试步骤。",
+      "tags": [
+        "refactor",
+        "chore",
+        "amd",
+        "ci",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅涉及 third_party/amd 的 LLVM pass、python/triton/knobs.py 中的 amd_knobs.scalarize_packed_fops（Ascend 不使用 amd_knobs）、third_party/amd/python/triton_amd.cc 绑定与 HIPBackend。三方平台特定实现，triton-ascend 不加载 AMD 后端、不实现 TargetInfoBase、也不走 TritonGPU→LLVM 路径，与此变更无耦合。",
+        "testing": "无影响。删除的是 third_party/amd/python/test/test_scalarize_packed_fops.py 与 integration-tests-amd.yml 中的 AMD 专项步骤，不涉及 python/test/backend 后端发现测试或 Ascend 测试套件。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Remove the ScalarizePackedFOps LLVM pass (#12218)\n\nRemove `AMDGCN_SCALARIZE_PACKED_FOPS`\n(`knobs.amd.scalarize_packed_fops`) and the LLVM IR pass behind it\n(#6656), with its Python binding and test.\n\nThe pass scalarized every vector `fmul`/`fadd`/`fsub` in a basic block\ncontaining an MFMA, so that none of them were emitted as `v_pk_*_f32`,\nwhich cannot co-issue with an MFMA.\n\nThe AMDGPU backend now does this itself. `SIPreEmitPeephole`\n(llvm/llvm-project#157968) unpacks the `V_PK_{MUL,ADD,FMA}_F32` that\nfall inside an MFMA's latency window into scalar instructions, so they\nco-issue with the MFMA, and leaves the ones outside the window packed,\nwhere one packed instruction is cheaper than two scalar ones. It decides\nafter scheduling, when it is known which instructions sit in an MFMA's\nshadow, so the Triton pass is no longer needed. The knob was off by\ndefault.\n\nTests: `test_scalarize_packed_fops.py` and its CI steps are removed; the\nother AMD Python tests and `test_knobs.py` pass on gfx950."
+    },
+    {
+      "sha": "ac9fc7ab6c0630bdb8735ea91933ac547ab85b8a",
+      "comment": "AMD 后端大规模 NFC（无功能变更）整理，共 62 个文件，主要内容：1) 修正 codespell 拼写错误，包括对外可见的符号重命名 getTDMGatherScatterInstrinsicCount → getTDMGatherScatterIntrinsicCount（TDMUtility.h/.cpp 与 UpdateAsyncWaitCount.cpp 调用点）、deduceMinCountBetweeOps → deduceMinCountBetweenOps（Utility.cpp）；2) 统一头文件保护宏为按路径命名规范（#5244），并修正 Passes.td 中与 TritonGPU 冲突的 TRITONGPU_PASSES 保护宏；3) 将 TDMUtility.h 的全局 using 声明下沉到使用点，去掉其对 TargetInfo.h 的包含；4) 把 TritonAMDGPUTransforms 下所有 pass 统一为 TritonAMDGPU<Name>Pass 结构体（如 PipelinePass→TritonAMDGPUPipelinePass、ScheduleLoops→TritonAMDGPUScheduleLoopsPass、TritonAMDFoldTrueCmpIOpPass→TritonAMDFoldTrueCmpIPass），并把 optimize-dot-operands 从 mlir::triton::amdgpu 移入 mlir 命名空间（registerTritonAMDGPUOptimizeDotOperands 随之改为 mlir::registerTritonAMDGPUOptimizeDotOperands，同步更新 bin/RegisterTritonDialects.h、Passes.h 与 triton_amd.cc 的 ADD_PASS_OPTION_WRAPPER_1 调用）；5) 删除 MFMA/WMMA intrinsic 结构体的默认特殊成员函数；6) 将 TargetInfo 对 TargetFeatures 的平凡转发函数定义内联到 TargetInfo.h 并从 .cpp 删除；7) 修正若干过时/复制粘贴的 pass 描述与 gfx10 残留引用（如 wgp_cu_mode 注释与 test_launch.py 的 arch 前缀判断）。虽然 diff 量大，但语义等价，风险主要来自符号重命名：任何下游/外部的 AMD 代码或脚本若引用旧名称（getTDMGatherScatterInstrinsicCount、deduceMinCountBetweeOps、mlir::triton::amdgpu::registerTritonAMDGPUOptimizeDotOperands、PipelinePass 等）会编译失败，但这些都是 AMD 后端内部符号且通过 git grep 已全量更新。",
+      "tags": [
+        "refactor",
+        "chore",
+        "amd",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。全部改动位于 third_party/amd（include/lib/python 的注解与声明）、third_party/amd/python/triton_amd.cc、bin/RegisterTritonDialects.h 的 AMD pass 注册行，以及 python/triton/experimental/gluon/language/amd/**（Gluon AMD 专属）和 python/test/unit/runtime/test_launch.py 的 HIP 分支。被内联的 TargetInfo 转发方法属于 AMD 的 TargetInfo（mlir::triton::AMD::TargetInfo），Ascend 不实现也不调用 TargetInfoBase 路径；被重命名的 pass/函数均在 mlir::triton::AMD 命名空间。未触及 BaseBackend/DriverBase/GPUDriver、backends 发现、TritonSemantic.dot、CodeGenerator.__init__、compiler.parse、TritonOpBuilder 等 Ascend 必然影响接口，也未改动 tt/ttg 方言定义。",
+        "testing": "无影响。仅 test_launch.py 中一个 HIP 专属用例的 arch 前缀判断去掉 gfx10，以及 test_gluon_cdna5.py 的注释拼写修改，均不涉及 triton-ascend 测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] NFC: Tidy up comments, header guards, and declarations (#12220)\n\n- Fix codespell typos, including the misspelled\ngetTDMGatherScatterInstrinsicCount and deduceMinCountBetweeOps names.\n- Fix stale or copy-pasted pass/op descriptions and references to\nrenamed entities; drop leftover gfx10 mentions.\n- Rename the Passes.td include guard, which collided with TritonGPU's.\n- Name all header guards after their path, per #5244.\n- Move TDMUtility.h's global using-declarations to their users and drop\nits TargetInfo.h include.\n- Declare all TritonAMDGPUTransforms passes as TritonAMDGPU<Name>Pass\nstructs, and move optimize-dot-operands into the mlir namespace like the\nrest.\n- Drop the defaulted special members from the MFMA/WMMA intrinsic\nstructs.\n- Define the trivial TargetInfo -> TargetFeatures forwarders inline."
+    },
+    {
+      "sha": "ab198e4f2094e412f4a9a608a202a261387b4b9d",
+      "comment": "修复 triton_kernels matmul 的 FUSE_TENSOR_SCALE 条件：原条件在行缩放（row scale）且 epilogue 未被细分（SUBTILE_FACTOR == 1）时不会融合 scale 与 bias，除非 SWAP_XW 或 WTensorScale 不为 None，导致该路径的舍入行为与原始 matmul 不一致。新条件简化为 (is_out_microscaled or SUBTILE_FACTOR == 1)，即当 epilogue 未细分时对任意 scale 来源（global/row/column）都融合 row scale 与 bias，从而保留原始 matmul 的舍入。测试在 test_matmul.py 的参数化用例中新增 (\"row\", 1, False, 0.00787353515625)，与 (\"global\", 1, ...) 和 (\"column\", 1, ...) 的期望误差一致，验证了 row+未细分 epilogue 现在与其它 scale 来源行为对齐。风险低：改动仅限 _p_matmul 的编译期 constexpr 条件与相应数值期望，但它是数值精度敏感路径，需确认对已融合路径（SUBTILE_FACTOR > 1 的 row scale 用例，期望值 0.0079345703125）保持原样，测试已覆盖。",
+      "tags": [
+        "bugfix",
+        "test",
+        "triton-kernels",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅位于 python/triton_kernels/triton_kernels/matmul_details/_p_matmul.py 的 FUSE_TENSOR_SCALE constexpr 条件与 python/triton_kernels/tests/test_matmul.py 的参数化用例，属 Triton kernel 层实现细节，不涉及 BaseBackend/DriverBase、backends 发现机制、语言前端语义层、CodeGenerator、compiler.parse 或任何 C++ IR 方言定义。triton-ascend 不依赖 triton_kernels 的该融合条件，且其必然影响路径未被触及。",
+        "testing": "无影响。triton_kernels/tests/test_matmul.py 为 NVIDIA 导向的内核数值测试，不在 triton-ascend 测试体系内。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[KERNELS] Preserve row-scale bias fusion for full epilogues (#12204)\n\nFuse row scales with bias when the epilogue is not subdivided,\npreserving the original matmul rounding.\n\n<!-- codex-thread: 01a12105-56db-7652-90c2-0783f6dbddcc -->"
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}
