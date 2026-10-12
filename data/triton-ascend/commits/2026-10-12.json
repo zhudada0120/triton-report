@@ -1,0 +1,134 @@
+{
+  "date": "2026-10-12",
+  "repo": "triton-lang/triton-ascend",
+  "branch": "main",
+  "commits": [
+    {
+      "sha": "e6d75162c4b75d6d22638f8eb33bb8dc3fb3cb50",
+      "author": {
+        "name": "zhan wei",
+        "email": "493694187@qq.com"
+      },
+      "date": "2026-10-12T23:02:38+08:00",
+      "message": "[compiler](fix) make bisheng_options backend-managed (#2523)",
+      "parents": [
+        "d0b18b1093594e23d7e63e3e807badc3d4a6e6a2"
+      ],
+      "stats": {
+        "total_additions": 26,
+        "total_deletions": 1,
+        "files_changed": 3
+      },
+      "files": [
+        {
+          "filename": "third_party/ascend/backend/compiler.py",
+          "status": "modified",
+          "additions": 3,
+          "deletions": 1,
+          "patch": "@@ -1257,7 +1257,9 @@ class NPUOptions:\n     allowed_dot_input_precisions: Tuple[str] = (\"ieee\", \"hf32\")\n     max_num_imprecise_acc_default: int = 0\n     extern_libs: dict = None\n-    bisheng_options: str = \"-cce-link-aicore-ll-module \" + get_libdevice()\n+    # Backend-managed BiSheng arguments. Keep the name discoverable so legacy\n+    # launch keywords are accepted, but never forward a user-supplied value.\n+    bisheng_options: str = field(default=\"-cce-link-aicore-ll-module \" + get_libdevice(), init=False)\n     multibuffer: bool = True\n     # Public dictionaries are stored as sorted pairs for hashing and JSON caches.\n     multibuffer_mode: Optional[Union[Dict[str, int], Tuple[Tuple[str, int], ...]]] = None"
+        },
+        {
+          "filename": "third_party/ascend/backend/utils.py",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 0,
+          "patch": "@@ -62,6 +62,7 @@ _DEPRECATED_NPU_OPTIONS = frozenset({\n     \"arch\",\n     \"auto_blockify_size\",\n     \"auto_tile_and_bind_subblock\",\n+    \"bisheng_options\",\n     \"code_motion\",\n     \"compile_on_910_95\",\n     \"enable_auto_blockify\",\n@@ -144,6 +145,7 @@ _DEPRECATED_NPU_OPTION_DETAILS = {\n     \"auto_blockify_size\": \"it is ignored; this option has no replacement because it had no effective consumer.\",\n     \"auto_tile_and_bind_subblock\":\n     \"it is ignored; tiling and subblock binding are derived from Linalg IR and lock semantics.\",\n+    \"bisheng_options\": \"it is ignored; BiSheng compiler arguments and libdevice linkage are backend-managed.\",\n     \"code_motion\": \"it is ignored; the removed vendor compiler control has no replacement.\",\n     \"enable_auto_blockify\": \"it is ignored; automatic block mapping and its safety blacklist are backend-managed.\",\n     \"enable_buffer_insert_optimization\":"
+        },
+        {
+          "filename": "third_party/ascend/unittest/pytest_ut/test_compiler.py",
+          "status": "modified",
+          "additions": 21,
+          "deletions": 0,
+          "patch": "@@ -6,6 +6,7 @@ from unittest.mock import MagicMock\n \n import pytest\n \n+import triton\n import triton.backends.ascend.compiler as compiler\n from triton.backends.ascend import utils\n from triton.backends.compiler import GPUTarget\n@@ -178,6 +179,26 @@ def test_ignored_values_preserve_defaults_and_input(backend, name):\n     assert options.hash() == baseline.hash()\n \n \n+@pytest.mark.parametrize(\"value\", [None, \"\", \"--unsupported-bisheng-option\"])\n+def test_legacy_bisheng_options_launch_uses_backend_defaults(backend, value):\n+\n+    @triton.jit\n+    def kernel():\n+        pass\n+\n+    baseline = backend.parse_options({})\n+    kwargs = {\"bisheng_options\": value}\n+\n+    with pytest.warns(FutureWarning, match=\"bisheng_options.*backend-managed\"):\n+        options, signature, constexprs, attrs = kernel._pack_args(backend, kwargs, {}, [], None)\n+\n+    assert kwargs == {\"bisheng_options\": value}\n+    assert options.bisheng_options == \"-cce-link-aicore-ll-module \" + compiler.get_libdevice()\n+    assert options.__dict__ == baseline.__dict__\n+    assert options.hash() == baseline.hash()\n+    assert signature == constexprs == attrs == {}\n+\n+\n @pytest.mark.parametrize(\"stream\", [None, 0, object()], ids=[\"none\", \"zero\", \"unused-object\"])\n def test_legacy_stream_is_consumed_without_losing_option_discovery(backend, stream):\n     baseline = backend.parse_options({\"num_warps\": 16})\n"
+        }
+      ]
+    },
+    {
+      "sha": "d0b18b1093594e23d7e63e3e807badc3d4a6e6a2",
+      "author": {
+        "name": "lrf22",
+        "email": "112365706+lrf22@users.noreply.github.com"
+      },
+      "date": "2026-10-12T21:41:56+08:00",
+      "message": "[ssbuffer](fix) count only a fixpipe to UB as cross-core traffic (#2522)\n\nisMainLoopOnlyCopyOrFixpipe counted every hivm.hir.fixpipe, but only one whose\ndestination is UB reaches the vector core.\n\nCo-authored-by: CrDem <147323633+CrDem@users.noreply.github.com>",
+      "parents": [
+        "1367dee488e0f42d428515cabe6b3994fe270ddb"
+      ],
+      "stats": {
+        "total_additions": 40,
+        "total_deletions": 11,
+        "files_changed": 3
+      },
+      "files": [
+        {
+          "filename": "third_party/ascend/lib/DynamicCVPipeline/AnalyzeDataFlow/AnalyzeScope.cpp",
+          "status": "modified",
+          "additions": 20,
+          "deletions": 5,
+          "patch": "@@ -135,11 +135,26 @@ static bool checkVecScopeMainLoop(ModuleOp module) {\n   return hasMainLoop && allMainLoopsSatisfy;\n }\n \n+static bool isFixpipeToUB(Operation *op) {\n+  auto fixpipeOp = dyn_cast<hivm::FixpipeOp>(op);\n+  if (!fixpipeOp)\n+    return false;\n+  auto dstType = dyn_cast<MemRefType>(fixpipeOp.getDst().getType());\n+  if (!dstType)\n+    return false;\n+  auto addrSpaceAttr =\n+      dyn_cast_or_null<hivm::AddressSpaceAttr>(dstType.getMemorySpace());\n+  if (!addrSpaceAttr)\n+    return false;\n+\n+  return addrSpaceAttr.getAddressSpace() == hivm::AddressSpace::UB;\n+}\n+\n // For every main_loop id, gather all for/while ops sharing that id and count\n-// the hivm.hir.copy and hivm.hir.fixpipe ops within them. Only when ALL\n-// main_loop ids have either count equal to zero (every id has only copy or\n-// only fixpipe, none has both), the dynamic CV pipeline cannot be applied and\n-// we fall back to the original workflow.\n+// the hivm.hir.copy ops and the hivm.hir.fixpipe ops writing to UB within\n+// them. Only when ALL main_loop ids have either count equal to zero (every id\n+// has only copy or only fixpipe, none has both), the dynamic CV pipeline\n+// cannot be applied and we fall back to the original workflow.\n //   - hivm::CopyOp    typically appears in VECTOR scope main_loops\n //   - hivm::FixpipeOp typically appears in CUBE scope main_loops\n // Nested regions inside the main_loop op are also walked, and scf.yield\n@@ -171,7 +186,7 @@ static bool isMainLoopOnlyCopyOrFixpipe(ModuleOp module) {\n       }\n       if (isa<hivm::CopyOp>(innerOp)) {\n         ++counts.first;\n-      } else if (isa<hivm::FixpipeOp>(innerOp)) {\n+      } else if (isFixpipeToUB(innerOp)) {\n         ++counts.second;\n       }\n       return WalkResult::advance();"
+        },
+        {
+          "filename": "third_party/ascend/unittest/DynamicCVPipeline_ut/test_pcb03_mlir_cube_chain_c2c_independent_vector.py",
+          "status": "modified",
+          "additions": 10,
+          "deletions": 3,
+          "patch": "@@ -9,7 +9,8 @@ Description: Cube1 (outer product) -> Cube2 (dot with C) -> Cube3 (dot with D) c\n Refactoring approach (refer to test_custom.py):\n   1. Remove precision comparison logic between Kernel and reference implementation\n   2. Refer to compile_kernel in test_custom.py to implement MLIR code generation for each Triton Kernel\n-  3. Add MLIR content validation in test functions to ensure the MLIR code contains the \"scope\" keyword\n+  3. Add MLIR content validation in test functions; this is a fallback scenario,\n+     so the MLIR code must NOT contain the \"scope\" keyword\n   4. Keep the test framework complete and maintainable\n \n Test Cases:\n@@ -264,7 +265,10 @@ def test_pcb03_tc01():\n     assert mlir and len(mlir) > 0, \"MLIR code generation failed or is empty\"\n     assert \"func.func @pcb03_tc01_cube_chain(\" in mlir, \\\n         \"Kernel function definition not found in MLIR code\"\n-    assert \"scope\" in mlir, \"MLIR code does not contain the 'scope' keyword\"\n+    # The cube chain stages through L1 (L0C -> cbuf), which stays on CUBE, so the\n+    # only cross-core traffic here is the V->C copies: a one-way interaction, and\n+    # the pipeline falls back on those, as in sdf10 and the other one-way cases.\n+    assert \"scope\" not in mlir, \"Fallback scenario: MLIR code unexpectedly contains the 'scope' keyword\"\n \n     # Output MLIR code to the specified path\n \n@@ -287,7 +291,10 @@ def test_pcb03_tc02():\n     assert mlir and len(mlir) > 0, \"MLIR code generation failed or is empty\"\n     assert \"func.func @pcb03_tc02_cube_chain(\" in mlir, \\\n         \"Kernel function definition not found in MLIR code\"\n-    assert \"scope\" in mlir, \"MLIR code does not contain the 'scope' keyword\"\n+    # The cube chain stages through L1 (L0C -> cbuf), which stays on CUBE, so the\n+    # only cross-core traffic here is the V->C copies: a one-way interaction, and\n+    # the pipeline falls back on those, as in sdf10 and the other one-way cases.\n+    assert \"scope\" not in mlir, \"Fallback scenario: MLIR code unexpectedly contains the 'scope' keyword\"\n \n     # Output MLIR code to the specified path\n "
+        },
+        {
+          "filename": "third_party/ascend/unittest/DynamicCVPipeline_ut/test_pcb04_mlir_cube_chain_c2c_vector_chain_v2v.py",
+          "status": "modified",
+          "additions": 10,
+          "deletions": 3,
+          "patch": "@@ -8,7 +8,8 @@ Description: Cube chain C2C (Cube1->Cube2) + Vector chain V2V (Vec1->Vec2)\n Refactoring approach (refer to test_custom.py):\n   1. Remove precision comparison logic between Kernel and reference implementation\n   2. Refer to compile_kernel in test_custom.py to implement MLIR code generation for each Triton Kernel\n-  3. Add MLIR content validation in test functions to ensure the MLIR code contains the \"scope\" keyword\n+  3. Add MLIR content validation in test functions; this is a fallback scenario,\n+     so the MLIR code must NOT contain the \"scope\" keyword\n   4. Keep the test framework complete and maintainable\n \n Test Cases:\n@@ -260,7 +261,10 @@ def test_pcb04_tc01():\n     assert mlir and len(mlir) > 0, \"MLIR code generation failed or is empty\"\n     assert \"func.func @pcb04_tc01_cube_vec_chain(\" in mlir, \\\n         \"Kernel function definition not found in MLIR code\"\n-    assert \"scope\" in mlir, \"MLIR code does not contain the 'scope' keyword\"\n+    # The cube chain stages through L1 (L0C -> cbuf), which stays on CUBE, so the\n+    # only cross-core traffic here is the V->C copies: a one-way interaction, and\n+    # the pipeline falls back on those, as in sdf10 and the other one-way cases.\n+    assert \"scope\" not in mlir, \"Fallback scenario: MLIR code unexpectedly contains the 'scope' keyword\"\n \n     # Output MLIR code to the specified path\n \n@@ -283,7 +287,10 @@ def test_pcb04_tc02():\n     assert mlir and len(mlir) > 0, \"MLIR code generation failed or is empty\"\n     assert \"func.func @pcb04_tc02_cube_vec_chain(\" in mlir, \\\n         \"Kernel function definition not found in MLIR code\"\n-    assert \"scope\" in mlir, \"MLIR code does not contain the 'scope' keyword\"\n+    # The cube chain stages through L1 (L0C -> cbuf), which stays on CUBE, so the\n+    # only cross-core traffic here is the V->C copies: a one-way interaction, and\n+    # the pipeline falls back on those, as in sdf10 and the other one-way cases.\n+    assert \"scope\" not in mlir, \"Fallback scenario: MLIR code unexpectedly contains the 'scope' keyword\"\n \n     # Output MLIR code to the specified path\n \n"
+        }
+      ]
+    },
+    {
+      "sha": "1367dee488e0f42d428515cabe6b3994fe270ddb",
+      "author": {
+        "name": "lrf22",
+        "email": "112365706+lrf22@users.noreply.github.com"
+      },
+      "date": "2026-10-11T17:09:13+08:00",
+      "message": "[ssbuffer](fix) start & end sync op insert point (#2513)",
+      "parents": [
+        "533c9056f0c11c6f7af95d369efe6283b8b60491"
+      ],
+      "stats": {
+        "total_additions": 131,
+        "total_deletions": 1,
+        "files_changed": 4
+      },
+      "files": [
+        {
+          "filename": "third_party/ascend/include/DynamicCVPipeline/Common/Utils.h",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 0,
+          "patch": "@@ -60,6 +60,7 @@ inline constexpr llvm::StringLiteral kLoadStoreBufCount =\n     \"ssbuffer.load_store_buf_count\";\n inline constexpr llvm::StringLiteral kAnalyzeFlagId =\n     \"ssbuffer.analyze_flag_id\";\n+inline constexpr llvm::StringLiteral kLoopId = \"ssbuffer.loop_id\";\n inline constexpr llvm::StringLiteral kLoopCarriedL0C =\n     \"ssbuffer.loop_carried_l0c\";\n inline constexpr llvm::StringLiteral kCrossCoreDeps = \"ssbuffer.crossCoreDeps\";"
+        },
+        {
+          "filename": "third_party/ascend/include/DynamicCVPipeline/SplitDataflow/InterCoreTransferAndSync.h",
+          "status": "modified",
+          "additions": 6,
+          "deletions": 0,
+          "patch": "@@ -104,9 +104,15 @@ private:\n   int markAllocIndex = 0;\n   int intraDepsGroupId = 0;\n \n+  llvm::DenseMap<int, llvm::SmallVector<LoopLikeOpInterface>> loopInclusions;\n+  llvm::DenseSet<int> singleLoopSet;\n+\n   llvm::DenseMap<mlir::Value, mlir::Value> ndnzValueMapping;\n   SSBufferManager ssbufferManager;\n \n+  void analyzeLoopInclusion();\n+  void moveStartEndSync(mlir::OpBuilder &builder);\n+\n   mlir::LogicalResult\n   processDependencies(FlagIdManager &flagManager,\n                       FlagIdReuseManager &flagIdReuseManager);"
+        },
+        {
+          "filename": "third_party/ascend/lib/DynamicCVPipeline/RemoveAttributes.cpp",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -55,7 +55,7 @@ static constexpr llvm::StringLiteral kAttrsToRemove[]{\n     kLoadStoreBufCount, kInsertionOptimization,\n     kDepMark,           kIntraDeps,\n     kSubBlock,          kMergeSmallBlockFirstRunDone,\n-    kSplittedIf};\n+    kSplittedIf,        kLoopId};\n \n void RemoveSsbufAttrPass::runOnOperation() {\n   auto module = getOperation();"
+        },
+        {
+          "filename": "third_party/ascend/lib/DynamicCVPipeline/SplitDataflow/InterCoreTransferAndSync.cpp",
+          "status": "modified",
+          "additions": 123,
+          "deletions": 0,
+          "patch": "@@ -258,6 +258,28 @@ static bool isValidC2CMatmulDependency(Value value, int consumerBlockId) {\n   return hasAnyMatmulABInputUser(value, consumerBlockId);\n }\n \n+static void attachLoopIdTag(Operation *op, int loopId) {\n+  MLIRContext *ctx = op->getContext();\n+  op->setAttr(\n+      CVPipeline::kLoopId,\n+      IntegerAttr::get(IntegerType::get(ctx, kIntegerBitWidth), loopId));\n+}\n+\n+bool hasStartEndSyncWhitelistKernel(ModuleOp module) {\n+  std::vector<std::string> whitelist{\n+      \"_swa_bwd_dq_kernel\",\n+  };\n+\n+  bool isWhitelistKernel = false;\n+  for (auto func : module.getOps<func::FuncOp>()) {\n+    if (llvm::is_contained(whitelist, func.getName().str())) {\n+      isWhitelistKernel = true;\n+      break;\n+    }\n+  }\n+  return isWhitelistKernel;\n+}\n+\n // Block Start/End Operation Retrieval\n std::pair<mlir::Operation *, mlir::Operation *>\n InterCoreTransferAndSyncPass::getBlockStartEnd(int targetId,\n@@ -1164,6 +1186,14 @@ void InterCoreTransferAndSyncPass::insertInterCoreSync(\n     attachAnalyzeFlagIdTag(setOpForWrite);\n     attachAnalyzeFlagIdTag(setOpForStart);\n     attachAnalyzeFlagIdTag(waitOpForEnd);\n+\n+    if (hasStartEndSyncWhitelistKernel(module)) {\n+      auto loopId =\n+          mainLoopOp->getAttrOfType<IntegerAttr>(CVPipeline::kLoopId).getInt();\n+      attachLoopIdTag(setOpForStart, loopId);\n+      attachLoopIdTag(waitOpForEnd, loopId);\n+    }\n+\n     // E2: register every set->wait pair of this transfer, not just the\n     // loop start/end pair. Each pair is the only proof of cross-core\n     // ordering for the sync ops it connects.\n@@ -2205,6 +2235,89 @@ void InterCoreTransferAndSyncPass::sortDependencies(\n             });\n }\n \n+void InterCoreTransferAndSyncPass::analyzeLoopInclusion() {\n+  loopInclusions.clear();\n+  int maxLoopId = -1;\n+  module.walk<WalkOrder::PreOrder>([&](Operation *op) {\n+    auto loopOp = dyn_cast<LoopLikeOpInterface>(op);\n+    if (!loopOp) {\n+      return;\n+    }\n+\n+    int loopId = 0;\n+    Operation *parentLoop =\n+        loopOp.getOperation()->getParentOfType<LoopLikeOpInterface>();\n+    while (parentLoop) {\n+      ++loopId;\n+      parentLoop = parentLoop->getParentOfType<LoopLikeOpInterface>();\n+    }\n+    loopOp->setAttr(\n+        CVPipeline::kLoopId,\n+        IntegerAttr::get(\n+            IntegerType::get(loopOp->getContext(), kIntegerBitWidth), loopId));\n+    loopInclusions[loopId].push_back(loopOp);\n+    maxLoopId = std::max(maxLoopId, loopId);\n+  });\n+  for (int loopId = 0; loopId <= maxLoopId; ++loopId) {\n+    if (loopInclusions[loopId].size() != 1) {\n+      break;\n+    }\n+    bool allSingle = true;\n+    for (int outerId = loopId - 1; outerId >= 0; --outerId) {\n+      if (loopInclusions[outerId].size() != 1) {\n+        allSingle = false;\n+        break;\n+      }\n+    }\n+    if (allSingle) {\n+      singleLoopSet.insert(loopId);\n+    }\n+  }\n+}\n+\n+void InterCoreTransferAndSyncPass::moveStartEndSync(OpBuilder &builder) {\n+  llvm::SmallVector<Operation *> startSyncOps;\n+  llvm::SmallVector<Operation *> endSyncOps;\n+  module.walk<WalkOrder::PreOrder>([&](Operation *op) {\n+    if (!op->hasAttr(CVPipeline::kLoopId) ||\n+        !(isa<hivm::SyncBlockSetOp, hivm::SyncBlockWaitOp>(op))) {\n+      return;\n+    }\n+    auto loopId = op->getAttrOfType<IntegerAttr>(CVPipeline::kLoopId).getInt();\n+    auto it = singleLoopSet.find(loopId);\n+    if (it != singleLoopSet.end()) {\n+      if (isa<hivm::SyncBlockSetOp>(op)) {\n+        startSyncOps.push_back(op);\n+      } else if (isa<hivm::SyncBlockWaitOp>(op)) {\n+        endSyncOps.push_back(op);\n+      }\n+    }\n+  });\n+\n+  if (loopInclusions.count(0) == 0 || loopInclusions[0].empty()) {\n+    return;\n+  }\n+  Operation *outerLoop = loopInclusions[0][0];\n+  if (!outerLoop) {\n+    return;\n+  }\n+  // move startSyncOps and endSyncOps to the outer loop\n+  builder.setInsertionPoint(outerLoop);\n+  for (auto it = startSyncOps.begin(); it != startSyncOps.end(); ++it) {\n+    builder.clone(**it);\n+  }\n+  builder.setInsertionPointAfter(outerLoop);\n+  for (auto it = endSyncOps.rbegin(); it != endSyncOps.rend(); ++it) {\n+    builder.clone(**it);\n+  }\n+  for (auto op : startSyncOps) {\n+    op->erase();\n+  }\n+  for (auto op : endSyncOps) {\n+    op->erase();\n+  }\n+}\n+\n // Main Processing\n LogicalResult InterCoreTransferAndSyncPass::processDependencies(\n     FlagIdManager &flagManager, FlagIdReuseManager &flagIdReuseManager) {\n@@ -2217,6 +2330,11 @@ LogicalResult InterCoreTransferAndSyncPass::processDependencies(\n     return failure();\n   }\n \n+  // Analyze loop nesting before inserting inter-core transfer/sync.\n+  if (hasStartEndSyncWhitelistKernel(module)) {\n+    analyzeLoopInclusion();\n+  }\n+\n   llvm::SmallVector<DependencyInfo> &V2CDependencies =\n       info.getV2CDependencies();\n   sortDependencies(V2CDependencies, module);\n@@ -2360,6 +2478,11 @@ LogicalResult InterCoreTransferAndSyncPass::processDependencies(\n   // tensor computation occurs between the transfer and the store.\n   processCubeToVectorDirectStoreSync(builder, flagManager, flagIdReuseManager);\n \n+  // move start/end sync ops\n+  if (hasStartEndSyncWhitelistKernel(module)) {\n+    moveStartEndSync(builder);\n+  }\n+\n   LOG_DEBUG(\"InterCoreTransferAndSyncPass success!\\n\");\n \n   return success();\n"
+        }
+      ]
+    }
+  ]
+}

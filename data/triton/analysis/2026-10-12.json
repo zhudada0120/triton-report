@@ -1,0 +1,53 @@
+{
+  "date": "2026-10-12",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-13T07:53:17.278969+08:00",
+  "daily_summary": "当日两个 commit 分别针对前端语义与 AMD 后端优化：(1) 修复 tl.arange 拒绝负 start 的 bug——原实现用 `start >> 32` 判断 int64 溢出，导致负数被误判为超 int32 范围，改为显式区间检查 `start < -2**31 or end > 2**31 - 1`；(2) 将 AMD 的 MFMA 调度器（schedule_hint=\"mfma-schedule\"）从仅 gfx950 扩展到 gfx942，并引入 CDNA3/CDNA4 分档的 LDS 带宽模型（gfx942 128 B/clk vs gfx950 256 B/clk），相应地把 arch 参数贯穿 MFMASchedule pass 与 Python 绑定。两者都不涉及核心 TTIR/TTGIR 抽象或后端契约接口，风险有限。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 均无实质影响。commit a98500f 修改的是 python/triton/language/semantic.py 中 TritonSemantic.arange 的范围校验逻辑，虽然 semantic.py 属于 Ascend monkey-patch 覆盖的模块，但 Ascend 的 _patched_dot 只覆写 dot 方法，arange 语义放宽（允许负 start）对 Ascend 的算子语义与 lowering 无破坏性影响，反而使其与上游保持一致。commit b575c0c 完全位于 third_party/amd 平台特定代码（HIPBackend、MFMASchedule pass、triton_amd.cc 绑定），Ascend 不加载 AMD 后端也从不调用该 pass，属于绝不影响的路径。两个 commit 均无需 triton-ascend 侧新增或修改测试。",
+  "commits": [
+    {
+      "sha": "a98500f77a3e0fb848fec350e1043c978e21d396",
+      "comment": "修复 tl.arange 拒绝负 start 的 bug。原实现用 `bool(start >> 32)` / `bool(end >> 32)` 判断 int64 溢出，但 Python 对负数做算术右移会得到 -1（真值），导致 -128、-64 等合法负 start 被误判为超出 int32 而抛错。新实现改用显式区间检查 `start < -2**31 or end > 2**31 - 1`，正确覆盖 [INT32_MIN, INT32_MAX] 范围，且保留 end > start 的原有校验。同时扩充 test_core.py 的 test_arange 参数化用例，加入 -128/-64/-16 负 start 场景。变更局限在 TritonSemantic.arange 的参数校验，不改变生成的 IR 结构（仍为 int32 索引张量），风险低。注意语义略有放宽：此前 start == -2**31 会被拒绝，现在被接受，属于修复方向上的正确行为。",
+      "tags": [
+        "bugfix",
+        "frontend",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。python/triton/language/semantic.py 虽在 triton-ascend 的 monkey-patch 范围内（third_party/ascend/backend/__init__.py::_apply_ascend_patch），但 Ascend 的 patch 仅覆写 TritonSemantic.dot，不触及 arange。本次 arange 校验放宽（允许负 start、允许 start == -2**31）不改变 TritonSemantic.arange 的签名与返回类型，Ascend 侧的 arange 到 TTIR 的转换路径完全不变；对使用负 start 的 Ascend kernel 反而从报错变为可用。",
+        "testing": "无影响。不涉及 Ascend 测试集。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[FRONTEND] Fix tl.arange rejecting a negative start (#11044)\n\nReplace the guard with an explicit int32 range check on the produced\nvalues ([start, end)).",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/language/semantic.py"
+        ],
+        "recommend_refresh": true
+      }
+    },
+    {
+      "sha": "b575c0c38d428a609e25487db64051a5fa7bfab8",
+      "comment": "将 AMD 的 MFMA 调度器从 gfx950 扩展到 gfx942，并修正 LDS 带宽模型。此前 make_llir 中仅有 `options.arch == \"gfx950\"` 才会调用 add_mfma_schedule_pass，导致 gfx942 上 schedule_hint=\"mfma-schedule\" 生成的 hsaco 与不带 hint 完全一致（该 pass 根本不运行）。本次改动：(1) HIPBackend.make_llir 条件改为 arch in (\"gfx942\", \"gfx950\") 并把 arch 传给 pass；(2) runMFMASchedulePass 增加 llvm::StringRef Arch 参数，通过 StringSwitch 映射 LDSBytesPerClk（gfx942=128，默认/gfx950=256），MFMAScheduler 构造函数接收该值并逐层传递至 getLDSCoverCycles / takeMFMAsForLDS / scheduleMFMAWithSpacing；(3) getLDSCoverCycles 公式从 Bits/8 改为 Bits*32/LDSBytesPerClk，即 ds_read_b128 在 gfx950 需 16 周期、gfx942 需 32 周期的 MFMA 覆盖；(4) pybind 绑定 add_mfma_schedule_pass 增加 arch 参数；(5) 新增 lds_write_kernel Gluon 测试（按 CDNA3 的 LDS 写模式）并参数化断言 gfx942 每次 LDS 写获得 2 个 MFMA、gfx950 为 1 个；test_other_archs_ignore_the_hint 从 gfx942/gfx1250 改为 gfx90a/gfx1250。gfx950 的数值路径保持不变（Bits*32/256 == Bits/8）。变更完全位于 third_party/amd，属于 AMD 后端特有的 LLVM-IR 后处理优化，不触及 Triton 核心抽象。",
+      "tags": [
+        "performance",
+        "amd",
+        "backend",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更文件全部位于 third_party/amd（backend/compiler.py::HIPBackend.make_llir、lib/Target/MFMASchedule/{MFMASchedule.cpp,MFMASchedule.h}、python/triton_amd.cc 的 add_mfma_schedule_pass 绑定、python/test/test_schedule_hint.py），这些均属 AMD/HIP 平台专属实现。triton-ascend 不继承 HIPBackend、不加载 TritonAMDGPU 相关 pass，其 add_stages 中也不引用 amd.add_mfma_schedule_pass，因此 arch 参数贯穿与 LDS 带宽模型调整均不传导至 Ascend 编译链。",
+        "testing": "无影响。新增/修改的测试均为 third_party/amd/python/test/test_schedule_hint.py 下的 AMD 专属 pytest，Ascend 测试集无需同步。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] MFMA scheduler: run on gfx942, with a CDNA3 LDS model (#12229)\n\nThe pass ran only for gfx950 (make_llir checks options.arch), so\nschedule_hint=\"mfma-schedule\" compiled gfx942 kernels unchanged: the\nhsaco is byte-identical with and without the hint. The cycle table\nalready has the CDNA3 MFMA shapes (mfma.f32.16x16x16f16,\n16x16x16bf16.1k, ...), so the pass fires on gfx942 once it is run; what\nit lacks there is the LDS bandwidth.\n\n- make_llir runs the pass for gfx942 and gfx950 and passes it the arch.\n- getLDSCoverCycles is Bits * 32 / LDSBytesPerClk, with LDSBytesPerClk\n128 on gfx942 (CDNA3) and 256 on gfx950 (CDNA4). With all four SIMDs\nissuing it, an access moves 64 lanes x 4 SIMDs x Bits/8 bytes, so a\nds_read_b128 needs 16 cycles of MFMA cover on gfx950 and 32 on gfx942.\nWith the gfx950 value, every LDS access on gfx942 gets half the cover it\nneeds.\n\ngfx950 is unchanged: Bits * 32 / 256 == Bits / 8 for every access width\nthat occurs (>= 8 bits).\n\nTest: a small kernel that writes its K tiles to LDS after the MFMAs\nchecks that each LDS write gets two MFMAs of cover on gfx942 and one on\ngfx950. test_other_archs_ignore_the_hint now covers gfx90a and gfx1250."
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

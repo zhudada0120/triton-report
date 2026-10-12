@@ -1,0 +1,68 @@
+{
+  "date": "2026-10-12",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-10-13T07:53:30.818486+08:00",
+  "daily_summary": "当日三个 commit 聚焦于 Ascend 后端的稳定性与正确性修复：一是将 bisheng_options 从用户可传入选项改为后端自管字段（compiler.py 中 init=False + utils.py 弃用登记 + 测试），防止用户误传参数污染 BiSheng 编译链路；二是修正 ssbuffer 动态 CV pipeline 中跨核流量统计逻辑，只把目标地址空间为 UB 的 hivm.hir.fixpipe 计入，避免把仅停留在 CUBE 核的 L1 级 fixpipe 误判为跨核流量，导致 pipeline 该回退时未回退；三是新增 ssbuffer start/end sync 插入点调整机制（loop_id 标记 + analyzeLoopInclusion/moveStartEndSync + RemoveAttributes 清理 kLoopId），针对白名单 kernel 将 loop 内的 sync set/wait 提升到外层 loop 之外。三者均属 Ascend 编译链细节修复，不涉及上游 Triton 前端或后端抽象契约变更。",
+  "test_impact_summary": "当日变更测试覆盖较为充分：commit 1 直接新增了 test_compiler.py 中针对 legacy bisheng_options 的 FutureWarning 与默认值等价性测试；commit 2 修改了两个 DynamicCVPipeline pytest 断言（从要求含 'scope' 改为要求不含），属于既有测试预期的修正与固化，说明该回退行为已被测试看护；commit 3 引入了新的 sync 提升逻辑但未见显式新增单元测试，仅依赖白名单 kernel '_swa_bwd_dq_kernel' 触发，该路径的测试看护相对薄弱，需要关注是否有端到端/IR 级测试能覆盖 loop_id 标记、analyzeLoopInclusion 嵌套判定与 moveStartEndSync 的搬运正确性。整体看，需要新增/更新测试点集中在 commit 3 的 sync 提升逻辑与 commit 2 回退判定的边界场景（fixpipe 到非 UB 地址空间）。",
+  "commits": [
+    {
+      "sha": "e6d75162c4b75d6d22638f8eb33bb8dc3fb3cb50",
+      "comment": "将 NPUOptions.bisheng_options 从普通可传入字段改为后端自管字段：在 dataclass 上用 field(default=..., init=False) 使该字段不进入 __init__，从而在 parse_options 构造 options 时不会采纳用户传入值，同时保留字段名以兼容旧版 launch 关键字；配套在 utils.py 的 _DEPRECATED_NPU_OPTIONS 与 _DEPRECATED_NPU_OPTION_DETAILS 中将 'bisheng_options' 登记为已弃用并给出 'backend-managed' 说明，使旧关键字被消费时发出 FutureWarning 并落入默认逻辑；新增测试 test_legacy_bisheng_options_launch_uses_backend_defaults 验证传入 None/空串/非法串时 options.bisheng_options 均等于默认的 libdevice 链接命令，options.__dict__ 与 hash 与基线一致，原 kwargs 不被就地修改。该改动属于后端选项契约收紧（安全加固类），防止用户自定义 BiSheng 编译参数导致不一致或注入问题。风险较低，但需注意 init=False 后 NPUOptions 的序列化/哈希/JSON cache 路径是否仍能正确携带该字段（测试已断言 hash 一致）。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "low-risk",
+        "backend"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "该 commit 已自带新增测试（test_legacy_bisheng_options_launch_uses_backend_defaults），覆盖 legacy 关键字告警、默认值等价与 hash 一致性；测试变更已随代码提交，因此现有测试已足以看护该改动，仅需确认该测试在 NPUOptions 序列化路径上仍能覆盖。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler.py"
+        ]
+      },
+      "message": "[compiler](fix) make bisheng_options backend-managed (#2523)"
+    },
+    {
+      "sha": "d0b18b1093594e23d7e63e3e807badc3d4a6e6a2",
+      "comment": "修正 DynamicCVPipeline 中判定是否可应用动态 CV pipeline 的跨核流量统计。原 isMainLoopOnlyCopyOrFixpipe 通过 isa<hivm::FixpipeOp> 统计所有 fixpipe，但只有目的地址位于 UB（统一缓冲）的 fixpipe 才会真正到达 vector core 形成跨核流量，dest 在 L1/cbuf 的 fixpipe 仍留在 CUBE 核内。新增 isFixpipeToUB 辅助函数，通过 dyn_cast<MemRefType> 取 dst 的 memory space 并 dyn_cast_or_null<hivm::AddressSpaceAttr> 判断是否为 hivm::AddressSpace::UB，将统计条件改为 isFixpipeToUB(innerOp)。配套修改两个 pytest（test_pcb03/test_pcb04）中 tc01/tc02 的断言，从断言 MLIR 含 'scope' 改为断言不含 'scope'，因为这些 cube chain 经 L1 中转只构成 V->C 单向交互，属于回退场景，与 sdf10 等一致。改动使 pipeline 判定更贴近真实跨核语义，避免误启用动态 CV pipeline。风险中等，因为该判定直接影响 pipeline 启用与回退路径，涉及 C++ pass 且无新增单测，仅靠两个已有 pytest 的断言反转来固化行为。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "codegen"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "已有两个 DynamicCVPipeline pytest 的断言被反转（含 scope -> 不含 scope），与代码逻辑同批提交，属于测试预期修正；但未新增针对 isFixpipeToUB 地址空间判定（非 UB 的 fixpipe 不应计数）的直接单元测试，边界场景的看护依赖现有用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/test_pcb03_mlir_cube_chain_c2c_independent_vector.py",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/test_pcb04_mlir_cube_chain_c2c_vector_chain_v2v.py",
+          "third_party/ascend/lib/DynamicCVPipeline/AnalyzeDataFlow/AnalyzeScope.cpp"
+        ]
+      },
+      "message": "[ssbuffer](fix) count only a fixpipe to UB as cross-core traffic (#2522)\n\nisMainLoopOnlyCopyOrFixpipe counted every hivm.hir.fixpipe, but only one whose\ndestination is UB reaches the vector core.\n\nCo-authored-by: CrDem <147323633+CrDem@users.noreply.github.com>"
+    },
+    {
+      "sha": "1367dee488e0f42d428515cabe6b3994fe270ddb",
+      "comment": "为 ssbuffer 的 start/end sync 插入点增加调整机制。变更包括：Common/Utils.h 新增 kLoopId = \"ssbuffer.loop_id\" 字符串常量；InterCoreTransferAndSync.h 新增 loopInclusions（loopId -> LoopLikeOpInterface 列表）与 singleLoopSet 成员及 analyzeLoopInclusion / moveStartEndSync 声明；InterCoreTransferAndSync.cpp 增加 attachLoopIdTag、hasStartEndSyncWhitelistKernel（白名单 '_swa_bwd_dq_kernel'）以及两个核心函数——analyzeLoopInclusion 以 PreOrder 遍历为每个 LoopLikeOpInterface 计算其嵌套深度作为 loopId 并打 tag，记录各 loopId 的归属及 maxLoopId，随后计算 singleLoopSet（某 loopId 及其所有外层 loopId 均只含唯一 loop 的链）；moveStartEndSync 收集带 kLoopId 的 SyncBlockSetOp/SyncBlockWaitOp，在 singleLoopSet 中的将其克隆到最外层 loop 之前/之后并删除原 op（set 顺序克隆、wait 逆序克隆以保持相对顺序）。processDependencies 中在 whitelist kernel 命中时先 analyzeLoopInclusion，最后调 moveStartEndSync。RemoveAttributes.cpp 将 kLoopId 加入待移除属性列表，避免标记泄漏到后续 pass。该改动针对特定 kernel 的 sync 提升，实现上是通用机制但触发白名单硬编码，风险中等：loopId 计算基于 parent 链长度，moveStartEndSync 依赖 loopInclusions[0] 存在且非空，若外层 loop 结构复杂或 loop 嵌套不满足 singleLoopSet 条件会静默跳过，且 op 克隆/删除仅搬移 sync set/wait 而不同步搬移其关联寄存/依赖数据，需确认提升后语义仍正确。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "codegen"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "引入了新的 sync 提升逻辑（loop_id 标记、analyzeLoopInclusion 单链判定、moveStartEndSync 克隆搬运）以及白名单 kernel 触发路径，但 commit 未新增任何测试。该逻辑依赖 '_swa_bwd_dq_kernel' 白名单，现有 DynamicCVPipeline_ut 中的用例未必命中，需评估并补充针对 sync 提升前后 IR 结构的测试，以及 RemoveAttributes 对 kLoopId 的清理验证。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/",
+          "third_party/ascend/lib/DynamicCVPipeline/SplitDataflow/InterCoreTransferAndSync.cpp",
+          "third_party/ascend/lib/DynamicCVPipeline/RemoveAttributes.cpp",
+          "third_party/ascend/include/DynamicCVPipeline/Common/Utils.h"
+        ]
+      },
+      "message": "[ssbuffer](fix) start & end sync op insert point (#2513)"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

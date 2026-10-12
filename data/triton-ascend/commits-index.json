@@ -1,4 +1,16 @@
 {
+  "e6d75162c4b75d6d22638f8eb33bb8dc3fb3cb50": {
+    "date": "2026-10-12",
+    "msg": "[compiler](fix) make bisheng_options backend-managed (#2523)"
+  },
+  "d0b18b1093594e23d7e63e3e807badc3d4a6e6a2": {
+    "date": "2026-10-12",
+    "msg": "[ssbuffer](fix) count only a fixpipe to UB as cross-core traffic (#2522)"
+  },
+  "1367dee488e0f42d428515cabe6b3994fe270ddb": {
+    "date": "2026-10-12",
+    "msg": "[ssbuffer](fix) start & end sync op insert point (#2513)"
+  },
   "533c9056f0c11c6f7af95d369efe6283b8b60491": {
     "date": "2026-10-10",
     "msg": "update installation_guide.md (#2507)"

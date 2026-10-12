@@ -1,4 +1,12 @@
 {
+  "a98500f77a3e0fb848fec350e1043c978e21d396": {
+    "date": "2026-10-12",
+    "msg": "[FRONTEND] Fix tl.arange rejecting a negative start (#11044)"
+  },
+  "b575c0c38d428a609e25487db64051a5fa7bfab8": {
+    "date": "2026-10-12",
+    "msg": "[AMD] MFMA scheduler: run on gfx942, with a CDNA3 LDS model (#12229)"
+  },
   "9fbab754d1341f715bdd4218e480afd38af443c9": {
     "date": "2026-10-11",
     "msg": "[AMD] Remove the ScalarizePackedFOps LLVM pass (#12218)"
