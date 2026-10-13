@@ -1,4 +1,32 @@
 {
+  "4ee1a827440d453ca276ded4219190d5e7346b8b": {
+    "date": "2026-10-13",
+    "msg": "[LANGUAGE] Use two-pass argmin and argmax reductions (#12046)"
+  },
+  "872c90a6a0574fc30071885186d64c725c1c3ea7": {
+    "date": "2026-10-13",
+    "msg": "[AMD] Exchange buffer atomic xchg values as integers (#11904)"
+  },
+  "41846bc965e51306d574f0dab721039f97f24996": {
+    "date": "2026-10-13",
+    "msg": "[TOOLS] Match AOT float scalars to ABI widths (#11882)"
+  },
+  "53293f9784334b4574c3a95471bf8200a8e63d4c": {
+    "date": "2026-10-13",
+    "msg": "[FPSan] Support cmpf payload semantics (#12070)"
+  },
+  "718c396c3a9a06661828da5aea79e09af0a64e11": {
+    "date": "2026-10-13",
+    "msg": "[FPSan] Support absf payload semantics (#12075)"
+  },
+  "15164f01c5641544a09ab428fade18ceb62b39da": {
+    "date": "2026-10-13",
+    "msg": "[INTERPRETER] Fix tuple reductions over all axes (#12207)"
+  },
+  "f52500347373a69e938b17baa059538d02af1116": {
+    "date": "2026-10-13",
+    "msg": "[LLVM] Build LLVM with NVPTX fptrunc.round support (#12214)"
+  },
   "a98500f77a3e0fb848fec350e1043c978e21d396": {
     "date": "2026-10-12",
     "msg": "[FRONTEND] Fix tl.arange rejecting a negative start (#11044)"

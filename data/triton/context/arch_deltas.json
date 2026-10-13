@@ -855,6 +855,30 @@
       "interface_changes": "运行时接口整理：在 python/triton/backends/driver.py 中引入 TensorDescABI 枚举（DECOMPOSED=None / CUDA_TMA='nvTmaDesc' / HIP_TDM='tensordesc'），将原先靠 has_tensordesc_meta 布尔 + descriptor_type 字符串双重参数驱动的 _expand_descriptor 改为按 ABI 枚举分支；新增 driver 无关的 get_kernel_argument_layout(signature, tensordesc_abi)，基于 find_paths_if + get_iterable_path 返回 (source_path, parameter_type) 对的列表，支持嵌套 tuple signature 与 tensor descriptor 展开、跳过 constexpr 叶子、排除 launcher 追加的 scratch 参数。CUDA (CudaLauncher) 与 HIP (HIPLauncher) 两个 launcher 删除",
       "change_summary": "[Runtime] Expose kernel argument layout (#12158)",
       "ascend_impact": false
+    },
+    "4ee1a827440d453ca276ded4219190d5e7346b8b": {
+      "date": "2026-10-13",
+      "affected_modules": [
+        "python/triton/runtime/interpreter.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/runtime/interpreter.py"
+      ],
+      "interface_changes": "重构 tl.min/tl.max 的 return_indices 归约实现，改为两阶段：先用原生 _elementwise_max/min_ignore_nan 或 _elementwise_max/min_propagate_nan 归约极值（新增 propagate_nan 参数，默认 PropagateNan.NONE，用 static_assert 校验必须是 PropagateNan 枚举值），再用 _argminmax_index 通过「匹配掩码 + 最小索引归约」定位最左匹配下标，从而统一支持 tie_break_left 两种模式（最左匹配对 tie_break_left=True/False 均有效）。移除了 python/triton/language/core.py 中的 _reduce_with_indices 内建函数，删除 standard.py 中的 _argmax_combine/_argmin_combine 系列成对归约函数，all/any 改用 renamed 的 _elementwise_min/max_ignore_nan。interpret",
+      "change_summary": "[LANGUAGE] Use two-pass argmin and argmax reductions (#12046)",
+      "ascend_impact": true
+    },
+    "15164f01c5641544a09ab428fade18ceb62b39da": {
+      "date": "2026-10-13",
+      "affected_modules": [
+        "python/triton/runtime/interpreter.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/runtime/interpreter.py"
+      ],
+      "interface_changes": "修复解释器中 tuple 归约在全轴（axis=None）多输入情况下的 bug。原 ReduceOps.unravel 在遍历 input 时对第一个输入 flatten 并设置 axis=0，但后续输入仍是原 shape，导致 generic reducer 用同一 index 读取形状不同的数据而抛 ValueError。修复后先对每个输入 flatten 再统一返回 axis=0，并用 original_ndim（扁平化前首输入的 rank）替代 len(input_shape) 来恢复 keep_dims=True 时的输出形状。test_core.py 的 test_generic_reduction 参数化为 1-D 显式轴、2-D 全轴、3-D 全轴+keep_dims 三种情况，验证 Welford mean/variance 与 tuple/单值 sum。修改 python/triton/runtime/interpreter.py，命中必然影响路径。",
+      "change_summary": "[INTERPRETER] Fix tuple reductions over all axes (#12207)",
+      "ascend_impact": true
     }
   }
 }

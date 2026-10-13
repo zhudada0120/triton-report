@@ -1,0 +1,185 @@
+{
+  "date": "2026-10-13",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-14T06:02:34.780496+08:00",
+  "daily_summary": "本日变更集中在 Triton 语言前端 min/max/argmin/argmax 归约算法重构（改为两阶段：先原生 min/max 归约求值，再最小索引归约定位下标，并新增 propagate_nan 参数）、FPSan 浮点消毒器对比较（cmpf）和绝对值（absf）的 payload 语义支持、以及若干工具与后端修复（AMD fp64/f16 buffer atomic swap 以整数宽度交换、AOT 启动器浮点标量 ABI 宽度对齐、解释器 tuple 归约全轴修复、LLVM 构建升级以支持 NVPTX fptrunc.round）。整体方向是提升语言语义一致性与 sanitizer 覆盖度、修复后端/工具链的具体代码生成缺陷。",
+  "ascend_impact_summary": "本日有 3 个 commit 会直接影响 triton-ascend：(1) argmin/argmax 两阶段重构移除 core.py 的 _reduce_with_indices 并改写 standard.py 的 min/max、新增 propagate_nan 参数，命中必然影响路径 python/triton/language/；(2) 解释器 tuple 归约全轴修复修改 python/triton/runtime/interpreter.py 的 ReduceOps.unravel/generic_reduce，命中必然影响路径，AscendInterpreterBuilder/AscendReduceOps 需同步验证；(3) AOT 浮点标量 ABI 宽度对齐修改 third_party/nvidia 与 third_party/amd 的 driver.py ty_to_cpp（属绝不影哬路径），但同一目录树下的测试结构可能被 Ascend 复用参考，实际不影响 Ascend 后端。其余 FPSan（TritonInstrument 专属，Ascend 不使用）与 LLVM 构建（CI/构建基础设施）不影响 Ascend。argmin/argmax 重构与解释器修复可能需要 Ascend 更新其前端/interpreter 测试。",
+  "commits": [
+    {
+      "sha": "4ee1a827440d453ca276ded4219190d5e7346b8b",
+      "comment": "重构 tl.min/tl.max 的 return_indices 归约实现，改为两阶段：先用原生 _elementwise_max/min_ignore_nan 或 _elementwise_max/min_propagate_nan 归约极值（新增 propagate_nan 参数，默认 PropagateNan.NONE，用 static_assert 校验必须是 PropagateNan 枚举值），再用 _argminmax_index 通过「匹配掩码 + 最小索引归约」定位最左匹配下标，从而统一支持 tie_break_left 两种模式（最左匹配对 tie_break_left=True/False 均有效）。移除了 python/triton/language/core.py 中的 _reduce_with_indices 内建函数，删除 standard.py 中的 _argmax_combine/_argmin_combine 系列成对归约函数，all/any 改用 renamed 的 _elementwise_min/max_ignore_nan。interpreter.py 相应简化 min_max 接口，删除 argmin/argmax 的成对归约特例并映射到 np.nanmax/np.max 等。注释指出「Reduce matching indices with min to enable native redux instructions」。权衡：列方向短归约在部分 shape 上有 4%-10% 回退（benchmark 表中 0.91-1.32×）。风险：_reduce_with_indices 被解释器和可能的第三方后端/自定义 combine 引用，删除会破坏向后兼容；新增 propagate_nan 参数改变了 min/max 的签名，第三方的 monkey-patch 需要同步。",
+      "tags": [
+        "refactor",
+        "performance",
+        "feature",
+        "medium-risk",
+        "language"
+      ],
+      "ascend_impact": {
+        "ascend_affected": true,
+        "functionality": "python/triton/language/core.py 中 _reduce_with_indices 内建函数被删除；python/triton/language/standard.py 的 tl.min/tl.max 签名新增 propagate_nan 参数、内部实现改为两阶段（极值归约 + 最小索引归约），并重命名 _elementwise_max/_elementwise_min → _elementwise_max_ignore_nan/_elementwise_min_ignore_nan，新增 _elementwise_max/min_propagate_nan 和 _argminmax_index。triton-ascend 若在 third_party/ascend/language 或 patch 中引用 _reduce_with_indices/_argmax_combine/_argmin_combine 会直接编译失败；Ascend 的 TritonSemantic.dot monkey-patch 不受影响，但若 Ascend 覆写了 standard.py 相关函数需同步 propagate_nan 语义。TritonToLinalg 转换链的输入 TTIR 形态会因两阶段实现而变化（新引入 _argminmax_index、_elementwise_*_ignore_nan/propagate_nan 等函数调用），可能影响 Ascend 的 lowering 对 reduce 模式识别。",
+        "testing": "python/triton/runtime/interpreter.py 的 ReduceOps.min_max/apply_impl 适配了新的 _elementwise_* 函数指针匹配，AscendInterpreterBuilder/AscendReduceOps 需要跟随；新增的 test_standard.py 测试（argmin/argmax、propagate_nan、tie_break_left、special values）与 test_frontend.py 的 propagate_nan 类型校验测试是通用测试，Ascend 端可复用但需在 NPU 上验证。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/ (argmin/argmax、min/max propagate_nan 语义端到端测试)",
+          "third_party/ascend/backend/ascend_interpreter.py (AscendInterpreterBuilder/AscendReduceOps 与新的 _elementwise_* 函数一致性)",
+          "python/test/unit/language/test_standard.py 与 test_frontend.py (NPU 平台回归)"
+        ]
+      },
+      "message": "[LANGUAGE] Use two-pass argmin and argmax reductions (#12046)\n\nReduce the extremum with native min/max, then find the leftmost matching\nindex. Use this path for both tie modes, support configurable NaN\npropagation, and remove the paired-reduction interpreter special cases.\nBased on #9840.\n\n### GB300 benchmarks\n\nDefault `argmax`, finite row-major 2D inputs with ties, 256–2048\n**total** elements, one CTA, four warps. Speedup = main / PR latency;\nbelow 1 is slower. Baseline: main `a34c2ab7c970` (same `standard.py` as\n`23b7630da4be`). Both Python implementations use the same installed\nTriton 3.8.0 compiler. Medians of 12 paired CUDA-graph rounds, 512\nlaunches each.\n\n| Shape | Axis | FP32 | int32 | int64 |\n|---|---:|---:|---:|---:|\n| 4×64 | 0 | 0.92× | 0.94× | 0.93× |\n| 4×64 | 1 | 1.08× | 1.08× | 1.07× |\n| 16×16 | 0 | 0.95× | 0.94× | 0.95× |\n| 16×16 | 1 | 0.97× | 0.97× | 0.96× |\n| 4×128 | 0 | 0.95× | 0.96× | 0.95× |\n| 4×128 | 1 | 1.06× | 1.07× | 1.06× |\n| 16×32 | 0 | 0.94× | 0.95× | 0.93× |\n| 16×32 | 1 | 0.97× | 0.98× | 0.99× |\n| 4×256 | 0 | 0.93× | 0.94× | 0.98× |\n| 4×256 | 1 | 1.05× | 1.06× | 1.06× |\n| 32×32 | 0 | 0.94× | 0.95× | 0.94× |\n| 32×32 | 1 | 0.96× | 0.98× | 0.97× |\n| 4×512 | 0 | 0.96× | 0.98× | 0.98× |\n| 4×512 | 1 | 1.04× | 1.08× | 1.27× |\n| 32×64 | 0 | 0.92× | 0.94× | 1.00× |\n| 32×64 | 1 | 1.03× | 1.05× | 1.32× |\n\nThe full argmin/argmax sweep with both tie modes spans **0.91–1.32×**:\nshort column reductions still regress, by up to 10%. Identical-code\ncontrol noise was <0.6%; no spills.\n\nValidation: all 192 benchmark cases correct; 878 language + 20 Gluon GPU\ntests passed; 790 interpreter tests passed (88 BF16 skips).\n\n---------\n\nCo-authored-by: jeshd <chengmaofan@huawei.com>",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/runtime/interpreter.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": true,
+        "affected_interfaces": [
+          "third_party/ascend/backend/ascend_interpreter.py::AscendReduceOps.apply_impl (references removed tl.standard._argmin_combine_tie_break_left / _argmax_combine_tie_break_left and renamed _elementwise_max / _elementwise_min, and calls ReduceOps.min_max with the removed (input, val_reduce_op, idx_reduce_op) signature)",
+          "python/triton/runtime/interpreter.py::ReduceOps.min_max (base-class signature changed from (self, input, val_reduce_op, idx_reduce_op=None) to (self, input, reduce_op); AscendReduceOps inherits it)",
+          "python/triton/runtime/interpreter.py::ReduceOps.apply_impl (base-class dispatch now keys on new _elementwise_{max,min}_{ignore,propagate}_nan; AscendReduceOps overrides apply_impl with the old key set)",
+          "third_party/ascend/include/TritonToLinalg/ArgMinMaxConverter.h::ArgMinMaxBaseConverter (OpConversionPattern<triton::ReduceOp> matching the 4-argument paired (value,index) reduce body that _reduce_with_indices used to emit)",
+          "third_party/ascend/lib/TritonToLinalg/ArgMinMaxConverter.cpp::ArgMin/ArgMaxConverter::matchComparisonResult and FoldOneHotGatherAfterReduceWithIndex (tie-break cmp/select IR pattern and reduce_mode='max_with_index'/'min_with_index' folding no longer match the two-pass IR)",
+          "third_party/ascend/lib/Utils/Utils.cpp / include/Utils/Utils.h::getReduceWithIndexParams / addReduceWithIndexAttr / TieBreakType / reduce_mode attribute (predicate-based paired-reduce detection is now dead for the new frontend)",
+          "third_party/ascend/patch/triton-ascend-3.6.0.patch::python/triton/language/standard.py hunk (max/min hunk context references _elementwise_max, _promote_bfloat16_to_float32 and the pre-two-pass signature; patch will fail to apply / produce stale semantics)"
+        ],
+        "adaptation_effort": "high",
+        "adaptation_guide": "This commit rewrites tl.min/tl.max return_indices (and argmax/argmin) from a single paired reduction to a two-pass scheme, which breaks three Ascend surfaces. (1) Interpreter: in third_party/ascend/backend/ascend_interpreter.py::AscendReduceOps.apply_impl (lines 44-60), replace the removed `tl.standard._argmin_combine_tie_break_left` / `_argmax_combine_tie_break_left` references and the renamed `_elementwise_max`/`_elementwise_min` with the new `_elementwise_{max,min}_ignore_nan` / `_elementwise_{max,min}_propagate_nan` names, and stop calling `self.min_max(input_param[0], val_reduce_op=..., idx_reduce_op=...)`; the base ReduceOps.min_max now has signature `min_max(self, input, reduce_op)` and takes a single numpy reduce fn (np.nanmax/np.max/np.nanmin/np.min). Since the interpreter no longer emits paired (value,index) reductions for argmin/argmax (the index is now computed separately via _argminmax_index), AscendReduceOps should simply dispatch on the renamed _elementwise_* combine fns and delete the arg-index special cases. (2) C++ lowering: the TritonToLinalg ArgMinMaxConverter (include/ and lib/ ArgMinMaxConverter.{h,cpp}) matches a tt.reduce with a 4-argument block (currValue,currIndex,reduceValue,reduceIndex) plus the OEQ/and/slt->or->select tie-break chain; the new frontend emits two single-value tt.reduce ops (extremum via _elementwise_{max,min}_{ignore,propagate}_nan, then an integer min-reduce over where(matches, arange, 0x7fffffff) in _argminmax_index) plus the ==/!= matching logic, so the pattern no longer matches and argmin/argmax silently falls back to the generic reduce path (correctness may survive but the specialized max_with_index/min_with_index linalg lowering, the reduce_mode attribute in getReduceWithIndexParams/addReduceWithIndexAttr, and the FoldOneHotGatherAfterReduceWithIndex top-k/MoE optimization are all dead). The converter must be rewritten to recognize the new two-pass TTIR (match the extremum reduce + the mask/arange/where + min-reduce index computation) and re-express it as the efficient linalg reduce-with-index, or the argmin/argmax and top2gating paths must be re-benchmarked under the generic path. (3) Patch maintenance: rebase the standard.py hunk in third_party/ascend/patch/triton-ascend-3.6.0.patch; it currently anchors on `_elementwise_max`, `input = core._promote_bfloat16_to_float32(input)`, and the old `max/min(input, axis, return_indices, return_indices_tie_break_left, keep_dims)` signature, all of which this commit removes/renames, so the release patch will no longer apply cleanly. Also update Ascend pytest coverage (test_argmax.py, test_argmin.py, test_top2gating_argmax.py, test_unlign_max_with_index.py, test_reduce_min_4_keepdim_True_with_index_op.py) to verify the two-pass path still lowers to the intended max_with_index/min_with_index linalg form on NPU.",
+        "risk": "high"
+      }
+    },
+    {
+      "sha": "872c90a6a0574fc30071885186d64c725c1c3ea7",
+      "comment": "修复 tl.atomic_xchg 在 AMD gfx942/gfx950/gfx1250 上对 fp64 编译失败的问题（AMDGPU 后端只 select i32/i64/f32 buffer swap）。在 BufferOpsEmitter::emitAtomicRMW 中当 rmwType==XCHG 时将 bufferType 改为与向量总位宽相同的整数类型（如 f64→i64、v2f16→i32），依靠 bitcast 保证 swap 只搬位不转换值；同时无符号扩展支持 packed v2f16/v2bf16 交换。python/src/interpreter.cc 的 RMWOp::XCHG 宏扩展支持 float/double。新增 lit 测试（f64/f32/v2f16 swap）与 test_tensor_atomic_xchg 端到端测试，覆盖 -0.0/inf/NaN payload/denormal 等特殊位模式。改动局限在 AMD 后端与解释器绑定，属平台特定代码。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "amd",
+        "interpreter"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更文件 python/src/interpreter.cc（RMWOp::XCHG 宏扩展）、test/Conversion/amd/buffer_load_store.mlir、third_party/amd/lib/TritonAMDGPUToLLVM/BufferOpsEmitter.cpp 均属 AMD 专属或解释器通用绑定但因只扩展 XCHG 类型枚举，不影响 Ascend 的 NPU 后端（Ascend 不使用 buffer atomic；RMWOp::XCHG 扩展也不改变既有 int 分支语义）。",
+        "testing": "无影响。新增测试为 AMD buffer ops lit 测试与通用 test_tensor_atomic_xchg，Ascend 无需同步。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Exchange buffer atomic xchg values as integers (#11904)\n\ntl.atomic_xchg on fp64 aborted compilation on gfx942, gfx950 and gfx1250\n(\"Cannot select: ... AMDGPUISD::BUFFER_ATOMIC_SWAP\"): ConvertToBufferOps\nturns it into a buffer atomic, and the AMDGPU backend only selects i32,\ni64 and f32 buffer swaps. A swap only moves bits, so emit it on a scalar\ninteger of the full value width and bitcast around it. This also covers\npacked v2f16/v2bf16 exchanges, which would otherwise become unselectable\nv2i16 swaps.\n\nAdd lit tests for f64, f32 and v2f16 swaps, and test_tensor_atomic_xchg.\nThe test exchanges random bit patterns plus -0.0, infinities, NaN\npayloads and a denormal, then compares bits. On AMD it also checks that\nthe buffer swap path is used."
+    },
+    {
+      "sha": "41846bc965e51306d574f0dab721039f97f24996",
+      "comment": "修复 AOT 编译的启动器浮点标量参数存储宽度与 kernel ABI 不匹配的问题。将 third_party/amd/backend/driver.py 与 third_party/nvidia/backend/driver.py 的 ty_to_cpp 中 fp16/bf16 映射从 double 改为 uint16_t、fp32/f32 从 double 改为 float、fp64 保持 double（16-bit 类型无便携 C 标量，需以原始位模式传入）。新增 test_aot.py 的 build_test_bin 辅助函数和 test_compile_link_scalar_float 测试，用 fp16/bf16 位模式 0x4000、fp32 的 2.0f、fp64 的 2.0 生成 C 测试二进制并校验启动器行为。改动仅涉及 NVIDIA/AMD 后端 driver.py 的 ty_to_cpp 映射与 AOT 工具测试，平台特定。风险较低但影响 ABI：任何复用 ty_to_cpp 的后端需注意 16-bit 类型改为按位模式传入。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "aot",
+        "nvidia",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更文件 third_party/nvidia/backend/driver.py、third_party/amd/backend/driver.py 与 python/test/unit/tools/test_aot.py 属绝不影哬路径（NVIDIA/AMD 后端专属 ty_to_cpp 映射）。Ascend 的 NPUDriver.map_python_to_cpp_type 有独立映射，不受影响。",
+        "testing": "无影响。新增 AOT 测试为 NVIDIA/AMD 平台专属，Ascend 无需同步（如后续 Ascend 也实现 AOT 编译，可参考此 ABI 对齐思路，不属本 commit 传导）。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TOOLS] Match AOT float scalars to ABI widths (#11882)\n\nMap fp32 and f32 to C float, and map fp16 and bf16 to uint16_t. The\n16-bit types have no portable C scalar representation, so callers\nprovide their raw bit patterns. Keep fp64 as double.\n\nThe generated launcher now stores each scalar in an object whose width\nmatches the kernel parameter copied by the driver."
+    },
+    {
+      "sha": "53293f9784334b4574c3a95471bf8200a8e63d4c",
+      "comment": "扩展 FPSan（浮点消毒器）支持 cmpf 比较操作的 payload 语义。在 lib/Dialect/TritonInstrument/Transforms/FpSanitizer.cpp 新增 CmpFOpPattern：将 arith.cmpf 的 OEQ/UEQ→CmpIPredicate::eq、ONE/UNE→ne、OLT/ULT→slt、OLE/ULE→sle、OGT/UGT→sgt、OGE/UGE→sge；ORD→常量 true、UNO→常量 false、AlwaysTrue/AlwaysFalse 处理为常量。通过 embedToInt 把两侧浮点转成有符号整数 payload 后比较，使比较与 FPSan 的 min/max 语义一致（NaN carrier 也参与有序比较）。关键点是在常量折叠之前应用该 pattern 以保留 NaN payload（用 walkAndApplyPatterns）。文档补充 Comparisons 章节，gluon test_fpsan.py 新增 test_cmpf_payload_semantics，test/TritonGPU/fpsan.mlir 新增 cmpf/cmpf_ordering/cmpf_nan_constant 测试。属 TritonInstrument 方言专属路径。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "fpsan",
+        "sanitizer"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更文件 docs/programming-guide/chapter-3/fpsan.rst、lib/Dialect/TritonInstrument/Transforms/FpSanitizer.cpp、python/test/gluon/test_fpsan.py、test/TritonGPU/fpsan.mlir 均属 FPSan（TritonInstrument 方言）与 Gluon 专属路径，Ascend 不加载 TritonInstrument 也不编译到 TTGIR/走 TritonGPUToLLVM，本路径完全跳过。",
+        "testing": "无影响。新增测试为 Gluon/fpsan lit 与 GPU 测试，Ascend 无需同步。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[FPSan] Support cmpf payload semantics (#12070)\n\nCompare signed integer payloads so comparisons agree with FPSan min/max,\nincluding NaN carriers. Rewrite before constant folding, and add\ndocumentation and tests."
+    },
+    {
+      "sha": "718c396c3a9a06661828da5aea79e09af0a64e11",
+      "comment": "扩展 FPSan 支持 absf（绝对值）的 payload 语义。在 FpSanitizer.cpp 新增 AbsFOpPattern：对 embed 后的整数执行 math::AbsIOp，再用掩码 (1<<(width-1))-1 与运算，将 INT_MIN（负数零的 payload）映射到零，保留 NaN 位。保留属性包括 abs(x)=abs(-x)、abs(abs(x))=abs(x)、embed(abs(x))>=0。文档补充 Absolute Value 章节，gluon test_fpsan.py 新增 test_absf_payload_semantics，test/TritonGPU/fpsan.mlir 新增 absf 测试，nvidia-fpsan.mlir 的 tmem_load_reduce 测试因 absf 现在降级为 absi+andi 而更新 CHECK。属 TritonInstrument 方言专属路径。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "fpsan",
+        "sanitizer"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更文件 docs/programming-guide/chapter-3/fpsan.rst、lib/Dialect/TritonInstrument/Transforms/FpSanitizer.cpp、python/test/gluon/test_fpsan.py、test/TritonGPU/fpsan.mlir、test/TritonGPU/nvidia-fpsan.mlir 均属 FPSan（TritonInstrument 方言）/Gluon/NVIDIA 专属路径，Ascend 不使用。",
+        "testing": "无影响。新增测试为 Gluon/fpsan lit 与 GPU 测试，Ascend 无需同步。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[FPSan] Support absf payload semantics (#12075)\n\nUse integer payload abs to preserve NaN bits and map negative zero to\npositive zero. Add documentation and tests."
+    },
+    {
+      "sha": "15164f01c5641544a09ab428fade18ceb62b39da",
+      "comment": "修复解释器中 tuple 归约在全轴（axis=None）多输入情况下的 bug。原 ReduceOps.unravel 在遍历 input 时对第一个输入 flatten 并设置 axis=0，但后续输入仍是原 shape，导致 generic reducer 用同一 index 读取形状不同的数据而抛 ValueError。修复后先对每个输入 flatten 再统一返回 axis=0，并用 original_ndim（扁平化前首输入的 rank）替代 len(input_shape) 来恢复 keep_dims=True 时的输出形状。test_core.py 的 test_generic_reduction 参数化为 1-D 显式轴、2-D 全轴、3-D 全轴+keep_dims 三种情况，验证 Welford mean/variance 与 tuple/单值 sum。修改 python/triton/runtime/interpreter.py，命中必然影响路径。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "interpreter"
+      ],
+      "ascend_impact": {
+        "ascend_affected": true,
+        "functionality": "python/triton/runtime/interpreter.py 的 ReduceOps.unravel 与 generic_reduce 被修改：unravel 现在在 axis=None 时对所有输入统一 flatten 并返回 axis=0，generic_reduce 用 original_ndim 替代 len(input_shape) 恢复 keep_dims 输出形状。triton-ascend 的 AscendInterpreterBuilder/AscendReduceOps（third_party/ascend/backend/ascend_interpreter.py）若继承或复用了 ReduceOps.unravel/generic_reduce（如 AscendReduceOps 重写了 generic_reduce 或调用 unravel），需同步该修复以保证 NPU 上 CPU 解释执行 tuple 全轴归约正确。若 Ascend 仅继承 ReduceScanOpInterface 而未复用该方法，则无直接影响。",
+        "testing": "python/test/unit/language/test_core.py 的 test_generic_reduction 现覆盖 1-D/2-D 全轴/3-D 全轴+keep_dims，Ascend 端若有对应解释器测试（third_party/ascend/unittest）需确认 tuple 全轴归约通过。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/backend/ascend_interpreter.py (AscendReduceOps 对 unravel/generic_reduce 的复用)",
+          "third_party/ascend/unittest/ (tuple 全轴归约、keep_dims=True 的解释执行回归)"
+        ]
+      },
+      "message": "[INTERPRETER] Fix tuple reductions over all axes (#12207)\n\n`tl.reduce((x, y), axis=None, combine_fn=...)` fails in the interpreter\nfor multidimensional inputs. `unravel` sets the shared axis to zero\nafter flattening the first input, leaving subsequent inputs at their\noriginal shape. The generic reducer then reads differently shaped inputs\nwith the same index and raises `ValueError`.\n\nFlatten every input before selecting axis zero, and preserve the\noriginal rank when restoring `keep_dims=True`.\n\nThe existing `test_generic_reduction` now has three cases: the original\n1-D explicit-axis control, a 2-D full reduction, and a 3-D full\nreduction with `keep_dims=True`. They compare Welford mean/variance and\ntuple/single sums against PyTorch. Removed the added runtime test,\nstatic assertions, and output-shape branching as requested during\nreview.\n\nValidation:\n- Focused Linux CPU A/B at this head: baseline **2 fail / 1 pass**,\npatched **3 pass**. Exact test/helper extraction with a CPU fixture.\n- Available native runtime is Triton 3.6.0. Both affected baseline\nmethods match the PR base byte-for-byte; only those two Python methods\nwere transferred to private package copies. This is not full\ncurrent-main or GPU qualification.\n- YAPF 0.43.0, focused Ruff, AST parsing and `git diff --check` pass. No\nGPU execution or compiler rebuild. Full-suite PASS is not claimed.\n\n# New contributor declaration\n- [x] This is a functional bug fix, not a trivial change.\n- [x] The description explains why the change is needed.\n- [ ] Complete `pre-commit run --from-ref origin/main --to-ref HEAD`\n(not run in the available environment).\n- [x] Added tests in `/python/test`.\n- [x] No new `lit` tests.\n\n---------\n\nSigned-off-by: Xucheng Zhou <aden1350@outlook.com>",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/runtime/interpreter.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": true,
+        "affected_interfaces": [
+          "python/triton/runtime/interpreter.py::ReduceOps.unravel",
+          "python/triton/runtime/interpreter.py::ReduceOps.generic_reduce",
+          "third_party/ascend/backend/ascend_interpreter.py::AscendReduceOps.generic_reduce"
+        ],
+        "adaptation_effort": "low",
+        "adaptation_guide": "AscendReduceOps (third_party/ascend/backend/ascend_interpreter.py:38) overrides `generic_reduce` (lines 71-127) with a stale copy of the upstream ReduceOps.generic_reduce to implement argmin/argmax local-index semantics, so it does NOT inherit the upstream fix; only `unravel` is inherited and its fix applies automatically. Two edits are needed in AscendReduceOps.generic_reduce to mirror commit 15164f01c564: (1) capture the pre-flatten rank before calling `self.unravel` — add `original_ndim = len(input[0].handle.data.shape)` right after `original_axis = self.axis` (before line 73's `input, axis = self.unravel(...)`), since `unravel` now flattens all inputs when axis is None and `input_shape` becomes the flattened 1-D shape; (2) in the keep_dims pack-output branch (lines 119-121), change `for _ in range(len(input_shape)):` to `for _ in range(original_ndim):` so full-reduction outputs with keep_dims=True are expanded back to the original rank (e.g. (1,1,1) for a 3-D input) instead of only a single leading axis. No changes are required to `unravel` or to `AscendScanOps`/`AscendInterpreterBuilder`.",
+        "risk": "low"
+      }
+    },
+    {
+      "sha": "f52500347373a69e938b17baa059538d02af1116",
+      "comment": "升级 LLVM 依赖到 llvm/llvm-project@18f9e623e4c8（从 triton-lang/llvm-project 切回 llvm/llvm-project），包含 NVPTX fptrunc.round 支持与 BF16/FP16 直接转换选择，为后续 llvm-info.json pin 更新和 NVIDIA FpToFpOp 集成做准备。同步修改 .github/workflows/llvm-build.yml：移除 pull_request 触发（PR 构建不发布 SDK），改为只在 main push 和 workflow_dispatch 触发；移除 workflow 自身变更触发重建包的逻辑，改按 changed manifests 与 AMD codegen 源选择包；BASE_SHA/HEAD_SHA 从 pull_request.base/head 回退到 github.event.before/sha；移除 Check LLVM Build Does Not Exist 步骤的 pull_request 条件。属构建/CI 基础设施变更，不影响任何后端编译链。",
+      "tags": [
+        "chore",
+        "ci",
+        "low-risk",
+        "build"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更文件 .github/workflows/llvm-build.yml（CI 工作流）与 cmake/llvm-build-info.json（LLVM commit pin）为构建/CI 基础设施，不改变任何后端编译链接口。Ascend 若自带 LLVM 依赖 pin（llvm_patch/llvm-info.json）也独立维护，不受此上游 CI 变更影响；但若 Ascend 复用上游 cmake/llvm-build-info.json 的 hash，需自行跟进（不属本 commit 强制传导）。",
+        "testing": "无影响。无测试变更。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[LLVM] Build LLVM with NVPTX fptrunc.round support (#12214)\n\nBuild\n[llvm/llvm-project@18f9e623e4c8](https://github.com/llvm/llvm-project/commit/18f9e623e4c891ba31ff817c07197707ac9bc593),\nwhich includes [NVPTX support for\n`llvm.fptrunc.round`](https://github.com/llvm/llvm-project/pull/223720)\nand direct BF16/FP16 conversion selection.\n\nRun the LLVM build workflow only on relevant pushes to `main` and manual\ndispatch. Pull-request builds do not publish SDKs to Azure, so remove\nthat trigger and its event-specific handling. Package selection follows\nthe changed manifests and AMD codegen sources; changing the workflow\nitself no longer requests rebuilding unchanged packages.\n\nThis prepares SDK artifacts for a subsequent `llvm-info.json` pin update\nand NVIDIA `FpToFpOp` integration. The consumer pin will be updated once\nthe packages are published by the post-merge LLVM build workflow.\n\nValidation: the original PR revision passed all eight LLVM SDK builds\nand integration CI. For the workflow update, YAML trigger validation,\nsix package-selection scenarios, `git diff --check`, and repository\npre-commit hooks passed."
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

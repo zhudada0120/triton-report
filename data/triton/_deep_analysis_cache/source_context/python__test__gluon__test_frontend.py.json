@@ -1,7 +1,7 @@
 {
-  "content_hash": "5e56e2b2bdc5a660",
+  "content_hash": "9503496e2ea1576d",
   "analysis": {
-    "interface_summary": "定义 5 个类；定义 375 个函数",
+    "interface_summary": "定义 5 个类；定义 378 个函数",
     "key_interfaces": [
       "Pair",
       "ForwardOnlyAggregate",
@@ -19,5 +19,5 @@
       "TensorTupleType.__add__"
     ]
   },
-  "cached_at": "2026-09-30T02:04:28.904105+08:00"
+  "cached_at": "2026-10-14T06:02:35.160780+08:00"
 }
