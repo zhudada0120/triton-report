@@ -1,0 +1,260 @@
+{
+  "date": "2026-10-14",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-15T05:03:12.037228+08:00",
+  "daily_summary": "当日变更以性能优化与后端适配为主：NVPTX 目标专属算术向量化（替换 SLP，Python/C++ 双向打通并新增 disable_lsr/sched4reg/maxnreg 编译控制）、NVFP4→MXFP8 行缩放吸收到量化阶段以保持数值等价、AMD CDNA5 符号重命名（gfx1250→CDNA5）与 MFMA/WMMA 指令选择重构、RDNA CU 模式下的 barrier lowering 放行、masked load 负零保持修复。同时包含若干构建/测试基础设施与文档级修复（LLVM SDK 关闭 LZMA、GSan TCPStore 端口竞态修复、MockTensor stride、 extern 参数计数报错修正）。整体方向是继续解耦平台特定优化、增强编译可调参数化，并以纯 NFC 重命名降低后续维护成本。",
+  "ascend_impact_summary": "当日对 triton-ascend 影响有限但有一处硬相关：commit 139ac39 修改 python/src/ir.cc 的 FuncOp 绑定接口（新增 get_arg_str_attr/get_arg_int_attr），命中 Ascend 的‘必然影响’路径（ir.cc 是 TritonOpBuilder 继承与绑定层），但仅新增方法不改签名，兼容性风险低；其余 NVPTX 向量化（新增 NVPTXVectorizerPass 与 llvm.cc 新增参数）、SLP 开关、AMD 全部 changes、kernels 数值改动、测试/CI/构建修复均不触及 Ascend 的编译链与运行时接口。triton-ascend 应关注 ir.cc 变更以避免后续 rebase 冲突，无需功能性适配，也无需新增测试。",
+  "commits": [
+    {
+      "sha": "139ac393c858b151b0869f34e7bc5cc56cadbef3",
+      "comment": "为 FuncOp 的 Python 绑定新增 get_arg_str_attr / get_arg_int_attr 两个访问器，通过 FunctionOpInterface::getArgAttr 读取函数参数属性（如 tt.divisibility），以 py::none() 表示缺失。改动仅在 python/src/ir.cc 中新增方法，未修改既有签名；同时清理了被注释掉的 attrs/add_attr 占位，并附带一个误提交的 VSCode workspace 文件 triton.0.code-workspace（与仓库无关，建议清理）。测试在 test_bindings.py 中补了一行调用。整体是低风险的工具性扩展，便于 Python 侧检查参数属性。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "python-bindings"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "python/src/ir.cc 属于 Ascend 的 TritonOpBuilder 继承与 ascendnpu_ir_builder 绑定所在文件，命中‘必然影响’路径。本次仅新增 get_arg_str_attr/get_arg_int_attr 两个 FuncOp 方法并删除注释，不改动 TritonOpBuilder 构造函数或 getI64ArrayAttr 等基础接口，因此 AscendNPUIROpBuilder 的继承与绑定不受破坏，无功能回归；但 patch 维护时需注意与 triton-ascend 的 ir.cc 改动可能产生 merge 冲突。",
+        "testing": "Ascend 侧不依赖这两个新访问器；其现有 IR 构建与前端测试无需变更即可通过。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Python] Add python accessors for funcArgAttrs (#12232)",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/src/ir.cc"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "884464667350ab1fff2e4cb7622efc0b718514e2",
+      "comment": "回滚此前为 FPSan 增加 cmpf payload 语义的支持。删除 FpSanitizer.cpp 中的 CmpFOpPattern（将 arith.cmpf 按有符号整型 payload 重写），并同步移除 docs/programming-guide/chapter-3/fpsan.rst 的 Comparisons 章节、python/test/gluon/test_fpsan.py 中 test_cmpf_payload_semantics 及 _binop_kernel 的比较分支、test/TritonGPU/fpsan.mlir 三个 cmpf 用例。原因是社区对该 payload 语义仍有讨论。回滚后 FPSan 对比较运算恢复原有（未经 rewrite）处理。风险是若依赖新语义的下游代码存在需同步回退，但仓库内仅 FPSan 相关路径。",
+      "tags": [
+        "refactor",
+        "low-risk",
+        "triton-instrument"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。FpSanitizer 属于 lib/Dialect/TritonInstrument/Transforms，走 FpSan 插桩路径，Ascend 不使用 TritonInstrument 的 FpSan/CmpF 重写，也未在 triton-ascend 中启用该 instrumentation 模式。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Revert \"[FPSan] Support cmpf payload semantics\" (#12292)\n\nreverting while we discuss this payload change"
+    },
+    {
+      "sha": "b41eba6a7aefd4670219f51ec075195979271be3",
+      "comment": "将 NVFP4 外层的行缩放（tensor_scale）提前吸收到 NVFP4→MXFP8 的 requantize 中，使 s*(Q(x)@W) 变为 Q(s*x)@W，避免 epilogue 中再做一次行缩放，从而消除相关 shared memory 临时空间。改动包括：nvfp4_to_mxfp8_tile 增加可选 tensor_scale 参数（把 scales *= tensor_scale[:,None]），_matmul/_p_matmul 引入 has_x_epilogue_scale 并在 REQUANTIZE_X 时加载 x_conversion_scale 传入，opt_flags 的 subtiles_to_check 过滤掉无法容纳完整量化组的 epilogue subtile，opt_flags_nvidia.compute_num_stages 改为只在非 requantize 情况下为 a_mx_tensor_scale 预留 epilogue smem，并新增测试 test_nvfp4_requantization_matches_mxfp8 及扩展 tile 测试。属于数值等价前提下的性能/显存优化，风险中等在于必须与显式转换路径 bitwise 一致（测试已给出 enforce_bitwise_invariance 校验）。",
+      "tags": [
+        "performance",
+        "medium-risk",
+        "triton-kernels",
+        "matmul"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动全部在 python/triton_kernels/ 的 matmul/numerics 实现与测试中，属于 Python 层的 kernel 逻辑与调优选项，与 triton-ascend 的后端编译链无耦合。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[KERNELS] Absorb NVFP4 row scales during MXFP8 conversion (#12285)\n\nApply NVFP4 row scales before MXFP8 quantization in both matmul kernels,\nmatching explicit conversion followed by MXFP8 × MXFP4 matmul. Update\nshared-memory accounting to exclude the removed row-scale epilogue\nscratch.\n\n```text\ns: outer row scale\nx: NVFP4 activations decoded with block scales, before applying s\nW: MXFP4 weight matrix\nQ: MXFP8 quantization\n\nBefore: s * (Q(x) @ W)\nAfter:  Q(s * x) @ W\n```\n\nTested on GB300, including exact parity for fused outputs; reduce the\nrelated matmul test matrix from 400 to 200 cases."
+    },
+    {
+      "sha": "3a230c2cf6da2150c969cfe0897499c352758520",
+      "comment": "纯 NFC 重构 AMD AccelerateAMDMatmul.cpp 的指令选择逻辑：将 chooseMfmaInstruction/chooseWmmaInstruction 的接口从依赖 cType/RankedTensorType 改为接受 retShape/aElemType/bElemType，把 mlirTypeToScaledElemType 从 FailureOr 改为返回 ScaleDotElemType（默认分支 llvm_unreachable），把 operand 类型选择的内联循环合入 chooseWmmaInstruction 并保留同样的 cost model，同时清理大量冗余的 LinearLayout 计算（aEncLL/bEncLL、order、standardOutDims 等）与重复代码。删除 BlockedToWMMA 的 nonKDim 参数并在各 ISAFamily 分支中统一用 isa 取值。属于代码整洁化，无行为变更；但改写指令选择入口时若稍有不慎会影响 MFMA/WMMA 语义，需依赖既有 lit 测试覆盖。",
+      "tags": [
+        "refactor",
+        "low-risk",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。third_party/amd/ 属于 ROCm 专属后端，与 Ascend 无耦合，仅作为多后端插件机制的另一示例。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] NFC: Simplify MFMA/WMMA instruction selection (#12230)"
+    },
+    {
+      "sha": "faafaf91de0bf424cf38133a9bdfbc4d8315a130",
+      "comment": "变更意图：把已有的编译器控制开关暴露到 triton_kernels 的公共 API 上，让调用方在不改动 kernel 算术语义的前提下调优。具体为：(1) topk_forward/topk 新增可选参数 disable_lsr（默认 None），仅在非 None 时以 kwargs 方式传给 _topk_forward 启动，从而对 CUDA forward kernel 覆盖 loop strength reduction；同时 TopK.autograd.Function.forward/backward 的参数列表与返回的梯度个数同步增加一个 None（保持 autograd 参数计数一致）。(2) reduce.py 的 OptFlags 数据类新增 maxnreg/sched4reg 两个 Optional 字段，_select_reduce_forward_config 从 _opt_flags_constraints ContextVar 中读出这两个键组成 launch_options 并透传到所有 OptFlags 构造点，reduce_forward 启动时再次用 walrus 表达式过滤 None 后才作为启动 kwargs 传入——确保未设置时不产生任何额外启动选项，也就不会把 CUDA 专有选项泄漏到其它后端。实现方式整体是防御性的条件 kwargs 构造，默认行为与改动前完全一致。潜在风险：低。需要注意的点是 TopK.forward/backward 与 topk() 的位置依赖参数顺序——forward 新增的 disable_lsr 加在末尾并于 backward 返回同样数量的 None，若后续再追加参数需同步更新两处；另外 _topk_forward 必须实际接受 disable_lsr 这个关键字（launch option），若未支持会在此处报错，但这属于该 PR 显式声明的既有控制项。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "kernels"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[KERNELS] Expose top-k and reduction compilation controls (#12282)\n\nExpose optional `disable_lsr` for top-k forward and\n`maxnreg`/`sched4reg` through the reduction optimization flags. These\nallow callers to tune the existing compiler controls without modifying\nkernel arithmetic. Unset options are omitted from launches, preserving\nthe current defaults and avoiding CUDA-specific options on other\nbackends.\n\nBased on current main, including #11478. Pre-commit checks and eight\nmanual CPU checks passed for default configuration, option forwarding,\nscoped overrides, and autograd argument counts. Those CPU checks use\nmocked GPU dispatch; GPU correctness and performance tests have not been\nrerun for this PR."
+    },
+    {
+      "sha": "55194a9b2c9fe1817be3813aa8fd4ab2bc17d0ba",
+      "comment": "把 gfx1250 相关符号统一重命名为 CDNA5：ISAFamily::GFX1250→CDNA5、isGFX1250()→isCDNA5()、is_hip_gfx1250→is_hip_cdna5、GFX1250MXScaleLayout→CDNA5MXScaleLayout、GFX1250_SCALE→CDNA5_SCALE、各种命名为 gfx1250 的 test 文件/FileCheck 前缀/注释一并更名，但保留 gfx1250-strict 相关的具体 arch 字符串与该变体名称。属大规模机械重命名（66 个文件），影响面广但语义不变。风险点是任何遗漏的引用（如测试 skip 标记、注释引用）会导致编译或测试不一致，但由于是纯改名，只要所有引用同步即可。",
+      "tags": [
+        "refactor",
+        "low-risk",
+        "amd",
+        "test"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更集中在 third_party/amd、include/triton/Dialect/TritonGPU/IR/TritonGPUAttrDefs.td 的注释、python/triton/_internal_testing.py、python/triton/language/target_info.py、python/triton_kernels 及大量 test/ 目录的 AMD 与通用测试辅助函数名。目标文件要么是 AMD 专属实现，要么是仅与 HIP 目标检测相关的测试辅助函数（is_hip_cdna5），Ascend 不使用这些 HIP 目标检测，也不走 TritonGPU 的 AMD 布局路径。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] NFC: Rename gfx1250 symbols and definitions to CDNA5 (#12279)\n\nRename the gfx1250 ISA family and related symbols to CDNA5:\n- `ISAFamily::GFX1250` -> `ISAFamily::CDNA5`, `isGFX1250()` ->\n  `isCDNA5()`\n- `is_hip_gfx1250` -> `is_hip_cdna5`\n- `GFX1250MXScaleLayout` -> `CDNA5MXScaleLayout`,\n  `GFX1250_SCALE` -> CDNA5_SCALE`\n- gfx1250-suffixed test files, FileCheck prefixes and comments\n\nThe gfx1250-strict variant keeps its name (`isGFX1250Strict`,\n`skip_if_gfx1250_strict_wmma`), as do concrete target arch strings."
+    },
+    {
+      "sha": "b812e11399150c77f0dcb0f06773ffeec7b431f4",
+      "comment": "修复 masked load 优化丢失 -0.0 的问题（issue #12241）。核心是把 include/triton/Analysis/Utility.h 里的 isZeroConst 重命名为 isZeroFillConst 并严格要求 isPosZero()（正零），从而让 -0.0 不再被当作可零填充；随后更新 Pipeliner/LowerLoops.cpp（mustLoadToRegisters 与 createAsyncCopy 的判断改为 isZeroFillConst，并在 select 分支保留 -0.0）、AMD CanonicalizePointers.cpp 与 ConvertToBufferOps.cpp、NVIDIA WGMMA.cpp 的引用。新增 pipeline-lower-loop.mlir 用例验证 -0.0 在异步拷贝后通过 select 还原。修复语义正确性，风险低，因只收紧了对零填充的判定。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "pipeliner",
+        "analysis",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。上游修改的是 include/triton/Analysis/Utility.h 的辅助函数与 Pipeliner（TritonGPU lowering 路径）及 AMD/NVIDIA TargetInfo 侧引用。Ascend 不走 TritonGPU 的异步拷贝流水与 LLVM lowering，也不使用 isZeroFillConst 的调用点（仅 NVIDIA WGMMA 与 AMD 路径），故无功能耦合。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Fix] Preserve negative zero in masked load optimizations (#12277)\n\nPreserve `other=-0.0` in pipelined and AMD buffer loads instead of\ntreating it as zero-fill. Adds a focused pipeliner regression.\n\nValidated with `make` and the pipeliner and AMD buffer-op lit tests.\n\nFixes #12241."
+    },
+    {
+      "sha": "78e80b9e9f7bf720945f828947e6e196284f7e6a",
+      "comment": "用 NVIDIA 目标感知的 ad hoc 向量化器替换 SLP 向量化器（大型 PR，+3287 行）。新增 lib/Target/LLVMIR/LLVMIRNVPTXVectorizer.cpp（约 1370 行）与 NVPTXVectorizerPass，实现按 compute capability 判断支持的 packed 运算（f16/bf16/f32、FMA、int16 umax、fabs sign mask 等）、基于 dominator/成本模型的打包规划、循环累加器合并、循环携带（loop carry）打包等技术；triton-llvm-opt 新增 -nvptx-vectorize/-nvptx-compute-capability；python/src/llvm.cc 将 NVPTXVectorizerPass 接入 optimize_module（新增 nvptx_compute_capability 参数）并为 translate_to_asm 新增 disable_lsr 参数与 ScopedLSRPassGate（基于 LLVMContext 的 OptPassGate，使并行编译可独立选择），同时新增 TRITON_USE_SLP_VECTORIZER knob；third_party/nvidia/backend/compiler.py 增加 disable_lsr 选项并将 SLP 关闭改为 opt-in、按 capability 传入 nvptx_compute_capability；GetEnv.h 加入 TRITON_USE_SLP_VECTORIZER 缓存失效变量。改动大且涉及 LLVM IR 层代码生成，性能影响明显（可能改变寄存器压力，故同时提供 sched4reg/maxnreg 调节）；风险中高，主要在序列语义与正确性方面，已有详尽 lit 覆盖（test/LLVMIR/nvptx-vectorizer.ll，1776 行）与 python/test/unit/test_knobs.py 的 LSR/并发用例保护。",
+      "tags": [
+        "performance",
+        "high-risk",
+        "nvidia",
+        "llvmir"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。向量化器为 NVPTX 专用（third_party/nvidia/backend/compiler.py、lib/Target/LLVMIR、bin/triton-llvm-opt、python/src/llvm.cc 的 NVPTX 相关分支），Ascend 后端不经过 NVPTX 代码生成、不使用 CUDAOptions 的 disable_lsr/sched4reg、也不走 llvm.optimize_module 的 NVPTX 路径；python/src/llvm.cc 中新增的 disable_lsr 参数位于 llvm.translate_to_asm 绑定上，但属于带默认值的新增参数，Ascend 若未调用该方法则无影响。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Replace NVIDIA SLP with target-aware arithmetic vectorization (#11478)\n\nReplace SLP vectorizer for Nvidia backend by an ad hoc vectorizer\nspecialized to Nvidia target.\n\nThis may cause some important performance changes because SLP vectorizer\nreorders aggressively. Using `sched4reg` or `maxnreg` option can help\nsolve problems for kernel that now have high pressure due to less\nreordering.\nThere is an option to turn SLP back on however we will later update the\nLLVM target causing SLP vectorizer to stop reordering as aggressively."
+    },
+    {
+      "sha": "850348bef5a2623ea4bfeac13692ad4ae53295bd",
+      "comment": "在 LLVM SDK 构建中关闭 LLVM_ENABLE_LZMA（两个平台的 cmake 调用均加 -DLLVM_ENABLE_LZMA=OFF），并把 cmake/llvm-build-info.json 的 build_number 从 1 升到 2 以发布新的不可变 archive。原因是该 LLVM revision 自动探测 liblzma 并把它加入 LLVMSupport 的导出链接接口，在没有 liblzma 开发库的 CI runner 上配置失败，阻塞后续 PR。Triton 不需要 LLVM 可选 xz 支持。纯构建基础设施改动，不影响编译逻辑。",
+      "tags": [
+        "ci",
+        "build",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。仅 LLVM SDK 的构建配置与 build number，不改变 Triton 的编译器行为。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BUILD] Disable LZMA in LLVM SDKs (#12262)\n\nDisable `LLVM_ENABLE_LZMA` in the LLVM SDK build on every platform and\npublish build 2 of `18f9e623e4c891ba31ff817c07197707ac9bc593`.\n\nThis LLVM revision auto-detects liblzma and adds `LibLZMA::LibLZMA` to\nthe exported `LLVMSupport` link interface. The build-1 Ubuntu SDKs\ntherefore fail to configure on CI runners without liblzma development\nfiles, blocking #12236 and its child #12237. Triton's SDKs do not need\nLLVM's optional xz decompression support.\n\nThe build-number bump requests fresh, immutable archives. After this PR\nmerges and publication finishes, #12236 can consume build 2 with the new\narchive checksums. LLVM builds remain restricted to main pushes and\nmanual dispatch.\n\nValidation on Brix GB300 with the exact LLVM source tree for `18f9e623`:\n- Reproduced the exported-target failure with the published build-1 SDK\nand `CMAKE_DISABLE_FIND_PACKAGE_LibLZMA=TRUE`.\n- Rebuilt `LLVMSupport` with `LLVM_ENABLE_LZMA=OFF`; its exported link\ninterface no longer contains LibLZMA.\n- A separate SDK consumer configured, linked, and ran successfully with\nLibLZMA discovery disabled, verifying xz support is disabled.\n- Pre-commit checks passed. The full SDK matrix will run after merge."
+    },
+    {
+      "sha": "19159e7dfdd5e015e0782bdf1e0423f02202e1dd",
+      "comment": "修复 GSan 分布式测试的 rendezvous 端口竞态：原实现先用 _get_free_tcp_port() 探测空闲端口后关闭 socket，再由 rank 0 启动服务，中间窗口可能被其他进程抢占导致 EADDRINUSE。改为在父进程中以端口 0 创建真正的 dist.TCPStore 并保持存活直到所有 worker 退出，worker 一律以 is_master=False 通过 _connect_to_store 连接并把 store 显式传给 init_process_group，同时移除 MASTER_ADDR/MASTER_PORT 环境变量设置。所有 25 个对称内存用例在此实现下通过。属测试基础设施修复，风险低。",
+      "tags": [
+        "test",
+        "bugfix",
+        "low-risk",
+        "gsan"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。仅 python/test/gsan/test_symmetric_memory.py 的测试进程编排，与 Ascend 的编译链和运行时无关。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[GSan] Fix distributed test rendezvous port race (#12266)\n\nThe distributed symmetric-memory tests can fail with `EADDRINUSE`\nbecause `_get_free_tcp_port()` releases its socket before rank 0 starts\nthe rendezvous server. Another process can claim the port during that\ngap, as in [this CI\nfailure](https://github.com/triton-lang/triton/actions/runs/38344466586/job/115122601268?pr=11478).\n\nStart the actual `TCPStore` in the parent on an OS-assigned port and\nkeep it alive until all workers exit. Every worker, including rank 0,\nconnects as a client and passes the store explicitly to\n`init_process_group`.\n\nValidation:\n- All 25 existing symmetric-memory test cases passed on GB300 using a\nprebuilt Triton runtime, including the reported failing case.\n- All pre-commit checks passed, including Ruff, YAPF, and mypy."
+    },
+    {
+      "sha": "dd4f8f60bb0efd8fff515143a319eef8f64deeaa",
+      "comment": "修复 MockTensor.stride()（python/triton/runtime/jit.py）对 rank>=3 的张量返回错误步长的问题：原实现用 shape[1:] 前向累乘再反转，导致 [2,3,4] 返回 (12,3,1) 而非 (12,4,1)。改为从最后一维向后累乘再反转，得到标准行主序步长。此错误会影响以多维 MockTensor 预热时的 specialization/alignment 决策。改动小、语义明确，风险低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "runtime",
+        "jit"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。JITFunction/JITCallable 被 Ascend 直接复用，但本变更仅修正 MockTensor.stride() 的计算，不改变特化键格式、缓存键计算或参数绑定输出形态，Ascend kernel 的编译缓存与启动器生成行为不受影响。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Update jit.py (#12272)\n\nFix MockTensor.stride() returning incorrect strides for rank ≥ 3 shapes\n\nMockTensor.stride() computed the cumulative stride product using\nshape[1:] in forward order instead of walking dimensions from the last\none backward. This gave correct results for rank ≤ 2 shapes but wrong\nstrides for any mocked tensor with 3+ dimensions (e.g. shape=[2,3,4]\nreturned (12, 3, 1) instead of the correct (12, 4, 1)), which can affect\nspecialization/alignment decisions when warming up a kernel with a\nmulti-dimensional MockTensor.\n\nFix: accumulate the stride starting from the last dimension and reverse\nat the end, matching standard row-major stride computation.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [ ] I have not added any `lit` tests.\n- [x] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/runtime/jit.py"
+        ],
+        "recommend_refresh": true
+      }
+    },
+    {
+      "sha": "70c7e03eea757f0174b331176f2fa655ca92aa0a",
+      "comment": "修正 python/triton/language/core.py 中 dispatch() 参数个数不匹配的报错文案，把 Expect {len(args)}, got {num_args} 反转为 Expect {num_args}, got {len(args)}。纯文案修复，便于调试 extern 函数调用参数不匹配。风险极低，无行为变更。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "language"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。仅修改 dispatch() 抛出的 ValueError 文本，不属于 Ascend 的 monkey-patch 目标（dot/CodeGenerator.__init__/parse），也不涉及类型系统或算子语义。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Update core.py (#12274)\n\nFix swapped “expect/got” values in dispatch()’s argument-count error\nmessage\n\nWhen the number of arguments passed to an extern function doesn’t match\nthe expected count, dispatch() raises a ValueError with the expected and\nactual counts reversed: it reports Expect {len(args)}, got {num_args}\ninstead of Expect {num_args}, got {len(args)}. This makes the error\nmessage say the opposite of what actually happened, which is confusing\nwhen debugging a mismatched extern-function call.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [ ] I have not added any `lit` tests.\n- [x] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)"
+    },
+    {
+      "sha": "0bea346bfbb357072cdd16fa6ebd7afaa8a0399f",
+      "comment": "允许 RDNA 在 CU 模式（wgp_cu_mode=\"cu\"）下走 tagged barrier lowering：只有当所有 wave 共享同一 L0 时，local-only fence（省略 vector cache invalidate）才安全，因此 BarrierOp 的 lowering 改为对 CDNA 或（RDNA 且 cuMode）走 tagged 路径。为此 TargetInfo 增加 cuMode 字段与 isCuMode()，createConvertTritonAMDGPUToLLVMPass/add_to_llvmir 增加 cuMode 参数，Passes.td 增加 cu-mode option，HIPBackend 在调用时传入 options.wgp_cu_mode == \"cu\"。新增 lit RUN lines（gfx1100/gfx1200 cu-mode）与 GPU 端 test_reduce_cu_mode 验证跨 wave 归约在两种模式下的正确性。属后端功能扩展，风险集中在对 CU/WGP 语义边界的正确判断上。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更全部位于 third_party/amd（HIPBackend、TritonAMDGPUToLLVM 的 Passes/TargetInfo/MemoryOpToLLVM、triton_amd.cc 绑定）与 AMD lit/GPU 测试，属于 ROCm 专属的 barrier lowering 与 target feature，Ascend 不走该路径。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Allow the tagged barrier lowering on RDNA in CU mode (#11911)\n\nEnable address-space-tagged barriers on RDNA when `wgp_cu_mode=\"cu\"`. A\nlocal-only fence omits the vector cache invalidate, so an acquire in one\nwave can cover the work-group only when all waves share one L0. CU mode\nprovides that sharing; WGP mode spans two CUs and retains the generic\nlowering that fixed the split-cumsum regression.\n\nThe option controls both barrier lowering and the LLVM target feature.\nExisting default-mode lit checks remain, with CU-mode checks for gfx1100\nand gfx1200. A cross-wave reduction test checks the selected lowering\nand execution in both modes.\n\nValidation: rebuilt with `make`; all pre-commit checks passed. All 124\nAMD lit tests and three focused GPU cases passed. Split-cumsum matched\nthe eager reference over 20 iterations per case for float32, float64,\nint32, and int64 in flat and row layouts, in both WGP and CU modes. The\nfloat64/int64 kernels retain eight barriers while `buffer_gl0_inv` drops\nfrom nine in WGP mode to one in CU mode."
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

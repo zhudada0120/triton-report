@@ -1,4 +1,56 @@
 {
+  "139ac393c858b151b0869f34e7bc5cc56cadbef3": {
+    "date": "2026-10-14",
+    "msg": "[Python] Add python accessors for funcArgAttrs (#12232)"
+  },
+  "884464667350ab1fff2e4cb7622efc0b718514e2": {
+    "date": "2026-10-14",
+    "msg": "Revert \"[FPSan] Support cmpf payload semantics\" (#12292)"
+  },
+  "b41eba6a7aefd4670219f51ec075195979271be3": {
+    "date": "2026-10-14",
+    "msg": "[KERNELS] Absorb NVFP4 row scales during MXFP8 conversion (#12285)"
+  },
+  "3a230c2cf6da2150c969cfe0897499c352758520": {
+    "date": "2026-10-14",
+    "msg": "[AMD] NFC: Simplify MFMA/WMMA instruction selection (#12230)"
+  },
+  "faafaf91de0bf424cf38133a9bdfbc4d8315a130": {
+    "date": "2026-10-14",
+    "msg": "[KERNELS] Expose top-k and reduction compilation controls (#12282)"
+  },
+  "55194a9b2c9fe1817be3813aa8fd4ab2bc17d0ba": {
+    "date": "2026-10-14",
+    "msg": "[AMD] NFC: Rename gfx1250 symbols and definitions to CDNA5 (#12279)"
+  },
+  "b812e11399150c77f0dcb0f06773ffeec7b431f4": {
+    "date": "2026-10-14",
+    "msg": "[Fix] Preserve negative zero in masked load optimizations (#12277)"
+  },
+  "78e80b9e9f7bf720945f828947e6e196284f7e6a": {
+    "date": "2026-10-14",
+    "msg": "[BACKEND] Replace NVIDIA SLP with target-aware arithmetic vectorization (#11478)"
+  },
+  "850348bef5a2623ea4bfeac13692ad4ae53295bd": {
+    "date": "2026-10-14",
+    "msg": "[BUILD] Disable LZMA in LLVM SDKs (#12262)"
+  },
+  "19159e7dfdd5e015e0782bdf1e0423f02202e1dd": {
+    "date": "2026-10-14",
+    "msg": "[GSan] Fix distributed test rendezvous port race (#12266)"
+  },
+  "dd4f8f60bb0efd8fff515143a319eef8f64deeaa": {
+    "date": "2026-10-14",
+    "msg": "Update jit.py (#12272)"
+  },
+  "70c7e03eea757f0174b331176f2fa655ca92aa0a": {
+    "date": "2026-10-14",
+    "msg": "Update core.py (#12274)"
+  },
+  "0bea346bfbb357072cdd16fa6ebd7afaa8a0399f": {
+    "date": "2026-10-14",
+    "msg": "[AMD] Allow the tagged barrier lowering on RDNA in CU mode (#11911)"
+  },
   "4ee1a827440d453ca276ded4219190d5e7346b8b": {
     "date": "2026-10-13",
     "msg": "[LANGUAGE] Use two-pass argmin and argmax reductions (#12046)"

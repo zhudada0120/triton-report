@@ -1,4 +1,12 @@
 {
+  "b492bef958e1d29acb8de648462a5bcd5663b0bd": {
+    "date": "2026-10-14",
+    "msg": "[Docs](fix) clarify environment and compiler option support (#2541)"
+  },
+  "333b4b8fa763330ab1d2856a5802a27a5dda1d95": {
+    "date": "2026-10-14",
+    "msg": "[bubbleup](fix) skip bubble-up for misaligned bf16 extract_slice on n… (#2498)"
+  },
   "e6d75162c4b75d6d22638f8eb33bb8dc3fb3cb50": {
     "date": "2026-10-12",
     "msg": "[compiler](fix) make bisheng_options backend-managed (#2523)"

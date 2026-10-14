@@ -1,0 +1,52 @@
+{
+  "date": "2026-10-14",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-10-15T05:03:52.754276+08:00",
+  "daily_summary": "当日两个 commit 分别聚焦文档与编译修复：(1) 大规模文档修订（中英文双份），重新组织环境变量与编译选项参考表，增加 A2/A3 与 950 的支持标注、DynamicCV 流水优化说明、旧多缓冲选项向 multibuffer_mode 的迁移指引，并在三个 sync_block_* 亲和接口文档中补充 disable_auto_inject_block_sync=True 的前置要求；(2) 针对非 A5（如 A3）目标修复 bubble-up-operation pass 在处理 bf16 arith.extf 后的 extract_slice 时因 32 字节对齐导致精度/编译失败的问题，通过新增 compileOn91095 选项在非 A5 上跳过不安全重写，并附带 UT。",
+  "test_impact_summary": "本次变更引入了两个需要看护的测试点。文档 commit 本身不改变运行时行为，但明确了 disable_auto_inject_block_sync、multibuffer_mode 及 DynamicCV 回退语义，属于对现有用户契约的澄清，因此主要为文档级影响；不过其中描述的 DynamicCV 回退行为与 multibuffer_mode 新字典格式值得通过针对性测试验证其与文档一致。修复 commit 则真正引入了新的编译路径分支：非 A5 目标下 bf16 extract_slice + arith.extf 的 misaligned 场景会被跳过 bubble-up，新增的 test_extract_slice_misaligned.py 覆盖了 off=8/16/24 的对齐与非对齐组合，验证了修复点；但 A5（910-95）路径行为不变这一点目前缺少回归测试，且 compileOn91095 选项从 false 变为默认的传参链（compiler.py → triton_ascend.cc → Passes.td）也需要 pass 级测试确认参数透传正确。建议在后续补充 A5 等价路径以及对 bubble-up 其它父 op（TruncF/FPToSI 等）混入对齐场景的覆盖，避免该修复引发回归盲区。",
+  "commits": [
+    {
+      "sha": "b492bef958e1d29acb8de648462a5bcd5663b0bd",
+      "comment": "纯文档 commit，中英文同步修订 docs/{en,zh}/environment_variable_and_compiler_options_reference.md、architecture_design_and_core_features.md 以及 sync_block_{all,set,wait}.md。核心内容：(1) 重构环境变量/编译选项参考表，新增 A2/A3 与 950 支持列，明确各选项生效平台；(2) 新增 DynamicCV 流水优化小节，说明 enable_dynamic_cv_pipeline=True 时若优化不适用会回退 IR、置开关为 False 并恢复被调整的选项；(3) 新增旧多缓冲选项（limit_auto_multi_buffer_only_for_local_buffer / limit_auto_multi_buffer_of_local_buffer / limit_auto_multi_buffer_buffer）到 multibuffer_mode 字典的迁移映射，并给出示例；(4) 在三个 sync_block_* 亲和 API 文档中补充使用前必须设置 disable_auto_inject_block_sync=True 的前置条件；(5) 更正废弃项列表，新增 bisheng_options、enable_vf_fusion、enable_simt_reorder_instruction 等迁移说明。该变更不触及 third_party/ascend/backend/compiler.py 等代码路径，仅影响用户文档与契约表达；但注意原架构文档中分类说明的 bisheng_options 已从活跃表移除并移入废弃表，这与当前 NPUOptions 实现实际行为是否完全吻合需在代码侧持续保持同步，否则文档与代码可能再次漂移。风险较低。",
+      "tags": [
+        "docs",
+        "low-risk",
+        "ascend-backend"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "该 commit 只修改 Markdown 文档，不改变任何运行时/编译逻辑，现有测试无需因变更本身而更新。不过新增的 DynamicCV 回退语义、multibuffer_mode 新字典格式与 sync_block_* 前置选项属于对已实现行为的文档化，若此前缺乏对应测试覆盖，建议后续补充以验证文档描述行为真实生效。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/",
+          "third_party/ascend/unittest/autotune_ut/ (multibuffer_mode 解析)",
+          "docs 中 sync_block_* 相关功能测试路径"
+        ]
+      },
+      "message": "[Docs](fix) clarify environment and compiler option support (#2541)\n\n* [Docs](fix) clarify environment and compiler option support\n\nDistinguish A2/A3 and 950 support in the Chinese and English configuration\nreferences and separate active settings from compatibility guidance.\nDocument multibuffer_mode migration, future removal errors, and the current\nbisheng_options deprecation on main.\n\nKeep disable_auto_inject_block_sync active and document its requirement in\nthe three block synchronization APIs. Explain DynamicCV pipelining and\nfallback in the architecture guide and link to it from the reference.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* [Docs](style) place sync configuration notes after signatures\n\nPlace the compiler-option prerequisite after each function signature so readers see API behavior and call syntax before compilation requirements. Apply the same order to all three APIs in Chinese and English.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* [Docs](style) clarify option links and simplify deprecation text\n\nClarify that the synchronization API links provide details about the required compiler option. Remove backend implementation details from the bisheng_options deprecation entry in both languages.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n---------\n\nSigned-off-by: KanuaK <yihan_z@qq.com>"
+    },
+    {
+      "sha": "333b4b8fa763330ab1d2856a5802a27a5dda1d95",
+      "comment": "修复 bubble-up-operation pass 在非 A5（如 A3）目标上处理 bf16 arith.extf 后 extract_slice 时的失败问题。根因：arith.extf 降低为 vcast 需要源地址 32 字节对齐，非对齐会退化为标量 cast，而 A3 不支持 bf16 标量 cast，因此把 extract_slice 冒泡到 arith.extf 之上会把原本对齐的 f32 slice 变成非对齐的 bf16 slice（bf16 每元素 2 字节，需 linearOffset%16==0 才 32 字节对齐）。实现方式：(1) BubbleUpExtract 构造函数新增 compileOn91095 成员，新增 isBf16ExtSliceMisaligned() 判断——当父 op 为 arith.extf 且源类型为 bf16、线性元素 offset 静态可证不为 16 的倍数（含动态 offset，保守处理）时返回 failure() 跳过重写；(2) Passes.td 新增 compile-on-910-95 布尔选项；(3) triton_ascend.cc 的 add_bubble_up_operation 绑定从无参改为接收 compileOn91095 并构造 BubbleUpOperationOptions；(4) compiler.py 中 ttir_to_linalg 的 add_bubble_up_operation(pm) 改为传 compile_on_910_95，与同链中其它 pass 保持一致。该修复精准限定在非 A5 目标，A5 行为不变，风险中等——因为新增了一个 pass 选项并改变了 Python 绑定签名，任何外部直接调用 add_bubble_up_operation 的脚本（如调试脚本或第三方）若不更新调用方式会报错；另外 isBf16ExtSliceMisaligned 对动态 offset 一律返回 true（保守跳过），可能在动态 offset 场景下丢失本可进行的 bubble-up 优化，属可接受的保守取舍。附带新增 UT test_extract_slice_misaligned.py，参数化 off=8/16/24 覆盖对齐与非对齐情况。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "ascend-backend",
+        "compiler-passes",
+        "test"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "该 commit 新增了 pass 选项（compile-on-910-95）、修改了 add_bubble_up_operation 的 Python 绑定签名（新增必需 bool 参数），并改变非 A5 目标下 bf16 extract_slice + arith.extf 的 bubble-up 行为。新增的 test_extract_slice_misaligned.py 覆盖了 misaligned 与 aligned（off=16）场景，但尚未覆盖 A5（910-95）路径的等价性回归以及非对齐场景下显式关闭/开启 disable_auto_inject_block_sync 无关，需确认是否与其它 pass 参数传递无耦合；同时 add_bubble_up_operation 签名变更也应更新或核对那些使用 Python 绑定直接构造 pass 的测试/脚本。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_extract_slice_misaligned.py",
+          "third_party/ascend/unittest/Conversion/ (bubble-up-operation pass lit 测试)",
+          "third_party/ascend/triton_ascend.cc 绑定的 Python 调用点（compiler.py 及调试脚本）",
+          "A5/910-95 目标的等价回归测试"
+        ]
+      },
+      "message": "[bubbleup](fix) skip bubble-up for misaligned bf16 extract_slice on n… (#2498)\n\n* [bubbleup](fix) skip bubble-up for misaligned bf16 extract_slice on non-A5\n\nOn non-A5 targets (e.g. A3), the vector cast (vcast) that arith.extf lowers to requires the source address to be 32-byte aligned; a misaligned cast normally degrades to a scalar cast, but A3 does not support scalar cast for bf16, so the misaligned bf16 slice has no fallback and fails.\n\nBubbling an extract_slice above an arith.extf bf16->f32 can turn an aligned f32 slice into a misaligned bf16 slice: bf16 is 2 bytes/element, so the slice start is 32-byte aligned only when the linear element offset is a multiple of 16.\n\nAdd a compile-on-910-95 option to the bubble-up-operation pass. When compiling for non-A5 targets, skip the rewrite for tensor.extract_slice whose producer is arith.extf on a bf16 source and whose linear element\noffset is not statically provable as a multiple of 16 (dynamic offsets are treated conservatively). A5 behavior is unchanged.\n\n* fix precommit\n\n* [UT](feat) Unit test for misaligned bugfix on non-A5 (#2498)\n\n[UT](feat) Unit test for misaligned bugfix on non-A5 (#2498)\n\n---------\n\nCo-authored-by: Wallace-ZhangLiang <wallacee036@gmail.com>\n(cherry picked from commit 5bb45168bdc6ced67bd8b205cc45b9c8e1562361)"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

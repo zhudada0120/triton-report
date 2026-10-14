@@ -879,6 +879,18 @@
       "interface_changes": "修复解释器中 tuple 归约在全轴（axis=None）多输入情况下的 bug。原 ReduceOps.unravel 在遍历 input 时对第一个输入 flatten 并设置 axis=0，但后续输入仍是原 shape，导致 generic reducer 用同一 index 读取形状不同的数据而抛 ValueError。修复后先对每个输入 flatten 再统一返回 axis=0，并用 original_ndim（扁平化前首输入的 rank）替代 len(input_shape) 来恢复 keep_dims=True 时的输出形状。test_core.py 的 test_generic_reduction 参数化为 1-D 显式轴、2-D 全轴、3-D 全轴+keep_dims 三种情况，验证 Welford mean/variance 与 tuple/单值 sum。修改 python/triton/runtime/interpreter.py，命中必然影响路径。",
       "change_summary": "[INTERPRETER] Fix tuple reductions over all axes (#12207)",
       "ascend_impact": true
+    },
+    "139ac393c858b151b0869f34e7bc5cc56cadbef3": {
+      "date": "2026-10-14",
+      "affected_modules": [
+        "python/src/ir.cc"
+      ],
+      "affected_interfaces": [
+        "python/src/ir.cc"
+      ],
+      "interface_changes": "为 FuncOp 的 Python 绑定新增 get_arg_str_attr / get_arg_int_attr 两个访问器，通过 FunctionOpInterface::getArgAttr 读取函数参数属性（如 tt.divisibility），以 py::none() 表示缺失。改动仅在 python/src/ir.cc 中新增方法，未修改既有签名；同时清理了被注释掉的 attrs/add_attr 占位，并附带一个误提交的 VSCode workspace 文件 triton.0.code-workspace（与仓库无关，建议清理）。测试在 test_bindings.py 中补了一行调用。整体是低风险的工具性扩展，便于 Python 侧检查参数属性。",
+      "change_summary": "[Python] Add python accessors for funcArgAttrs (#12232)",
+      "ascend_impact": false
     }
   }
 }
