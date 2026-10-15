@@ -1,0 +1,220 @@
+{
+  "date": "2026-10-15",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-16T04:37:16.170171+08:00",
+  "daily_summary": "当日变更以 bugfix 与测试完善为主，覆盖多个层次：NFC 清理（删除无用的 vscode workspace 文件）、TritonGPU 去重优化修正（volatile load 不再被 rematerialize）、NVIDIA 向量化器支持 BF16 混合精度加法成本模型、JIT 缓存键纳入源位置（文件/起始行/定义行列）以修复缓存失效契约、前端 atomic_cas 保留 pointee 类型、tensor descriptor 指针回退中大 shape 使用无符号扩展、AMD 后端跳过 volatile load 的 buffer-op 转换，以及 AMD 流水线代码 NFC 拆分（Pipeliner 目录重构）。整体没有引入新的跨后端接口变更，多为行为修正与重构。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 的影响集中在少数共享基础设施路径：(1) JIT 缓存键计算改动（python/triton/runtime/jit.py 的 DependenciesFinder/cache_key 与 _compile_warmup_pool.py）属于 triton-ascend 必然影响路径，会改变 Ascend kernel 的编译缓存键与缓存命中行为，但 API 兼容；(2) 前端 semantic.py 的 atomic_cas 增加类型检查，属于可能影响路径，因 triton-ascend 复用 TritonSemantic，可能改变 Ascend 生成的 TTIR；(3) TritonGPU/CL 与 AMD/NVIDIA 专有后端改动（TritonGPU Utility、LLVMIRNVPTXVectorizer、AMD buffer-op、AMD Pipeliner）对 Ascend 不适用。总体无破坏性接口变更，无需同步修改 Ascend 后端实现，但缓存键语义变化与原子操作语义变化建议补充测试。",
+  "commits": [
+    {
+      "sha": "e6f4c919fb18a99ed08f1cf3713ae15c686790d3",
+      "comment": "[NFC] 删除 python/src/triton.0.code-workspace 文件（14 行 VSCode 工作区配置，引用了外部目录 torch-nexus/text.0）。纯清理性变更，不涉及任何编译、运行时或后端逻辑。",
+      "tags": [
+        "chore",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NFC] Remove unused triton.0.code-workspace file (#12312)"
+    },
+    {
+      "sha": "e9cd89dc76451c526e3b25bf43e0ab00d72c2ee8",
+      "comment": "修复 RemoveLayoutConversions 中 volatile load 被错误 rematerialize 的问题。原 canBeRematerialized 对小型 load 提前返回 true，未检查写效应，导致 volatile load 在被多种 layout 使用时会各自生成一次读取，数值不一致。变更将 hasEffect<MemoryEffects::Write> 检查提前到函数开头，先于 LoadOp/StoreOp 分支（若命中写效应则返回 false），并将末尾改为 return true。属于 TritonGPU 通用优化 pass 的行为修正，新增 lit 测试 no_remat_volatile_load。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "tritongpu"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。Ascend 不走 TritonGPU→LLVM 路径（用 TritonToLinalg 替代），RemoveLayoutConversions 是 TritonGPU 层的 layout 优化 pass，不属于 Ascend 编译链。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TritonGPU] Do not rematerialize volatile loads (#12268)\n\n`canBeRematerialized` returns early for small loads before it checks for\nwrite effects, so `RemoveLayoutConversions` can rematerialize a volatile\nload. When the loaded value is used in several layouts, each layout then\ngets its own read, and the uses can see different values.\n\nCheck write effects first, so the check added in #11001 also covers\nloads. A volatile load that is only used in one layout now keeps its\nlayout and gets a `convert_layout` instead of being moved.\n\nThe new `no_remat_volatile_load` lit test fails without the change (two\n`tt.load`) and passes with it. The full lit suite passes. With the\nkernel from the issue on an L4, `num_warps=4` now emits one\n`ld.volatile` instead of six, and 0 of 20000 readers are inconsistent\n(19725 before).\n\nFixes #12256.\n\n<details>\n<summary>New contributor declaration</summary>\n\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [ ] I have not added any `lit` tests.\n- [x] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode and using the instructions it generates is not minimal.)\n\n</details>"
+    },
+    {
+      "sha": "4eda6cc91e86553a2517d1c764ea2967985553ad",
+      "comment": "NVIDIA 向量化器（LLVMIRNVPTXVectorizer）的成本模型修正：isFusedHalfAddition 原先只识别 FPExtInst 源为 half 的扩展，BF16→FP32 的扩展链被当作普通 FP32 加法计费。变更将条件扩展为 srcTy 为 half 或 bfloat，使 BF16 混合精度累加链正确计入，从而选出折叠转换的 packed FP32 FMA。变更仅放宽谓词，FMA 操作数类型匹配逻辑不变。新增/扩展 nvptx-vectorizer.ll 测试覆盖 BF16 累加、FP16/BF16 两种因子顺序以及同类型 FMA 对照。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Target/LLVMIR/LLVMIRNVPTXVectorizer.cpp，是 NVIDIA PTX 目标专属的 LLVM IR 向量化器，Ascend 不使用 PTX/LLVMIRNVPTXVectorizer 路径。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Account for BF16 mixed-precision adds in the vectorizer (#12304)\n\nBF16-to-FP32 accumulation chains are currently costed as ordinary FP32\nadditions because `isFusedHalfAddition` only recognizes FP16 extensions.\nOn SM100, this can select packed FP32 additions that retain separate\nBF16 conversions instead of folding them into mixed-precision adds.\n\nRecognize BF16 extensions when computing the scalar addition-chain cost.\nThe predicate remains restricted to FP32 `FAdd`; FMA operand-type\nmatching is unchanged.\n\nAdd regression coverage for BF16 accumulation, both FP16/BF16 FMA factor\norders, and same-type FMA controls. The mixed-factor cases retain their\nconversions and use ordinary FP32 FMA.\n\nValidation:\n- Full compiler lit suite: 305 passed, 2 unsupported plugin tests.\n- 48 GB200 numerical/codegen cases passed, covering both factor orders,\ncontraction enabled/disabled, scalar and packed layouts, and FMA\nfollowed by BF16 accumulation. None of the 24 mixed-factor cases emitted\n`FHFMA`.\n- Pre-commit checks passed."
+    },
+    {
+      "sha": "a12054e781c17a5dfbf8171bdf3bfdd042f04909",
+      "comment": "测试改动：test_launch.py 中 max occupancy 校验不再通过 libcuda_dirs() 拼接路径加载 libcuda.so.1，而是直接用 ctypes.CDLL(\"libcuda.so.1\")，以匹配运行时加载器的驱动选择（含 CUDA 兼容库）。仅调整测试中的驱动加载方式，逻辑正确性不变。",
+      "tags": [
+        "test",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 python/test/unit/runtime/test_launch.py，是 CUDA 专属运行时测试，与 Ascend 无关。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Tests] Use runtime CUDA driver for occupancy checks (#12302)"
+    },
+    {
+      "sha": "4e207e68fefe83bf2e619452a3581889eb47fc4c",
+      "comment": "JIT 缓存键契约统一：DependenciesFinder 新增 source_location 参数，将文件、起始行号、定义行号、定义列号一并纳入 sha256 哈希；JITCallable 不再单独拼接 starting_line_number（改为依赖 source_location），hash 直接取 dependencies_finder.ret。_compile_warmup_pool.py 新增 _SourceLocation dataclass 并保留四个位置字段以支持 warmup 序列化。测试 test_source_locations_invalidate_cache 参数化覆盖 unchanged/file/line/decorator/column 五种情形与 line-info 开关组合。这是 python/triton/runtime/jit.py 的核心缓存键语义变更，影响所有后端（含 Ascend）的编译缓存命中。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "runtime",
+        "jit"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "影响 triton-ascend 的编译缓存行为。python/triton/runtime/jit.py 属于必然影响路径（JITFunction/JITCallable 被 Ascend 直接复用）。DependenciesFinder.__init__ 新增 source_location 参数、JITCallable.hash 计算方式变更、_compile_warmup_pool.py 的 _make_dynamic_jit_callable 签名从 starting_line_number 改为 _SourceLocation，都会改变 Ascend kernel 的 cache_key。虽然函数签名在 triton 上游内部闭环（Ascend 未 monkey-patch 这些位置），但缓存键格式变化意味着现有 Ascend 磁盘缓存条目在升级后全部失效，且同一 kernel 移动位置后会重新编译。",
+        "testing": "Ascend 的缓存相关测试需验证新缓存键契约：kernel 源码位置（文件/行/列/装饰器数量）变化应产生新缓存键，line-info 开关变化应产生新缓存键。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/（缓存相关用例，如 test_cache 对应部分）",
+          "Ascend 后端 JIT 缓存命中验证用例"
+        ]
+      },
+      "message": "[JIT] Hash source locations in cache keys (#11832)\n\n## Summary\n\nMake the JIT cache key follow one contract: a change to the kernel's\nsource or\nsource location, or to the line-info setting, gives a new compilation\ncache\nkey.\n\n| Source/location changed | Line-info setting changed | New compilation\ncache key |\n|---|---|---|\n| Yes | Yes | Yes |\n| Yes | No | Yes |\n| No | Yes | Yes |\n| No | No | No |\n\nThis simplified contract and its implementation are from @Jokeren, who\npushed\nthem to this branch; they replace my earlier version, which hashed the\nlocation\nonly when line info was emitted.\n\n- `JITCallable.cache_key` always hashes the kernel's source file,\nstarting\nline, and definition line and column, so a kernel that moves, or the\nsame\n  source loaded from another file, gets a new key.\n- The line-info setting is not hashed separately:\n`TRITON_DISABLE_LINE_INFO`\nis already a cache-invalidating environment variable, so changing it\nalone\n  also gives a new compilation cache key.\n- Compile-warmup serialization keeps these fields when it rebuilds a\nkernel.\n\nRefs #11817. This fixes the stale source-location part. Under this\ncontract,\nmoving a kernel gives a new key even when line info is disabled, and\nunset and\n`0` still give separate keys, as on `main`.\n\n## Testing\n\n- `test_source_locations_invalidate_cache` (unchanged, file, line,\ndecorator,\nand column variants, each with and without a line-info change) passed\n10/10\n  when compiled for a gfx1100 target. With `main`'s `jit.py`, the file,\n  decorator, and column cases fail (6/10).\n- A compile-cache check of the four rows above: the second compile\ncreated a\n  new cache entry exactly in the three \"Yes\" rows.\n- `test_cache.py` and `test_driver.py` show no new failures relative to\n`main`\n  on a machine without a GPU driver.\n- Pre-commit passed on all changed files.\n\nThese runs compiled on CPU for a gfx1100 target; no GPU execution is\nclaimed.\n\n# New contributor declaration\n\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n- [x] I have added tests under `/python/test`.\n- [x] I have not added any `lit` tests.\n\n---\n*This is an experimental, AI-generated code change, reviewed by AMD\nengineers before submission.*\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCo-authored-by: Jokeren <robinho364@gmail.com>",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/runtime/jit.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "6e55d637d9d6ce5188220b393e42abfce976a9a7",
+      "comment": "修复 atomic_cas 丢失 pointee 类型的问题（#12258）。在 TritonSemantic.atomic_cas 开头新增两次 _atomic_typechecking_impl 调用，分别校验 ptr/cmp 与 ptr/val 的类型一致性，确保 ptr 的元素类型被正确传播/校验。新增 test_atomic_cas_pointee_type 覆盖 int32/uint32/int64/uint64、scalar/tensor、compare 为 0 与 -1 的组合，验证 signed/unsigned pointee 的语义分离。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "frontend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "影响 triton-ascend 的原子操作前端语义。python/triton/language/semantic.py 属于必然影响路径（TritonSemantic 被 Ascend 复用，且 _patched_dot 等 monkey-patch 挂载于同类）。atomic_cas 新增类型检查会改变 Ascend 生成的 TTIR：signed/unsigned pointee 不再被隐式混淆，uint32/uint64 与 int32/int64 的 atomic_cas 语义将明确区分。对依赖旧有隐式行为的 Ascend kernel 可能产生编译期类型错误或 IR 形态变化，需确认 Ascend 的 TritonToLinalg/atomic 相关 lowering 能正确处理强化后的类型。",
+        "testing": "建议补充 Ascend 平台上的 atomic_cas pointee 类型测试，验证 scalar/tensor、signed/unsigned、0/-1 compare 组合在 NPU 上的语义正确性。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/（atomic 相关用例）",
+          "Ascend 平台 atomic_cas pointee 类型端到端测试"
+        ]
+      },
+      "message": "[FRONTEND] Preserve pointee type in atomic_cas (#12270)\n\nFixes #12258.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/language/semantic.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "4fc4733d482c85226dfc26344cca12717b958bd7",
+      "comment": "测试修复：test_core.py 的 test_dot kernel 原先将输入 bias 与输出 Z 复用同一块 z_tri 内存，在 ADD_ROWS/ADD_COLS 等 epilogue 情形下，某些 warp 先完成写入而其他 warp 仍在读取同一内存，可能产生数据竞争。变更新增独立的 Bias 参数（bias_tri = torch.clone(z_tri)），kernel 签名增加 Bias，ADD_MATRIX/ADD_ROWS/ADD_COLS 从 Bias 读取，Z 仅作为输出写入。属于纯测试隔离性修复，不改变测试覆盖语义。",
+      "tags": [
+        "test",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动仅位于 python/test/unit/language/test_core.py 的 test_dot 测试 kernel 与调用方，是上游语言层测试用例，Ascend 不复用该测试代码。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Split result tensor and bias arguments in test_core::test_dot kernel (#12271)\n\nThis PR splits input bias tensor and output Z tensor to avoid potential\ndata race.\n\nAssume all warps process store dot results in similar layout as they\nprocess it, so there are no LDS involved and no barriers in code.\n\nThis means one warp can do all the work and finish before other warps\nread Z memory.\nThis can lead in data races in some ADD_COLS and ADD_ROWS cases, where\nsame pieces of input Z are used by different warps.\n\n---------\n\nCo-authored-by: Alexander Efimov <efimov.alexander@gmail.com>"
+    },
+    {
+      "sha": "34fffaf2b63195f6c864e2b866eea5bbd584df43",
+      "comment": "修复 tensor descriptor 指针回退中大 shape 符号扩展导致负值的问题（#12255）。RewriteMakeTensorDesc 中 shape 原使用 castToI64（符号扩展），使 [2^31, 2^32) 范围的维度变为负数从而屏蔽掉所有非负访问。新增 castUnsignedToI64 辅助（arith::ExtUIOp），仅对 shape 使用零扩展，strides/padding 与 descriptor indices/offsets 继续用有符号扩展。新增 lit 测试 dynamic_shape 校验 arith.extui 生成并被 bounds check 使用。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "triton-ir"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Dialect/Triton/Transforms/RewriteTensorDescriptorToPointer.cpp（TTIR 层 tensor descriptor 到指针的回退模式）。虽然 include/triton/Dialect/Triton/ 与 lib/Dialect/Triton/ 属于必然影响路径，但该 pass 是 TensorDescriptor 指针回退专用转换，trition-ascend 的 TritonToLinalg 路径是否复用该 pass 取决于其 add_stages 中的 ttir 阶段；如 Ascend 复用了 RewriteTensorDescriptorToPointer，则大 shape 描述符行为会改善（正向修复），否则无影响。属于行为修正且不改变签名，不会破坏 Ascend 编译。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Fix large tensor descriptor shapes in pointer fallback (#12278)\n\n## Description\n\nFixes #12255.\n\nIn-kernel tensor descriptors use signless i32 shape operands. When\ndescriptors are lowered to pointers, those operands were sign-extended\nto i64, so dimensions in `[2^31, 2^32)` became negative and caused every\nnonnegative access to be masked out.\n\nZero-extend descriptor shapes during `RewriteMakeTensorDesc` so their\nnonnegative values are preserved. Descriptor indices and offsets\ncontinue to use signed extension.\n\nA minimal lit regression checks that a dynamic descriptor shape is\nwidened with `arith.extui` and used by the generated bounds check.\n\n## Testing\n\n- `pre-commit run --from-ref origin/main --to-ref HEAD`\n- `make PYTHON=.venv/bin/python MAX_JOBS=8`\n- `lit -v test/Triton/rewrite-tensor-descriptor-to-pointer.mlir`\n- `lit -sv test` (304 passed, 2 unsupported)\n- Exact issue repro on NVIDIA A10 (sm_86) with the source build:\n  - `M=2^31-64`: in-kernel `[1]`, host `[1]`\n  - `M=2^31+64`: in-kernel `[1]`, host `[1]`\n\n# New contributor declaration\n\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n[rules](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n- [x] I have added tests.\n  - `/test` for `lit` tests\n- [x] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "lib/Dialect/Triton/"
+        ],
+        "recommend_refresh": true
+      }
+    },
+    {
+      "sha": "c8668cd7521a9182a4021e26697cafb2c6b17ebf",
+      "comment": "AMD 后端修复：ConvertTritonLoadToBufferLoad 之前会把 volatile load 也降级为 amdg.buffer_load，但 buffer load intrinsic 不支持 volatile 限定，导致 volatile 语义丢失。变更在 matchAndRewrite 中对 LoadOp 检查 op.getIsVolatile()，命中则 notifyMatchFailure 跳过转换，使 volatile load 保持 tt.load。新增 amd-convert-buffer-ops.mlir 测试 volatile_load，校验 volatile 保留为 tt.load、非 volatile 转为 amdg.buffer_load。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/amd/lib/TritonAMDGPUTransforms/ConvertToBufferOps.cpp，是 AMD 后端专属的 buffer-op 转换，Ascend 不加载 TritonAMDGPU 方言、不调用该 pass。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][Backend] Skip volatile loads in buffer-op conversion (#12284)\n\n- buffer load intrinsic has no volatile qualification\n- skip buffer load lowering for volatile loads"
+    },
+    {
+      "sha": "3d5090c6957eb795f0bc5912efac4324d7f0ce49",
+      "comment": "AMD 后端 NFC 重构：将 TritonAMDGPUTransforms 下的流水线代码拆分为 Pipeliner/ 子目录，新增 LDSEncoding.{h,cpp}（把共享内存编码选择与 canBeConvertedToAsyncLoad 从 LowerLoops.cpp 抽出）与 StreamOps.{h,cpp}（把 StreamCopyChainOps/AsyncCopyChainOps/TDMChainOps 及 createStreamCopy/createAsyncCopy/createTDMAsyncCopy/createTDMAsyncGather 抽出），原 Pipeline.cpp/ScheduleLoops.cpp/LowerLoops.cpp/PipelineUtility.h/TDMStoresPipeline.cpp 重命名到 Pipeliner/ 下，Update CMakeLists 与 include 路径。属于纯结构重排，逻辑无变化，为后续 LowerLoops 特性扩展腾出空间。",
+      "tags": [
+        "refactor",
+        "low-risk",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更全部位于 third_party/amd/lib/TritonAMDGPUTransforms/ 与 test/TritonGPU/amd/，是 AMD 后端专属流水线代码的文件重排与函数搬迁，Ascend 不依赖这些文件。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] NFC: Split stream-op builders and LDS encoding out (#12269)\n\nMove pipelined load chains into StreamOps and shared-encoding selection\ninto LDSEncoding.\nThis split prepares LowerLoops for upcoming features so the file stays\nreadable and easier to maintain.\n\n---------\n\nCo-authored-by: Ognjen Plavsic <plognjen@amd.com>"
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

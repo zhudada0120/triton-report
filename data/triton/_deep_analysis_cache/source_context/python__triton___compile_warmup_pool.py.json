@@ -1,0 +1,28 @@
+{
+  "content_hash": "0f8d1138dd8f230d",
+  "analysis": {
+    "interface_summary": "定义 7 个类；定义 28 个函数",
+    "key_interfaces": [
+      "_UnsupportedPreloadError",
+      "_CompilationFailedError",
+      "_CodeGenFunction",
+      "_JITFunctionPickler",
+      "_CapturedPreload",
+      "ProcessPoolWarmupDispatcher",
+      "SharedWarmupCoordinator",
+      "_JITFunctionPickler._reduce_jit_codegen_fn",
+      "_JITFunctionPickler.reducer_override",
+      "_CapturedPreload.digest_payload",
+      "ProcessPoolWarmupDispatcher.__init__",
+      "ProcessPoolWarmupDispatcher.record_test",
+      "ProcessPoolWarmupDispatcher.dispatch",
+      "ProcessPoolWarmupDispatcher._submit",
+      "ProcessPoolWarmupDispatcher._capture_preloads",
+      "SharedWarmupCoordinator.__init__",
+      "SharedWarmupCoordinator._accept",
+      "SharedWarmupCoordinator._consume",
+      "SharedWarmupCoordinator.close"
+    ]
+  },
+  "cached_at": "2026-10-16T04:37:16.483081+08:00"
+}

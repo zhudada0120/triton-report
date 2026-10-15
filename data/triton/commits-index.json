@@ -1,4 +1,44 @@
 {
+  "e6f4c919fb18a99ed08f1cf3713ae15c686790d3": {
+    "date": "2026-10-15",
+    "msg": "[NFC] Remove unused triton.0.code-workspace file (#12312)"
+  },
+  "e9cd89dc76451c526e3b25bf43e0ab00d72c2ee8": {
+    "date": "2026-10-15",
+    "msg": "[TritonGPU] Do not rematerialize volatile loads (#12268)"
+  },
+  "4eda6cc91e86553a2517d1c764ea2967985553ad": {
+    "date": "2026-10-15",
+    "msg": "[NVIDIA] Account for BF16 mixed-precision adds in the vectorizer (#12304)"
+  },
+  "a12054e781c17a5dfbf8171bdf3bfdd042f04909": {
+    "date": "2026-10-15",
+    "msg": "[Tests] Use runtime CUDA driver for occupancy checks (#12302)"
+  },
+  "4e207e68fefe83bf2e619452a3581889eb47fc4c": {
+    "date": "2026-10-15",
+    "msg": "[JIT] Hash source locations in cache keys (#11832)"
+  },
+  "6e55d637d9d6ce5188220b393e42abfce976a9a7": {
+    "date": "2026-10-15",
+    "msg": "[FRONTEND] Preserve pointee type in atomic_cas (#12270)"
+  },
+  "4fc4733d482c85226dfc26344cca12717b958bd7": {
+    "date": "2026-10-15",
+    "msg": "Split result tensor and bias arguments in test_core::test_dot kernel (#12271)"
+  },
+  "34fffaf2b63195f6c864e2b866eea5bbd584df43": {
+    "date": "2026-10-15",
+    "msg": "[BACKEND] Fix large tensor descriptor shapes in pointer fallback (#12278)"
+  },
+  "c8668cd7521a9182a4021e26697cafb2c6b17ebf": {
+    "date": "2026-10-15",
+    "msg": "[AMD][Backend] Skip volatile loads in buffer-op conversion (#12284)"
+  },
+  "3d5090c6957eb795f0bc5912efac4324d7f0ce49": {
+    "date": "2026-10-15",
+    "msg": "[AMD] NFC: Split stream-op builders and LDS encoding out (#12269)"
+  },
   "139ac393c858b151b0869f34e7bc5cc56cadbef3": {
     "date": "2026-10-14",
     "msg": "[Python] Add python accessors for funcArgAttrs (#12232)"

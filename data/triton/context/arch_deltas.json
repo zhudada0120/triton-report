@@ -891,6 +891,30 @@
       "interface_changes": "为 FuncOp 的 Python 绑定新增 get_arg_str_attr / get_arg_int_attr 两个访问器，通过 FunctionOpInterface::getArgAttr 读取函数参数属性（如 tt.divisibility），以 py::none() 表示缺失。改动仅在 python/src/ir.cc 中新增方法，未修改既有签名；同时清理了被注释掉的 attrs/add_attr 占位，并附带一个误提交的 VSCode workspace 文件 triton.0.code-workspace（与仓库无关，建议清理）。测试在 test_bindings.py 中补了一行调用。整体是低风险的工具性扩展，便于 Python 侧检查参数属性。",
       "change_summary": "[Python] Add python accessors for funcArgAttrs (#12232)",
       "ascend_impact": false
+    },
+    "4e207e68fefe83bf2e619452a3581889eb47fc4c": {
+      "date": "2026-10-15",
+      "affected_modules": [
+        "python/triton/runtime/jit.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/runtime/jit.py"
+      ],
+      "interface_changes": "JIT 缓存键契约统一：DependenciesFinder 新增 source_location 参数，将文件、起始行号、定义行号、定义列号一并纳入 sha256 哈希；JITCallable 不再单独拼接 starting_line_number（改为依赖 source_location），hash 直接取 dependencies_finder.ret。_compile_warmup_pool.py 新增 _SourceLocation dataclass 并保留四个位置字段以支持 warmup 序列化。测试 test_source_locations_invalidate_cache 参数化覆盖 unchanged/file/line/decorator/column 五种情形与 line-info 开关组合。这是 python/triton/runtime/jit.py 的核心缓存键语义变更，影响所有后端（含 Ascend）的编译缓存命中。",
+      "change_summary": "[JIT] Hash source locations in cache keys (#11832)",
+      "ascend_impact": false
+    },
+    "6e55d637d9d6ce5188220b393e42abfce976a9a7": {
+      "date": "2026-10-15",
+      "affected_modules": [
+        "python/triton/language/semantic.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/language/semantic.py"
+      ],
+      "interface_changes": "修复 atomic_cas 丢失 pointee 类型的问题（#12258）。在 TritonSemantic.atomic_cas 开头新增两次 _atomic_typechecking_impl 调用，分别校验 ptr/cmp 与 ptr/val 的类型一致性，确保 ptr 的元素类型被正确传播/校验。新增 test_atomic_cas_pointee_type 覆盖 int32/uint32/int64/uint64、scalar/tensor、compare 为 0 与 -1 的组合，验证 signed/unsigned pointee 的语义分离。",
+      "change_summary": "[FRONTEND] Preserve pointee type in atomic_cas (#12270)",
+      "ascend_impact": false
     }
   }
 }

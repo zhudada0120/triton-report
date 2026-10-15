@@ -1,4 +1,20 @@
 {
+  "94d35e5b1c4d46c2f92643b9495dcbcf771d86ee": {
+    "date": "2026-10-15",
+    "msg": "[docs](feat)  Updated the docs for release 3.2.2.post1 and 3.6.0"
+  },
+  "6c4139e4d8d1e550719333d6b2813a2cb791a789": {
+    "date": "2026-10-15",
+    "msg": "[docs](feat) update release_note version compatibility tables"
+  },
+  "3d5fecdf58f86e2685402bd0550514807e2b6c82": {
+    "date": "2026-10-15",
+    "msg": "[Docs](fix) document the VF stack limit compiler option (#2583)"
+  },
+  "5ee08836f6456c32ee1632abb8d790a9bfa8d3d0": {
+    "date": "2026-10-15",
+    "msg": "[Docs](fix) modify formatting issues in the document (#2537)"
+  },
   "b492bef958e1d29acb8de648462a5bcd5663b0bd": {
     "date": "2026-10-14",
     "msg": "[Docs](fix) clarify environment and compiler option support (#2541)"
