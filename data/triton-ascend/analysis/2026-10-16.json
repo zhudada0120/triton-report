@@ -1,0 +1,27 @@
+{
+  "date": "2026-10-16",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-10-17T04:12:17.531506+08:00",
+  "daily_summary": "当日仅有一个 commit（#2602），聚焦于文档构建（Sphinx）的可用性与渲染质量修复：一是修正 docs/en 与 docs/zh 下的 mock 模块（_triton_mock.py），为 CANN 扩展补上 ascend_address_space 这一模块级实例的桩对象并对 torch 导入失败做更宽容的兜底；二是调整 conf.py，去掉全局 autodoc_mock_imports=['triton']，改为在使用 _triton_mock 安装后置空，使真实 mock 机制生效；三是通过 custom.css 让过长签名（dt.sig）与标题换行渲染，避免文档页面溢出；四是修正 docs/zh/python-api/_parse_source.py 在注册动态生成的源模块时同时把子模块挂载到父模块上，保证 autodoc 能正确解析模块层级。整体为纯文档/构建链变更，不触及编译流水线、后端抽象或 C++ pass，对 Ascend 后端功能无影响。",
+  "test_impact_summary": "当日变更全部位于 docs/ 目录（Sphinx 配置、mock 模块、CSS、python-api 源解析脚本），不涉及 python/triton 前端、backends 抽象、Ascend backend/compiler.py、driver.py 或 C++ pass，因此对 triton-ascend 的功能测试、算子端到端测试、autotune/costmodel 测试没有任何看护影响。唯一潜在测试点是文档构建本身（能否成功生成 en/zh API 文档、ascend_address_space 页面能否正常渲染、超长签名是否换行），但仓库现有测试体系（test/ lit、unittest/ gtest、python/test/、third_party/ascend/unittest/）并未覆盖 docs 构建流水线，建议后续如需看护可考虑为文档构建增加 CI 冒烟（Sphinx build）而非新增单元测试。现有测试无需更新。",
+  "commits": [
+    {
+      "sha": "e5100244b813ecc22b7fb77f51866545d5624cbc",
+      "comment": "该 commit 是纯文档构建链修复（对应 PR #2602），意图是让 triton-ascend 的 Sphinx API 文档（英文与中文两份，结构对称）能正确渲染 class API 页面并对超长签名换行。具体实现分四处：1) docs/{en,zh}/_mock/_triton_mock.py：原 AST 解析提取机制无法捕获《ascend_address_space》这类模块级实例（由 ascend_address_space_group() 返回），因此新增桩逻辑——若 _cann_ext 缺少 ascend_address_space，则动态构造一个 __module__ 为 triton.language.extra.cann.extension.core、携带真实 group docstring 的实例并挂载；同时把 import torch 的异常捕获从 ImportError 放宽到 Exception，避免 torch 在有依赖但加载失败（非单纯缺包）时构建崩溃。2) docs/{en,zh}/conf.py：移除 autodoc_mock_imports = ['triton'] 的全局 mock，改在 _force_mock 分支调用 _triton_mock.install() 之后置为 []，即从“Sphinx 自动 mock triton”切换为“自研 mock 模块安装后再真实 import triton”，这是页面能渲染真实 docstring 的关键，否则会与自研 mock 冲突。3) docs/{en,zh}/_static/custom.css：新增 dt.sig 的 overflow-wrap/word-break、dt.sig span.pre 的 white-space: pre-wrap 与 h1/h2/h3 的 overflow-wrap，修复长签名溢出。4) docs/zh/python-api/_parse_source.py：install_source_module 在把模块注册进 sys.modules 后，额外将 leaf 模块 setattr 到父模块上，使 autodoc 解析父包属性时能命中动态生成的子模块。风险层面：均为文档/构建脚本，不进入运行时与编译路径；理论上唯一的次生风险是 _triton_mock 的 torch 兜底从 ImportError 扩大到 Exception 可能掩盖真实的 torch 加载异常，但这只发生在文档构建环境，且原意就是避免构建失败；另外 conf.py 移除 autodoc_mock_imports 后，文档构建环境必须能够真实 import triton（或成功安装 mock），对 CI 构建环境的依赖更强，若 CI 未安装 triton 则可能反而导致构建失败——这属于文档构建环境的看护点，而非 triton-ascend 后端本身的回归风险。",
+      "tags": [
+        "docs",
+        "bugfix",
+        "low-risk",
+        "build"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "变更完全落在 docs/ 目录（Sphinx conf.py、mock 模块、custom.css、python-api 源解析脚本），不涉及 triton-ascend 的 Python 前端、BaseBackend/DriverBase 后端契约、Ascend 编译 lowering 链或任何 C++ pass，因此现有功能测试无需新增或修改。docs 构建本身不在当前测试体系（test/ lit、unittest/ gtest、python/test/、third_party/ascend/unittest/）的覆盖范围内。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](fix) render class API docs correctly and wrap long signatures (#2602)"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

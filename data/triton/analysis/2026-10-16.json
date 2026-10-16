@@ -1,0 +1,148 @@
+{
+  "date": "2026-10-16",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-17T04:10:53.202386+08:00",
+  "daily_summary": "当天变更覆盖多个方向：(1) NFC 测试调整，将依赖对齐推断的除/取余从 signed 换成 unsigned 版本，为后续将推断限制到 unsigned op 铺路；(2) AMD gfx1250 支持 TDM Scatter 多 CTA，移除断言并在 verifier 中新增多项布局一致性检查，同时补充 lit 与 GPU 回归测试；(3) 为 FP4（fp4e2m1x2）与 E8M0（fp8e8m0fnu）引入原生类型，作为类型系统/IR 层面的语法糖接入前端、TTIR/TTGIR、类型转换与下游 lowering，并统一使用 getIntOrFloatOrPtrBitWidth 替换 getIntOrFloatBitWidth；(4) Coalesce 依赖分析复用：将 buildCoalescedEncoding 重构为 CoalescedEncodingAnalysis 类，基于 SCC 计算切片向量化汇总并缓存，显著降低复杂度；(5) GSan mbarrier 表容量按后端分配（allocation）大小计算，改用共享内存别名分析避免动态索引导致容量不足；(6) 修复常量 backward remat 无限循环，改为直接以目标 layout 重建常量。整体以 AMD 后端特性、原生低精度类型与 pass 稳健性/性能优化为主。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 有较明显影响。核心影响点是原生 FP4/E8M0 类型引入：虽未触及 BaseBackend/DriverBase 抽象方法，但改动了 TritonSemantic（computation_type_impl 对 float4e2m1x2/float8e8m0fnu 显式拦截隐式提升）与 dtype 类型系统（FP_TYPES、to_ir 增加 get_fp4e2m1x2_ty/get_fp8e8m0fnu_ty），Ascend 通过 monkey-patch 覆写 TritonSemantic.dot，dot 上下游的类型/提升路径需注意兼容；python/src/ir.cc 新增两个 TritonOpBuilder 绑定方法，AscendNPUIROpBuilder 继承自 TritonOpBuilder，新增方法不影响其现有绑定但需保证构建时基类接口一致；include/triton/Dialect/Triton/ 的 TT_Float 增加了 F8E8M0FNU、TT_Tensor/TT_Type 增加 TT_FP4E2M1x2，属于 Ascend 复用的 TTIR 方言定义变更是必然影响面；CoalescedEncodingAnalysis 重构不改变 TTIR，但依赖 ModuleAxisInfo/共享 Analysis 基础设施，属于可能影响；GSan/backward remat 属于 NVIDIA 专属路径（TritonInstrument、NVIDIA layout），Ascend 不走 TTGIR，不直接受影响。整体建议 Ascend 侧核对 type canonicalisation、dtype.itemsize/primitive_bitwidth 假设以及 dot 类型提升路径。",
+  "commits": [
+    {
+      "sha": "c028eec10801a26eb63d26b1de30880cb7c98694",
+      "comment": "NFC 测试改动。将 dedup-by-constancy.mlir 与 loop-pipeline-hip.mlir 中依赖 AxisInfo 对齐/连续性推断的 arith.divsi/arith.remsi 改为 arith.divui/arith.remui，并同步更新 CHECK 行（sdiv->udiv）。原因是 signed 除法/取余在负数域会破坏 constancy/contiguity 推断（这两个推断本质上按 floor 除法推导，只对非负被除数成立），而测试所用 dividend 是 program_id*1024+arange 等并非天然非负。改动只是测试层面，不涉及编译器实现，为后续将推断限制到 unsigned op 做准备。风险低，但要注意被除数是否为无符号的语义假设被隐含在测试中。",
+      "tags": [
+        "test",
+        "refactor",
+        "low-risk",
+        "analysis"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。仅改动 lit 测试文件（test/Conversion、test/TritonGPU），不涉及任何编译器实现、接口或 pass。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NFC] Use unsigned div/rem in the tests that rely on their alignment inference (#12327)\n\n`dedup-by-constancy.mlir` and the `simple_matmul_kernel` case in\n`loop-pipeline-hip.mlir` both depend on what `AxisInfo` infers for a\ndivision or remainder with a contiguous dividend and a constant divisor:\n\n- `DivOpAxisInfoVisitor::getConstancy` reports constancy 256 for `%7 =\narith.divsi %4, dense<256>` in `dedup_by_constancy_full` (and 4 in\n`dedup_by_constancy_fp`), which is what lets the pointer arithmetic\ndeduplicate down to the single `llvm.getelementptr` the CHECK lines\nexpect.\n- `RemOpAxisInfoVisitor::getContiguity` reports contiguity 16 for `%5 =\narith.remsi %3, %4` in `simple_matmul_kernel`, which is what makes the\noperand loads wide enough for the pipeliner to emit the vectorized\n`async_copy_global_to_local` the ASYNC checks expect.\n\nBoth inferences are derived for floor division and are shared by the\nsigned and the unsigned op, so they report the same numbers for either.\nThe derivation only holds for a non-negative dividend: signed division\ntruncates toward zero, so the constancy pattern breaks around zero, and\na signed remainder of a negative dividend is negative, so the contiguity\npattern breaks there too. Neither dividend here is non-negative by\nconstruction — they are `program_id * 1024 + arange(0, 1024)` and `%arg1\n* 64 + arange(0, 64)` — so the tests currently cover the inference\nthrough the ops it cannot be justified for.\n\nThis PR switches the three operations to `arith.divui`/`arith.remui`,\nwhich the derivation does apply to. The inferred constancy and\ncontiguity are unchanged, so the tests keep exercising the same\ndeduplication and pipelining decisions; only the `sdiv`/`udiv` CHECK\nlines move. That leaves the two tests independent of whether the\ninference stays enabled for the signed ops, which is a prerequisite for\nrestricting it to the unsigned ones."
+    },
+    {
+      "sha": "6bf64a51df4a9c48f0d575b4ca4ad6c9988d36d2",
+      "comment": "AMD gfx1250 TDM Scatter 支持多 CTA。此前 AsyncTDMScatterOpConversion 中有 lookupNumCTAs>1 即报错的断言，移除后 scatter 可在多 CTA 下生成。实现上把原本只服务于 AsyncTDMGatherOp 的布局校验逻辑抽取为共享的 verifyTDMGatherScatterLayout（行主序 shared order、lane 广播要求、index 与 shared 的 block basis 是否同时存在、二者 row 维 block basis 是否一致），scatter 与 gather 共用，并修正 scatter padding 校验改用 getShapePerCTA(smemTy) 而非旧式 getShapePerCTA(paddedEnc, blockShape)。同时在 .td 中补充文档说明 dst_row_indices 需按 warp 广播且跨 CTA 分布需与源行一致。新增 4 个多 CTA lit 用例（2x1/1x2/2x2 CGA）、6 个 invalid 用例覆盖 lane 分布/block basis 缺失或错配/列主序等错误路径，以及 Python gluon 回归测试 _tdm_scatter_multi_cta。风险点：多 CTA 下跨 CTA 的行索引与 LDS 源分片必须严格一致，验证覆盖了这些约束，但运行时正确性仍依赖 CGA layout 生成端正确性。",
+      "tags": [
+        "feature",
+        "bugfix",
+        "medium-risk",
+        "amd",
+        "tdm"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更全部位于 third_party/amd（TritonAMDGPUOps.td、TritonAMDGPU/IR/Dialect.cpp、TritonAMDGPUToLLVM/LoadStoreOpToLLVM.cpp）与 AMD 测试，属于 AMD 专属 TDM/gfx1250 路径，Ascend 不加载 TritonAMDGPU 方言也不使用 TDM lowering。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][gfx1250] Support Multi-CTA in TDM Scatter (#12324)\n\nThere's an assertion blocking TDM Scatter from supporting multi-CTA.\nThis PR removed the assertion, added several checks in the TDM Scatter\nverifier and added several tests."
+    },
+    {
+      "sha": "4283dc7bb52e6977b07ef2465e5411e5aaa7b036",
+      "comment": "为 FP4 与 E8M0 增加原生类型支持（tl.float4e2m1x2 / tl.float8e8m0fnu），不引入新功能，主要是语法糖与清理。IR 层新增 PackedFloat4E2M1Type（!tt.fp4e2m1x2，一个字节装两个 nibble，低 nibble 为第一个值），并把 F8E8M0FNU 纳入 TT_Float。类型系统在前端（dtype.FP_TYPES、fp_mantissa_width/exponent_bias、to_ir 增加 builder.get_fp4e2m1x2_ty/get_fp8e8m0fnu_ty）、_utils.canonicalisation、BITWIDTH_DICT（两者均为 8）与 triton/language/__init__.str_to_ty 中打通。C++ 侧关键改动是引入 include/triton/Dialect/Triton/IR/Utility.h::getIntOrFloatOrPtrBitWidth（对 PackedFloat4E2M1Type 返回 8，对指针返回 64），并大规模替换各处 getIntOrFloatBitWidth/type.getElementTypeBitWidth 调用（Analysis/AxisInfo、Analysis/Utility、TritonGPU Transforms、TritonNvidiaGPU、AMD/NVIDIA lowering 等），统一 bit width 语义。TritonSemantic.computation_type_impl 增加对这两种类型的显式拦截：若与不同类型参与运算则抛 'Implicit promotion ... not supported'。TypeConverter 将 PackedFloat4E2M1Type 转为 i8，Float8E8M0FNUType 走 convertFP8Type。dot_scaled 的 A/B、Fp4ToFp、tc_gen5_mma_scaled、AMD ScaledUpcast/Downcast 等 op 的约束从纯 I8 扩展为允许 TT_FP4E2M1x2/F8E8M0FNU。generateOther 中对这两个类型改用 bitcast i8 常量零填充。风险：改动面极广（65 文件），跨前端/IR/转换/后端 lowering，任何遗漏的 bitwidth 计算仍按 getIntOrFloatBitWidth 会在 PackedFloat4E2M1 上 assert 或得到错误宽度；同时新增类型参与 promote 会抛错，若下游有依赖隐式提升的路径会编译期失败。",
+      "tags": [
+        "feature",
+        "refactor",
+        "medium-risk",
+        "tdm",
+        "dialect"
+      ],
+      "ascend_impact": {
+        "ascend_affected": true,
+        "functionality": "必然影响路径命中 python/triton/language/semantic.py（TritonSemantic.computation_type_impl 新增对 tl.float4e2m1x2/tl.float8e8m0fnu 的隐式提升拦截，Ascend 通过 _apply_ascend_patch 覆写 TritonSemantic.dot，dot 的类型提升/scale 处理和 max_num_imprecise_acc 拦截逻辑需与该分支兼容；若 Ascend 侧存在对这些 dtype 做提升的路径会抛 TypeError）。命中 include/triton/Dialect/Triton/IR/TritonTypes.td 与 Utility.h：TT_Float 增加 F8E8M0FNU、TT_Tensor/TT_Type 增加 TT_FP4E2M1x2，并新增 getIntOrFloatOrPtrBitWidth（对指针返回 64、对 PackedFloat4E2M1 返回 8），Ascend 复用 TTIR 前端并从此处进入 TritonToLinalg，新增类型与 bit width 语义变化会改变 Ascend lowering 的输入/宽度假设。命中 python/src/ir.cc：TritonOpBuilder 新增 get_fp4e2m1x2_ty/get_fp8e8m0fnu_ty 绑定，AscendNPUIROpBuilder 继承自 TritonOpBuilder，新增绑定本身不破坏继承，但基类构造与绑定接口一致性仍需保证。命中 lib/Dialect/Triton/IR（Ops.cpp BitcastOp::verify 改用 getIntOrFloatOrPtrBitWidth，Types.cpp PointerType::verify 允许 PackedFloat4E2M1 pointee、getPointeeBitWidth 改用新函数）及 lib/Dialect/Triton/Transforms/RewriteTensorDescriptorToPointer.cpp，属 Ascend 转换链上游方言语义变更。lib/Dialect/TritonGPU 与 third_party/{amd,nvidia} 的 bitwidth 替换属 Ascend 不使用的 TTGIR 路径，不传导。",
+        "testing": "Ascend 侧若已有基于 uint8/i8 表示 FP4 的算子路径、dtype item size 假设或 dot type promotion 相关测试，需要重新验证 native fp4e2m1x2/e8m0fnu 与既有 unsigned byte 表示的双向兼容；AscendInterpreterBuilder 对新增 dtype 若缺少解释执行注册也会在解释器路径暴露问题。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut（FP4/E8M0 相关算子端到端测试，native dtype 与 i8/uint8 表示对照）",
+          "third_party/ascend/unittest/Conversion（TTIR -> linalg 转换在新增 dtype 与 bitwidth 计算上的行为）",
+          "Ascend 前端 dot 类型提升相关测试（TritonSemantic.computation_type_impl 新增拦截对 _patched_dot 的影响）"
+        ]
+      },
+      "message": "Add support for native types for fp4 and e8m0 (#12315)\n\nThis doesn't expose any new functionality, mostly clean ups and\nsyntactic sugar",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "include/triton/Dialect/Triton/",
+          "lib/Dialect/Triton/",
+          "python/src/ir.cc",
+          "python/triton/language/semantic.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": true,
+        "affected_interfaces": [
+          "python/triton/language/core.py::dtype (FP_TYPES, __init__ fp_mantissa_width/exponent_bias, to_ir, new float4e2m1x2/float8e8m0fnu globals)",
+          "python/triton/language/semantic.py::TritonSemantic (computation_type_impl promotion guard; dot_scaled packed-float assert)",
+          "python/src/ir.cc::TritonOpBuilder (new get_fp4e2m1x2_ty/get_fp8e8m0fnu_ty methods; subclassed by AscendNPUIROpBuilder)",
+          "python/triton/_utils.py (type_canonicalisation_dict + BITWIDTH_DICT entries)",
+          "python/triton/language/__init__.py (str_to_ty + __all__ entries)"
+        ],
+        "adaptation_effort": "low",
+        "adaptation_guide": "This commit is additive syntactic sugar (new native fp4e2m1x2 and e8m0 types) with no signature changes to any interface triton-ascend subclasses or monkey-patches (BaseBackend/DriverBase/TargetInfoBase untouched; TritonSemantic.dot signature unchanged; TritonOpBuilder only gains new methods). Required adaptation is patch maintenance plus awareness:\n1. Rebase third_party/ascend/patch/triton-ascend-<version>.patch: the Ascend patch modifies python/triton/language/semantic.py (+89/-18), python/triton/_utils.py (+3/-2), and python/src/ir.cc (+13/-0), all of which this commit also edits — resolve the resulting cherry-pick/patch conflicts (semantic.py around computation_type_impl and the dot_scaled assert; _utils.py type_canonicalisation_dict/BITWIDTH_DICT; ir.cc around get_fp8e4nv_ty).\n2. Confirm third_party/ascend/ascend_ir.cc::AscendNPUIROpBuilder (struct AscendNPUIROpBuilder : public TritonOpBuilder) still compiles — no change needed since the new builder methods are additive and do not alter the constructor/base interface.\n3. Verify third_party/ascend/backend/__init__.py::_apply_ascend_patch is unaffected: _patched_dot wraps dot (signature unchanged); the computation_type_impl change only guards the new fp4/e8m0 types and cannot trigger on existing Ascend kernels.\n4. Optionally reject/guard tl.float4e2m1x2 and tl.float8e8m0fnu in the Ascend frontend/lowering if NPU does not support them; the default error paths in third_party/ascend/lib (TritonToLinalg/TritonStructured type dispatch) already reject unknown element types, so no code change is strictly required.",
+        "risk": "Low. Changes are purely additive and target hardware-agnostic frontend/binding files; no abstract-interface signature, stage-key, or monkey-patch contract changes. The only concrete risk is patch conflict during cherry-pick of the upstream commit onto the Ascend-patched semantic.py/_utils.py/ir.cc, and (if users attempt fp4/e8m0 on NPU) hitting existing unsupported-type error paths rather than a silent miscompile."
+      }
+    },
+    {
+      "sha": "d355745a39dd3268559d1bdde2b8da0134a95a62",
+      "comment": "Coalesce 依赖分析复用，降低时间复杂度的性能修复。原 buildCoalescedEncoding 对每个 memory op 都调用 mlir::getSlice(op) 做切片遍历，导致 O(n^2)（甚至更差）复杂度。重构为 CoalescedEncodingAnalysis 类：构造函数持有 ModuleAxisInfoAnalysis，首次查询时按 FunctionOpInterface 构建切片图（SliceNode + SliceGraphTraits），显式建模 operand/def、user 以及 region 包含三类边（region 包含是单向的：父 op 可达嵌套 op，反之不必），用 llvm::scc_iterator 以 SCC 为单位（successor-first 顺序）聚合向量化摘要（ShapeAndOrder -> per-thread 向量宽度），并在 getEncoding 中只对 load 使用缓存摘要（对 shapePerCTA[order[0]] 做 min clamp），store 仍用自身局部 bound（避免相邻线程写之间出现 gap）。调用方 Coalesce.cpp / CoalesceAsyncCopy.cpp / Gluon InferCoalescedEncodings.cpp 改为构造一次分析实例并复用。新增大量 coalesce.mlir 用例覆盖独立切片、shape 不同、block argument 与派生指针、非对称 region、循环 block argument、order 不同、CGA extent 不同的场景。风险：新算法改变了 constancy/contiguity 汇总的语义边界（SCC 内共享摘要、跨 CTA extent 在查询时 clamp），若 SCC 建图遗漏某类边（例如多 region op 或 isolated-from-above 判断）可能回归向量宽度选择，但测试覆盖较广。",
+      "tags": [
+        "performance",
+        "refactor",
+        "medium-risk",
+        "tritongpu",
+        "coalesce"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Dialect/TritonGPU/Transforms（CoalesceUtils.h/cpp、Coalesce.cpp、CoalesceAsyncCopy.cpp）、lib/Dialect/Gluon 与 lit 测试，均属 Ascend 不使用的 TTGIR/Coalesce 路径（Ascend 用 TritonToLinalg 而非 TTGIR lowering，不经过 Coalesce pass）。虽然改动使用 ModuleAxisInfoAnalysis 与共享 Analysis 基础设施，但仅作为 Coalesce 内部实现，不改变对外接口或 Analysis 定义。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Reuse coalescing dependency analysis (#12322)\n\nreduce time complexity of the coalescing pass.\n\nProblem found and debugged by @christopherhesse\n\nCo-authored-by: Christopher Hesse <christopherhesse@users.noreply.github.com>"
+    },
+    {
+      "sha": "2d0eee9c8ade47f9bcdda7bf9ae77b935d883b39",
+      "comment": "修复 GSan mbarrier 表容量不足（'GSan mbarrier table is full'）。根因是循环中动态索引的 mbarrier 分配会让单个 mbarrier.init 初始化多个不同 barrier 地址，而运行时在 invalidate 后仍保留表项，因此按静态 init 个数累加无法给出容量上界。改为用 SharedMemoryAliasAnalysis（createDataFlowSolver + data-flow analysis）收集所有 ttng.InitBarrierOp 的 alloc 的别名分配（getAllocs），对每个底层 allocation 只按其元素数计算一次容量，从而覆盖动态索引视图与循环携带的 allocation 并消除重复计数。返回类型由 int64_t 改为 FailureOr<int64_t>，solver 失败时 signalPassFailure 而非静默。新增 lit 覆盖动态索引、去重、循环携带 allocation，以及多个 GPU 回归（重复 init/invalidate、同时初始化、双 CTA barrier）。风险：依赖别名分析的精度，若分析无法解析某类 barrier 来源（如未覆盖的 op 形态）会返回 failure 直接失败；这类从'保守高估'变为'精确按分配计数'的改动需要别名分析在边界情形下不低估。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "gsan",
+        "sanitizer"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Dialect/TritonInstrument/Transforms/GlobalSanitizer.cpp 与 test/TritonGPU/gsan.mlir、python/test/gluon/test_core.py，属 NVIDIA/Hopper+ 双 CTA mbarrier 专属的 GSan sanitizer 路径。Ascend 既不加载 TritonInstrument 也不使用 TTGIR/GSan instrumentation。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[GSan] Size mbarrier tables from backing allocations (#12323)\n\nGSan can report `GSan mbarrier table is full` when a loop dynamically\nindexes a barrier allocation: a single `mbarrier.init` operation can\ninitialize several distinct barrier addresses. The runtime retains table\nentries after invalidation, so counting static init operations does not\nbound the required capacity.\n\nUse shared-memory alias analysis to find the backing allocations of\ninitialized barriers and sum each allocation's element count once. This\ncovers dynamically indexed views and loop-carried allocations while\navoiding duplicate counts for repeated initialization.\n\nAdd lit coverage for dynamic indexing, deduplication, and loop-carried\nallocation roots, plus GPU regressions for repeated initialization and\ninvalidation, simultaneously initialized barriers, and two-CTA barriers.\n\nValidation on a Brix GB300 devbox:\n- Original reproducer passes; the previous compiler reports a full\nmbarrier table.\n- All 12 new GPU regression cases pass.\n- Nine existing mbarrier tests pass, including expected-failure tests.\n- `make test-lit`: 305 passed, 2 unsupported.\n\nLocal pre-commit checks also pass."
+    },
+    {
+      "sha": "4a4302c71902a7b7eb60cf4ef4728522fcf91f5b",
+      "comment": "修复 backward remat 对非均匀常量的无限循环。原来在 rewriteSlice 中遇到 arith::ConstantOp 时 clone 原 op 再插入 convert_layout，但对于非均匀（non-uniform）常量，canonicalizer 不会消除该 convert_layout，于是每次 backward remat 都会产生新的 convert_layout 并再次触发 remat，形成无限循环。修复为直接把常量 DenseElementsAttr 通过 reshape(newType) 换成目标 layout 的常量（arith::ConstantOp::create 直接以新 layout 建立），从而避免插入 convert_layout。新增 combine.mlir 用例覆盖非均匀 float 与 integer 常量的 remat。风险：reshape 仅对 DenseElementsAttr 有效，若常量不是 DenseElementsAttr（理论上 arith.constant 的 tensor 常量都是）会 cast 失败；对 splat 常量行为与旧路径等价（旧路径 splat + convert_layout 也会被 canonicalize 成目标 layout 的 splat 常量）。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "tritongpu"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Dialect/TritonGPU/Transforms/RemoveLayoutConversions.cpp，属 TTGIR layout conversion/rematerialization 路径（NVIDIA/AMD 使用），Ascend 不走 TTGIR 的 RemoveLayoutConversions。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Fix backward remat infinite loop for constant remat (#12307)\n\nBackward remat inserts a convert_layout after a constant to get it in\nthe target layout. This can cause an infinite loop for non-uniform\nconstants, because the convert_layout doesn't get cleaned up by the\ncanonicalizer, and we end up with a new convert layout that we then try\nto backward remat again and again.\n\nTo fix this, remat the constant directly into the target layout instead\nof using a convert_layout."
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

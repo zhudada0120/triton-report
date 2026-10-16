@@ -1,4 +1,28 @@
 {
+  "c028eec10801a26eb63d26b1de30880cb7c98694": {
+    "date": "2026-10-16",
+    "msg": "[NFC] Use unsigned div/rem in the tests that rely on their alignment inference (#12327)"
+  },
+  "6bf64a51df4a9c48f0d575b4ca4ad6c9988d36d2": {
+    "date": "2026-10-16",
+    "msg": "[AMD][gfx1250] Support Multi-CTA in TDM Scatter (#12324)"
+  },
+  "4283dc7bb52e6977b07ef2465e5411e5aaa7b036": {
+    "date": "2026-10-16",
+    "msg": "Add support for native types for fp4 and e8m0 (#12315)"
+  },
+  "d355745a39dd3268559d1bdde2b8da0134a95a62": {
+    "date": "2026-10-16",
+    "msg": "[BACKEND] Reuse coalescing dependency analysis (#12322)"
+  },
+  "2d0eee9c8ade47f9bcdda7bf9ae77b935d883b39": {
+    "date": "2026-10-16",
+    "msg": "[GSan] Size mbarrier tables from backing allocations (#12323)"
+  },
+  "4a4302c71902a7b7eb60cf4ef4728522fcf91f5b": {
+    "date": "2026-10-16",
+    "msg": "Fix backward remat infinite loop for constant remat (#12307)"
+  },
   "e6f4c919fb18a99ed08f1cf3713ae15c686790d3": {
     "date": "2026-10-15",
     "msg": "[NFC] Remove unused triton.0.code-workspace file (#12312)"

@@ -1,0 +1,16 @@
+{
+  "content_hash": "34d1efbbbf2045b2",
+  "analysis": {
+    "interface_summary": "定义 3 个类；定义 15 个函数",
+    "key_interfaces": [
+      "MockJITCallable",
+      "MockFloat",
+      "MockInt",
+      "MockJITCallable.__init__",
+      "MockJITCallable.cache_key",
+      "MockFloat.__new__",
+      "MockInt.__new__"
+    ]
+  },
+  "cached_at": "2026-10-17T04:10:53.531408+08:00"
+}

@@ -915,6 +915,24 @@
       "interface_changes": "修复 atomic_cas 丢失 pointee 类型的问题（#12258）。在 TritonSemantic.atomic_cas 开头新增两次 _atomic_typechecking_impl 调用，分别校验 ptr/cmp 与 ptr/val 的类型一致性，确保 ptr 的元素类型被正确传播/校验。新增 test_atomic_cas_pointee_type 覆盖 int32/uint32/int64/uint64、scalar/tensor、compare 为 0 与 -1 的组合，验证 signed/unsigned pointee 的语义分离。",
       "change_summary": "[FRONTEND] Preserve pointee type in atomic_cas (#12270)",
       "ascend_impact": false
+    },
+    "4283dc7bb52e6977b07ef2465e5411e5aaa7b036": {
+      "date": "2026-10-16",
+      "affected_modules": [
+        "include/triton/Dialect/Triton/",
+        "lib/Dialect/Triton/",
+        "python/src/ir.cc",
+        "python/triton/language/semantic.py"
+      ],
+      "affected_interfaces": [
+        "include/triton/Dialect/Triton/",
+        "lib/Dialect/Triton/",
+        "python/src/ir.cc",
+        "python/triton/language/semantic.py"
+      ],
+      "interface_changes": "为 FP4 与 E8M0 增加原生类型支持（tl.float4e2m1x2 / tl.float8e8m0fnu），不引入新功能，主要是语法糖与清理。IR 层新增 PackedFloat4E2M1Type（!tt.fp4e2m1x2，一个字节装两个 nibble，低 nibble 为第一个值），并把 F8E8M0FNU 纳入 TT_Float。类型系统在前端（dtype.FP_TYPES、fp_mantissa_width/exponent_bias、to_ir 增加 builder.get_fp4e2m1x2_ty/get_fp8e8m0fnu_ty）、_utils.canonicalisation、BITWIDTH_DICT（两者均为 8）与 triton/language/__init__.str_to_ty 中打通。C++ 侧关键改动是引入 include/triton/Dialect/Triton/IR/Utility.h::getIntOrFloatOrPtrBitWidth（对 PackedFloat4E2M1Type 返回 8，对指针返回 64），并大规模替换各处 ge",
+      "change_summary": "Add support for native types for fp4 and e8m0 (#12315)",
+      "ascend_impact": true
     }
   }
 }

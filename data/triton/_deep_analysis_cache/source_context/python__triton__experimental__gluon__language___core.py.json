@@ -1,7 +1,7 @@
 {
-  "content_hash": "04efac2daea96b59",
+  "content_hash": "230d6c4d40473efc",
   "analysis": {
-    "interface_summary": "定义 3 个类；定义 62 个函数",
+    "interface_summary": "定义 3 个类；定义 63 个函数",
     "key_interfaces": [
       "distributed_type",
       "shared_memory_descriptor_type",
@@ -23,5 +23,5 @@
       "shared_memory_descriptor.shape"
     ]
   },
-  "cached_at": "2026-09-11T04:15:00.310216+08:00"
+  "cached_at": "2026-10-17T04:10:53.540546+08:00"
 }

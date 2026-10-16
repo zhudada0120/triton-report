@@ -1,0 +1,75 @@
+{
+  "date": "2026-10-16",
+  "repo": "triton-lang/triton-ascend",
+  "branch": "main",
+  "commits": [
+    {
+      "sha": "e5100244b813ecc22b7fb77f51866545d5624cbc",
+      "author": {
+        "name": "TecJesh",
+        "email": "qdvm5gl@163.com"
+      },
+      "date": "2026-10-16T16:29:05+08:00",
+      "message": "[Docs](fix) render class API docs correctly and wrap long signatures (#2602)",
+      "parents": [
+        "94d35e5b1c4d46c2f92643b9495dcbcf771d86ee"
+      ],
+      "stats": {
+        "total_additions": 62,
+        "total_deletions": 8,
+        "files_changed": 7
+      },
+      "files": [
+        {
+          "filename": "docs/en/_mock/_triton_mock.py",
+          "status": "modified",
+          "additions": 14,
+          "deletions": 1,
+          "patch": "@@ -256,6 +256,19 @@ def install() -> None:\n             _stub_cls = type(_name, (), {\"__doc__\": f\"MLIR {_name} type.\"})\n             setattr(_cann_ext, _name, _stub_cls)\n \n+    # ascend_address_space is a module-level instance (ascend_address_space_group()),\n+    # which the AST parser above doesn't extract. Attach a stub instance whose\n+    # repr matches the real object and which carries the real group docstring,\n+    # so the autodata page renders the same as in real-triton builds.\n+    if not hasattr(_cann_ext, \"ascend_address_space\"):\n+        _aas_group = getattr(_cann_ext, \"ascend_address_space_group\", None)\n+        _aas_cls = type(\n+            \"ascend_address_space_group\", (), {\n+                \"__module__\": \"triton.language.extra.cann.extension.core\",\n+                \"__doc__\": getattr(_aas_group, \"__doc__\", \"Ascend hardware address space constants.\"),\n+            })\n+        setattr(_cann_ext, \"ascend_address_space\", _aas_cls())\n+\n     # ------------------------------------------------------------------ #\n     # Optional runtime deps                                               #\n     # ------------------------------------------------------------------ #\n@@ -266,7 +279,7 @@ def install() -> None:\n \n     try:\n         import torch  # noqa: F401\n-    except ImportError:\n+    except Exception:\n         sys.modules[\"torch\"] = MagicMock(name=\"torch\")\n         sys.modules[\"torch.nn\"] = MagicMock(name=\"torch.nn\")\n         sys.modules[\"torch._C\"] = MagicMock(name=\"torch._C\")"
+        },
+        {
+          "filename": "docs/en/_static/custom.css",
+          "status": "modified",
+          "additions": 13,
+          "deletions": 0,
+          "patch": "@@ -50,3 +50,16 @@ section#triton-ascend h1 {\n .toctree-wrapper.sidebar-groups-only {\n     display: none;\n }\n+\n+dt.sig {\n+    overflow-wrap: anywhere;\n+    word-break: break-word;\n+}\n+\n+dt.sig span.pre {\n+    white-space: pre-wrap;\n+}\n+\n+h1, h2, h3 {\n+    overflow-wrap: anywhere;\n+}"
+        },
+        {
+          "filename": "docs/en/conf.py",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 3,
+          "patch": "@@ -78,9 +78,6 @@ if _is_zh:\n else:\n     exclude_patterns.extend(['../zh'])\n \n-# python-api RST files require triton import; mock it at build time.\n-autodoc_mock_imports = ['triton']\n-\n _HERE = os.path.dirname(__file__)\n _REPO = os.path.abspath(os.path.join(_HERE, \"..\", \"..\"))\n \n@@ -111,6 +108,8 @@ if _force_mock:\n         os.path.join(_HERE, \"_mock\", \"_triton_mock.py\"),\n     ).install()\n \n+autodoc_mock_imports = []\n+\n import triton\n import triton.language.extra as _tl_extra\n "
+        },
+        {
+          "filename": "docs/zh/_mock/_triton_mock.py",
+          "status": "modified",
+          "additions": 14,
+          "deletions": 1,
+          "patch": "@@ -256,6 +256,19 @@ def install() -> None:\n             _stub_cls = type(_name, (), {\"__doc__\": f\"MLIR {_name} type.\"})\n             setattr(_cann_ext, _name, _stub_cls)\n \n+    # ascend_address_space is a module-level instance (ascend_address_space_group()),\n+    # which the AST parser above doesn't extract. Attach a stub instance whose\n+    # repr matches the real object and which carries the real group docstring,\n+    # so the autodata page renders the same as in real-triton builds.\n+    if not hasattr(_cann_ext, \"ascend_address_space\"):\n+        _aas_group = getattr(_cann_ext, \"ascend_address_space_group\", None)\n+        _aas_cls = type(\n+            \"ascend_address_space_group\", (), {\n+                \"__module__\": \"triton.language.extra.cann.extension.core\",\n+                \"__doc__\": getattr(_aas_group, \"__doc__\", \"Ascend hardware address space constants.\"),\n+            })\n+        setattr(_cann_ext, \"ascend_address_space\", _aas_cls())\n+\n     # ------------------------------------------------------------------ #\n     # Optional runtime deps                                               #\n     # ------------------------------------------------------------------ #\n@@ -266,7 +279,7 @@ def install() -> None:\n \n     try:\n         import torch  # noqa: F401\n-    except ImportError:\n+    except Exception:\n         sys.modules[\"torch\"] = MagicMock(name=\"torch\")\n         sys.modules[\"torch.nn\"] = MagicMock(name=\"torch.nn\")\n         sys.modules[\"torch._C\"] = MagicMock(name=\"torch._C\")"
+        },
+        {
+          "filename": "docs/zh/_static/custom.css",
+          "status": "modified",
+          "additions": 13,
+          "deletions": 0,
+          "patch": "@@ -50,3 +50,16 @@ section#triton-ascend h1 {\n .toctree-wrapper.sidebar-groups-only {\n     display: none;\n }\n+\n+dt.sig {\n+    overflow-wrap: anywhere;\n+    word-break: break-word;\n+}\n+\n+dt.sig span.pre {\n+    white-space: pre-wrap;\n+}\n+\n+h1, h2, h3 {\n+    overflow-wrap: anywhere;\n+}"
+        },
+        {
+          "filename": "docs/zh/conf.py",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 3,
+          "patch": "@@ -78,9 +78,6 @@ if _is_zh:\n else:\n     exclude_patterns.extend(['../zh'])\n \n-# python-api RST files require triton import; mock it at build time.\n-autodoc_mock_imports = ['triton']\n-\n _HERE = os.path.dirname(__file__)\n _REPO = os.path.abspath(os.path.join(_HERE, \"..\", \"..\"))\n \n@@ -111,6 +108,8 @@ if _force_mock:\n         os.path.join(_HERE, \"_mock\", \"_triton_mock.py\"),\n     ).install()\n \n+autodoc_mock_imports = []\n+\n import triton\n import triton.language.extra as _tl_extra\n "
+        },
+        {
+          "filename": "docs/zh/python-api/_parse_source.py",
+          "status": "modified",
+          "additions": 4,
+          "deletions": 0,
+          "patch": "@@ -200,3 +200,7 @@ def install_source_module(\n         export_filter=export_filter,\n     )\n     _sys.modules[module_name] = module\n+\n+    _parent_name, _sep, _leaf = module_name.rpartition(\".\")\n+    if _sep and _parent_name in _sys.modules:\n+        setattr(_sys.modules[_parent_name], _leaf, module)\n"
+        }
+      ]
+    }
+  ]
+}
