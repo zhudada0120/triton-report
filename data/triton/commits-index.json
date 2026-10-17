@@ -1,4 +1,20 @@
 {
+  "2122e24efc1886bfa36337c1f5b07c47d827b1d4": {
+    "date": "2026-10-17",
+    "msg": "[Backend] Avoid emitting llvm bitcast when loading (#12319)"
+  },
+  "2cd5519881ff9f92fa6f2a83db86b51eeea6292e": {
+    "date": "2026-10-17",
+    "msg": "[NVIDIA] Reland non-aligned warp-specialized barriers (#12321)"
+  },
+  "4a18983590bf26cf1f79e81d9b1ed471986ce9ef": {
+    "date": "2026-10-17",
+    "msg": "[Runtime] Account for CUDA reservations in max_occupancy (#12326)"
+  },
+  "1369c18a3f3a399dec0f4f5eacfff9786b126d52": {
+    "date": "2026-10-17",
+    "msg": "[PROTON][UT] Generalize tests in `test_instrumentation.py` using `device` fixture (#12316)"
+  },
   "c028eec10801a26eb63d26b1de30880cb7c98694": {
     "date": "2026-10-16",
     "msg": "[NFC] Use unsigned div/rem in the tests that rely on their alignment inference (#12327)"

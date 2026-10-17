@@ -1,0 +1,31 @@
+{
+  "date": "2026-10-17",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-10-18T03:46:46.469850+08:00",
+  "daily_summary": "当日仅有一次纯文档类提交，围绕 3.6.0 与 3.2.2.post2 两个版本的发布信息进行完善：更新中英文 README 的 Latest News、重写中英文 release_note.md（调整发布计划表、分支维护状态表、版本推荐配套矩阵、兼容性矩阵并移除版本亮点章节）、修正安装指南中环境变量表格的缩进与格式，并移除了 python-api 文档中 triton.Config 的 replace_docstring 覆写。同时还夹带了对 autotune 相关文档描述的删除（commit message 提到 'autotune issue fixed'）。整体是发布收尾性质的文档整理，未触及任何后端编译链、运行时或 C++ pass 代码。",
+  "test_impact_summary": "本次变更为纯文档/文档构建脚本修改（README、release_note、installation_guide、python-api 的 _ascend_constraints.py 文档覆写），不涉及编译器、运行时、驱动或任何算子实现，因此不需要新增或更新功能性测试用例。唯一需要留意的是 docs/zh/python-api/_ascend_constraints.py 移除了 triton.Config 的文档覆写内容，若仓库存在文档生成/API 文档校验类测试（如 sphinx 构建检查、doctest 或文档快照），应确认 Ascend 侧 triton.Config 的约束说明（num_warps/num_stages/num_ctas/maxnreg/ir_override 等）是否已在其他位置（如 autotuner 源码 docstring 或 _apply_ascend_patch 处）得到保留，避免文档能力描述缺失。现有测试体系（lit/gtest/python 测试/third_party/ascend/unittest）不受影响。",
+  "commits": [
+    {
+      "sha": "afbc53764b8e9dcde35e55f9f46b96c9600dae63",
+      "comment": "纯文档提交，用于补齐 3.2.2.post2 与 3.6.0 两个版本的发布信息。具体包括：(1) README.md / README_zh.md 的 Latest News 将 3.6.0 单版本发布改为 3.2.2.post2 和 3.6.0 同时发布；(2) docs/en|zh/release_note.md 重构：删除『发布兼容性矩阵』与『版本亮点/已知限制/迁移指南』整段，改为在发布计划表新增『版本性质』列并补入 3.2.2.post2 行，分支状态表中新增 release/3.6.0 分支并将 release/3.2.2 从 Active 改为 Maintenance，推荐配套矩阵新增 3.2.2.post2 行（PyTorch 2.7.1 / TorchNPU 2.7.1.post11 / CANN 9.2.0 / SHMEM v1.7.0 / LLVM b5cc222），并在 torch_npu 兼容与特性支持矩阵中补入 3.2.2.post2 行；(3) docs/en|zh/installation_guide.md 仅做 Markdown 缩进/对齐格式修正（表格、代码块缩进），内容未变；(4) docs/zh/python-api/_ascend_constraints.py 删除了 triton.Config 的 replace_docstring 覆写块，该块原本描述了 Ascend 上 num_warps（仅纯 SIMT 生效）、num_stages（仅 1/2 且等价于 multibuffer 开关）、num_ctas/maxnreg 被忽略、ir_override 支持的扩展名（ttir/ttadapter/mlirbc/bcmlir/npubin）等约束。commit message 中还提及 'autotune issue fixed'，对应很可能就是删除该可能引发文档生成/内容冲突的覆写。风险点：a) 移除该 replace_docstring 后，Ascend 特有的 autotune 参数语义（num_stages 与 multibuffer 的等价关系、num_warps 仅在 simt_only 生效、ir_override 扩展名）不再在 API 文档中显式说明，用户可发现性下降，且若该覆写本身是为规避 autotune 文档生成 bug 而删除，则需后续在合适位置（如 AutoTilingTuner 的 docstring 或 _apply_ascend_patch 注释）补回说明；b) release_note 删除了 3.6.0 版本亮点与迁移指南链接，可能造成历史发布信息丢失，属于文档信息完整性问题而非功能风险。整体不涉及任何代码路径，风险极低。",
+      "tags": [
+        "docs",
+        "low-risk",
+        "release",
+        "python-api-docs"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "变更仅涉及 README、release note、安装指南和 python-api 文档约束脚本，未修改任何编译链、运行时、驱动或算子实现代码，现有 lit/gtest/python/third_party/ascend/unittest 测试均不受影响，无需新增或更新功能测试。唯一潜在看护点是 _ascend_constraints.py 中 triton.Config 的 replace_docstring 被移除：若仓库有文档构建或 API 文档内容校验类测试（如 sphinx 构建、文档快照比对），应确认删除后文档仍能正常生成且 Ascend autotune 参数约束说明未彻底丢失。",
+        "suggested_test_areas": [
+          "docs/zh/python-api/_ascend_constraints.py（文档构建/API 文档生成校验）",
+          "docs/en/release_note.md, docs/zh/release_note.md（Markdown 渲染/链接有效性检查，如存在）",
+          "docs/en/installation_guide.md, docs/zh/installation_guide.md（Markdown 格式渲染检查）"
+        ]
+      },
+      "message": "[docs](fix) 3.2.2.post2 and 3.6.0 versions (#2604)\n\n* [docs](feat)  Updated the docs for 3.6.0 (#2591)\n\n* [docs](feat)  Updated the docs for release 3.6.0\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>\n\n* [patch](fix) autotune issue fixed\n\n---------\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>\n\n* [docs](fix) 3.2.2.post2 and 3.6.0 versions\n\n---------\n\nSigned-off-by: liuhuan <liuhuan261@huawei.com>"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

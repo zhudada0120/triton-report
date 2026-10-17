@@ -1,0 +1,87 @@
+{
+  "date": "2026-10-17",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-18T03:46:38.606948+08:00",
+  "daily_summary": "当日变更集中在 NVIDIA 后端的 lowering 质量与运行时细节：一是 tl.load 的 inline_asm 尽量以真实浮点/整型向量类型返回，避免 LLVM 把浮点加载降级成整型路径（数据正确性与代码质量）；二是 reland 了 warp-specialized 分区使用非对齐命名屏障的修复，保证分区级 barrier 的语义正确；三是修正 max_occupancy 下共享内存预留的计算（计入 CUDA 每 CTA 驱动预留并按 128B 对齐），并扩展了启动/占用率测试；此外 Proton 测试用例从硬编码 cuda 改为 device fixture，提升多后端可测性。整体以 NVIDIA 平台内部改动为主，核心 Python 接口与 TTIR/编译器框架无变化。",
+  "ascend_impact_summary": "当日四个 commit 均未触及 triton-ascend 依赖的核心接口面：BaseBackend/DriverBase/后端发现、TritonSemantic/CodeGenerator/compiler.parse monkey-patch 点、JIT、TT 方言等均无改动。三个 NVIDIA 相关变更位于 third_party/nvidia（LoadStoreOpToLLVM、ConvertWarpSpecializeToLLVM、driver.c/driver.py），属于 Ascend 绝不使用的路径；Proton 测试改动仅影响 third_party/proton 的测试且提升通用性。因此对 triton-ascend 无功能与测试影响。",
+  "commits": [
+    {
+      "sha": "2122e24efc1886bfa36337c1f5b07c47d827b1d4",
+      "comment": "变更意图：tl.load 目前总是通过 inline_asm 返回整型值再 bitcast 到实际 dtype，这会让 LLVM InstCombine 倾向于选择整型运算路径（尤其浮点零比较/掩码被整数化），从而生成次优代码。本次在 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/LoadStoreOpToLLVM.cpp 的 LoadOpConversion 中引入 wordTy 概念：当元素类型为浮点，或为 32 位打包整数（i16/i8 且 width==32）时，inline_asm 直接返回 unpackedTy（标量元素类型或 vector<wordNElems>），仅在不支持的组合（如 B16 下的 v2i8）才回退到整型 width。同时把返回值解包逻辑简化为按 unpackedTy bitcast 后 unpackLLVector 展开，替换原先按 tmp=width/elemBits 的 extract_element 循环。实现方式：以 unpackedTy/wordTy 打通 mask 默认值打包、retTys、extract_val 与解包路径，并用 append_range 统一处理。潜在风险：该改动只影响 NVIDIA TritonGPU->LLVM lower 阶段，改变了 inline_asm 的返回类型契约（PTX 文本不变，LLVM 类型变化），需确保 float8 等低位宽打包类型仍走 vector<4xi8>（测试已验证），且 masked 分支的 otherElems 打包路径类型一致；另外 two_byte_i8 仍保留 bitcast 以匹配 b16 不支持 v2i8 的限制，测试中有显式覆盖。整体风险局限于 NVIDIA 后端代码生成，不涉及编译器框架或前端接口。",
+      "tags": [
+        "refactor",
+        "performance",
+        "low-risk",
+        "nvidia-backend",
+        "lowering"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/LoadStoreOpToLLVM.cpp（NVIDIA 专属 TritonGPU->LLVM lowering），triton-ascend 走 TritonToLinalg 路径，不使用该 TargetInfo/lowering，也不加载 TritonNvidiaGPU 相关实现。",
+        "testing": "无影响。新增的 test/Conversion/tritongpu_to_llvm.mlir 用例为 lit 测试，仅校验 NVIDIA 后端的 LLVM IR 输出。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Backend] Avoid emitting llvm bitcast when loading (#12319)\n\nCurrently tl.load emits inline_asm returning integer values, and we\nbitcast those to the actual dtype. This can make llvm prefer doing\ninteger operations to avoid the bitcast, even if the value is actually a\nfloat.\n\nThis changes the inline_asm to return the actual type wherever possible."
+    },
+    {
+      "sha": "2cd5519881ff9f92fa6f2a83db86b51eeea6292e",
+      "comment": "变更意图：warp-specialized 分区（partition）内只有部分 CTA 线程执行，其命名屏障不能要求整个 CTA 对齐到达，否则会在分区/内联函数场景下产生语义错误甚至死锁风险。本次为 #11710 的 reland（此前被 #11830 revert），在 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/ConvertWarpSpecializeToLLVM.cpp 中，把非 32 线程的 NVVM::BarrierOp 生成改为 aligned=false；numThreads==32 仍走 createSyncWarp。测试 test/Conversion/warp_specialize_to_llvm.mlir 中所有相关 CHECK 补充 {aligned = false}，覆盖顶层重写、default/partition 内以及 noinline ws 函数的屏障 lowering。commit message 给出了较充分的性能回归验证（GB300 barrier 微基准与 TMA matmul 均在噪声范围内、SASS 等同、下游 CI 通过），说明此前 revert 的减速问题在新工具链上不可复现。潜在风险：aligned=false 生成的 PTX 与 bar.sync 变体不同，理论上影响同步语义与性能，但仅在 NVIDIA warp-specialization 路径，且已有明确基准数据支撑。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "low-risk",
+        "nvidia-backend",
+        "warp-specialization",
+        "lowering"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/ConvertWarpSpecializeToLLVM.cpp，属于 NVIDIA 专属的 TritonGPU->LLVM lowering；triton-ascend 不使用 warp specialization 的该 lowering 路径，也不加载 NVVM 方言。",
+        "testing": "无影响。仅修改 test/Conversion/warp_specialize_to_llvm.mlir 这一 NVIDIA 专属 lit 测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Reland non-aligned warp-specialized barriers (#12321)\n\nWarp-specialized partitions execute on only part of a CTA. Their named\nbarriers must use the non-aligned form rather than require every CTA\nthread to reach the same instruction.\n\nThis relands #11710, which was reverted by #11830, and restores the\nchecks for non-aligned barriers in partition and noinline-function\nlowering.\n\nI could not reproduce the earlier slowdown on the current toolchain:\n- Six paired GB300 barrier microbenchmarks were within 0.04%; their\ngenerated SASS was identical.\n- Nine paired GB300 TMA matmul configurations ranged from -0.08% to\n+0.19%, with unchanged register and instruction counts. The actual\nrebuilt lowering emits the same PTX as the measured non-aligned variant,\naside from debug locations.\n- Downstream GB200 performance CI passed all 217 tests for both baseline\nand candidate. Across 990 matching timing points, the geometric mean\nchange was +0.08% and the median +0.11%, using the logged throughput\nvalues. The largest isolated outlier was in a kernel that does not use\nwarp specialization.\n\nCorrectness validation:\n- 305 lit tests passed; 2 unsupported.\n- 23 focused GB300 GPU tests passed; 6 skipped.\n- Upstream A100, H100 and GB200 integration jobs passed.\n\nThe full downstream builds also encounter the same existing quarantined\ntest-helper failure in their coverage jobs. The upstream A100, H100 and\nGB200 jobs passed; remaining AMD and macOS checks are still running."
+    },
+    {
+      "sha": "4a18983590bf26cf1f79e81d9b1ed471986ce9ef",
+      "comment": "变更意图：当启用 max_occupancy 时，现有公式 min_shared = max_shared_mem_per_multiprocessor // (max_occupancy + 1) + 1 未计入 CUDA 的每 CTA 驱动预留（reserved_shared_mem_per_block）以及 128 字节的分配粒度向上取整，导致实际可驻留 CTA 数低于请求值（例如 GB300 上 max_occupancy=15 实际只有 14）。实现方式：在 third_party/nvidia/backend/driver.c 的 getDeviceProperties 中新增查询 CU_DEVICE_ATTRIBUTE_RESERVED_SHARED_MEMORY_PER_BLOCK 并暴露为 reserved_shared_mem_per_block；在 third_party/nvidia/backend/driver.py 的 CudaLauncher 中改为 shared_per_cta = max_shared_mem_per_multiprocessor // max_occupancy，再 min_shared = shared_per_cta // 128 * 128 - reserved_shared_mem_per_block，最后 self.shared = max(self.shared, min_shared)，仍以 kernel 实际所需共享内存为优先，且计算保持在启动期（编译仍与具体设备无关）。测试 test_launch.py 扩展为 num_warps ∈ {1,4}、max_occupancy ∈ {None,1..32,1024}，并用 cuOccupancyMaxActiveBlocksPerMultiprocessor 独立校验 blocks == min(max_occupancy, unlimited_blocks)，另覆盖超过硬件上限、cluster 启动与 graph capture/replay。潜在风险：低占用率场景会预留更多共享内存（行为变化但不影响正确性）；device properties 返回值新增一个键，若有下游代码对 dict 做严格长度/键集合假设可能受影响（本项目内未见）。属于 NVIDIA driver/runtime 侧改动。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "nvidia-backend",
+        "runtime",
+        "driver",
+        "test"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/nvidia/backend/driver.c 与 driver.py（CudaDriver/CudaLauncher 的共享内存预留计算）及 python/test/unit/runtime/test_launch.py（CUDA 专属测试）。triton-ascend 使用 NPUDriver/NPULauncher 与 npu_utils.cpp 的 workspace 分配，不读取 CUDA device properties，也不使用 CudaLauncher。GPUTarget/DriverBase 抽象接口未变。",
+        "testing": "无影响。test_max_occupancy_launch 标记 skipif(not is_cuda())，与 Ascend 无关。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Runtime] Account for CUDA reservations in max_occupancy (#12326)\n\nThe current shared-memory reservation can reduce occupancy below\n`max_occupancy` because CUDA also charges a per-CTA driver reservation\nand rounds allocations up. For example, on GB300 a low-register kernel\nwith `max_occupancy=15` is limited to 14 resident CTAs.\n\nExpose `reserved_shared_mem_per_block` in the CUDA device properties and\ncalculate the launch reservation as:\n\n```python\nshared_per_cta = max_shared_mem_per_multiprocessor // max_occupancy\nmin_shared = shared_per_cta // 128 * 128 - reserved_shared_mem_per_block\n```\n\nRounding the total budget down to the 128-byte allocation granularity\nbefore subtracting the driver reservation lets the requested number of\nCTAs fit. Required kernel shared memory still takes precedence, and the\ncalculation remains at launch time so compilation stays independent of\nthe active device. This reserves the largest aligned per-CTA budget that\nfits the requested occupancy, so low occupancy caps can reserve more\nshared memory than before.\n\nExtend the existing launch test to check exact CUDA-reported occupancy\nfor targets 1–32, subject to the kernel's other resource limits, using\none- and four-warp CTAs. Also cover a target above the hardware limit,\nclustered launches, and graph capture/replay.\n\nValidation on GB300:\n- Built Triton and ran `make`.\n- 153 targeted pytest cases passed: occupancy launches, preserving\nrequired shared memory, compile-only/invalid options, and GSan\noccupancy/graph replay.\n- The eight compile-only/invalid-option cases also passed in a fresh\nprocess without the mixed-suite mock-driver cleanup warning.\n- Repository pre-commit checks passed.\n\nRelated to #12306."
+    },
+    {
+      "sha": "1369c18a3f3a399dec0f4f5eacfff9786b126d52",
+      "comment": "变更意图：third_party/proton/test/test_instrumentation.py 中大量用例硬编码 device='cuda'，无法在其他后端上运行；本次统一为每个用例注入 pytest 的 device fixture，并把张量创建改为 device=device，使测试可在当前激活后端上执行（AMD/NVIDIA 等），同时保留若干 NVIDIA 特有的 skipif（如 is_ampere_or_newer、supports_tma/supports_ws、num_ctas 能力检查）。变更仅涉及测试文件，52 增 52 删基本为对称替换，无语义变化。潜在风险：仅测试可移植性问题；若某些 fixture 在非 CUDA 后端不可用，可能会有新的 skip/fail，但已被现有能力检查覆盖一部分。属于测试基础设施改进。",
+      "tags": [
+        "test",
+        "low-risk",
+        "proton"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅修改 third_party/proton/test/test_instrumentation.py 的测试装备方式，未触及 Proton 运行时/编译器 hooks，也未触及 BaseBackend/DriverBase/后端发现等接口。Ascend 默认不启用 Proton，且该测试改动不改变任何接口契约。",
+        "testing": "无影响。属于 Proton 测试用例的可移植性改造（device fixture），不涉及 triton-ascend 的测试套件；若日后 Ascend 启用 Proton，这些测试更易复用，但当前无强制更新需求。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[PROTON][UT] Generalize tests in `test_instrumentation.py` using `device` fixture (#12316)\n\nSigned-off-by: Anatoly Myachev <anatoly.myachev@intel.com>"
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

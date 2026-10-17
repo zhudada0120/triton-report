@@ -1,4 +1,8 @@
 {
+  "afbc53764b8e9dcde35e55f9f46b96c9600dae63": {
+    "date": "2026-10-17",
+    "msg": "[docs](fix) 3.2.2.post2 and 3.6.0 versions (#2604)"
+  },
   "e5100244b813ecc22b7fb77f51866545d5624cbc": {
     "date": "2026-10-16",
     "msg": "[Docs](fix) render class API docs correctly and wrap long signatures (#2602)"
