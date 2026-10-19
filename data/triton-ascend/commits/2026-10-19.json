@@ -1,0 +1,47 @@
+{
+  "date": "2026-10-19",
+  "repo": "triton-lang/triton-ascend",
+  "branch": "main",
+  "commits": [
+    {
+      "sha": "a176ab28b11b63d427760c15f6cd63c14ac296f1",
+      "author": {
+        "name": "LH-123L",
+        "email": "liuhuan261@huawei.com"
+      },
+      "date": "2026-10-19T14:19:59+08:00",
+      "message": "[patch](fix) autotune issue fixed (#2618)",
+      "parents": [
+        "afbc53764b8e9dcde35e55f9f46b96c9600dae63"
+      ],
+      "stats": {
+        "total_additions": 22,
+        "total_deletions": 21,
+        "files_changed": 3
+      },
+      "files": [
+        {
+          "filename": "third_party/ascend/build/setup_patch.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 0,
+          "patch": "@@ -149,6 +149,7 @@ def get_triton_ascend_patch_file():\n         \"python/triton/language/semantic.py\",\n         \"python/triton/language/standard.py\",\n         \"python/triton/runtime/interpreter.py\",\n+        \"python/triton/runtime/autotuner.py\",\n         \"python/triton/runtime/jit.py\",\n         \"bin/RegisterTritonDialects.h\",\n         \"bin/triton-opt.cpp\","
+        },
+        {
+          "filename": "third_party/ascend/patch/triton-ascend-3.6.0.patch",
+          "status": "modified",
+          "additions": 21,
+          "deletions": 0,
+          "patch": "@@ -1190,3 +1190,25 @@ index 0f506818f..43742c328 100644\n      specialization = [{','.join(specialization)}]\n      return params, specialization, options\n  \"\"\"\n+diff --git a/python/triton/runtime/autotuner.py b/python/triton/runtime/autotuner.py\n+index 0c4d710496..d98afb86f9 100644\n+--- a/python/triton/runtime/autotuner.py\n+@@ -126,7 +126,7 @@ class Autotuner(KernelInterface):\n+         return self._do_bench\n+ \n+     def _bench(self, *args, config, **meta):\n+-        from ..compiler.errors import CompileTimeAssertionFailure\n++        from ..compiler.errors import CompileTimeAssertionFailure, MLIRCompilationError\n+ \n+         verbose = knobs.autotuning.print\n+         if verbose:\n+@@ -162,7 +162,7 @@ class Autotuner(KernelInterface):\n+ \n+         try:\n+             return self.do_bench(kernel_call, quantiles=(0.5, 0.2, 0.8))\n+-        except (OutOfResources, CompileTimeAssertionFailure, PTXASError) as e:\n++        except (OutOfResources, CompileTimeAssertionFailure, PTXASError, MLIRCompilationError) as e:\n+             if verbose:\n+                 print(f\"Autotuning failed with {e}\")\n+             return [float(\"inf\"), float(\"inf\"), float(\"inf\")]"
+        },
+        {
+          "filename": "third_party/ascend/patch/triton-ascend-dev-3.6.0.patch",
+          "status": "removed",
+          "additions": 0,
+          "deletions": 21,
+          "patch": "deleted file mode 100644\n@@ -1,22 +0,0 @@\n-diff --git a/python/triton/runtime/autotuner.py b/python/triton/runtime/autotuner.py\n-index 0c4d710496..d98afb86f9 100644\n-+++ b/python/triton/runtime/autotuner.py\n-@@ -126,7 +126,7 @@ class Autotuner(KernelInterface):\n-         return self._do_bench\n- \n-     def _bench(self, *args, config, **meta):\n--        from ..compiler.errors import CompileTimeAssertionFailure\n-+        from ..compiler.errors import CompileTimeAssertionFailure, MLIRCompilationError\n- \n-         verbose = knobs.autotuning.print\n-         if verbose:\n-@@ -162,7 +162,7 @@ class Autotuner(KernelInterface):\n- \n-         try:\n-             return self.do_bench(kernel_call, quantiles=(0.5, 0.2, 0.8))\n--        except (OutOfResources, CompileTimeAssertionFailure, PTXASError) as e:\n-+        except (OutOfResources, CompileTimeAssertionFailure, MLIRCompilationError) as e:\n-             if verbose:\n-                 print(f\"Autotuning failed with {e}\")\n-             return [float(\"inf\"), float(\"inf\"), float(\"inf\")]\n"
+        }
+      ]
+    }
+  ]
+}

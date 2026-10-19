@@ -1,0 +1,33 @@
+{
+  "date": "2026-10-19",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-10-20T05:49:18.518325+08:00",
+  "daily_summary": "当日仅有一个补丁维护类变更：将 autotuner 异常处理补丁（在 Autotuner._bench 中捕获 MLIRCompilationError，使 Ascend 编译期 MLIR 错误在自动调优时降级为 inf 而不中断调优）从 dev 补丁文件迁移进 3.6.0 release 补丁，并同步在 setup_patch.py 的补丁应用文件清单中加入 python/triton/runtime/autotuner.py。同时删除了原来存放该改动的 triton-ascend-dev-3.6.0.patch。本质是把已在 dev 分支验证过的修复正式合入 release 补丁链，属于补丁构建流程的整理，不涉及后端编译器/driver 主链路逻辑变更。",
+  "test_impact_summary": "本次变更不新增功能接口、不修改 Ascend 后端编译流水线或运行时契约，仅调整补丁文件的组织方式与适用范围：改动后的行为是自动调优遇到 Ascend 编译错误（MLIRCompilationError）时按 OutOfResources/PTXASError 同样降级为 inf 并继续搜索配置。该行为与 Ascend autotune 体系（third_party/ascend/backend/runtime/autotuner.py 的 AutoTilingTuner 继承上游 Autotuner）直接相关，但属于异常处理路径，现有的算子端到端测试通常不构造编译失败场景，很难覆盖到该分支。建议关注：1) third_party/ascend/unittest/autotune_ut/ 中补一个 autotune 时某配置编译失败仍能选到有效配置的负向用例；2) 验证 release patch 应用后 python/triton/runtime/autotuner.py 确实包含 MLIRCompilationError 捕获，避免 dev/release 补丁切换造成回归（此前该改动只在 dev patch 中，直接应用 release patch 会漏掉）。整体测试策略影响为低，但存在‘补丁迁移后漏应用’的看护点需要确认。",
+  "commits": [
+    {
+      "sha": "a176ab28b11b63d427760c15f6cd63c14ac296f1",
+      "comment": "补丁维护类修复（fix autotune issue）。变更内容：(1) 在 setup_patch.py 的补丁应用文件清单 get_triton_ascend_patch_file 中加入 python/triton/runtime/autotuner.py，使其纳入 release 补丁的变更跟踪范围；(2) 将该 autotuner 补丁片段从 triton-ascend-dev-3.6.0.patch 移入 triton-ascend-3.6.0.patch，并删除 dev 补丁文件；(3) 补丁内容本身是给 Autotuner._bench 的 except 子句增加 MLIRCompilationError：import 处新增该异常，except 元组变为 (OutOfResources, CompileTimeAssertionFailure, PTXASError, MLIRCompilationError)。实现意图是让 Ascend 上由 MLIR/毕昇工具链产生的编译错误在自动调优某个 config 失败时按既有‘不可用配置’语义处理——打印告警并返回 [inf, inf, inf]，从而不中断整个 autotune 搜索流程，而非直接抛出。注意 dev 补丁原版中 except 元组为 (OutOfResources, CompileTimeAssertionFailure, MLIRCompilationError)，即在 dev 版本中移除了 PTXASError，而合入 release 的版本保留 PTXASError，两版语义略有差异但 release 版更保守（同时覆盖 CUDA 遗留异常与 Ascend MLIR 错误），对 Ascend 后端而言影响一致。风险较低：改动作用于通用的 python/triton/runtime/autotuner.py（架构上下文中标注为‘可能影响’模块，因 AutoTilingTuner 继承 Autotuner 且依赖其 _bench/benchmark 调优协议），但由于只扩展 except 分支且保持返回三元组形状不变，不改变 Autotuner 的 run/benchmark 契约，AutoTilingTuner 的参数展开与结果选择不受影响。潜在风险在于补丁的‘搬家’：若构建流程仍可能应用 dev patch 或 release patch 的选择逻辑（setup_ascend.py::_apply_triton_ascend_patch，dev 分支应用 triton-ascend-dev-*.patch），删除 dev 补丁文件后需确认 dev 路径回退到 release patch 无误，否则 dev 构建可能缺少该修复或出现‘文件不存在’错误；此外 setup_patch.py 中文档清单新增条目后，release 补丁中的 hunk 需与上游 autotuner.py 行号上下文精确匹配，否则 _apply_triton_ascend_patch 打补丁会失败——这是此类补丁维护变更最典型的隐患。",
+      "tags": [
+        "bugfix",
+        "chore",
+        "low-risk",
+        "runtime",
+        "patch"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "改动本身是异常处理分支（自动调优中某个 config 编译失败时降级为 inf 而非抛出），现有 Ascend autotune 测试多为正常路径，不构造编译失败配置，难以覆盖新分支；且补丁从 dev 迁移到 release 后，需要验证构建产物中 autotuner.py 确实带上了 MLIRCompilationError 处理，否则存在漏应用回归。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/autotune_ut/",
+          "third_party/ascend/build/setup_patch.py（补丁应用路径验证）",
+          "python/triton/runtime/autotuner.py（补丁后异常降级行为）",
+          "third_party/ascend/backend/runtime/autotuner.py（AutoTilingTuner 对 Autotuner._bench 的继承依赖）"
+        ]
+      },
+      "message": "[patch](fix) autotune issue fixed (#2618)"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}
