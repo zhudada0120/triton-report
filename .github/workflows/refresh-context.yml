@@ -2,6 +2,9 @@ name: Refresh Architecture Context
 
 on:
   workflow_dispatch:
+  schedule:
+    # 每半月一次：每月 1 日、15 日 UTC 5:43 = 北京时间 13:43，错开每日 UTC 18:00 的 daily-commit
+    - cron: '43 5 1,15 * *'
 
 permissions:
   contents: write
