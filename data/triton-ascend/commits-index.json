@@ -1,4 +1,52 @@
 {
+  "e20045f8a2f98390699d4eea081f227ea1785546": {
+    "date": "2026-10-20",
+    "msg": "[TritonToLinalg](fix) stop legacy traversal at integer scalars (#2655)"
+  },
+  "5ad763ce9e9de378f08e8ae1336762fb97667955": {
+    "date": "2026-10-20",
+    "msg": "[runtime](feat) add automatic constexpr reuse (#2633)"
+  },
+  "bea973e6149760c4dfad13814fb4d7f430d1192c": {
+    "date": "2026-10-20",
+    "msg": "[compiler](fix) --enable-optimized-metaop: The value depends on the version of the CANN (#2617)"
+  },
+  "e550901098255260f7ff34763f67b6da0a9510e7": {
+    "date": "2026-10-20",
+    "msg": "[opclassifier](fix) stop BFS at hivm.hir.custom in yield propagation (#2551)"
+  },
+  "053b32d12300755626c3f991e5cecc54bd2f0971": {
+    "date": "2026-10-20",
+    "msg": "[ssbuffer](fix) skip LLVM::AssumeOp when analyzing memoryeffect (#2599)"
+  },
+  "5f1dea5c87363588a67d1081de8fc052e030dff7": {
+    "date": "2026-10-20",
+    "msg": "[Libdevice](fix) Remove redundant positive libdevice guards (#2577)"
+  },
+  "788b1cfd310664408ec3c0cfdc7a9befb381c5d9": {
+    "date": "2026-10-20",
+    "msg": "[opclassifier](fix) skip scf dialect ops in CUBE upstream BFS (#2581)"
+  },
+  "5b4262e07de26f20307165a4836bbf12fc136660": {
+    "date": "2026-10-20",
+    "msg": "[ssbuffer](fix) RefineArgsBlockId adapter multi-region when clone (#2539)"
+  },
+  "688c80802fff6e3dcd5e513b4a87e0082871825e": {
+    "date": "2026-10-20",
+    "msg": "fix: preserve scalar loop carries during CV scope split (#2533)"
+  },
+  "447dc14e98ff83a38a3fcb19c0f2550536aa5fee": {
+    "date": "2026-10-20",
+    "msg": "[TritonToLinalg](feat) remove UseAnalysis with staged lowering (#2440)"
+  },
+  "c38a2fdfafcc839bf9109d3f5c8ba8e9239dc5d9": {
+    "date": "2026-10-20",
+    "msg": "[ssbuffer](fix) preserve cube merge state across loops (#2448)"
+  },
+  "d95fbd685a5285479e7ae972dba712f18e69c405": {
+    "date": "2026-10-20",
+    "msg": "[CI](chore) Bundle the BishengIR compiler into the wheel (#2143)"
+  },
   "a176ab28b11b63d427760c15f6cd63c14ac296f1": {
     "date": "2026-10-19",
     "msg": "[patch](fix) autotune issue fixed (#2618)"

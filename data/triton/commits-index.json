@@ -1,4 +1,24 @@
 {
+  "7302258a3ee90688f12ec69cf68f96fd071fa0f1": {
+    "date": "2026-10-20",
+    "msg": "[Frontend] Reject tuples of different lengths in a function's return types (#12381)"
+  },
+  "6706b886650f13b79dac00b6df007d37e93fba42": {
+    "date": "2026-10-20",
+    "msg": "[Frontend] Fix pointer subtraction with unsigned offsets (#12318)"
+  },
+  "9b12eff0a651c990658e228264e42e99030aa531": {
+    "date": "2026-10-20",
+    "msg": "[AMD] Add option for per-kernel clopt control (#12382)"
+  },
+  "29ef3c3320e42aa0b5c2c9e24110b53526660f10": {
+    "date": "2026-10-20",
+    "msg": "[FRONTEND] Preserve source signedness in loop operands (#12350)"
+  },
+  "3a43613f97bbd4ae3c5ac7e74db1168c66daffdf": {
+    "date": "2026-10-20",
+    "msg": "[AMD] Move CU-mode barrier test into its own file (#12373)"
+  },
   "2122e24efc1886bfa36337c1f5b07c47d827b1d4": {
     "date": "2026-10-17",
     "msg": "[Backend] Avoid emitting llvm bitcast when loading (#12319)"

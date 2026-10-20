@@ -1,0 +1,13 @@
+{
+  "content_hash": "13a7e620d9a027bf",
+  "analysis": {
+    "interface_summary": "定义 1 个类；定义 73 个函数",
+    "key_interfaces": [
+      "Square",
+      "Square.__init__",
+      "Square.power",
+      "Square.compute"
+    ]
+  },
+  "cached_at": "2026-10-21T04:57:54.354732+08:00"
+}

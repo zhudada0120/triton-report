@@ -1,0 +1,233 @@
+{
+  "date": "2026-10-20",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-10-21T04:59:36.952652+08:00",
+  "daily_summary": "当日变更主要集中在 Ascend 后端编译链的稳健性修复与能力增强：TritonToLinalg 移除 UseAnalysis 改为分阶段 lower（内存/指针阶段与数值阶段分离），并配套修复 BlockData 标量边界、掩码共享、block pointer advance 等；DynamicCVPipeline 系列修复 OpClassifier 的 BFS 边界（hivm.hir.custom、scf 方言）、AssumeOp 内存依赖、RefineArgsBlockId 多 region 克隆、SeparateCVScope 标量循环携带值、MergeCubeBlock 多循环合并状态累积；运行时新增自动 constexpr 复用体系（分析/派发/注册表/后台编译 worker），并对 CompiledKernel 做可 pickle 化；libdevice 清理冗余 SIMT 守卫统一走 A5 fp32 路径；CANN 版本相关启用 optimized-metaop；CI 侧将 BishengIR 编译器打包进 wheel 并优化构建缓存与 NPU 测试门禁。整体方向是提升编译正确性与稳定性、完善 runtime 复用与打包发布链路。",
+  "test_impact_summary": "当日变更引入了多类需要重点看护的测试点：TritonToLinalg 的 UseAnalysis 移除属于结构性重构，改变了 MetaUse/MixUse 语义与 lower 顺序，已有 lit 测试需要重写/新增以覆盖地址-only 链删除、共享地址与数据、block pointer advance、混合 mask 等场景；constexpr 复用是新特性，新增了大量 host 单测但缺乏真实 NPU 端到端复用验证（尤其是后台 worker 编译落缓存与 pickle 反序列化后加载），需在 pytest_ut 层补端到端；DynamicCVPipeline 的多处修复均新增了针对性 lit 测试，覆盖较好；libdevice 改动删除了 fp16/bf16 的 extern 分支，需确认原有 libdevice 相关单测的 dtype 覆盖没有退化；CI 变更新增了 wheel 级 NPU 冒烟测试，但对手动触发/失败回退路径缺乏看护。整体看测试策略正从单元/lit 向端到端打包验证延伸，但复用体系与 wheel 发布的失败路径仍是薄弱点。",
+  "commits": [
+    {
+      "sha": "e20045f8a2f98390699d4eea081f227ea1785546",
+      "comment": "在 BlockPtrAnalysis.cpp 的 isUsedWithCondition 遍历入口处增加整数标量短路返回，使 legacy 遍历与 BlockDataParser::parse 对整型标量的处理边界一致，避免把仅作为地址计算的整数标量错误地纳入 BlockData 分解，从而让 loop selection 与 carried-slot 分解对同一标量边界达成一致。新增 MLIR 用例覆盖标量地址与混合数值/affine 载体，并补充了源自 PR #2607 的 scan/scatter 回归（含 skewed 输入与 carried counts 可观测）。风险较低：仅影响地址图过滤逻辑，且明确以 parse 的行为为准；但对依赖旧白名单行为、把整数标量视为可分解载体的用例可能存在潜在外科式变化，需关注其他分散的 isUsedWithCondition 调用点是否共享同一语义。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "TritonToLinalg"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "变更本身已新增 MLIR lit 用例与 pytest 回归，但该修复统一了遍历边界语义，建议确认其他使用 isUsedWithCondition 的 pass 是否也需要对应用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/",
+          "third_party/ascend/unittest/pytest_ut/test_loop_carried_scatter_index.py"
+        ]
+      },
+      "message": "[TritonToLinalg](fix) stop legacy traversal at integer scalars (#2655)\n\nMatch the scalar boundary already used by BlockDataParser::parse instead of filtering the address-use graph with an operation whitelist. Apply the boundary in the shared traversal so loop selection and carried-slot decomposition agree.\n\nAdd MLIR coverage for scalar addresses and mixed numerical/affine carriers. Adapt the scan/scatter regression from PR #2607, including skewed inputs and observable carried counts.\n\nRelated to https://github.com/triton-lang/triton-ascend/pull/2607\n\n(cherry picked from commit 7aef73d83ff220117e8a0649b227107efdf1f0f4)\n\nSigned-off-by: zhaojingkai <zhaojingkai4@huawei.com>"
+    },
+    {
+      "sha": "5ad763ce9e9de378f08e8ae1336762fb97667955",
+      "comment": "新增 Ascend 运行时自动 constexpr 复用体系：AscendBackend 暴露 get_jit_reuse_handler/get_exact_request_scope 钩子，reuse 包包含 DSL 依赖分析（uses/facts/source）、tile 复用证明（local_axis/rules/guards/footprint）、派发与变体注册表、后台编译 PreparationService 与独立子进程 CompileWorker（JSON IPC + deadline）、以及基于 weakref 的源码失效校验；同时通过 patch 将 JIT run 拆成 handler + _run_jit_tail，并让 CompiledKernel 可 pickle（copyreg RLock、__getstate__/__setstate__、初始化锁）。AutoTilingTuner 用 exact_request_scope 保证 autotune 走原路径。这是一个高度复杂、默认关闭（TRITON_ASCEND_ENABLE_DYNAMIC_REUSE=0）的大特性，覆盖缓存键、进程边界、并发初始化、失败回退等多个高风险面；主要风险在于：(1) 对上游 jit.py/compiler.py/autotuner.py 的 patch 依赖较深，上游签名变化易破坏；(2) 后台 worker 编译与父进程缓存一致性、源码失效判定的正确性；(3) tile 复用证明的数值/边界安全性（溢出、mask、in-place 重叠）已在 guards 中大量防御，但仍需真实硬件验证。",
+      "tags": [
+        "feature",
+        "high-risk",
+        "runtime",
+        "jit",
+        "compiler",
+        "autotuner"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 test_constexpr_reuse.py 大量 host 单测，但缺少真实 NPU 上的端到端复用/后台编译/pickle 反序列化加载验证；patch 涉及上游文件，需回归既有 autotune 与 jit 测试。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/test_constexpr_reuse.py",
+          "third_party/ascend/unittest/autotune_ut/",
+          "third_party/ascend/unittest/pytest_ut/",
+          "third_party/ascend/patch/triton-ascend-3.6.0.patch",
+          "python/test/unit/runtime/（上游 jit/autotuner 相关）"
+        ]
+      },
+      "message": "[runtime](feat) add automatic constexpr reuse (#2633)\n\n* [runtime](feat) add automatic constexpr reuse (#2560)\n\n* feat(ascend): add automatic constexpr reuse\n\n* test(ascend): cover constexpr reuse contracts\n\nCover frontend handoff, loop proofs and worker IPC with host tests.\nMeet 80% line and 60% branch coverage across the reuse package.\n\n* fix(build): ship constexpr reuse patches (#2613)\n\nRelease wheels skip the dev patch and miss the constexpr reuse hooks.\nMove compiler, JIT and autotuner changes into the release patch.\n\nInclude #2608 autotune error handling and remove the dev patch.\nRestore the original patch application flow and simplify reuse package\nregistration through the existing backend directory mapping.\n\nRefs #2560, #2608\n\n* [runtime](fix) make CompiledKernel picklable for worker IPC\n\nShip the constexpr-reuse worker IPC changes in the release patch so\ncompiled kernel handles can be returned from the worker back to the\nparent process:\n\n- Register a copyreg pickle handler for threading.RLock. torch's\n  TritonCompileResult.__getstate__ serializes CompiledKernel by\n  spreading kernel.__dict__ verbatim, bypassing\n  CompiledKernel.__getstate__, so the _initialization_lock RLock would\n  otherwise be shipped into the worker -> parent pickle graph.\n- Add CompiledKernel.__getstate__/__setstate__ to drop the RLock from\n  the pickled state and recreate it on the receiving side.\n- Guard _init_handles with the initialization lock and gate the run\n  property on _initialization_complete so the kernel is loaded exactly\n  once even when the handle crosses process boundaries.\n- Pick up MLIRCompilationError in the autotuner bench exception list.\n\nAlso refresh the patch hunk headers and drop trailing whitespace.\n\n---------\n\nCo-authored-by: XuanPeng <hin.meego@gmail.com>"
+    },
+    {
+      "sha": "bea973e6149760c4dfad13814fb4d7f430d1192c",
+      "comment": "将 A2/A3 分支的 --enable-optimized-metaop 从硬编码 false 改为按 CANN 版本判定（>=9.2.0 启用），与 910-95 分支的版本判定方式保持一致，使该编译选项随 CANN 能力自适应。风险低，仅是开关值随版本变化；但需要确认 is_cann_version_at_least 在无 CANN 或版本解析失败时的回退语义，避免在错误版本上误开导致编译行为差异。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "compiler"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "单行开关调整，依赖 CANN 版本的外部行为，难以在常规 lit 测试中直接覆盖；可由现有 A2/A3 端到端编译测试间接看护。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/",
+          "third_party/ascend/unittest/Conversion/General/"
+        ]
+      },
+      "message": "[compiler](fix) --enable-optimized-metaop: The value depends on the version of the CANN (#2617)"
+    },
+    {
+      "sha": "e550901098255260f7ff34763f67b6da0a9510e7",
+      "comment": "OpClassifier 的 yield 传播 BFS 在 shouldStopPropagationForYield 处遇到 hivm.hir.custom 即停止，防止 BFS 经 SSA 与内存依赖边从 tensor 世界穿越到 memref 世界（bufferization.to_tensor -> memref.alloc），进而把已稳定的 CUBE 分类覆盖为 VECTOR。以单一语义边界替代枚举 memref/bufferization 边界 op，修复思路最小且贴合实际 flash-attention 模式。风险中低：停止条件若过宽可能漏传播某些合法 CUBE 依赖，但新增 lit 用例覆盖了 custom 中止与 else 分支不受影响两种情形。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "已新增 test_op_classifier_hivm_custom_yield_stop.mlir 覆盖 custom 中止与分支场景，后续修改 BFS 传播逻辑时应回归该用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/PlanComputeBlock/"
+        ]
+      },
+      "message": "[opclassifier](fix) stop BFS at hivm.hir.custom in yield propagation (#2551)\n\nThe Step 8 yield propagation BFS walked upstream through both SSA operands\nand the memory-dependency graph, and could cross from the SSA tensor world\ninto the memref world (via bufferization.to_tensor -> memref.alloc) and\noverwrite an already-stable CUBE classification back to VECTOR with a\ndirect assignment.\n\nStop the BFS at hivm::CustomOp instead of enumerating every memref /\nbufferization boundary op. This is the single semantic boundary at which\ntensor-world work and memref-world storage meet, and matches the user's\npreferred minimal fix.\n\nCo-authored-by: Claude Opus 4.6 <noreply@anthropic.com>"
+    },
+    {
+      "sha": "053b32d12300755626c3f991e5cecc54bd2f0971",
+      "comment": "在 MemoryEffectsTracker 与 DataDependencyAnalysis 中把 LLVM::AssumeOp 与 annotation::MarkOp、gpu::BarrierOp 一样视为不产生数据/不构成真实内存依赖的算子，避免 assume 被当作 dataSource/lastWriter 或跨 block 依赖，从而错误地生成 sync_block_set/wait。修复针对 assume 只带 Write effect 但无数据产出的场景，语义合理。风险低，属于加入已知无害 op 列表；需注意 assume 的 condition 若本身来自跨核数据，理论上仍可能需要依赖，但当前用例显示其为纯控制断言。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "已新增 test_assume_memdep.mlir 验证不产生跨核同步；后续若 memory effect 分析新增其他无副作用 op 应扩展该白名单并补测试。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow/"
+        ]
+      },
+      "message": "[ssbuffer](fix) skip LLVM::AssumeOp when analyzing memoryeffect (#2599)"
+    },
+    {
+      "sha": "5f1dea5c87363588a67d1081de8fc052e030dff7",
+      "comment": "将 libdevice.py 中大量 _is_libdevice_simt_enabled 守卫替换为 _is_a5_target + fp32 dtype 判断，统一只在 A5（910_95/950）且 fp32 时走 extern __hmf_*，其余走原有组合实现；删除 fp16/bf16 的 extern 映射与 bf16 的 static_assert 拦截，同时简化 AscendBackend.hash 中的 libdevice 状态（去掉 SIMT 开关和 arch 参数）。意图应是移除冗余/不可用的正数守卫，降低维护面。风险中高：删除了 fp16 extern 分支后，A5 上 fp16 输入将走 composition 路径，数值与性能可能与之前不同；同时 hash 变更会使 cached kernel 失效（一次性），并可影响 SIMT 模式下用户预期。需确认 fp16/bf16 行为在 A5 上确为有意回退。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "libdevice",
+        "compiler"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "dtype 分支收窄会影响 fp16/bf16 与 A5 fp32 的行为，需补/更新 libdevice 单测覆盖各 dtype 在 A5 与非 A5 下的路径，并确认现有断言仍然成立。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/（libdevice/math 相关）",
+          "third_party/ascend/language/cann/libdevice.py"
+        ]
+      },
+      "message": "[Libdevice](fix) Remove redundant positive libdevice guards (#2577)"
+    },
+    {
+      "sha": "788b1cfd310664408ec3c0cfdc7a9befb381c5d9",
+      "comment": "在 shouldSkipCubeUpstream 中对 scf::ForOp/WhileOp/IfOp 短路返回 true，阻止 CUBE 上游 BFS 穿过 scf.for 的 result（iter_arg）回溯到所有 init 操作数，从而避免把与 CUBE 无关的 init（如 -inf fill）误标为 CUBE。修复与上一条 custom 中止形成互补，属于对 CUBE 分类传播边界的收紧。风险中低：可能漏掉通过 scf 结果真正需要传播的 CUBE 链，但已在 lrf/cwy 实测中验证 CUBE matmul 链保留且误标减少。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "变更未新增 lit 用例（仅在 commit message 中说明实测），建议补 scf 边界传播的回归用例，与 custom 中止用例共同构成 BFS 边界测试集。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/PlanComputeBlock/"
+        ]
+      },
+      "message": "[opclassifier](fix) skip scf dialect ops in CUBE upstream BFS (#2581)\n\nshouldSkipCubeUpstream now short-circuits on scf::ForOp / scf::WhileOp /\nscf::IfOp so the CUBE BFS does not walk through an scf.for's result (an\niter_arg) into all of its init operands. Without this, when an iter_arg\nsits in a CUBE chain, every init is misclassified as CUBE regardless of\nits actual downstream use (e.g. the initial -inf fill of a row-max\ntensor gets marked CUBE in lrf.mlir).\n\nVerified on lrf.mlir (input %14 linalg.fill now VECTOR; scf.for\niter_arg[0] yield type stays VECTOR) and cwy.mlir (no regression; 28\nspurious CUBE markings on scalar constants / block-arg passes dropped,\nall 4 linalg.matmul and their genuine CUBE operand chain preserved)."
+    },
+    {
+      "sha": "5b4262e07de26f20307165a4836bbf12fc136660",
+      "comment": "RefineArgsBlockId 的 cloneDepSubgraph 从仅遍历 SSA operands 改为使用 DependencyHelper{memGraph}.forEachSource 同时遍历 SSA 与内存依赖源，修复多 region（scf.if 等）克隆时内存依赖边上的上游依赖未被计入导致子图不完整的问题；同时改用 WalkResult 中断语义。新增用例覆盖循环携带标量依赖与 if 分支。风险中低：从 SSA-only 扩展为含内存依赖，可能克隆更多操作或触发更多非标量依赖拒绝，需关注性能与拒绝率变化。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "已扩展 test_refine_args_block_id.mlir 覆盖多 region 与循环携带标量场景，建议补充因内存依赖引入更多上游而触发安全拒绝的用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow/test_refine_args_block_id.mlir"
+        ]
+      },
+      "message": "[ssbuffer](fix) RefineArgsBlockId adapter multi-region when clone (#2539)\n\nCo-authored-by: shaoyiyang <shaoyiyang1@huawei.com>"
+    },
+    {
+      "sha": "688c80802fff6e3dcd5e513b4a87e0082871825e",
+      "comment": "SeparateCVScope 的 shouldPreserveFromYield 增加对 scf 类 yield 结果的整型/索引类型判断：即使没有混合作用域 sibling result，只要 yield 目标对应 int/index 结果也保留从 yield 到结果的追踪，从而保住跨 CV scope 拆分的标量 loop carry（否则 if 结果对 iter_arg 的更新可能丢失）。新增 for/while 两种场景用例。风险低：仅放宽保留条件，方向保守，最坏情况是多保留一些值；用例也明确了 CUBE 内无外部使用者时只保留下一迭代 carry。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "已在 separate_cv_scope_ut.mlir 中补充 for/while 标量 carry 用例，建议再覆盖 float 等非 int/index 标量是否需要类似保留的边界。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/separate_cv_scope_ut.mlir"
+        ]
+      },
+      "message": "fix: preserve scalar loop carries during CV scope split (#2533)"
+    },
+    {
+      "sha": "447dc14e98ff83a38a3fcb19c0f2550536aa5fee",
+      "comment": "TritonToLinalg 移除 UseAnalysis/MetaUse 机制，改成分阶段 lower：先内存/指针转换（MemoryTypeConverter + 内存合法性规则），finishMemoryConversion 清理 handoff 属性并 CSE+Canonicalize 后验证无 tt.ptr，再数值转换（convertRemainingComputations），最后 finalizeLoweredModule 收尾（pointer cast、interleave、workspace 参数、loc 修复）；同时把 runOnOperation 拆成多个阶段 helper。配套修复：MemoryPointerConverter 支持标量指针表达式并保留 ptr<i1>->ptr<i8> 转发；BlockDataParser 优先从原始 AddPtr/Bitcast 解析；MaskAnalysis 将 i1 splat 统一视为均匀 mask 不再依赖用户白名单。这是一个大幅重构（-1458/+765），涉及转换顺序、DCE 语义与多处指针合法性规则，回归风险较高；删除 UseAnalysis 后地址-only 链依赖中间 DCE 清理，若某生产者同时被数值使用需确保在数值阶段仍合法；block pointer 合法性由 hasPointerFreeTypes 判断但也可能导致漏/误选。尽管配套了多个新 lit 用例，仍属高风险变更。",
+      "tags": [
+        "refactor",
+        "high-risk",
+        "TritonToLinalg"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "删除 UseAnalysis 并重排转换阶段，已有依赖 MetaUse 语义的测试需删除/重命名（已重命名 atomic_rmw 与 dead_control_flow 相关 pytest），新增 remove_use_analysis/block_pointer_memory_legality/mixed_use_splat_mask 等 lit 用例；仍需大范围回归既有 TritonToLinalg lit 与 NPU 端到端。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/（全部）",
+          "third_party/ascend/unittest/pytest_ut/test_atomic_rmw_memory_dependency.py",
+          "third_party/ascend/unittest/pytest_ut/test_dead_control_flow_cleanup.py"
+        ]
+      },
+      "message": "[TritonToLinalg](feat) remove UseAnalysis with staged lowering (#2440)\n\n* [UseAnalysis](feat) remove UseAnalysis\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* [TritonToLinalg](refactor) simplify staged conversion\n\nRemove redundant numerical-stage pointer legality and manual dead-range\ncleanup after memory conversion, and simplify descriptor slot validation.\n\nExtract target detection, preparation, memory/numerical conversion and\nfinalization from runOnOperation. The extraction preserves cleanup order,\nmarker lifetimes and existing failure behavior, and makes the pointer-free\nstage boundary explicit.\n\nValidation: source comparison, clang-format 19.1.6 on changed lines, and\ngit diff --check. Builds, lit and NPU tests were not run for the extraction.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* [TritonMemoryAccess](fix) preserve shared boolean mask extents\n\nInterpret an i1 splat as a uniform mask independently of its other users.\nAfter removing UseAnalysis cloning, numerical and indirect-memory users can\nshare that value with a regular load, store or atomic. The old user whitelist\nlost the active extent and could reject a conjunction with a per-lane bound.\n\nCover mixed numerical/memory uses, uniform masks on multi-element blocks,\nmask intersections, and the Marlin atomic path after unstructured lowering.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n---------\n\nSigned-off-by: KanuaK <yihan_z@qq.com>"
+    },
+    {
+      "sha": "c38a2fdfafcc839bf9109d3f5c8ba8e9239dc5d9",
+      "comment": "MergeCubeBlock 的 mergedAny 由赋值改为按位或累积，避免后续无合并的 loop 覆盖掉先前 loop 的合并状态，导致本应执行的 reorder 被跳过、合并块交错从而触发 DynamicCVPipeline fallback。修复精准，新增两种 loop 顺序与 no-merge 路径的 lit 用例，覆盖 merge state 与 reorder 联动。风险低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "已新增 merge_cube_block_multiple_loops.mlir 覆盖累积语义与 reorder，回归路径完善。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/"
+        ]
+      },
+      "message": "[ssbuffer](fix) preserve cube merge state across loops (#2448)\n\nA later loop with no merges overwrote the module-wide mergedAny flag,\neven when an earlier loop merged Cube blocks. This could skip the required\nreorder, leave a merged block interleaved and cause DynamicCVPipeline fallback.\n\nAccumulate merge results across loop bodies. Add FileCheck coverage for\nboth loop orders and for the no-merge path, including the following reorder.\n\nValidation: isolated 950-server build and 101 DynamicCVPipeline lit tests pass.\nThe new merge/reorder checks fail on the unmodified main-dev compiler and\npass with this fix. All applicable pre-commit checks pass; the unrelated\nworkflow YAML hook cannot initialize because the server's Go download fails\nwith an SSL EOF.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>"
+    },
+    {
+      "sha": "d95fbd685a5285479e7ae972dba712f18e69c405",
+      "comment": "CI/打包重构：新增 npuir-build.yml 从 AscendNPU-IR stable 分支构建 BishengIR payload（含 cgroup 感知并行度、ccache、按 gitlink SHA 的 PVC 缓存与 SHA 校验），wheels.yml 改为下载预构建 payload（失败时回退 in-image 构建）、加入 NPU 实测门禁 Test-Wheels 与 Publish-Wheels，wheels.Dockerfile 调整层序以命中 registry 缓存、cgroup 计算 MAX_JOBS 并挂载 ccache；build_npuir.py/setup_patch.py 支持 stable 分支拉取、payload 环境变量与 manylinux 包选择、curl 断点续传下载 LLVM、auditwheel 目标策略改为 manylinux_2_34。整体提升发布效率与正确性，但涉及缓存键/回退/权限/安全目录等大量编排逻辑，CI 本身难以在仓库内被常规测试覆盖，风险集中在构建链路而非产品代码；setup_patch 的 payload 目录层级（triton/backends/ascend/bishengir）与运行时查找必须严格一致，否则 wheel 会退化为系统 bishengir 并出现 MLIR 版本不匹配。",
+      "tags": [
+        "ci",
+        "chore",
+        "medium-risk",
+        "build"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 Test-Wheels 在真实 NPU 上跑 smoke 测试并校验 bundled bishengir 存在，是新增看护点；但 payload 缺失回退、缓存污染、下载重试等失败路径缺乏自动化测试，且 setup_patch 的包路径/auditwheel 策略变更需通过构建产物验证。",
+        "suggested_test_areas": [
+          ".github/workflows/npuir-build.yml",
+          ".github/workflows/wheels.yml",
+          "third_party/ascend/build/build_npuir.py",
+          "third_party/ascend/build/setup_patch.py",
+          "third_party/ascend/unittest/pytest_ut/test_01_vector_add.py 等 smoke 集"
+        ]
+      },
+      "message": "[CI](chore) Bundle the BishengIR compiler into the wheel (#2143)\n\n* Add the npuir package build\n\n* Add the npuir package to the wheel build\n\n* Roll back the integration-test changes\n\n* Change the cpu detection method\n\n* perf(ci): reuse prebuilt npuir payload in wheels\n\nSwitch main branch wheels to npuir: OFF so the 8 matrix jobs download the\nprebuilt BishengIR payload (built once by npuir-build.yml) instead of each\nrecompiling AscendNPU-IR inline. Pull the payload from the base branch for\nPRs (wheels-only PRs never change the AscendNPU-IR pin) rather than the fork\nhead, and drop allow_forks.\n\nCuts ~60% wall-clock and ~42% CPU compile time per wheels run.\n\n* fix(ci): fall back to in-image npuir build when payload is missing\n\nInstead of hard-failing when no npuir-build artifact exists (fresh branch,\nexpired artifact), fall back to compiling the payload in-image so the wheel\nbuild still succeeds. The fast path (prebuilt payload) is used whenever an\nartifact is available.\n\n* perf(ci): restore SWR registry build cache in wheels\n\nAdd cache-from/cache-to (mode=max) so the dnf/pip layers and the ccache\nmount persist across runs instead of relying on the scattered, gc-prone\nbuildkitd local cache. Keyed by arch only so the four python variants share\none ccache (compiled once, reused 4x).\n\n* fix(ci): set PYTHON under container.env for buildkitd node pinning\n\nPYTHON was a job-level env, which the runner only injects into step\nprocesses, not into the container's pod-spec env. The runner pod's postStart\nhook (buildkitd node pinning) reads container env, so it always fell through\nto the round-robin service. Move PYTHON under container.env (same pattern as\nvllm-ascend's SOC) so the pinning actually selects the per-python node.\n\n* perf(ci): drop cache-to, keep cache-from only\n\nThe registry cache is warmed once and then read-only; removing cache-to\navoids the expensive mode=max export (ccache push) on every build.\n\n* Fix the checkout error\n\n* fix(ci): download npuir payload from the PR branch\n\nnpuir-build.yml now runs on pull_request (payload lands on the PR head\nbranch), so point the wheels download back at github.head_ref with\nallow_forks for fork PRs, instead of github.base_ref.\n\n* Fix the cpu usage issue\n\n* perf(ci): cache npuir payload on the shared-volume PVC\n\nThe 137MB payload download from GitHub artifacts (Azure blob) is the\nbottleneck (~13min over the CN egress). Cache it under\n/root/.cache/npuir-payload/<arch>-npuir-<llvm+version hash> (the persistent\nshared-volume PVC) so subsequent runs skip the download and copy it locally.\n\nFirst run still downloads (and seeds the cache); later runs hit the local\ncache and go straight to the build.\n\n* fix(ci): key npuir payload cache on the AscendNPU-IR gitlink SHA\n\nThe previous cache key used cmake/llvm-hash.txt + json-version.txt, which\ntrack Triton's LLVM, not the BishengIR payload; that would have served a\nstale payload when only the AscendNPU-IR submodule changed. Key on the\nAscendNPU-IR gitlink SHA (git ls-tree HEAD) instead, which captures the full\nsubmodule content (including nested submodules).\n\nAlso seed the PVC cache via write-temp-then-mv so concurrent same-key writers\nnever expose a half-written directory.\n\n* fix(ci): mark checkout as git safe.directory for payload cache key\n\ngit ls-tree fails on the job container with 'detected dubious ownership'\nbecause the checkout is owned by the runner UID. Add safe.directory before\nreading the AscendNPU-IR gitlink SHA. Also use a per-process temp dir when\nseeding the cache so concurrent same-arch jobs don't clobber each other.\n\n* Delete the main function\n\n* Add build tests\n\n* Fix the path issue\n\n* Modify the npuir tracking version\n\n* fix(ci): validate npuir payload SHA before caching\n\n---------\n\nCo-authored-by: JavaPythonAIForBAT <wuhejun@h-partners.com>"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

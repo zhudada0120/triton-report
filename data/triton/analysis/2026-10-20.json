@@ -1,0 +1,149 @@
+{
+  "date": "2026-10-20",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-21T04:57:54.150585+08:00",
+  "daily_summary": "今日变更以 Python 前端（Frontend）的类型/语义正确性修复为主：修复了 return 语句中不同长度 tuple 类型未被拒绝的问题、修复了 uint8 等窄无符号偏移量做指针减法时的无符号环绕错误、修复了 for/tl.range 循环操作数在提升到归纳变量类型时按归纳类型而非源操作数符号性扩展的 bug；另外 AMD 后端新增 per-kernel LLVM 命令行选项 llvm_cl_opts 并让用户 llvm_fn_attrs 可覆盖编译器内置属性，同时把 CU-mode barrier 测试拆分到独立文件。整体偏向 bugfix 和 AMD 后端可调优特性，风险集中在循环操作数符号性变更带来的前端 IR 行为差异。",
+  "ascend_impact_summary": "本日三个前端修复 commit 中，pointer 减法的无符号偏移修复直接改动了 TritonSemantic.add/sub 路径（必影响路径 python/triton/language/semantic.py，虽当前 ascend patch 只覆写 dot，但指针语义为 Ascend 后端 TritonToLinalg 的输入语义所依赖），循环操作数符号性修复改动了 CodeGenerator.visit_For（必影响路径 python/triton/compiler/code_generator.py，且其 __init__ 被 ascend monkey-patch，虽然本次改的是 visit_For 而非 __init__，但影响 TTIR 生成），tuple 返回类型长度校验也改动了 code_generator.py 的 return 类型推导逻辑。三处均会改变 Ascend 前端生成的 TTIR，需要回归 Ascend 后端编译链与解释器测试。AMD 的两个 commit（llvm_cl_opts、测试文件拆分）属 third_party/amd 专属路径，对 Ascend 无影响。",
+  "commits": [
+    {
+      "sha": "7302258a3ee90688f12ec69cf68f96fd071fa0f1",
+      "comment": "修复 decide_return_type 中 common_type 对 tuple 类型的比较逻辑：原先仅比较 a.fields == b.fields，未命名 tuple 两侧均为 fields=None，导致长度不同的 tuple 返回值（如一支返回 (x, y)、另一支返回 (x,)）通过了校验，随后 zip 会静默丢弃多余元素。现增加 len(a.types) == len(b.types) 校验，使此类分支返回在编译期正确报出 Return type mismatch。改动位于 python/triton/compiler/code_generator.py 的 CodeGenerator 返回类型推导，并新增 python/test/unit/language/test_compile_errors.py 回归用例。实现简单、语义明确，风险低；唯一需要注意的是此前依赖该 bug 静默工作的用户代码会开始报错（这是期望的修复行为）。",
+      "tags": [
+        "bugfix",
+        "frontend",
+        "code-generator",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "修改了 python/triton/compiler/code_generator.py 中 decide_return_type 的 common_type 逻辑，属于 Ascend 复用的 AST→TTIR 前端：Ascend kernel 中若存在分支返回不同长度 tuple 的情况，将从静默接受变为编译期报 'Return type mismatch' 错误，行为变化对所有后端一致。该函数不在 ascend 的 monkey-patch 覆盖范围内（patch 覆写的是 CodeGenerator.__init__ 与 compiler.parse），但改变 Ascend 前端编译的报错行为。",
+        "testing": "Ascend 侧无需主动改测试框架，但既有 Ascend kernel 若有多分支不同长度 tuple 返回（较罕见），会由通过变为失败；建议在等价性回归中确认。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Frontend] Reject tuples of different lengths in a function's return types (#12381)\n\nFixes #12374.\n\nIn `decide_return_type`, `common_type` compared `a.fields == b.fields`\nfor tuple return types. Unnamed tuples have `fields=None` on both sides,\nso that check passed whatever the lengths, and the following `zip(a, b)`\nsilently dropped the extra elements. A helper that returns `(x, y)` on\none branch and `(x,)` on another compiled instead of failing with\n`Return type mismatch`.\n\nThe check now compares the lengths too.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n[rules](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\nruff and yapf pass. mypy could not run because I used a sparse checkout\nwithout `python/triton/runtime`.\n- [x] I have added tests: `test_returns_tuples_of_different_lengths` in\n`python/test/unit/language/test_compile_errors.py`.\n- [x] I have not added any `lit` tests.\n\n**What I ran:** I did not build Triton from source, since the change is\nPython-only. The issue's reproducer asserts the bug on the released\n3.8.0 wheel, and with this one-line change applied to the wheel's\n`code_generator.py` it prints PASS. I ran the new test as a standalone\nfile against that wheel: it fails without the change (`DID NOT RAISE`)\nand passes with it. I did not run the rest of `test_compile_errors.py`\n(it imports torch, which that environment lacks).",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/compiler/code_generator.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "6706b886650f13b79dac00b6df007d37e93fba42",
+      "comment": "修复指针减去窄无符号偏移（如 uint8）时，unsigned negate 先发生环绕导致指针前移的错误。在 TritonSemantic 的 sub 语义中，当 scalar_ty.is_ptr() 且 other.dtype 为窄无符号整数（<64 位）时，先将其零扩展转换为 int64，再取负与指针相加，从而避免无符号环绕；指针加无符号偏移路径保持不变。新增 interpreter 回归测试 test_ptr_sub_unsigned_offset。改动极小、语义正确，但需注意该转换对所有后端统一生效（含 Ascend 的 TritonToLinalg 路径），且 create_int_cast 的 signed=False 对 uint 源是零扩展，符合预期。",
+      "tags": [
+        "bugfix",
+        "frontend",
+        "semantic",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "修改了 python/triton/language/semantic.py::TritonSemantic.sub 的指针减法分支，属于 Ascend 复用的语言语义层与 TritonToLinalg 输入链路：Ascend kernel 中若存在 ptr - uint8/uint16 偏移，之前生成的 TTIR 会先对窄无符号值做无符号取负（语义错误），现在会先转 int64 再取负，生成不同的 TTIR 表达，修复后 Ascend 后端在此基础上 lowered 的 linalg 结果才是正确的。虽然 ascend 的 _patched_dot 只覆写 dot 而非 sub，但 sub 语义为共享路径，直接改变 Ascend 编译产物行为。",
+        "testing": "需要在 Ascend 侧补充或验证指针减法 + 窄无符号偏移的端到端用例；既有 Ascend 等价性/算子回归中涉及此类模式的 kernel 结果会从错误变为正确。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut (pointer arithmetic 相关算子测试)",
+          "Ascend 后端 TritonToLinalg 转换的等价性回归"
+        ]
+      },
+      "message": "[Frontend] Fix pointer subtraction with unsigned offsets (#12318)\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n[rules](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n- [x] I have added tests.\n  - `/python/test` for end-to-end tests\n- [x] I have not added any `lit` tests.\n\n## Summary\n\nSubtracting an unsigned offset narrower than 64 bits from a pointer can\nmove the pointer forward instead of backward. The unsigned negation\nwraps around before pointer addition, producing an incorrect address.\n\nThis change converts the narrow unsigned offset to `int64` before\nnegation, preventing unsigned wraparound while leaving unsigned pointer\naddition unchanged.\n\nFixes #12240.\n\n## Testing\n\n- Added a regression test for pointer subtraction with `uint8` offsets.\n- Verified that the regression test fails without the fix and passes\nwith it.\n- Ran the targeted regression test using Triton's interpreter on CPU: `1\npassed`.\n- Ran pre-commit checks against both `origin/main` and `upstream/main`;\nall hooks passed.\n- GPU execution was not tested locally.\n\nSigned-off-by: Abdullah Bin Saad <abdullahbinsaad07@gmail.com>",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/language/semantic.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "9b12eff0a651c990658e228264e42e99030aa531",
+      "comment": "AMD 后端新增 per-kernel LLVM 命令行选项 llvm_cl_opts（逗号分隔，裸名置 true，name=value 形式设置值），追加到该 kernel 每次 LLVM pipeline 的 flags 之后以覆盖内置默认；同时把 llvm_fn_attrs 重命名为通用 _parse_llvm_key_values，并将用户 fn attrs 的应用推迟到所有编译器内置属性设置之后，从而让用户属性覆盖编译器属性（如 amdgpu-expert-scheduling-mode、amdgpu-no-workgroup-id-x/y/z）。同步修改 python/src/llvm.cc 的 LLVMOptionSettings::enable 以支持 name=value 解析（上游 LLVM build_number 4→5），以及 amdgpu_codegen.cc 的 flags 解析。测试新增 test_llvm_cl_opts_set_option_value / test_llvm_fn_attrs_override_compiler_attributes 并将文件重命名为 test_llvm_controls.py。改动仅限 third_party/amd 与 AMD 相关 LLVM 绑定，逻辑清晰；注意 llvm_cl_opts 为进程级 LLVM 选项，混用不同选项的并行编译会受限（已有文档说明）。",
+      "tags": [
+        "feature",
+        "amd",
+        "backend-compiler",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Add option for per-kernel clopt control (#12382)\n\nAdd an llvm_cl_opts option to HIPOptions. It takes comma-separated LLVM\ncommand line options, e.g. \"enable-gvn-hoist,unroll-threshold=150\"; bare\nnames are set to true. The options are appended to the flags used by\nevery LLVM pipeline run of the kernel, so they override the built-in\ndefaults.\n\nAlong the way, also make the developer provided LLM fn attrs overrule."
+    },
+    {
+      "sha": "29ef3c3320e42aa0b5c2c9e24110b53526660f10",
+      "comment": "修复 visit_For 在将 lb/ub/step 提升到归纳类型（iv_type）时统一使用归纳类型符号性做扩展的问题：对于 uint8 上界 200 会被作为 int32 归纳类型时符号扩展为 -56 导致循环零次行为，负的窄有符号操作数在无符号归纳类型下被零扩展。现在每个操作数按其源操作数的 signedness 决定 ext/high（lb.dtype.is_int_signed() 等），宽度相等的 cast 也保留以避免无关 IR 变化。新增前端 FileCheck 测试（覆盖 Triton/Gluon、int1/int8/uint8/int16/uint16 源与 int32/uint32/int64/uint64 归纳类型）和运行时测试（range 与 tl.range，含 trip count 与 induction sum 校验）。修改了 CodeGenerator.visit_For，属于前端 IR 生成的核心路径，需警惕依赖原符号扩展行为的既有 kernel 出现输出变化（属修复语义）。",
+      "tags": [
+        "bugfix",
+        "frontend",
+        "code-generator",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "修改了 python/triton/compiler/code_generator.py::visit_For 中循环操作数的类型转换逻辑（lb/ub/step 的 create_int_cast 改用各源操作数的 signedness 而非归纳类型的 signedness）。Ascend 复用该 CodeGenerator 生成 TTIR，因此 Ascend kernel 中循环边界/步长来自窄有符号/无符号加载的场景会生成不同的 arith.extsi/extui，且循环 trip count 与归纳值将按正确语义计算。注意 ascend 通过 _apply_ascend_patch 覆写的是 CodeGenerator.__init__（注入 hacc.target），本次修改在 visit_For 中，不与 patch 直接冲突，但影响 Ascend 编译产物语义。",
+        "testing": "需要在 Ascend 侧验证涉及 tl.range/for 循环、且循环边界或步长来自 uint8/uint16/int8/int16 加载的 kernel 的 trip count 与结果；建议在 Ascend 解释器与 NPU 后端各执行一次循环语义回归。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut (循环/range 相关算子测试)",
+          "third_party/ascend/backend/ascend_interpreter.py 解释执行路径的循环回归",
+          "Ascend 后端 TritonToLinalg 对 arith.extsi/extui 的处理回归"
+        ]
+      },
+      "message": "[FRONTEND] Preserve source signedness in loop operands (#12350)\n\nA narrow loop operand can change value when `visit_For` promotes it to\nthe induction type. For example, a loaded `uint8` upper bound of 200 is\nsign-extended to -56, so `range(n)` executes zero iterations. Negative\nnarrow signed operands are likewise zero-extended when the induction\ntype is unsigned.\n\nChoose each lower bound, upper bound, and step cast's extension from the\nsource operand's signedness. The existing cast operations are retained,\nincluding equal-width casts, to avoid unrelated frontend IR changes.\n\nFixes #12347. Credit to @Hughshine for the report, diagnosis, and\nproposed source-signedness correction in that issue.\n\nThe separate full-width unsigned loop-comparison behavior described in\n#12347 is outside this fix.\n\nValidation on source-built upstream `2122e24ef` plus this patch:\n\n- Triton frontend suite: **946 passed**, including 120 new Triton/Gluon\ncases covering all three operands, signed/unsigned/boolean sources, and\nsigned/unsigned 32/64-bit induction types.\n- Gluon frontend suite: **604 passed, 184 skipped**.\n- Runtime loop regressions and existing loop coverage: **54 passed on\nA100 and 54 passed on H100**. The new runtime cases check both trip\ncounts and induction-value sums for `range` and `tl.range`.\n- Paired baseline checks: 60 of the new compiler cases and 16 selected\nruntime cases fail without the fix; the same cases pass with it.\n- `pre-commit run --from-ref origin/main --to-ref HEAD` passed.\n\nAMD runtime testing was not performed.\n\n### New contributor declaration\n\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n[rules](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n- [x] I have added tests under `/python/test`.\n- [x] I have not added any lit tests.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/compiler/code_generator.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "3a43613f97bbd4ae3c5ac7e74db1168c66daffdf",
+      "comment": "纯测试组织调整：把原本放在 test_amd_codegen.py（面向 AMD CodeGen LLVM IR 测试）中的 test_reduce_cu_mode 运行时测试及其 import 移入新建的 third_party/amd/python/test/test_barrier.py，内容逻辑不变。无生产代码改动，风险为无。",
+      "tags": [
+        "test",
+        "amd",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Move CU-mode barrier test into its own file (#12373)\n\n`test_amd_codegen.py` is intended for AMD CodeGen LLVM tests. Move the\nCU-mode barrier runtime test and its imports into `test_barrier.py`."
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

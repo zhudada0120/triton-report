@@ -1,0 +1,200 @@
+{
+  "date": "2026-10-20",
+  "repo": "triton-lang/triton",
+  "branch": "main",
+  "commits": [
+    {
+      "sha": "7302258a3ee90688f12ec69cf68f96fd071fa0f1",
+      "author": {
+        "name": "Saqib Khan",
+        "email": "saqibkhan@utexas.edu"
+      },
+      "date": "2026-10-20T23:39:32+08:00",
+      "message": "[Frontend] Reject tuples of different lengths in a function's return types (#12381)\n\nFixes #12374.\n\nIn `decide_return_type`, `common_type` compared `a.fields == b.fields`\nfor tuple return types. Unnamed tuples have `fields=None` on both sides,\nso that check passed whatever the lengths, and the following `zip(a, b)`\nsilently dropped the extra elements. A helper that returns `(x, y)` on\none branch and `(x,)` on another compiled instead of failing with\n`Return type mismatch`.\n\nThe check now compares the lengths too.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n[rules](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\nruff and yapf pass. mypy could not run because I used a sparse checkout\nwithout `python/triton/runtime`.\n- [x] I have added tests: `test_returns_tuples_of_different_lengths` in\n`python/test/unit/language/test_compile_errors.py`.\n- [x] I have not added any `lit` tests.\n\n**What I ran:** I did not build Triton from source, since the change is\nPython-only. The issue's reproducer asserts the bug on the released\n3.8.0 wheel, and with this one-line change applied to the wheel's\n`code_generator.py` it prints PASS. I ran the new test as a standalone\nfile against that wheel: it fails without the change (`DID NOT RAISE`)\nand passes with it. I did not run the rest of `test_compile_errors.py`\n(it imports torch, which that environment lacks).",
+      "parents": [
+        "6706b886650f13b79dac00b6df007d37e93fba42"
+      ],
+      "stats": {
+        "total_additions": 22,
+        "total_deletions": 1,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "python/test/unit/language/test_compile_errors.py",
+          "status": "modified",
+          "additions": 21,
+          "deletions": 0,
+          "patch": "@@ -239,6 +239,27 @@ def test_returns_branched_on_non_constexpr():\n     assert \"at 1:0:\" in str(e.value.__cause__), \"error should point to function definition\"\n \n \n+@triton.jit\n+def returns_tuples_of_different_lengths(N: int):\n+    values = tl.arange(0, 4)\n+    if N == 0:\n+        return values, values + 1\n+    else:\n+        return (values, )\n+\n+\n+def test_returns_tuples_of_different_lengths():\n+\n+    @triton.jit\n+    def kernel(N: int):\n+        returns_tuples_of_different_lengths(N)\n+\n+    with pytest.raises(CompilationError) as e:\n+        triton.compile(triton.compiler.ASTSource(fn=kernel, signature={'N': 'i32'}, constexprs={}))\n+\n+    assert \"Return type mismatch\" in str(e.value.__cause__)\n+\n+\n def test_power_of_two_shapes():\n \n     @triton.jit"
+        },
+        {
+          "filename": "python/triton/compiler/code_generator.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -593,7 +593,7 @@ class CodeGenerator(ast.NodeVisitor):\n         def common_type(a, b):\n             if isinstance(a, tl.tuple_type):\n                 _check(isinstance(b, tl.tuple_type), lambda: error_msg(a, b))\n-                _check(a.fields == b.fields, lambda: error_msg(a, b))\n+                _check(len(a.types) == len(b.types) and a.fields == b.fields, lambda: error_msg(a, b))\n                 return tl.tuple_type([common_type(ai, bi) for ai, bi in zip(a, b)], fields=a.fields)\n             if isinstance(a, tl.constexpr_type):\n                 if a == b:\n"
+        }
+      ]
+    },
+    {
+      "sha": "6706b886650f13b79dac00b6df007d37e93fba42",
+      "author": {
+        "name": "Abdullah Bin Saad",
+        "email": "81187244+Abdullah49645@users.noreply.github.com"
+      },
+      "date": "2026-10-20T23:39:14+08:00",
+      "message": "[Frontend] Fix pointer subtraction with unsigned offsets (#12318)\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n[rules](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n- [x] I have added tests.\n  - `/python/test` for end-to-end tests\n- [x] I have not added any `lit` tests.\n\n## Summary\n\nSubtracting an unsigned offset narrower than 64 bits from a pointer can\nmove the pointer forward instead of backward. The unsigned negation\nwraps around before pointer addition, producing an incorrect address.\n\nThis change converts the narrow unsigned offset to `int64` before\nnegation, preventing unsigned wraparound while leaving unsigned pointer\naddition unchanged.\n\nFixes #12240.\n\n## Testing\n\n- Added a regression test for pointer subtraction with `uint8` offsets.\n- Verified that the regression test fails without the fix and passes\nwith it.\n- Ran the targeted regression test using Triton's interpreter on CPU: `1\npassed`.\n- Ran pre-commit checks against both `origin/main` and `upstream/main`;\nall hooks passed.\n- GPU execution was not tested locally.\n\nSigned-off-by: Abdullah Bin Saad <abdullahbinsaad07@gmail.com>",
+      "parents": [
+        "9b12eff0a651c990658e228264e42e99030aa531"
+      ],
+      "stats": {
+        "total_additions": 21,
+        "total_deletions": 0,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "python/test/unit/language/test_core.py",
+          "status": "modified",
+          "additions": 16,
+          "deletions": 0,
+          "patch": "@@ -532,6 +532,22 @@ def test_addptr(dtype, order, device):\n     np.testing.assert_allclose(y, to_numpy(y_tri))\n \n \n+@pytest.mark.interpreter\n+def test_ptr_sub_unsigned_offset(device):\n+\n+    @triton.jit\n+    def kernel(X, Y):\n+        i = tl.arange(0, 64)\n+        tl.store(Y + i, tl.load(X + 300 - i.to(tl.uint8)))\n+\n+    x = to_triton(np.arange(1024, dtype=np.float32), device=device)\n+    y = to_triton(np.empty(64, dtype=np.float32), device=device)\n+    kernel[(1, )](x, y)\n+\n+    expected = np.array([300., 299., 298., 297., 296.], dtype=np.float32)\n+    np.testing.assert_array_equal(to_numpy(y)[:5], expected)\n+\n+\n @pytest.mark.interpreter\n @pytest.mark.parametrize(\"dtype_x, dtype_y\", [  #\n     (dtype_x, dtype_y) for dtype_x in int_dtypes for dtype_y in int_dtypes"
+        },
+        {
+          "filename": "python/triton/language/semantic.py",
+          "status": "modified",
+          "additions": 5,
+          "deletions": 0,
+          "patch": "@@ -291,6 +291,11 @@ class TritonSemantic(Generic[TensorTy]):\n         scalar_ty = input.type.scalar\n         # ptr - offset\n         if scalar_ty.is_ptr():\n+            # Negate unsigned offsets in a signed type to avoid unsigned wraparound.\n+            if other.dtype.is_int_unsigned() and other.dtype.int_bitwidth < 64:\n+                other_type = other.type.with_element_ty(tl.int64)\n+                other_handle = self.builder.create_int_cast(other.handle, other_type.to_ir(self.builder), False)\n+                other = self.make_tensor(other_handle, other_type)\n             return self.add(input, self.minus(other), sanitize_overflow=False)\n         # float - float\n         if scalar_ty.is_floating():\n"
+        }
+      ]
+    },
+    {
+      "sha": "9b12eff0a651c990658e228264e42e99030aa531",
+      "author": {
+        "name": "Lei Zhang",
+        "email": "antiagainst@gmail.com"
+      },
+      "date": "2026-10-20T23:23:16+08:00",
+      "message": "[AMD] Add option for per-kernel clopt control (#12382)\n\nAdd an llvm_cl_opts option to HIPOptions. It takes comma-separated LLVM\ncommand line options, e.g. \"enable-gvn-hoist,unroll-threshold=150\"; bare\nnames are set to true. The options are appended to the flags used by\nevery LLVM pipeline run of the kernel, so they override the built-in\ndefaults.\n\nAlong the way, also make the developer provided LLM fn attrs overrule.",
+      "parents": [
+        "29ef3c3320e42aa0b5c2c9e24110b53526660f10"
+      ],
+      "stats": {
+        "total_additions": 93,
+        "total_deletions": 25,
+        "files_changed": 5
+      },
+      "files": [
+        {
+          "filename": "cmake/amd-llvm-build-info.json",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -1,5 +1,5 @@\n {\n   \"llvm_hash\": \"6bc4aaf6641c56ee104f6200c96a6a571bc77052\",\n   \"repository\": \"triton-lang/llvm-project\",\n-  \"build_number\": 4\n+  \"build_number\": 5\n }"
+        },
+        {
+          "filename": "python/src/llvm.cc",
+          "status": "modified",
+          "additions": 7,
+          "deletions": 2,
+          "patch": "@@ -142,8 +142,13 @@ struct LLVMOptionSettings {\n   }\n \n   void enable(const std::vector<std::string> &flags) {\n-    for (const std::string &flag : flags)\n-      setFlag(flag, true);\n+    for (const std::string &flag : flags) {\n+      auto [name, value] = StringRef(flag).split('=');\n+      if (name.size() == flag.size())\n+        setFlag(flag, true);\n+      else\n+        set(name.str(), value.str());\n+    }\n   }\n \n   // DISABLE_LLVM_OPT may hold a comma separated list of LLVM flags to turn on,"
+        },
+        {
+          "filename": "third_party/amd/backend/codegen/amdgpu_codegen.cc",
+          "status": "modified",
+          "additions": 7,
+          "deletions": 3,
+          "patch": "@@ -286,9 +286,13 @@ triton_amdgpu_compile(const char *llvmIR, size_t llvmIRSize,\n   if (options->flags && options->flags[0]) {\n     llvm::SmallVector<llvm::StringRef, 4> flags;\n     llvm::StringRef(options->flags).split(flags, ',');\n-    for (llvm::StringRef flag : flags)\n-      if (!flag.empty())\n-        settings.emplace_back(flag.str(), \"true\");\n+    for (llvm::StringRef flag : flags) {\n+      if (flag.empty())\n+        continue;\n+      auto [name, value] = flag.split('=');\n+      settings.emplace_back(name.str(),\n+                            name.size() == flag.size() ? \"true\" : value.str());\n+    }\n   }\n \n   if (options->disabledPasses && options->disabledPasses[0]) {"
+        },
+        {
+          "filename": "third_party/amd/backend/compiler.py",
+          "status": "modified",
+          "additions": 34,
+          "deletions": 19,
+          "patch": "@@ -191,18 +191,21 @@ def is_expert_scheduling_enabled(base_arch):\n     return base_arch == \"gfx1250\"\n \n \n-def get_llvm_flags(arch):\n+def get_llvm_flags(options):\n     \"\"\"LLVM command line flags for every LLVM pipeline run of a compilation.\n \n-    These are process-wide LLVM options: compilations sharing a process can only\n-    run in parallel while they use identical flags. Prefer per-function LLVM\n-    attributes (see make_llir) whenever LLVM offers one.\n+    Each flag is either a bare option name, which is set to true, or\n+    \"name=value\". These are process-wide LLVM options: compilations sharing a\n+    process can only run in parallel while they use identical flags. Prefer\n+    per-function LLVM attributes (see make_llir) whenever LLVM offers one.\n     \"\"\"\n     flags = []\n     # Discourage VGPR reuse that creates VALU-to-DS WAR hazards and requires\n     # s_wait_alu va_vdst waits in expert scheduling mode.\n-    if arch == \"gfx1250\" and is_expert_scheduling_enabled(arch):\n+    if options.arch == \"gfx1250\" and is_expert_scheduling_enabled(options.arch):\n         flags.append(\"amdgpu-anti-hints-for-va-vdst\")\n+    # User-requested options come last so they override the defaults above.\n+    flags.extend(f\"{name}={value}\" for name, value in options.llvm_cl_opts)\n     return flags\n \n \n@@ -214,7 +217,7 @@ def is_consan_supported(base_arch):\n     return base_arch == \"gfx1250\"\n \n \n-def _parse_llvm_fn_attrs(attrs):\n+def _parse_llvm_key_values(attrs, bare_value=\"\"):\n     if not isinstance(attrs, str):\n         return tuple(attrs)\n     parsed = []\n@@ -222,7 +225,7 @@ def _parse_llvm_fn_attrs(attrs):\n         name, sep, value = attr.partition(\"=\")\n         name = name.strip()\n         if name:\n-            parsed.append((name, value.strip() if sep else \"\"))\n+            parsed.append((name, value.strip() if sep else bare_value))\n     return tuple(parsed)\n \n \n@@ -259,6 +262,8 @@ class HIPOptions:\n     backend_name: str = 'hip'\n     instrumentation_mode: str = \"\"\n     fpsan_homomorphic_casts: bool = False\n+    # WGP/CU execution mode for gfx11 and gfx120x; ignored on other targets.\n+    wgp_cu_mode: str = \"wgp\"\n \n     # Experimental hint for how the AMD backend schedules a kernel's instructions. The only\n     # recognized value is \"mfma-schedule\" (gfx942 and gfx950): run the MFMA scheduler on the optimized\n@@ -274,8 +279,11 @@ class HIPOptions:\n     # Example: llvm_fn_attrs=\"amdgpu-sched-strategy=iterative-ilp,noinline\"\n     llvm_fn_attrs: str | Tuple[Tuple[str, str], ...] = \"\"\n \n-    # WGP/CU execution mode for gfx11 and gfx120x; ignored on other targets.\n-    wgp_cu_mode: str = \"wgp\"\n+    # Experimental: intended for development and debugging; may change or be removed without notice.\n+    # Comma-separated LLVM command line options applied to every LLVM pipeline run of this kernel;\n+    # bare names are set to true. Option names omit the leading dash.\n+    # Example: llvm_cl_opts=\"enable-gvn-hoist,unroll-threshold=150\"\n+    llvm_cl_opts: str | Tuple[Tuple[str, str], ...] = \"\"\n \n     def __post_init__(self):\n         if self.wgp_cu_mode not in (\"wgp\", \"cu\"):\n@@ -295,7 +303,8 @@ class HIPOptions:\n             )\n             object.__setattr__(self, 'kpack', 1)\n \n-        object.__setattr__(self, 'llvm_fn_attrs', _parse_llvm_fn_attrs(self.llvm_fn_attrs))\n+        object.__setattr__(self, 'llvm_fn_attrs', _parse_llvm_key_values(self.llvm_fn_attrs))\n+        object.__setattr__(self, 'llvm_cl_opts', _parse_llvm_key_values(self.llvm_cl_opts, bare_value=\"true\"))\n \n         default_libdir = Path(__file__).parent / 'lib'\n         extern_libs = {} if self.extern_libs is None else dict(self.extern_libs)\n@@ -619,7 +628,7 @@ class HIPBackend(BaseBackend):\n         target_features = ''\n         if knobs.compilation.enable_asan:\n             target_features = '+xnack'\n-        llvm.attach_datalayout(llvm_mod, layout_triple, core_llvm_arch, target_features, get_llvm_flags(options.arch))\n+        llvm.attach_datalayout(llvm_mod, layout_triple, core_llvm_arch, target_features, get_llvm_flags(options))\n \n         # Set various control constants on the LLVM module so that device\n         # libraries can resolve references to them.\n@@ -665,9 +674,6 @@ class HIPBackend(BaseBackend):\n         if knobs.compilation.enable_asan:\n             kernel_fn.add_fn_target_feature(\"+xnack\")\n             kernel_fn.add_fn_asan_attr()\n-        for name, value in options.llvm_fn_attrs:\n-            kernel_fn.remove_fn_attr(name)\n-            kernel_fn.add_fn_attr(name, value)\n         if options.wgp_cu_mode == \"cu\":\n             if knobs.compilation.enable_asan:\n                 raise ValueError(\"wgp_cu_mode='cu' is not supported together with TRITON_ENABLE_ASAN\")\n@@ -704,7 +710,13 @@ class HIPBackend(BaseBackend):\n                 if not fn.is_declaration():\n                     fn.add_fn_attr(\"amdgpu-expert-scheduling-mode\", \"true\")\n \n-        llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3, core_llvm_arch, '', get_llvm_flags(options.arch),\n+        # Apply user-provided attributes after every attribute managed above so\n+        # that they take precedence.\n+        for name, value in options.llvm_fn_attrs:\n+            kernel_fn.remove_fn_attr(name)\n+            kernel_fn.add_fn_attr(name, value)\n+\n+        llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3, core_llvm_arch, '', get_llvm_flags(options),\n                              options.enable_fp_fusion, disable_vector_combine=True)\n         if target_triple != layout_triple:\n             amd.set_target_triple(llvm_mod, target_triple)\n@@ -713,10 +725,13 @@ class HIPBackend(BaseBackend):\n         # These attributes are used to determine if Z should be masked out when loading Y. They are inferred during\n         # optimize_module from calls to @llvm.amdgcn.workgroup.id.x/y/z(). We cannot rely on this because a\n         # dispatch dimensions might be used even if there is no program_id() call for it.\n+        # Attributes provided through llvm_fn_attrs are kept.\n         if amd.has_architected_sgprs(layout_triple, core_llvm_arch):\n-            kernel_fn.remove_fn_attr(\"amdgpu-no-workgroup-id-x\")\n-            kernel_fn.remove_fn_attr(\"amdgpu-no-workgroup-id-y\")\n-            kernel_fn.remove_fn_attr(\"amdgpu-no-workgroup-id-z\")\n+            user_attrs = {name for name, _ in options.llvm_fn_attrs}\n+            for dim in \"xyz\":\n+                attr = f\"amdgpu-no-workgroup-id-{dim}\"\n+                if attr not in user_attrs:\n+                    kernel_fn.remove_fn_attr(attr)\n \n         # Opt-in MFMA scheduler, see the schedule_hint option (validated in parse_options).\n         if options.schedule_hint == \"mfma-schedule\" and options.arch in (\"gfx942\", \"gfx950\"):\n@@ -748,7 +763,7 @@ class HIPBackend(BaseBackend):\n         assert len(names) == 1\n         metadata[\"name\"] = names[0]\n         # llvm -> hsaco\n-        flags = get_llvm_flags(options.arch)\n+        flags = get_llvm_flags(options)\n         features = ''\n         target_triple = get_amd_codegen_target_triple(options.arch)\n         ir_hash = hashlib.sha256(src.encode(\"utf-8\")).hexdigest()"
+        },
+        {
+          "filename": "third_party/amd/python/test/test_llvm_controls.py",
+          "status": "renamed",
+          "additions": 44,
+          "deletions": 0,
+          "patch": "similarity index 54%\nrename from third_party/amd/python/test/test_llvm_fn_attrs.py\nrename to third_party/amd/python/test/test_llvm_controls.py\n@@ -2,6 +2,7 @@ from pathlib import Path\n \n import pytest\n import triton\n+from triton import knobs\n \n from triton._internal_testing import is_hip\n \n@@ -56,3 +57,46 @@ def test_llvm_fn_attrs_change_amdgcn():\n     )\n \n     assert baseline.asm[\"amdgcn\"] != with_sched_attr.asm[\"amdgcn\"]\n+\n+\n+def test_llvm_fn_attrs_override_compiler_attributes(tmp_path):\n+    target = triton.runtime.driver.active.get_current_target()\n+\n+    with knobs.amd.scope(), knobs.cache.scope():\n+        knobs.cache.dir = str(tmp_path)\n+        knobs.amd.use_expert_scheduling = True\n+        # Expert scheduling mode is applied after linking device libraries.\n+        baseline = triton.compile(ATTN_FWD_TTIR, target=target)\n+        with_attrs = triton.compile(\n+            ATTN_FWD_TTIR,\n+            target=target,\n+            options={\"llvm_fn_attrs\": \"amdgpu-expert-scheduling-mode=false\"},\n+        )\n+\n+    assert '\"amdgpu-expert-scheduling-mode\"=\"true\"' in baseline.asm[\"llir\"]\n+    assert '\"amdgpu-expert-scheduling-mode\"=\"false\"' in with_attrs.asm[\"llir\"]\n+\n+\n+def test_llvm_cl_opts_set_option_value():\n+    target = triton.runtime.driver.active.get_current_target()\n+\n+    baseline = triton.compile(ATTN_FWD_TTIR, target=target)\n+    disabled = triton.compile(\n+        ATTN_FWD_TTIR,\n+        target=target,\n+        options={\"llvm_cl_opts\": \"enable-gvn-hoist=false\"},\n+    )\n+    enabled = triton.compile(\n+        ATTN_FWD_TTIR,\n+        target=target,\n+        options={\"llvm_cl_opts\": \"enable-gvn-hoist=true\"},\n+    )\n+    bare = triton.compile(\n+        ATTN_FWD_TTIR,\n+        target=target,\n+        options={\"llvm_cl_opts\": \"enable-gvn-hoist\"},\n+    )\n+\n+    assert baseline.asm[\"llir\"] == disabled.asm[\"llir\"]\n+    assert baseline.asm[\"llir\"] != enabled.asm[\"llir\"]\n+    assert bare.asm[\"llir\"] == enabled.asm[\"llir\"]\n"
+        }
+      ]
+    },
+    {
+      "sha": "29ef3c3320e42aa0b5c2c9e24110b53526660f10",
+      "author": {
+        "name": "Sahil Kadadekar",
+        "email": "147995121+Sahil170595@users.noreply.github.com"
+      },
+      "date": "2026-10-20T22:51:10+08:00",
+      "message": "[FRONTEND] Preserve source signedness in loop operands (#12350)\n\nA narrow loop operand can change value when `visit_For` promotes it to\nthe induction type. For example, a loaded `uint8` upper bound of 200 is\nsign-extended to -56, so `range(n)` executes zero iterations. Negative\nnarrow signed operands are likewise zero-extended when the induction\ntype is unsigned.\n\nChoose each lower bound, upper bound, and step cast's extension from the\nsource operand's signedness. The existing cast operations are retained,\nincluding equal-width casts, to avoid unrelated frontend IR changes.\n\nFixes #12347. Credit to @Hughshine for the report, diagnosis, and\nproposed source-signedness correction in that issue.\n\nThe separate full-width unsigned loop-comparison behavior described in\n#12347 is outside this fix.\n\nValidation on source-built upstream `2122e24ef` plus this patch:\n\n- Triton frontend suite: **946 passed**, including 120 new Triton/Gluon\ncases covering all three operands, signed/unsigned/boolean sources, and\nsigned/unsigned 32/64-bit induction types.\n- Gluon frontend suite: **604 passed, 184 skipped**.\n- Runtime loop regressions and existing loop coverage: **54 passed on\nA100 and 54 passed on H100**. The new runtime cases check both trip\ncounts and induction-value sums for `range` and `tl.range`.\n- Paired baseline checks: 60 of the new compiler cases and 16 selected\nruntime cases fail without the fix; the same cases pass with it.\n- `pre-commit run --from-ref origin/main --to-ref HEAD` passed.\n\nAMD runtime testing was not performed.\n\n### New contributor declaration\n\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n[rules](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n- [x] I have added tests under `/python/test`.\n- [x] I have not added any lit tests.",
+      "parents": [
+        "3a43613f97bbd4ae3c5ac7e74db1168c66daffdf"
+      ],
+      "stats": {
+        "total_additions": 79,
+        "total_deletions": 9,
+        "files_changed": 3
+      },
+      "files": [
+        {
+          "filename": "python/test/unit/language/test_core.py",
+          "status": "modified",
+          "additions": 44,
+          "deletions": 0,
+          "patch": "@@ -6732,6 +6732,50 @@ def test_for_iv(lo, hi, iv, device):\n     assert out[0] == sum(range(lo, hi, iv))\n \n \n+@pytest.mark.parametrize(\"use_tl_range\", [False, True], ids=[\"range\", \"tl_range\"])\n+@pytest.mark.parametrize(\"lower, upper, step\", [\n+    pytest.param((\"int32\", 0), (\"uint8\", 127), (\"int32\", 1), id=\"uint8_upper_control\"),\n+    pytest.param((\"int32\", 0), (\"uint8\", 128), (\"int32\", 1), id=\"uint8_upper_boundary\"),\n+    pytest.param((\"int32\", 0), (\"uint8\", 255), (\"int32\", 1), id=\"uint8_upper\"),\n+    pytest.param((\"int32\", 0), (\"uint16\", 40000), (\"int32\", 1), id=\"uint16_upper\"),\n+    pytest.param((\"int32\", 0), (\"bool\", True), (\"int32\", 1), id=\"bool_upper\"),\n+    pytest.param((\"uint8\", 200), (\"int32\", 205), (\"int32\", 1), id=\"uint8_lower\"),\n+    pytest.param((\"uint16\", 40000), (\"int32\", 40005), (\"int32\", 1), id=\"uint16_lower\"),\n+    pytest.param((\"bool\", True), (\"int32\", 4), (\"int32\", 1), id=\"bool_lower\"),\n+    pytest.param((\"uint8\", 133), (\"uint8\", 138), (\"int32\", 1), id=\"uint8_both\"),\n+    pytest.param((\"int32\", 0), (\"int32\", 256), (\"uint8\", 128), id=\"uint8_step\"),\n+    pytest.param((\"int32\", 0), (\"int32\", 65536), (\"uint16\", 32768), id=\"uint16_step\"),\n+    pytest.param((\"int32\", 0), (\"int32\", 5), (\"bool\", True), id=\"bool_step\"),\n+    pytest.param((\"int8\", -5), (\"int32\", 5), (\"int32\", 1), id=\"signed_control\"),\n+    pytest.param((\"uint32\", 0), (\"uint8\", 200), (\"int32\", 1), id=\"unsigned_control\"),\n+])\n+def test_for_loop_operand_signedness(lower, upper, step, use_tl_range, device):\n+\n+    @triton.jit\n+    def kernel(Lower, Upper, Step, Out, USE_TL_RANGE: tl.constexpr):\n+        lower = tl.load(Lower)\n+        upper = tl.load(Upper)\n+        step = tl.load(Step)\n+        count = tl.full((), 0, tl.int64)\n+        total = tl.full((), 0, tl.int64)\n+        if USE_TL_RANGE:\n+            for i in tl.range(lower, upper, step, num_stages=3):\n+                count += 1\n+                total += i.to(tl.int64)\n+        else:\n+            for i in range(lower, upper, step):\n+                count += 1\n+                total += i.to(tl.int64)\n+        tl.store(Out, count)\n+        tl.store(Out + 1, total)\n+\n+    operands = [to_triton(np.array([value], dtype=dtype), device=device) for dtype, value in (lower, upper, step)]\n+    out = torch.empty(2, dtype=torch.int64, device=device)\n+    kernel[(1, )](*operands, out, use_tl_range)\n+    expected = range(lower[1], upper[1], step[1])\n+    assert out.tolist() == [len(expected), sum(expected)]\n+\n+\n @pytest.mark.interpreter\n def test_if_else(device):\n "
+        },
+        {
+          "filename": "python/test/unit/language/test_frontend.py",
+          "status": "modified",
+          "additions": 31,
+          "deletions": 0,
+          "patch": "@@ -5,6 +5,7 @@ import re\n import triton\n import triton.language as tl\n from triton.experimental import gluon\n+from triton.experimental.gluon import language as gl\n from triton._filecheck import filecheck_test, run_filecheck_test, run_parser\n from triton.compiler.code_generator import CodeGenerator\n from triton.runtime.jit import MockTensor\n@@ -1348,6 +1349,36 @@ def test_for_loop_iv_modification():\n         anchor(i)\n \n \n+@pytest.mark.parametrize(\"jit\", [triton.jit, gluon.jit])\n+@pytest.mark.parametrize(\"operand\", [\"lower\", \"upper\", \"step\"])\n+@pytest.mark.parametrize(\"src_dtype\", [tl.int1, tl.int8, tl.uint8, tl.int16, tl.uint16], ids=str)\n+@pytest.mark.parametrize(\"iv_dtype\", [tl.int32, tl.uint32, tl.int64, tl.uint64], ids=str)\n+def test_for_loop_operand_extension(jit, operand, src_dtype, iv_dtype):\n+    language = tl if jit is triton.jit else gl\n+\n+    @jit\n+    def kernel(X, IV_DTYPE: tl.constexpr, OPERAND: tl.constexpr):\n+        value = language.load(X)\n+        lower = language.full((), 0, IV_DTYPE)\n+        upper = language.full((), 10, IV_DTYPE)\n+        step = language.full((), 1, IV_DTYPE)\n+        if OPERAND == \"lower\":\n+            lower = value\n+        elif OPERAND == \"upper\":\n+            upper = value\n+        else:\n+            step = value\n+        for i in range(lower, upper, step):\n+            language.store(X, i)\n+\n+    module = run_parser(kernel, args=(MockTensor(src_dtype), iv_dtype, operand))\n+    widths = f\"i{src_dtype.int_bitwidth} to i{iv_dtype.int_bitwidth}\"\n+    extensions = [line for line in module.str_nodebug().splitlines() if \"arith.ext\" in line and widths in line]\n+    assert len(extensions) == 1\n+    expected_op = \"arith.extsi\" if src_dtype in (tl.int8, tl.int16) else \"arith.extui\"\n+    assert expected_op in extensions[0]\n+\n+\n @pytest.mark.interpreter\n def test_constexpr_return():\n "
+        },
+        {
+          "filename": "python/triton/compiler/code_generator.py",
+          "status": "modified",
+          "additions": 4,
+          "deletions": 9,
+          "patch": "@@ -1349,15 +1349,10 @@ class CodeGenerator(ast.NodeVisitor):\n         iv_type = self.semantic.integer_promote_impl(lb.dtype, ub.dtype)\n         iv_type = self.semantic.integer_promote_impl(iv_type, step.dtype)\n         iv_ir_type = iv_type.to_ir(self.builder)\n-        iv_is_signed = iv_type.int_signedness == language.core.dtype.SIGNEDNESS.SIGNED\n-        # lb/ub/step might be constexpr, we need to cast them to tensor\n-        lb = lb.handle\n-        ub = ub.handle\n-        step = step.handle\n-        # ForOp can only accept IndexType as lb/ub/step. Cast integer to Index\n-        lb = self.builder.create_int_cast(lb, iv_ir_type, iv_is_signed)\n-        ub = self.builder.create_int_cast(ub, iv_ir_type, iv_is_signed)\n-        step = self.builder.create_int_cast(step, iv_ir_type, iv_is_signed)\n+        # Preserve each operand's signedness when widening to the induction type.\n+        lb = self.builder.create_int_cast(lb.handle, iv_ir_type, lb.dtype.is_int_signed())\n+        ub = self.builder.create_int_cast(ub.handle, iv_ir_type, ub.dtype.is_int_signed())\n+        step = self.builder.create_int_cast(step.handle, iv_ir_type, step.dtype.is_int_signed())\n         # Create placeholder for the loop induction variable\n         iv_placeholder = self.builder.create_poison(iv_ir_type)\n         self.set_value(node.target.id, language.core.tensor(iv_placeholder, iv_type))\n"
+        }
+      ]
+    },
+    {
+      "sha": "3a43613f97bbd4ae3c5ac7e74db1168c66daffdf",
+      "author": {
+        "name": "Matthias Gehre",
+        "email": "matthias.gehre@amd.com"
+      },
+      "date": "2026-10-20T15:34:40+08:00",
+      "message": "[AMD] Move CU-mode barrier test into its own file (#12373)\n\n`test_amd_codegen.py` is intended for AMD CodeGen LLVM tests. Move the\nCU-mode barrier runtime test and its imports into `test_barrier.py`.",
+      "parents": [
+        "2122e24efc1886bfa36337c1f5b07c47d827b1d4"
+      ],
+      "stats": {
+        "total_additions": 26,
+        "total_deletions": 25,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "third_party/amd/python/test/test_amd_codegen.py",
+          "status": "modified",
+          "additions": 0,
+          "deletions": 25,
+          "patch": "@@ -1,9 +1,4 @@\n import pytest\n-import torch\n-import triton\n-import triton.language as tl\n-\n-from triton._internal_testing import is_hip\n \n from triton.backends.amd import compiler\n \n@@ -224,23 +219,3 @@ define amdgpu_kernel void @named_barrier_kernel(i1 %condition) {\n   ret void\n }\n \"\"\")\n-\n-\n-@pytest.mark.skipif(not is_hip(), reason=\"requires HIP\")\n-@pytest.mark.parametrize(\"wgp_cu_mode\", [\"wgp\", \"cu\"])\n-def test_reduce_cu_mode(wgp_cu_mode, device):\n-    arch = triton.runtime.driver.active.get_current_target().arch\n-    if not arch.startswith((\"gfx11\", \"gfx120\")):\n-        pytest.skip(\"target has no WGP/CU mode distinction\")\n-\n-    @triton.jit\n-    def kernel(src, dst, BLOCK: tl.constexpr):\n-        offs = tl.arange(0, BLOCK)\n-        total = tl.sum(tl.load(src + offs))\n-        tl.store(dst + offs, tl.full((BLOCK, ), 0, tl.float32) + total)\n-\n-    x = torch.rand(1024, device=device)\n-    y = torch.empty_like(x)\n-    handle = kernel[(1, )](x, y, BLOCK=1024, num_warps=8, wgp_cu_mode=wgp_cu_mode)\n-    assert ('\"amdgpu-synchronize-as\"' in handle.asm[\"llir\"]) == (wgp_cu_mode == \"cu\")\n-    torch.testing.assert_close(y, x.sum().expand_as(y), rtol=1e-4, atol=1e-4)"
+        },
+        {
+          "filename": "third_party/amd/python/test/test_barrier.py",
+          "status": "added",
+          "additions": 26,
+          "deletions": 0,
+          "patch": "new file mode 100644\n@@ -0,0 +1,26 @@\n+import pytest\n+import torch\n+import triton\n+import triton.language as tl\n+\n+from triton._internal_testing import is_hip\n+\n+\n+@pytest.mark.skipif(not is_hip(), reason=\"requires HIP\")\n+@pytest.mark.parametrize(\"wgp_cu_mode\", [\"wgp\", \"cu\"])\n+def test_reduce_cu_mode(wgp_cu_mode, device):\n+    arch = triton.runtime.driver.active.get_current_target().arch\n+    if not arch.startswith((\"gfx11\", \"gfx120\")):\n+        pytest.skip(\"target has no WGP/CU mode distinction\")\n+\n+    @triton.jit\n+    def kernel(src, dst, BLOCK: tl.constexpr):\n+        offs = tl.arange(0, BLOCK)\n+        total = tl.sum(tl.load(src + offs))\n+        tl.store(dst + offs, tl.full((BLOCK, ), 0, tl.float32) + total)\n+\n+    x = torch.rand(1024, device=device)\n+    y = torch.empty_like(x)\n+    handle = kernel[(1, )](x, y, BLOCK=1024, num_warps=8, wgp_cu_mode=wgp_cu_mode)\n+    assert ('\"amdgpu-synchronize-as\"' in handle.asm[\"llir\"]) == (wgp_cu_mode == \"cu\")\n+    torch.testing.assert_close(y, x.sum().expand_as(y), rtol=1e-4, atol=1e-4)\n"
+        }
+      ]
+    }
+  ]
+}

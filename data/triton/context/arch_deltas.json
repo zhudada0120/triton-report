@@ -933,6 +933,42 @@
       "interface_changes": "为 FP4 与 E8M0 增加原生类型支持（tl.float4e2m1x2 / tl.float8e8m0fnu），不引入新功能，主要是语法糖与清理。IR 层新增 PackedFloat4E2M1Type（!tt.fp4e2m1x2，一个字节装两个 nibble，低 nibble 为第一个值），并把 F8E8M0FNU 纳入 TT_Float。类型系统在前端（dtype.FP_TYPES、fp_mantissa_width/exponent_bias、to_ir 增加 builder.get_fp4e2m1x2_ty/get_fp8e8m0fnu_ty）、_utils.canonicalisation、BITWIDTH_DICT（两者均为 8）与 triton/language/__init__.str_to_ty 中打通。C++ 侧关键改动是引入 include/triton/Dialect/Triton/IR/Utility.h::getIntOrFloatOrPtrBitWidth（对 PackedFloat4E2M1Type 返回 8，对指针返回 64），并大规模替换各处 ge",
       "change_summary": "Add support for native types for fp4 and e8m0 (#12315)",
       "ascend_impact": true
+    },
+    "7302258a3ee90688f12ec69cf68f96fd071fa0f1": {
+      "date": "2026-10-20",
+      "affected_modules": [
+        "python/triton/compiler/code_generator.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/compiler/code_generator.py"
+      ],
+      "interface_changes": "修复 decide_return_type 中 common_type 对 tuple 类型的比较逻辑：原先仅比较 a.fields == b.fields，未命名 tuple 两侧均为 fields=None，导致长度不同的 tuple 返回值（如一支返回 (x, y)、另一支返回 (x,)）通过了校验，随后 zip 会静默丢弃多余元素。现增加 len(a.types) == len(b.types) 校验，使此类分支返回在编译期正确报出 Return type mismatch。改动位于 python/triton/compiler/code_generator.py 的 CodeGenerator 返回类型推导，并新增 python/test/unit/language/test_compile_errors.py 回归用例。实现简单、语义明确，风险低；唯一需要注意的是此前依赖该 bug 静默工作的用户代码会开始报错（这是期望的修复行为）。",
+      "change_summary": "[Frontend] Reject tuples of different lengths in a function's return types (#12381)",
+      "ascend_impact": false
+    },
+    "6706b886650f13b79dac00b6df007d37e93fba42": {
+      "date": "2026-10-20",
+      "affected_modules": [
+        "python/triton/language/semantic.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/language/semantic.py"
+      ],
+      "interface_changes": "修复指针减去窄无符号偏移（如 uint8）时，unsigned negate 先发生环绕导致指针前移的错误。在 TritonSemantic 的 sub 语义中，当 scalar_ty.is_ptr() 且 other.dtype 为窄无符号整数（<64 位）时，先将其零扩展转换为 int64，再取负与指针相加，从而避免无符号环绕；指针加无符号偏移路径保持不变。新增 interpreter 回归测试 test_ptr_sub_unsigned_offset。改动极小、语义正确，但需注意该转换对所有后端统一生效（含 Ascend 的 TritonToLinalg 路径），且 create_int_cast 的 signed=False 对 uint 源是零扩展，符合预期。",
+      "change_summary": "[Frontend] Fix pointer subtraction with unsigned offsets (#12318)",
+      "ascend_impact": false
+    },
+    "29ef3c3320e42aa0b5c2c9e24110b53526660f10": {
+      "date": "2026-10-20",
+      "affected_modules": [
+        "python/triton/compiler/code_generator.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/compiler/code_generator.py"
+      ],
+      "interface_changes": "修复 visit_For 在将 lb/ub/step 提升到归纳类型（iv_type）时统一使用归纳类型符号性做扩展的问题：对于 uint8 上界 200 会被作为 int32 归纳类型时符号扩展为 -56 导致循环零次行为，负的窄有符号操作数在无符号归纳类型下被零扩展。现在每个操作数按其源操作数的 signedness 决定 ext/high（lb.dtype.is_int_signed() 等），宽度相等的 cast 也保留以避免无关 IR 变化。新增前端 FileCheck 测试（覆盖 Triton/Gluon、int1/int8/uint8/int16/uint16 源与 int32/uint32/int64/uint64 归纳类型）和运行时测试（range 与 tl.range，含 trip count 与 induction sum 校验）。修改了 CodeGenerator.visit_For，属于前端 IR 生成的核心路径，需警惕依赖原符号扩展行为的既有 kernel 出现输出变化（属修复语义）。",
+      "change_summary": "[FRONTEND] Preserve source signedness in loop operands (#12350)",
+      "ascend_impact": false
     }
   }
 }
