@@ -1,4 +1,12 @@
 {
+  "f674d463597ca0c17b9565462128de120b924a4f": {
+    "date": "2026-10-21",
+    "msg": "[chore](feat) sync main from branch main-dev (#2675)"
+  },
+  "5aa0932bedfff9234555a3f2fdb52ce46e1f679f": {
+    "date": "2026-10-21",
+    "msg": "[Docs](fix) modify contributing document (#2661)"
+  },
   "e20045f8a2f98390699d4eea081f227ea1785546": {
     "date": "2026-10-20",
     "msg": "[TritonToLinalg](fix) stop legacy traversal at integer scalars (#2655)"

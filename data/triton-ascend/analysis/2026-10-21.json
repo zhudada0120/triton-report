@@ -1,0 +1,57 @@
+{
+  "date": "2026-10-21",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-10-22T05:03:16.054504+08:00",
+  "daily_summary": "当日两条 commit 分别对应一个功能/修复合并批次与一次文档治理更新。f674d46 是从 main-dev 同步到 main 的批量合并，包含四项实质变更：(1) TritonToStructured pass 改为以 tt.load/tt.store 为种子构建工作列表并用 applyOpPatternsGreedily 替代 region-wide greedy 定点迭代，避免对无需规范化的内存操作重复执行指针分析与临时 IR 清理；(2) 修复 fused attention 教程/测试中 Q/K/V/Out 各自 batch/head stride 被错误复用为 Q 的偏移、以及 D256 scratch accumulator 用 Q 布局做整除寻址导致的别名问题；(3) bishengir-compile 在 TRITON_DEBUG 下新增 --save-temps 并指向每次编译唯一的临时目录，解决同 hash 并行编译共享临时文件的问题；(4) 更新 Triton-distributed 子模块 commit id。5aa0932 则是将 CONTRIBUTING.md 从面向开发者的贡献流程文档改写为上游 Triton 的治理结构文档，并同步精简了 docs/en/community/CONTRIBUTING.md 的 HTML 锚点式标题，同时扩充 codespell 白名单以放行人名。整体看当日以 bugfix 与编译期稳定性改进为主，无新增公共接口。",
+  "test_impact_summary": "当日变更测试看护影响中等偏正面。f674d46 自带新增与更新：新增 test_fused_attention_strides.py 覆盖独立 Q/K/V/Out 布局（head_gap/batch_gap/transposed）与多 query tile 的 scratch 寻址，新增 test_save_temps_isolates_same_hash_compilations 验证同 hash 并行编译临时目录隔离，并同步修改了三处 attention 参考实现与 test_compiler.py；但 TritonToStructured 的 worklist 改动本身属于 C++ pass 行为变更，目前仅靠既有 lit/pytest 用例间接看护，建议补一条针对 cat splitting 生成的新 load/store 仍需被重写的 lit 用例以固化该不变量。5aa0932 为纯文档与 codespell 白名单变更，不引入运行期行为变化，对测试无看护要求。综合而言，测试策略上 attention 路径的布局泛化已从『样例即测试』转向显式回归用例，是本次最有价值的看护增强；而编译稳定性（save-temps）与 pass 重写范围两处新增行为需在后续 CI 中确认既有用例确实覆盖到并行编译与内存操作重写分支。",
+  "commits": [
+    {
+      "sha": "f674d463597ca0c17b9565462128de120b924a4f",
+      "comment": "从 main-dev 同步的批量合并，含四项独立变更。其一，third_party/ascend/lib/TritonToStructured/TritonToStructuredPass.cpp 将原先对整模块的 applyPatternsGreedily 改为先 walk 收集 tt.load/tt.store 作为种子，再用 applyOpPatternsGreedily 驱动，配合 FrozenRewritePatternSet；意图是避免对不需要规范化的内存操作反复进行指针分析与临时 IR 清理，同时保留 cat splitting 新生成的 load/store 可被重写的语义（工作列表在 seed 之外仍允许 pattern 生成的新 op 进入）。风险点在于 applyOpPatternsGreedily 的迭代策略与全模块 greedy 定点不同，若某些 pattern 依赖非内存 op 作为驱动点（例如由 arith/tensor 侧触发的内存重写），可能收敛不到原结果，需靠 TritonToStructured 相关 lit 用例兜住。其二，fused attention（tutorials/06-fused-attention.py 及两份 unittest 参考实现）将原 qvk_offset 拆为 q/k/v/o 四个独立 base offset，并把 D256 scratch accumulator 的偏移从基于 Q 布局的整除式改为 (task_hz_idx * N_CTX + task_m_idx * BLOCK_M) * HEAD_DIM 的连续分配寻址；前者修复独立 stride 下取错行，后者修复 stride_qh < stride_qm 时整除导致不同 head 共用 scratch 的别名问题。注意该改动只是修正参考实现的索引计算，并非改动编译器语义。其三，compiler.py 新增 _get_save_temps_dir，在 opt.debug 时为 910_95 与 A2_A3 两条 npubin 编译分支传入 --save-temps=<唯一临时目录>，解决同 hash 并行编译共用临时目录冲突，符合架构中 linalg_to_bin 阶段的设计；目录经 get_dump_manager(hash_key).cache_dir 派生，便于与既有 dump 机制关联。其四，setup_patch.py 更新 Triton-distributed 子模块 commit id，属构建期依赖维护。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "refactor",
+        "chore",
+        "attention",
+        "compiler-pipeline",
+        "pass",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "该 commit 已自带测试变更：新增 test_fused_attention_strides.py（覆盖独立输入/输出布局与多 query tile 的 D256 scratch 路径）、在 test_compiler.py 新增 test_save_temps_isolates_same_hash_compilations，并同步更新 test_06_fused_attention.py 与 test_fusedattention.py 的参考实现。但 TritonToStructured pass 的重写策略变更（region-wide greedy → 以 load/store 为种子的 op-level greedy）尚无针对性用例，仅有既有 lit 用例间接覆盖，建议补充以固化 cat splitting 新生成内存操作仍被重写、以及非内存驱动点 pattern 不受影响的行为。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_fused_attention_strides.py",
+          "third_party/ascend/unittest/pytest_ut/test_06_fused_attention.py",
+          "third_party/ascend/unittest/pytest_ut/test_fusedattention.py",
+          "third_party/ascend/unittest/pytest_ut/test_compiler.py",
+          "third_party/ascend/lib/TritonToStructured（建议新增 lit 用例覆盖 worklist 播种与 cat splitting 生成 op 的重写）",
+          "third_party/ascend/tutorials/06-fused-attention.py"
+        ]
+      },
+      "message": "[chore](feat) sync main from branch main-dev (#2675)\n\n* [TritonToStructured](fix) avoid repeated memory rewrite sweeps (#2438)\n\nSeed the memory rewrite worklist with tt.load and tt.store instead of\nrunning a region-wide greedy fixed point. This avoids repeating pointer\nanalysis and temporary IR cleanup for memory operations that do not need\nnormalization.\n\nKeep newly generated operations eligible for rewriting, including loads\nand stores created by cat splitting. Preserve the existing patterns and\nthe surrounding canonicalization and cleanup stages.\n\nSigned-off-by: zhaojingkai <zhaojingkai4@huawei.com>\n\n* [Ascend] Fix independent fused attention strides (#2516)\n\nQ, K, V and the output may have different batch and head strides. Reusing\nQ's base offset for every tensor selects the wrong rows, and using Q's\nlayout for the contiguous accumulator can alias scratch storage.\n\nUse each tensor's own base offset and index the accumulator by its\ncontiguous allocation. Add regression coverage for independent input and\noutput layouts and multiple query tiles in the D256 scratch path.\n\nFixes #2512\n\nSigned-off-by: PuppyLu <puppylululu@outlook.com>\n\n* [compiler](feat) Pass --save-temps to bishengir-compile (#1616) (#2535)\n\nPasses --save-temps to bishengir-compile if TRITON_DEBUG is set. Makes\nsure that bishengir-compile uses a unique temp dir, so there are no\nproblems in parallel compilations using same hash dir for temp files.\n\nFixes #801\n\n* [triton-dist](feat) update triton distributed commit id (#2413)\n\n---------\n\nSigned-off-by: zhaojingkai <zhaojingkai4@huawei.com>\nSigned-off-by: PuppyLu <puppylululu@outlook.com>\nCo-authored-by: elstainniles <86865808+elstainniles@users.noreply.github.com>\nCo-authored-by: PuppyLu <puppylululu@outlook.com>\nCo-authored-by: Andrey Bokhanko <andreybokhanko@gmail.com>\nCo-authored-by: wutianyao <wutianyao1@huawei.com>"
+    },
+    {
+      "sha": "5aa0932bedfff9234555a3f2fdb52ce46e1f679f",
+      "comment": "文档治理变更。根目录 CONTRIBUTING.md 被整体改写为上游 Triton 的治理结构文档（contributors / module maintainers / core maintainers / lead core maintainer 分层、决策机制、in-tree 与 out-of-tree 模块列表），原先面向本仓库的 Fork-Pull 流程、DCO、Issue 与 PR 规范被移除；docs/en/community/CONTRIBUTING.md 则改为使用 Markdown 原生标题替换 <h2 id=...> HTML 锚点，并精简目录列表，内容仍保留 Getting Started/DCO/Code Style/Fork-Pull/CI Gate/Issue/PR 等本仓库实际贡献流程。同时 .github/docs-ci/codespell.whitelist.json 增加 12 个人名（Maher、Ilya、Enkovich、Ettore、Tiotto、Lezcano、Casado、Pawel、Szczerbuk、Raoux、Zahi、Moudallal）以通过拼写检查。需注意根 CONTRIBUTING.md 中写入的模块/维护者名单属于上游快照，与本仓库（Ascend 后端）实际治理对应关系并不一致，可能造成贡献者误导；且 root 与 docs 两份文档内容取向分歧（治理 vs 流程），后续存在维护重复与漂移风险。纯文本与 CI 白名单变更，无运行期影响。",
+      "tags": [
+        "docs",
+        "ci",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "变更为 CONTRIBUTING.md、docs/en/community/CONTRIBUTING.md 与 codespell 白名单 JSON，不涉及任何可执行代码或编译/运行路径，现有测试无需新增或修改。唯一需关注的是 docs-ci 的拼写检查与链接检查是否通过（白名单新增人名属于此类 CI 的配套调整）。",
+        "suggested_test_areas": [
+          ".github/docs-ci/codespell.whitelist.json",
+          "CONTRIBUTING.md",
+          "docs/en/community/CONTRIBUTING.md"
+        ]
+      },
+      "message": "[Docs](fix) modify contributing document (#2661)\n\n* [Docs](fix) modify formatting issues in the document\n\n* fix contributing\n\n* modify document\n\n* modify contributing\n\n* modify CONTRIBUTING\n\n* modify contributing\n\n* modify contributing"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

@@ -1,11 +1,11 @@
 {
-  "content_hash": "94481d4c07dc2e8d",
+  "content_hash": "40ea791ecf5bea90",
   "analysis": {
-    "interface_summary": "定义 2 个类；定义 32 个函数",
+    "interface_summary": "定义 2 个类；定义 38 个函数",
     "key_interfaces": [
       "test_knobs",
       "TestManagerClass"
     ]
   },
-  "cached_at": "2026-09-25T02:03:18.633372+08:00"
+  "cached_at": "2026-10-22T04:58:30.014807+08:00"
 }

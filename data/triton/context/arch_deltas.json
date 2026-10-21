@@ -969,6 +969,34 @@
       "interface_changes": "修复 visit_For 在将 lb/ub/step 提升到归纳类型（iv_type）时统一使用归纳类型符号性做扩展的问题：对于 uint8 上界 200 会被作为 int32 归纳类型时符号扩展为 -56 导致循环零次行为，负的窄有符号操作数在无符号归纳类型下被零扩展。现在每个操作数按其源操作数的 signedness 决定 ext/high（lb.dtype.is_int_signed() 等），宽度相等的 cast 也保留以避免无关 IR 变化。新增前端 FileCheck 测试（覆盖 Triton/Gluon、int1/int8/uint8/int16/uint16 源与 int32/uint32/int64/uint64 归纳类型）和运行时测试（range 与 tl.range，含 trip count 与 induction sum 校验）。修改了 CodeGenerator.visit_For，属于前端 IR 生成的核心路径，需警惕依赖原符号扩展行为的既有 kernel 出现输出变化（属修复语义）。",
       "change_summary": "[FRONTEND] Preserve source signedness in loop operands (#12350)",
       "ascend_impact": false
+    },
+    "1e259627c3426df5372396ba0640b76f3deb6402": {
+      "date": "2026-10-21",
+      "affected_modules": [
+        "include/triton/Dialect/Triton/"
+      ],
+      "affected_interfaces": [
+        "include/triton/Dialect/Triton/"
+      ],
+      "interface_changes": "大型 LLVM/MLIR pin 升级（18f9e623 build 2，含 NVPTX llvm.fptrunc.round），涉及 49 个文件的兼容性修改：CMake 允许 deprecated-declarations 警告；各 Triton/TritonGPU/Instrument/NVGPU/NVWS/AMD/Proton 方言设置 useStrictPropertiesInAssemblyFormat = 0 保持现有 attr-dict 语法；callToLLVM 内联汇编新增 convergent 参数；AMD 命名屏障迁到 addrspace 15；LLVMOptions 改为通过 CommandLineParser 支持 TableGen library 选项；新增 abi 参数以支持 NVPTX shortptr ABI 与 fp contraction 标志；新增 downgradeAliasScopeDomains 处理 AMD codegen 的 alias-scope 格式兼容；大量 lit 期望文本刷新。这是高影响、高风险的基础设施变更：python/",
+      "change_summary": "[LLVM] Update LLVM to 18f9e623 (#12236)",
+      "ascend_impact": false
+    },
+    "3a4e1d6635b7c3b72b0114a293c6852ba37cb466": {
+      "date": "2026-10-21",
+      "affected_modules": [
+        "include/triton/Dialect/Triton/",
+        "lib/Dialect/Triton/",
+        "python/src/ir.cc"
+      ],
+      "affected_interfaces": [
+        "include/triton/Dialect/Triton/",
+        "lib/Dialect/Triton/",
+        "python/src/ir.cc"
+      ],
+      "interface_changes": "前端 hint 保真修复：新增单结果恒等 op tt.annotate（含 fold 与 canonicalizer：无属性时折叠、单结果 producer 时把属性下推后折叠），用于把 tt.call 上的 hint 精确附着到某个结果；TritonInlinerInterface::handleResult 对单结果 call 且存在 hint 时创建 AnnotateOp，AxisInfo 通过 IdentityOpAxisInfoVisitor 穿透，TritonToTritonGPU 用 GenericOpPattern，LLVM lowering 中 AnnotateOpConversion 直接替换。python/src/ir.cc 的 set_attr 对多结果 definingOp 自动插入 annotate 并重定向 uses。这是 TTIR 核心 IR 变更，影响所有后端，需注意 IR 兼容性与新增 op 在所有 pass 中的处理（已加 fold/canonicalize/lowering/axis）。",
+      "change_summary": "[FRONTEND] Preserve per-result hints through inlining (#12388)",
+      "ascend_impact": true
     }
   }
 }

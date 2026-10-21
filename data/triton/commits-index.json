@@ -1,4 +1,68 @@
 {
+  "cbac1296d79137d0fc95a110ab3565190acd5425": {
+    "date": "2026-10-21",
+    "msg": "[NVIDIA] Lower rounded float conversions with llvm.fptrunc.round (#12237)"
+  },
+  "f7bec9df62b3fcc06da6b033da44e1596b628fae": {
+    "date": "2026-10-21",
+    "msg": "[AMD] Drop core LLVM workarounds after the LLVM bump (#12410)"
+  },
+  "f7f5641b4a80119293fbbfabce21f03e63666bcf": {
+    "date": "2026-10-21",
+    "msg": "[Tests] Fix vector-load scalarization test after LLVM update (#12407)"
+  },
+  "a367c52fd115e5e76fc342c88f8a3c85b27430d7": {
+    "date": "2026-10-21",
+    "msg": "Hoist conversions over multiple expansions (#12298)"
+  },
+  "df15fecd3c782e4e64965f02c50fb3124d72f303": {
+    "date": "2026-10-21",
+    "msg": "Cap backward rematerialization iterations (#12405)"
+  },
+  "70613630e05597634a6d81c41bb6f55b77fac5ef": {
+    "date": "2026-10-21",
+    "msg": "[NVIDIA] Fix accumulator stride for small batched MMAv2 dots (#12404)"
+  },
+  "1e259627c3426df5372396ba0640b76f3deb6402": {
+    "date": "2026-10-21",
+    "msg": "[LLVM] Update LLVM to 18f9e623 (#12236)"
+  },
+  "64ccfff9e9bd39c5d7136d904e4671855cbe0438": {
+    "date": "2026-10-21",
+    "msg": "[Testing] Create perf_report save_path before saving results (#12361)"
+  },
+  "cd772b3da9d343ea690f1c5daea020083503fd03": {
+    "date": "2026-10-21",
+    "msg": "[Gluon] Predicate TMEM copies and fix tutorial synchronization (#12402)"
+  },
+  "16491796407ec76ef223f8227e7d9a96c3723363": {
+    "date": "2026-10-21",
+    "msg": "[ConSan] Synchronize allocation poisoning across CTAs (#11908)"
+  },
+  "3a4e1d6635b7c3b72b0114a293c6852ba37cb466": {
+    "date": "2026-10-21",
+    "msg": "[FRONTEND] Preserve per-result hints through inlining (#12388)"
+  },
+  "72bcaf23ebd396d53696255a72a33b9496422c38": {
+    "date": "2026-10-21",
+    "msg": "[Gluon] Fix accumulator release and reject partial attention tiles (#12400)"
+  },
+  "f37fda82e1a3d36b86328769f8ec3d82c9ca6953": {
+    "date": "2026-10-21",
+    "msg": "[NVIDIA] Preserve unpacked vector loads with a conservative TTI (#12337)"
+  },
+  "99a346f0012692b928fd5f0f3cef3a82a2f9f090": {
+    "date": "2026-10-21",
+    "msg": "[GSan] Use unaligned barriers for warp-specialized synchronization (#12389)"
+  },
+  "23d6832c426e79a9b269d6252b11f17041bd35b5": {
+    "date": "2026-10-21",
+    "msg": "[AMD][CI] Bump rocjitsu to nightly 20261012 (#12238)"
+  },
+  "249c29ead385cfbd4272d1a96c90a7516ad754a5": {
+    "date": "2026-10-21",
+    "msg": "[AMD] Always insert a workgroup barrier before cluster barrier (#12342)"
+  },
   "7302258a3ee90688f12ec69cf68f96fd071fa0f1": {
     "date": "2026-10-20",
     "msg": "[Frontend] Reject tuples of different lengths in a function's return types (#12381)"

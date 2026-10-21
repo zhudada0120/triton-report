@@ -1,7 +1,7 @@
 {
-  "content_hash": "59e1897b46583481",
+  "content_hash": "4014b09ea5791dcb",
   "analysis": {
-    "interface_summary": "定义 3 个类；定义 37 个函数",
+    "interface_summary": "定义 3 个类；定义 39 个函数",
     "key_interfaces": [
       "_AMDGPUCodegenOptions",
       "HIPOptions",
@@ -15,5 +15,5 @@
       "HIPBackend.pack_metadata"
     ]
   },
-  "cached_at": "2026-09-25T02:03:18.690877+08:00"
+  "cached_at": "2026-10-22T04:58:30.033642+08:00"
 }

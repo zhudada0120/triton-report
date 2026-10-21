@@ -1,0 +1,353 @@
+{
+  "date": "2026-10-21",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-22T04:58:29.504999+08:00",
+  "daily_summary": "当日变更以 LLVM 升级（18f9e623 build 2）为主线，连带更新了 NVPTX 短指针 ABI、FP 转换舍入 lowering、AMD 命名屏障地址空间与 gfx1250-strict 支持、MLIR 属性迁移相关方言声明以及大量 lit 期望文本；同时包含多项 TritonGPU 编译优化修复（跨多个扩展/广播的 layout 转换提升、后向 rematerialization 迭代上限、MMAv2 小批量累加器步长）、ConSan/GSan 同步与分区修复、Gluon TMEM copy 谓词化与教程同步修复、前端 inline 多结果 hint 保留（新增 tt.annotate op）、NVIDIA 保守 TTI 以保留向量 load，以及测试/CI 基础设施修复（perf_report save_path、AMD CI 镜像与 bitcode 覆盖）。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 影响集中在公共接口与 IR 定义层：新增的 tt.annotate op 位于 include/triton/Dialect/Triton/IR/TritonOps.td（TTIR 唯一来源），Ascend 的 AST→TTIR→TritonToLinalg 链路必须能处理该 op（至少在 TTIR 层面不识破时会产生 lowering 失败风险），且 python/src/ir.cc 的 set_attr 行为变更影响 AscendNPUIROpBuilder 继承的 builder 语义；LLVM pin 升级会影响 Ascend 的 MLIR/LLVM 版本对齐与构建；python/triton/testing.py 的 perf_report 修复对 Ascend 的 benchmark 路径有正向影响。其余变更（NVPTX/AMD/ConSan/TMEM/TTI 等）为平台特定或 NVIDIA/AMD 专属路径，Ascend 不涉及。总体需重点关注 tt.annotate 的适配与 LLVM 版本升级。",
+  "commits": [
+    {
+      "sha": "cbac1296d79137d0fc95a110ab3565190acd5425",
+      "comment": "NVIDIA 专属 lowering 改进：将 tt.fp_to_fp 在 f16/bf16/f32/f64 之间的收窄转换改为通过 llvm.fptrunc.round 表达（保留舍入模式信息），从而让 NVPTX 能选择原生转换指令并折叠 f16↔bf16 的 f32 中间值。同时移除原有的 convertFp32To16BitFloat 与手写 inline PTX 路径，改用统一的 convertFpTrunc；FP8 路径复用它。变更文件全部位于 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM 与 NV 相关 lit/pytest。实现上干净且减少了手写 PTX，但依赖 LLVM pin（18f9e623）中 llvm.fptrunc.round 已合入，若 LLVM 未升级会编译失败；此外 RTZ 处理在 bf16↔f16 上依赖后端 PTX 支持，需 CI 覆盖 SM80/90/100。",
+      "tags": [
+        "feature",
+        "performance",
+        "medium-risk",
+        "backend-nvidia",
+        "lowering"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Lower rounded float conversions with llvm.fptrunc.round (#12237)\n\nUse `llvm.fptrunc.round` for NVIDIA `tt.fp_to_fp` narrowing between f16,\nbf16, f32, and f64. This exposes rounding to LLVM and lets NVPTX fold\nf16/bf16 conversions through an f32 intermediate into direct SM90+\ninstructions. It also covers scalar FP16 intermediates in the existing\nFP8 conversion paths.\n\nIncludes the forward fix in #12407, which should merge first. The LLVM\npin update in #12236 has merged.\n\n- Keep `arith::TruncFOp` on ordinary `llvm.fptrunc`.\n- Accept `triton::RoundingMode` in `convertFpTrunc` and stringify it\ninternally.\n- Preserve specialized packed FP8 conversions and migrate\nconversion-instruction checks to `tritongpu_to_ptx.mlir`.\n- Cover RTNE/RTZ narrowing, f16/bf16 conversions, and FP8 intermediates\nin PTX tests for SM80, SM90, and SM100.\n\nValidation on Brix GB300 at `c851915382` with the published LLVM\n`18f9e623` build 2 SDK (archive checksum and configured SDK path\nverified; LibLZMA discovery disabled):\n- Native rebuild and full lit suite: 305 passed, 2 unsupported.\n- Conversion suite: 83 passed, 12 skipped, including 10\nrounding-boundary cases and exhaustive f16↔bf16 inputs in both\ndirections.\n- Cast/multiply-high tests: 196 passed, 2 skipped.\n- FP4 packing regression: 1 passed.\n- Pre-commit checks passed.\n\nSM80/SM90 coverage above is compilation through PTX; GPU execution was\non GB300.\n\nTriton CI: all 11 checks passed at `c851915382`\n([run](https://github.com/triton-lang/triton/actions/runs/38991161111)),\nincluding A100/H100/GB200, the AMD GPU matrix, gfx1250 emulation, and\nmacOS."
+    },
+    {
+      "sha": "f7bec9df62b3fcc06da6b033da44e1596b628fae",
+      "comment": "AMD 后端在核心 LLVM 升级后移除临时 workaround：删除 upgradeLegacyNamedBarriers（LLVM 5bf967cb 已将命名屏障移入 addrspace 15，核心 LLVM 可自动升级），并将 gfx1250-strict 的 triple/architected-SGPR 判定等从硬编码特殊分支改为从核心 LLVM 派生，同时提升 AMD codegen build number。变更严格位于 third_party/amd 与 cmake/amd-llvm-build-info.json，逻辑上是一次清理，减少双 LLVM 版本状态不一致风险；但新增了对核心 LLVM 必须认识 gfx1250-strict 的强依赖，若 LLVM pin 未同步则编译失败。测试新增 test_strict_target_triple 与 gfx1250-strict MIR roundtrip 覆盖，较完善。",
+      "tags": [
+        "refactor",
+        "chore",
+        "low-risk",
+        "backend-amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Drop core LLVM workarounds after the LLVM bump (#12410)\n\nTriton's core LLVM now includes llvm/llvm-project@5bf967cb132b and knows\nthe gfx1250-strict processor, so remove the workarounds that bridged the\ngap to the independently pinned AMD code generator:\n\n- Remove upgradeLegacyNamedBarriers from the codegen library. Core LLVM\nalready emits named barriers in address space 15, so restore the plain\nparse path, which auto-upgrades debug info. Bump the AMD codegen build\nnumber so the library is republished.\n- Derive the amdgpu12.50s triple for gfx1250-strict from core LLVM. Drop\nthe hard-coded triple, the base-arch layout triple used around core LLVM\ntarget machines, and the TRITON_DUMP_MIR/TRITON_SWAP_MIR restriction for\ngfx1250-strict.\n\nAdd gfx1250-strict coverage for the target triple, the architected-SGPR\ncheck, and the MIR round trip."
+    },
+    {
+      "sha": "f7f5641b4a80119293fbbfabce21f03e63666bcf",
+      "comment": "LLVM 升级后的测试适配：修正 test_nvptx_tti_vector_load_scalarization，使用新的 llvm.load 属性语法 <alignment = 32> 并将索引/参数从 i32 改为指针宽度 i64，以避免 LLVM 新的 GEP 索引扩展开销掩盖被测试的 extractelement 成本行为。纯测试修改（python/test/unit/runtime/test_bindings.py），无生产代码风险；但表明该测试对 LLVM 版本的敏感性，后续 LLVM 再升级可能需要再次调整。",
+      "tags": [
+        "test",
+        "low-risk",
+        "backend-nvidia"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Tests] Fix vector-load scalarization test after LLVM update (#12407)\n\nFix `test_nvptx_tti_vector_load_scalarization` after the LLVM update in\n#12236. Use the required `llvm.load` property syntax and pointer-width\nindices so LLVM's new GEP index-extension costs do not mask the\nextraction-cost behavior under test.\n\nValidation on Brix GB300 with LLVM `18f9e623` build 2: rebuilt current\nmain plus this fix and passed all 173 tests in\n`python/test/unit/runtime/test_bindings.py`, including the 168-case\nscalarization matrix. Pre-commit checks passed for the same patch."
+    },
+    {
+      "sha": "a367c52fd115e5e76fc342c88f8a3c85b27430d7",
+      "comment": "TritonGPU RemoveLayoutConversions 的优化：hoistConvertOnTopOfExtOrBroadcast 原先只支持单个扩展/广播 op（遇到第二个就 return false），现改为收集所有扩展/广播 op 并累计其转换代价 newCvtCost，仅当总代价仍小于原始转换代价时才提升。实现上把原来单 op 处理改为循环，同时收集 (op, srcEncoding) 并用 IRMapping 重写 slice。潜在风险：多个 op 的重写顺序与 mapping 一致性需保证（当前逐 op clone 后 setInsertionPoint 在 op 前，依赖 IRMapping 精确映射），以及代价模型的正确性依赖 getConvertCost 对每个 operand(0) 的估计。测试覆盖了多次 ext 与多次 broadcast 的正反例，合理。",
+      "tags": [
+        "performance",
+        "refactor",
+        "low-risk",
+        "tritongpu",
+        "layout"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（Ascend 不走 TritonGPU layout 优化路径，使用 TritonToLinalg 替代）",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Hoist conversions over multiple expansions (#12298)\n\nAllow having multiple expanding ops as long as the total cost of the\nhoisted conversions is still less than the original one."
+    },
+    {
+      "sha": "df15fecd3c782e4e64965f02c50fb3124d72f303",
+      "comment": "为 RemoveLayoutConversions 的后向 rematerialization 循环增加 20 次迭代上限，防止在特定 IR（如 scf.for 回边上的 transpose、相互依赖的 convert 环）下不收敛导致编译器 hang。修改极小且仅加计数上限，属于防御性修复；新增 lit 用例 remat_transpose_backedge 与 remat_mutual_convert_cycle 展示不收敛场景并验证能终止。潜在风险是上限触发时保留部分 remat 未完成（非最优但正确），可接受。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "tritongpu",
+        "layout"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（Ascend 不走 TritonGPU layout 优化路径）",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Cap backward rematerialization iterations (#12405)\n\nIn some cases the backward remat loop can fail to converge. Cap it at 20\niterations."
+    },
+    {
+      "sha": "70613630e05597634a6d81c41bb6f55b77fac5ef",
+      "comment": "修复 NVIDIA MMAv2 批量 dot 的累加器偏移计算：原实现用 elemsPerThread[rank-2]*elemsPerThread[rank-1]/numCPackedElem 估算每个 batch 的寄存器段长度，当 M/N 小于 16（存在复制寄存器）或 loadC 有打包时计算错误，导致多 batch 访问越界/错位。改为 fc.size()/repBatch（基于实际 loadC 后寄存器数量与 batch 重复次数），更准确。同时移除 test_dot3d 中“小 dot 仅 HIP 支持”的跳过。风险点：repBatch 的计算与 loadC 打包语义紧密耦合，需依赖已有测试覆盖小 M/N 场景（含 B>1）。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "backend-nvidia",
+        "mma",
+        "lowering"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（MMAv2 为 NVIDIA 专属 lowering）",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Fix accumulator stride for small batched MMAv2 dots (#12404)"
+    },
+    {
+      "sha": "1e259627c3426df5372396ba0640b76f3deb6402",
+      "comment": "大型 LLVM/MLIR pin 升级（18f9e623 build 2，含 NVPTX llvm.fptrunc.round），涉及 49 个文件的兼容性修改：CMake 允许 deprecated-declarations 警告；各 Triton/TritonGPU/Instrument/NVGPU/NVWS/AMD/Proton 方言设置 useStrictPropertiesInAssemblyFormat = 0 保持现有 attr-dict 语法；callToLLVM 内联汇编新增 convergent 参数；AMD 命名屏障迁到 addrspace 15；LLVMOptions 改为通过 CommandLineParser 支持 TableGen library 选项；新增 abi 参数以支持 NVPTX shortptr ABI 与 fp contraction 标志；新增 downgradeAliasScopeDomains 处理 AMD codegen 的 alias-scope 格式兼容；大量 lit 期望文本刷新。这是高影响、高风险的基础设施变更：python/src/llvm.cc 的公共签名（attach_datalayout/translate_to_asm/to_bitcode 增加 abi/legacy_alias_scopes 参数）变更会影响所有后端；prologue 与 options 语义（enableFPContraction 从 TargetOptions 改为指令级 fastmath）变化需所有后端验证。",
+      "tags": [
+        "chore",
+        "refactor",
+        "high-risk",
+        "llvm",
+        "build",
+        "mlir"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "影响 triton-ascend 的基础依赖与公共绑定：1) LLVM/MLIR 版本升级要求 Ascend 侧 LLVM/MLIR 二进制与 C++ pass（third_party/ascend/lib、TritonToLinalg 等）对齐到同一 MLIR 版本，否则 IR 文本/类型 API 不兼容；2) python/src/llvm.cc 的 attach_datalayout 新增 abi 参数（有默认值，向后兼容）、translate_to_asm 新增 abi 参数（有默认值）、to_bitcode 新增 legacy_alias_scopes 参数，Ascend 若直接调用这些绑定需确认参数默认值不改变行为；3) 各 MLIR 方言声明 useStrictPropertiesInAssemblyFormat 的变更会影响 Ascend 自定义 TritonAscend/TritonStructured 方言的 assembly 语法一致性（若 Ascend 方言未设置该字段，输出 attr-dict 语法可能与上游不一致）；4) LLVMOptions 改为 cl::ParseCommandLineOptions 会改变 Ascend pass 中 ScopedLLVMOptions 选项行为。",
+        "testing": "需回归 Ascend 编译链（TTIR→linalg→bisheng IR→npubin），确认 MLIR 升级后 triton-opt 与 Ascend 自定义 pass 的 IR roundtrip 与 FileCheck 期望仍成立；重点验证 Ascend 方言 assembly 输出与 llir 生成。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion",
+          "third_party/ascend/unittest/pytest_ut",
+          "third_party/ascend/backend/utils.py (triton-opt 驱动路径)",
+          "Ascend 自定义方言 .td 的 assembly 格式测试"
+        ]
+      },
+      "message": "[LLVM] Update LLVM to 18f9e623 (#12236)\n\nUpdate the consumed LLVM SDK to\n[`18f9e623e4c8`](https://github.com/llvm/llvm-project/commit/18f9e623e4c891ba31ff817c07197707ac9bc593),\nbuild 2, which includes the NVPTX `llvm.fptrunc.round` implementation.\nAll eight checksums come from the successful [post-merge SDK\nbuild](https://github.com/triton-lang/triton/actions/runs/38491954898)\ntriggered by #12262; all eight published archives are available. Build 2\ndisables the optional LibLZMA dependency so Linux consumers configure\nwithout liblzma development files.\n\nThe LLVM/MLIR update requires these compatibility changes:\n\n- Select NVPTX's `shortptr` ABI and preserve `enable_fp_fusion` through\ncontraction flags.\n- Pass the new `pzo` operand as `false` to NVVM FP32-to-FP16/BF16 and\npacked FP4 conversion intrinsics, preserving signed zero.\n- Use the typed `LLVM::UMulHOp`, the updated pass APIs, and the new\ninline-assembly convergence argument.\n- Place AMD named barriers in their dedicated address space, 15, and\nupdate their compile-only tests.\n- Parse and restore LLVM TableGen library options alongside `cl::opt`,\nso MIR dump/reload honors codegen start/stop points and scheduler\nsettings.\n- Serialize alias-scope domains in the format supported by the\nindependently pinned AMD code generator, preserving explicit\nalias/noalias relationships. Drop only the newer implicit disjoint-scope\nguarantee at that handoff.\n- Preserve Triton's existing assembly syntax through MLIR's\nlegacy-properties setting and keep supported attribute-dictionary\nbuilder deprecations as warnings.\n- Refresh affected lit expectations for LLVM/MLIR assembly and PTX\nprinting.\n\nRebased onto `2122e24efc`. Preserve upstream's `disable_lsr` option\nalongside the new LLVM ABI handling. Update the rebased barrier-printing\nexpectations and remove the obsolete `llc -fp-contract=off` argument.\n\nValidation on Brix GB300 at `f8ee3411f9`, with the published Ubuntu\nARM64 build-2 SDK and `CMAKE_DISABLE_FIND_PACKAGE_LibLZMA=TRUE`:\n\n- Native rebuild after the full build including Proton; verified the SDK\narchive checksum, configured SDK path, changed source hashes, Python\npackage path, and AMD code-generator revision (`6bc4aaf6641c-3`).\n- AMD code-generation and scheduler pytest suites: 25 passed, 2 GPU-only\ntests skipped. Reproduced the alias-domain failure before the fix; added\ncoverage for named/anonymous domains, optional descriptions, and both\ndisjoint flag values.\n- `make test-lit`: 305 passed, 2 unsupported. The FP4 regression now\ntranslates through LLVM IR to PTX on SM100a.\n- `make test-cpp`: 312 passed.\n- Compiler-only, LLVM-option/ABI, LSR, BF16 rounding, and multiply-high\npytest coverage: 89 passed.\n- FP32-to-FP16/BF16 downcast tests: 4 passed.\n- Direct FP4 packing test: 1 passed, covering ties, saturation, nibble\norder, and signed zero.\n- Full `triton_kernels/tests/test_mxfp.py`: 172 passed.\n- Pre-commit checks passed.\n\nFollow-up validation on Brix GB300 at `df95c2e67c`:\n\n- 313 native tests and 305 lit tests passed (2 unsupported).\n- 33 AMD code-generation/scheduler tests passed (2 GPU-only tests\nskipped), including eight MIR round trips across gfx90a, gfx942, gfx950,\nand gfx1250 with machine scheduling both enabled and disabled.\n- 74 compiler-option and compile-only tests passed.\n- The CDNA5 compile-only suite passed at `8b935844c4`: 994 passed, 113\nskipped.\n\n[Full\nCI](https://github.com/triton-lang/triton/actions/runs/38986951213)\npassed all 11 jobs at `df95c2e67c`: AMD gfx90a, gfx942, gfx950 (both\nROCm configurations), gfx1250 emulation, NVIDIA A100/H100/GB200, macOS,\nformatting, and runner preparation. The NVIDIA conversion pattern is\nstacked on this pin update in #12237.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "include/triton/Dialect/Triton/"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "64ccfff9e9bd39c5d7136d904e4671855cbe0438",
+      "comment": "修复 perf_report 首次写入新目录时的 FileNotFoundError：将 os.makedirs(save_path) 从 finally 块移到 benchmark 运行之前，并删除 finally 中的重复创建。改动小且明确，新增 test_perf_report_creates_save_path 覆盖首次创建目录场景。属于通用工具路径（python/triton/testing.py），对任何后端（含 Ascend）的 benchmark 报告生成均有正向影响，无风险。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "testing",
+        "tools"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（通用工具修复，对 Ascend 为正向但不涉及特定接口契约变化）",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Testing] Create perf_report save_path before saving results (#12361)\n\nFixes #12359\n\n`Mark._run` saves `<plot_name>.png` and `.csv` into `save_path`, but\n`Mark.run` only created the directory in its `finally` block, after\n`_run` had already failed. A first run with a new directory raised\n`FileNotFoundError`, and the `finally` then created the directory, so a\nsecond run passed.\n\nCreate `save_path` before running the benchmarks, and remove the\n`makedirs` in `finally` since it is no longer needed.\n\nAdded `test_perf_report_creates_save_path` in\n`python/test/unit/test_utils.py`. It fails without the fix\n(`FileNotFoundError` on the png) and passes with it.\n\nVerified on a Linux node (A40, no GPU needed for this path) by running\nthe new test with this checkout's `testing.py` over an installed triton\n3.5.0, since the checkout is not built here. Ruff and yapf 0.43.0 are\nclean. I did not run a full build or the rest of the unit suite.\n\nThanks to @zh301 for the report and reproducer.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n[rules](https://cbea.ms/git-commit/#why-not-how).\n- [ ] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n(Ran ruff and yapf directly, `pre-commit` is not installed here.)\n- [x] I have added tests.\n  - `/python/test` for end-to-end tests\n- [x] I have not added any `lit` tests.\n\nAI disclosure: this change was prepared by an automated AI agent\n(Claude), and the code, test, and description were produced by it.\n\nCo-authored-by: guptaishaan <guptaishaan@users.noreply.github.com>"
+    },
+    {
+      "sha": "cd772b3da9d343ea690f1c5daea020083503fd03",
+      "comment": "为 ttng.tmem_copy 增加可选 i1 谓词（实现 PredicatedOpInterface），并在 Gluon 暴露 tcgen05_copy(..., pred=True)。谓词贯穿 NVIDIA lowering（与 warp/cluster 选举谓词 and）、MMALowering 生成的 scale 拷贝（使用 MMA 的 pred）、ConSan（info->pred）与 FPSan（用 scf.if 包裹并加 InsertionGuard）。同时修正教程：block-scaled MMA 的 scale copy 按 pred 谓词化，im2col 把 MMA wait 移到下一次 TMA 加载之前。改动跨 IR 定义/NV lowering/sanitizer/Gluon 前端/教程，属于 Blackwell 特性扩展；风险在于新增可选 operand 会改变 assemblyFormat 与所有构造点（已覆盖 gluon_ir.cc、MMALowering、测试 TMEMCopyOp 构造），需确认无遗漏构造函数；ConSan 对谓词的建模只记录 pred，静态真值判断需保守。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "backend-nvidia",
+        "gluon",
+        "sanitizer"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（ttng.tmem_copy 属 TritonNvidiaGPU 方言，Ascend 不加载）",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Gluon] Predicate TMEM copies and fix tutorial synchronization (#12402)\n\nConSan reports races in two Gluon tutorials: skipped pipeline iterations\nin the block-scaled MMA tutorial still copy scales without waiting for\ntheir load barrier, and im2col overwrites its single-buffered inputs\nbefore the previous asynchronous MMA finishes reading them.\n\nAdd an optional predicate to `ttng.tmem_copy` and expose it as\n`tcgen05_copy(..., pred=True)`. Carry the predicate through NVIDIA\nlowering, compiler-generated MMA scale copies, ConSan, and FPSan.\nPredicate the tutorial's scale copies and move im2col's MMA wait before\nthe next TMA loads.\n\nExtend the existing lowering and GPU tests to cover dynamic true/false\npredicates, destination preservation, subviews, and sanitizer behavior.\n\nValidation:\n- Rebuilt Triton on GB300 and verified that Python and native bindings\ncame from the tested checkout.\n- Both complete tutorial pytest suites under ConSan: **433 passed, 64\nskipped**, **9m24s wall time**.\n- TMEM copy and ConSan/FPSan regression tests on GB300: **57 passed**.\n- `make test-lit`: **305 passed, 2 unsupported**.\n- All pre-commit hooks passed."
+    },
+    {
+      "sha": "16491796407ec76ef223f8227e7d9a96c3723363",
+      "comment": "ConSan 分配 poison 初始化跨 CTA 同步修复：在 numCTAs>1 时用 hooks.createInitClusterBarrier 代替 CTA 局部 barrier，保证对 peer CTA 分配的首次访问前 poison 已完成；把 shared 的 async-proxy fence 移入 initializeAllocation 并在 barrier 之后发出（多 CTA 用 shared::cluster），TMEM 仍走 tmem store wait。同时移除测试里的手工 cluster barrier workaround。实现上把 hooks 与 hasAsyncProxyFenceTracking 传入 initializeAllocation，逻辑清晰；风险是 multi-CTA 下增加一次 cluster barrier 会有轻微性能开销，以及对单 CTA/多 CTA 分支需完整覆盖（已新增 2/4 CTA、multibuffer、单 CTA、关闭初始化及 NVIDIA/AMD shared 的 lit 期望）。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "sanitizer",
+        "concurrency"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（ConSan 属 TritonInstrument，Ascend 默认不使用）",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ConSan] Synchronize allocation poisoning across CTAs (#11908)\n\nConSan's poison writes can race with a peer CTA's first access to an\nallocation. In particular, a two-CTA MMA can access the peer's TMEM\nbefore that CTA finishes poisoning it, corrupting the result with NaNs.\n\n- Conservatively synchronize all CTAs after allocation poisoning\nwhenever `numCTAs > 1`, covering both TMEM initialization and\nshared-memory initialization. Retain the CTA barrier for single-CTA\nkernels.\n- Remove the explicit cluster-barrier workaround from\n`test_local_indexed_cross_cta_visibility` in\n`python/test/gluon/test_consan.py`.\n- Move the shared-memory async-proxy fence into `initializeAllocation`.\nEmit it after the barrier, using `shared::cluster` coverage for\nmulti-CTA kernels and `shared::cta` for single-CTA kernels. This orders\nthe acquired poison stores, including peers' stores, before subsequent\nasync accesses. TMEM initialization continues to use its store wait.\n\nAdd lit coverage for two- and four-CTA TMEM initialization, multibuffer\nallocations, single-CTA and disabled-initialization behavior, and\nshared-memory initialization on NVIDIA and AMD. Check the proxy fence's\ncoverage and placement for single-CTA TMA, multicast TMA, and CLC.\n\nValidation: compiler rebuild and both ConSan lit files passed; targeted\nGPU tests passed with 99 passed and 20 skipped; `pre-commit run\n--from-ref origin/main --to-ref HEAD` passed."
+    },
+    {
+      "sha": "3a4e1d6635b7c3b72b0114a293c6852ba37cb466",
+      "comment": "前端 hint 保真修复：新增单结果恒等 op tt.annotate（含 fold 与 canonicalizer：无属性时折叠、单结果 producer 时把属性下推后折叠），用于把 tt.call 上的 hint 精确附着到某个结果；TritonInlinerInterface::handleResult 对单结果 call 且存在 hint 时创建 AnnotateOp，AxisInfo 通过 IdentityOpAxisInfoVisitor 穿透，TritonToTritonGPU 用 GenericOpPattern，LLVM lowering 中 AnnotateOpConversion 直接替换。python/src/ir.cc 的 set_attr 对多结果 definingOp 自动插入 annotate 并重定向 uses。这是 TTIR 核心 IR 变更，影响所有后端，需注意 IR 兼容性与新增 op 在所有 pass 中的处理（已加 fold/canonicalize/lowering/axis）。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "medium-risk",
+        "frontend",
+        "ttir"
+      ],
+      "ascend_impact": {
+        "ascend_affected": true,
+        "functionality": "TTIR 新增 tt.annotate op（include/triton/Dialect/Triton/IR/TritonOps.td + lib/Dialect/Triton/IR/Ops.cpp），Ascend 复用 AST→TTIR 前端并从此处开始 TritonToLinalg 转换，因此 Ascend 的 lowering 链必须能处理该 op（或依赖 canonicalize 将其折叠）。同时 python/src/ir.cc 的 TritonOpBuilder::set_attr 行为变更（对多结果 op 自动插入 annotate 并重定向所有 uses）会影响 AscendNPUIROpBuilder 继承的 set_attr 语义，Ascend 前端若在多结果 op 上打 hint 将生成 tt.annotate；Inliner 的 handleResult 新逻辑也影响 Ascend 使用 inline 时的 hint 传播。",
+        "testing": "需检查 Ascend TritonToLinalg 转换是否覆盖 tt.annotate（若未覆盖，带 annotate 的 IR 会 lower 失败），并验证 canonicalize 后多数场景被折叠；需验证 Ascend 前端通过 set_attr 打 hint 生成的 IR 仍可正确编译。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion",
+          "third_party/ascend/unittest/pytest_ut (hint/divisibility 相关算子)",
+          "third_party/ascend/lib 的 TritonToLinalg 转换"
+        ]
+      },
+      "message": "[FRONTEND] Preserve per-result hints through inlining (#12388)\n\nFixes #12366, Closes #12377\n\nCompiler hints attached to a multi-result `tt.call` currently belong to\nthe shared operation, so inlining can propagate a hint to the wrong\nreturned value.\n\nAdd a single-result `tt.annotate` identity op and emit it only when\nattaching a hint to a value from a multi-result operation. Fold\nannotations into single-result producers, retain them for block\narguments and multi-result producers, propagate axis information through\nthem, and erase them during LLVM lowering. Single-result call hints are\nalso preserved when inlining returns an argument or a result of a\nmulti-result op.\n\nExtend the existing inliner lit test for reordered, nested, duplicate,\nmixed-rank, and split results. No runtime tests are added. This\naddresses the issue described in #12377 while preserving the hints.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "include/triton/Dialect/Triton/",
+          "lib/Dialect/Triton/",
+          "python/src/ir.cc"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": true,
+        "affected_interfaces": [
+          "third_party/ascend/lib/TritonToLinalg/TritonToLinalgPass.cpp::TritonToLinalgPass::populateTritonToLinalgConversionPatterns (register a new conversion pattern for triton::AnnotateOp)",
+          "third_party/ascend/include/TritonToLinalg/TritonOpConverter.h::TTOpConverters (add AnnotateConverter identity pattern, modeled on BitcastConverter at line ~701)",
+          "third_party/ascend/lib/TritonToLinalg/TritonToLinalgPass.cpp::addDynamicLegal / convertRemainingComputations (triton::TritonDialect is illegal by default here, so an unhandled tt.annotate fails applyPartialConversion)",
+          "third_party/ascend/lib/TritonToStructured/PtrAnalysis.cpp::getDivisibility (reads tt.divisibility from value.getDefiningOp(); hints now live on a separate tt.annotate op for multi-result/block-arg values, so this analysis can miss them)"
+        ],
+        "adaptation_effort": "low",
+        "adaptation_guide": "The commit adds a new `tt.annotate` identity op to the Triton dialect (TritonOps.td), emitted by the frontend via `Value::set_attr` (python/src/ir.cc) when a hint (tt.divisibility/tt.contiguity/tt.constancy from tl.multiple_of/tl.max_contiguous/tl.max_constancy) is attached to a value from a multi-result op, and by the inliner `handleResult` for single-result calls returning a block argument or multi-result producer. triton-ascend runs the upstream inliner + canonicalizer in `make_ttir` (third_party/ascend/backend/compiler.py), so the canonicalizer folds annotate into single-result producers but leaves annotate with block-argument or multi-result operands. Those survivors then reach TritonToLinalg, which has no pattern for `triton::AnnotateOp`, so `applyPartialConversion` fails with 'failed to legalize operation tt.annotate'. Adaptation: (1) add a trivial identity converter in TTOpConverters, e.g. `struct AnnotateConverter : public OpConversionPattern<triton::AnnotateOp> { matchAndRewrite -> rewriter.replaceOp(op, adaptor.getSrc()); return success(); }`, in third_party/ascend/include/TritonToLinalg/TritonOpConverter.h (mirror BitcastConverter); (2) register it in third_party/ascend/lib/TritonToLinalg/TritonToLinalgPass.cpp::populateTritonToLinalgConversionPatterns via `patterns.add<TTOpConverters::AnnotateConverter>(...)` (and confirm `triton::AnnotateOp` is illegal in addDynamicLegal so the pattern fires); (3) optionally update third_party/ascend/lib/TritonToStructured/PtrAnalysis.cpp::getDivisibility to look through a leading `triton::AnnotateOp` before reading `tt.divisibility`, otherwise the divisibility hint is lost for annotated values; (4) add a lit test under test/ exercising a kernel that annotates a tt.split/multi-result value.",
+        "risk": "Compilation-correctness regression, not a silent miscompile: without the conversion pattern, any kernel whose TTIR retains a `tt.annotate` op (e.g. tl.multiple_of applied to a tt.split/multi-result-call value, or an inlined single-result call returning a block argument) fails to compile with a 'failed to legalize operation' error. The adaptation itself is low-risk (pure identity erase of a side-effect-free op). Secondary, lower-severity risk: triton-ascend's PtrAnalysis reads `tt.divisibility` directly off the defining op, so if the pattern simply discards the hint instead of re-attaching it, divisibility-based pointer-alignment optimizations silently degrade for annotated values (no functional failure, just lost optimization)."
+      }
+    },
+    {
+      "sha": "72bcaf23ebd396d53696255a72a33b9496422c38",
+      "comment": "两个 Gluon 示例修复：1) 08 教程中 epilogue 仅在释放当前（已读）accumulator slot 之后才推进 acc_state，避免释放下一个 slot 导致 persistent matmul 死锁；2) attention 示例中将 BLOCK_M 计算（乘以 CGA split dim）提前并断言 seq_len 可被整除，防止 partial tile 导致各 partition 的 KV 迭代次数不一致。纯 python/examples 与 python/tutorials 下的示例代码，不涉及编译器路径，风险低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "docs",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（Gluon 教程示例，Ascend 不使用）",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Gluon] Fix accumulator release and reject partial attention tiles (#12400)\n\nThanks to @vinodgro for reporting the issues.\n\nFix two errors in the Gluon Blackwell samples:\n\n- In tutorial 08, advance the accumulator state only after releasing the\nslot the epilogue read. Releasing the next slot can deadlock persistent\nmatmul when the MMA partition reaches its empty-buffer wait after the\nepilogue's arrival.\n- In the attention example, assert that the sequence length is divisible\nby the effective `BLOCK_M` after CTA-layout scaling. Partial tiles can\nmake partitions disagree on the number of KV iterations and can write\nacross head boundaries or past the end of `M`.\n\nValidated on GB300:\n- 18 existing matmul test cases and 72 existing attention cases passed,\ncovering 1-, 2-, and 4-CTA attention configurations.\n- With a uniform delay before the MMA partition's accumulator wait, the\noriginal multi-tile matmul timed out after 60 seconds; the fixed version\npassed three runs normally and three with ConSan, all checked against\nthe reference output. The original single-tile control passed.\n- Ruff, YAPF, and whitespace checks passed."
+    },
+    {
+      "sha": "f37fda82e1a3d36b86328769f8ec3d82c9ca6953",
+      "comment": "该 commit 解决的是 LLVM 通用 TTI 对 extractelement 过度计费导致 VectorCombine 将全元素使用的对齐向量 load 标量化、进而妨碍后续 NVPTX 打包向量化的问题。实现上新增 lib/Target/LLVMIR/LLVMIRNVPTXTargetInfo.cpp，定义派生自 TargetTransformInfoImplCRTPBase 的 TritonNVPTXTTIImpl（与 NoTTIImpl 同源），仅覆写三个 getVectorInstrCost 重载，使「固定向量 + 常量索引 + 32/64 位元素」的 extractelement 成本为 TCC_Free，其余查询（子字元素、动态索引等）沿用通用行为；未采用 BasicTTI/NVPTX target machine，以免牵连其他优化决策。LLVMPasses.h 暴露 createTritonNVPTXTargetIRAnalysis()，CMakeLists 增加编译单元。python/src/llvm.cc 的 optimize_module 新增 enable_nvptx_tti 参数（默认 false），并在注册 MAM/CGAM 分析之后、PassBuilder 安装默认 TargetIRAnalysis 之前通过 fam.registerPass 注册（首次注册生效）；条件为 !targetMachine 且 triple 为空或 NVPTX，从而不改变已有 target machine 的管线与其他后端。third_party/nvidia/backend/compiler.py 在 make_llir 中对 optimize_module 传 enable_nvptx_tti=True。测试上新增 test_bindings.py 中参数化用例，覆盖 7 种 dtype × 2/4 元素 × TTI 开关 × 三种 triple × 常量/动态索引，断言向量 load 是否被保留。风险较低：改动是新增可选能力且默认关闭，仅 NVIDIA 后端显式打开；但需注意 getVectorInstrCost 重载的签名与 LLVM 版本绑定，升级 LLVM 时需同步；此外 TTI 影响面广，若后续在此处增加更多 hook 需逐项验证。注意新参数为 optimize_module 的关键字参数，对既有调用（含 Ascend 的 optimize_module 调用）无破坏性。",
+      "tags": [
+        "performance",
+        "feature",
+        "low-risk",
+        "nvidia-backend",
+        "llvm-lowering",
+        "codegen"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Preserve unpacked vector loads with a conservative TTI (#12337)\n\nLLVM's generic TTI charges for `extractelement` even when an element\nalready occupies a separate register. This can make VectorCombine\nscalarize an aligned vector load whose elements are all used, obscuring\nthe vector structure needed by later optimizations.\n\nAdd a Triton NVPTX TTI derived from `TargetTransformInfoImplCRTPBase`,\nthe same generic foundation used by `NoTTIImpl`. Its first override\nmakes constant, in-range extracts from fixed vectors with 32- or 64-bit\nelements free. Sub-word elements, dynamic indices, and other cost\nqueries retain the generic behavior. This provides a place to add\nindividually validated target information without adopting the full\nNVPTX target-machine cost model.\n\nThe NVIDIA backend enables this analysis. Other backends and pipelines\nwith an explicit target machine keep their existing TTI. The binding\nretains an opt-out for differential testing.\n\nTwo small synthetic loops illustrate the codegen effect. Each iteration\nloads an aligned vector and adds each element to a separate loop-carried\nFP32 accumulator. For example, the two-element loop starts with:\n\n```llvm\n%v = load <2 x float>, ptr addrspace(1) %p, align 8\n%x0 = extractelement <2 x float> %v, i32 0\n%x1 = extractelement <2 x float> %v, i32 1\n%next0 = fadd float %sum0, %x0\n%next1 = fadd float %sum1, %x1\n```\n\nWith generic TTI, VectorCombine splits the load and the arithmetic stays\nscalar. Preserving the vector load lets the existing NVPTX vectorizer\nform packed accumulators. Compiling identical inputs with only\n`enable_nvptx_tti` toggled (`O3`, SLP disabled, NVPTX vectorizer\nenabled, `sm_100a`, PTX 9.4, ptxas 13.4.59) gives:\n\n| Synthetic loop | Generic TTI: SASS per iteration | Custom TTI: SASS\nper iteration | Registers, before → after |\n| --- | --- | --- | --- |\n| Two FP32 accumulators | 2 × `FADD` | 1 × `FADD2` | 8 → 8 |\n| Four FP32 accumulators | 4 × `FADD` | 2 × `FADD2` | 14 → 14 |\n\nFor the two-element case, the PTX arithmetic changes from two\n`add.rn.f32` instructions to one `add.rn.f32x2`. The actual SASS\narithmetic is:\n\n```sass\n// Before\nFADD R5, R2, R5;\nFADD R0, R3, R0;\n\n// After: each operand denotes a pair of FP32 registers\nFADD2 R2, R2.F32x2.HI_LO, R4.F32x2.HI_LO;\n```\n\nBoth versions ultimately use one `LDG.E.64` (two elements) or one\n`LDG.E.128` (four elements); the improvement here is packed arithmetic.\nThe same results hold when loading integer vectors and bitcasting them\nto FP32. These are code-generation checks, not runtime speedup\nmeasurements.\n\n<details>\n<summary>Standalone two-accumulator reproducer</summary>\n\nSave this as `example.mlir`. This is a compiler-only example; its loop\nexecutes at least once.\n\n```mlir\nmodule {\n  llvm.func @accumulate(%input: !llvm.ptr<1>, %output: !llvm.ptr<1>, %count: i32) attributes {nvvm.kernel = 1 : ui1} {\n    %c0 = llvm.mlir.constant(0 : i32) : i32\n    %c1 = llvm.mlir.constant(1 : i32) : i32\n    %c2 = llvm.mlir.constant(2 : i32) : i32\n    %zero = llvm.mlir.constant(0.0 : f32) : f32\n    llvm.br ^loop(%c0, %zero, %zero : i32, f32, f32)\n  ^loop(%index: i32, %sum0: f32, %sum1: f32):\n    %offset = llvm.mul %index, %c2 : i32\n    %ptr = llvm.getelementptr %input[%offset] : (!llvm.ptr<1>, i32) -> !llvm.ptr<1>, f32\n    %values = llvm.load %ptr {alignment = 8 : i64} : !llvm.ptr<1> -> vector<2xf32>\n    %x0 = llvm.extractelement %values[%c0 : i32] : vector<2xf32>\n    %next0 = llvm.fadd %sum0, %x0 : f32\n    %x1 = llvm.extractelement %values[%c1 : i32] : vector<2xf32>\n    %next1 = llvm.fadd %sum1, %x1 : f32\n    %inc = llvm.add %index, %c1 : i32\n    %more = llvm.icmp \"ult\" %inc, %count : i32\n    llvm.cond_br %more, ^loop(%inc, %next0, %next1 : i32, f32, f32), ^exit {loop_annotation = #llvm.loop_annotation<unroll = <disable = true>>}\n  ^exit:\n    %out0 = llvm.getelementptr %output[%c0] : (!llvm.ptr<1>, i32) -> !llvm.ptr<1>, f32\n    llvm.store %next0, %out0 : f32, !llvm.ptr<1>\n    %out1 = llvm.getelementptr %output[%c1] : (!llvm.ptr<1>, i32) -> !llvm.ptr<1>, f32\n    llvm.store %next1, %out1 : f32, !llvm.ptr<1>\n    llvm.return\n  }\n}\n```\n\nRun with a build containing this change:\n\n```python\nfrom pathlib import Path\nimport subprocess\n\nfrom triton import knobs\nfrom triton._C.libtriton import ir, llvm\nfrom triton.backends.compiler import GPUTarget\nfrom triton.backends.nvidia.compiler import CUDABackend, get_features\n\nllvm.init_targets()\nbackend = CUDABackend(GPUTarget(\"cuda\", 100, 32))\noptions = backend.parse_options({})\nfor enabled in (False, True):\n    name = \"custom\" if enabled else \"generic\"\n    context = ir.context()\n    ir.load_dialects(context)\n    module = ir.parse_mlir_module(\"example.mlir\", context)\n    llvm_context = llvm.context()\n    llmod = llvm.to_module(module, llvm_context)\n    next(iter(llmod.get_functions())).set_calling_conv(71)  # PTX_Kernel\n    llvm.attach_datalayout(llmod, \"nvptx64-nvidia-cuda\", \"sm_100a\",\n                           get_features(options, 100))\n    llvm.optimize_module(llmod, llvm.OPTIMIZE_O3,\n                         disable_slp_vectorizer=True,\n                         nvptx_compute_capability=100,\n                         enable_nvptx_tti=enabled)\n    Path(f\"{name}.ll\").write_text(str(llmod))\n    metadata = {}\n    ptx = backend.make_ptx(str(llmod), metadata, options, 100)\n    Path(f\"{name}.ptx\").write_text(ptx)\n    cubin_path = Path(f\"{name}.cubin\")\n    cubin_path.write_bytes(backend.make_cubin(ptx, metadata, options, 100))\n    sass = subprocess.check_output(\n        [knobs.nvidia.nvdisasm.path, \"-c\", str(cubin_path)], text=True)\n    Path(f\"{name}.sass\").write_text(sass)\n    del llmod, llvm_context, module, context\n```\n\n</details>\n\nValidation:\n\n- All 168 cases of `test_nvptx_tti_vector_load_scalarization` passed on\nthe candidate build: element types, vector widths, enabled/disabled TTI,\nempty/NVPTX/AMD triples, and constant/dynamic indices.\n- All eight synthetic compilations completed: two/four accumulators ×\nfloat/integer loads × generic/custom TTI; PTX, SASS, and resource usage\ninspected.\n- Pre-commit checks passed for all six changed files."
+    },
+    {
+      "sha": "99a346f0012692b928fd5f0f3cef3a82a2f9f090",
+      "comment": "GSan 的 syncThreads 从 bar.sync 改为 barrier.sync，因为 GSan syncThreads 可能在 warp-specialized partition 内执行（仅部分 CTA 参与），隐式 aligned 的 bar.sync 会要求全 CTA 收敛。修改仅一行内联汇编，并在 test_gluon_warp_specialize_completes 中断言 llir 中使用 barrier.sync。风险低；注意该改动依赖 PTX barrier.sync 语义（未对齐屏障），对非 warp-spec 场景等价。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "sanitizer",
+        "backend-nvidia"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（GSan 为 NVIDIA 专属 sanitizer 库）",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[GSan] Use unaligned barriers for warp-specialized synchronization (#12389)\n\nGSan's `syncThreads` can execute within warp-specialized partitions,\nwhere only part of the CTA participates. Replace the implicitly aligned\n`bar.sync` with `barrier.sync` so these calls do not require convergence\nacross the whole CTA.\n\nExtend the existing warp-specialization test to check that GSan's inline\nassembly uses the unaligned form.\n\nValidation:\n- All pre-commit hooks, Python syntax, and diff checks passed.\n- GPU validation could not run: dependency setup on the Brix GB300\ndevbox failed because its package registry could not be resolved."
+    },
+    {
+      "sha": "23d6832c426e79a9b269d6252b11f17041bd35b5",
+      "comment": "AMD CI 基础设施更新：升级 rocjitsu nightly 镜像到 rocm10.2.0a20261012（pytorch2.16），在 CI 中验证并导出 TRITON_AMD_BITCODE_PATH 指向 ROCm 自带的 asanrtl/ockl/ocml bitcode，新增 knobs.amd.bitcode_path（env TRITON_AMD_BITCODE_PATH）与 get_amd_bitcode_path，使 HIPOptions.extern_libs 与 asan 路径可覆盖到 ROCm 安装目录。同时把 rocjitsu 的 -k 表达式从黑名单改为白名单（启用此前跳过的测试）。改动集中在 third_party/amd、python/triton/knobs.py、CI workflow，风险主要在 CI 配置与新 knobs 的默认行为（未设置环境变量时保持原先 bundled bitcode 路径，向后兼容）。",
+      "tags": [
+        "ci",
+        "chore",
+        "low-risk",
+        "backend-amd",
+        "knobs"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（AMD 专属 knobs 与 CI）",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][CI] Bump rocjitsu to nightly 20261012 (#12238)\n\n- Enable passing tests\n- Refresh bundled OCKL, OCML, and ASan bitcode for ROCm 10.2 ABI\ncompatibility"
+    },
+    {
+      "sha": "249c29ead385cfbd4272d1a96c90a7516ad754a5",
+      "comment": "该 commit 修复 CDNA5 上多重 cluster barrier 场景的挂起：CDNA5 的 cluster barrier 由单比特 'Cluster Barrier Wave State' 实现，当快 warp 连续通过两次 cluster arrive 而慢 warp 尚未到达第一次 cluster wait 时，慢 warp 通过第一次 cluster barrier 会消耗完成位，但由于快 warp 已越过第二次 arrive，完成位不会再被置位，慢 warp 卡在第二次 cluster barrier。该问题也存在于内核中连续多次使用 cluster 级 atomic（内部会插入 cluster barrier）的情形。按照 CDNA5 指南 5.6.6 的建议，在 TargetInfo::clusterBarrier 中先调用 barrier(loc, rewriter, triton::gpu::AddrSpace::None) 插入 workgroup barrier，再发出 ClusterBarrierArriveOp/ClusterBarrierWaitOp，使同一 workgroup 内各 wave 在每次 cluster barrier 前先同步到齐。测试在 test/Conversion/amd/cluster_barrier_to_llvm.mlir 的 atomic_cluster_barrier 用例中新增一条 CHECK: rocdl.s.barrier{{$}}，验证 atomic 路径产生的 cluster barrier 前确实插入了 workgroup barrier（并保留原有 CHECK-NOT 语义约束）。风险较低：改动局限在 AMD TargetInfo 的 clusterBarrier，可能带来少量额外 barrier 开销（每次 cluster barrier 多一条 s_barrier），但相较挂起是正确的取舍；由于 ascending 不使用 TargetInfoBase/TritonGPUToLLVM（走 TritonToLinalg），不影响其他后端。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "amd-backend",
+        "conversion",
+        "cluster-barrier"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Always insert a workgroup barrier before cluster barrier (#12342)\n\nCurrently the compiler does not follow this recommendation as suggested\nin the CDNA5 guide 5.6.6:\n\n> It is recommended that waves in a workgroup first synchronize by using\nthe workgroup barrier, then one wave per workgroup signals the cluster\nbarrier.\n\nThis will cause some troubles, in this minimal case:\n\n```python\n# assume a kernel with 2 cta, 8 warp\ngl.amd.cdna5.cluster.arrive() # signal  1\ngl.amd.cdna5.cluster.wait()   # barrier 1\ngl.amd.cdna5.cluster.arrive() # signal  2\ngl.amd.cdna5.cluster.wait()   # barrier 2\n```\n\nWhen 2 warp-0 from 2 ctas reached **signal 2** but a slower warp-n has\nnot yet reached **barrier 1** (n != 0), the warp-n will pass **barrier\n1**, but hang at **barrier 2**. As stated in the guide, cluster barrier\nis implemented using \"Cluster Barrier Wave State\", which has a single\nbit to indicate that the cluster barrier has completed. So when the\nwarp-n reaches **barrier 1**, its cluster-completion bit will be\nconsumed and there is no other wave-0 to set it again given they have\nalready passed **signal 2**.\n\nThe hang can happen in different variants:\n1) When the kernel manually uses more than one cluster barrier\n2) When the kernel uses more than one consecutive atomics, which under\nthe hood will insert cluster barriers\n\nA kernel-side remedy is to always insert a barrier before cluster\nbarrier / atomics. This PR proposes to directly insert it when lowering\nthe cluster barrier.\n\n---------\n\nSigned-off-by: Pengzhan Zhao <borontion@gmail.com>"
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

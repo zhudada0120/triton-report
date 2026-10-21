@@ -1,8 +1,13 @@
 {
-  "content_hash": "b98e2d6ea4218b3c",
+  "content_hash": "d6d0fa9c5d45c26f",
   "analysis": {
-    "interface_summary": "定义 25 个函数",
-    "key_interfaces": []
+    "interface_summary": "定义 2 个类；定义 33 个函数",
+    "key_interfaces": [
+      "UnavailableDriver",
+      "UnavailableDriver",
+      "UnavailableDriver.__getattr__",
+      "UnavailableDriver.__getattr__"
+    ]
   },
-  "cached_at": "2026-10-03T05:31:24.721211+08:00"
+  "cached_at": "2026-10-22T04:58:29.817262+08:00"
 }
