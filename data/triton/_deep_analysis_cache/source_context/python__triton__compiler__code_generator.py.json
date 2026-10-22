@@ -1,5 +1,5 @@
 {
-  "content_hash": "7fb807f2ce7f4e13",
+  "content_hash": "ec1052a591ab390f",
   "analysis": {
     "interface_summary": "定义 5 个类；定义 124 个函数",
     "key_interfaces": [
@@ -28,5 +28,5 @@
       "CodeGenerator._name_loc_prefix"
     ]
   },
-  "cached_at": "2026-10-21T04:58:44.624278+08:00"
+  "cached_at": "2026-10-23T04:56:38.704189+08:00"
 }

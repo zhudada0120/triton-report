@@ -1,4 +1,36 @@
 {
+  "c1641abbb17a80b8c9cad1fa05b4c70d6ac260ab": {
+    "date": "2026-10-22",
+    "msg": "[AMD][gfx1250] Ignore unit dims when checking the shared order for TDM ops (#12331)"
+  },
+  "93035c4472eb820f78074de0e28341fa321a759d": {
+    "date": "2026-10-22",
+    "msg": "[GLUON] Reject async copies between mismatched element types (#12341)"
+  },
+  "6caee94f73b140877238364d3ce37b9688e7dfb9": {
+    "date": "2026-10-22",
+    "msg": "[GSan] Add memory access profiler (#12338)"
+  },
+  "473737fea3f594f270b12c018199e772b124e821": {
+    "date": "2026-10-22",
+    "msg": "[Runtime] Serialize class-valued constexprs for preload (#12430)"
+  },
+  "568e9d3629e498eb31405df60a15c46ae73a645f": {
+    "date": "2026-10-22",
+    "msg": "[Frontend] Support bool parameter annotations (#12403)"
+  },
+  "b10226036e9ac8338534ff7bed63ca5bb36e047c": {
+    "date": "2026-10-22",
+    "msg": "[AMD] Use new AMD CodeGen build and update test (#12391)"
+  },
+  "3419b56873c5eed1d4885087c909a038614a46ff": {
+    "date": "2026-10-22",
+    "msg": "[triton_kernels] Ceiling-round E4M3 scales for ROUND_UP (#12401)"
+  },
+  "034dc0adbe34789612ed3b4590330b544a02f59f": {
+    "date": "2026-10-22",
+    "msg": "[NVIDIA] Preserve 16-bit copysign NaN payloads under FPSan (#12418)"
+  },
   "cbac1296d79137d0fc95a110ab3565190acd5425": {
     "date": "2026-10-21",
     "msg": "[NVIDIA] Lower rounded float conversions with llvm.fptrunc.round (#12237)"

@@ -1,0 +1,189 @@
+{
+  "date": "2026-10-22",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-23T04:55:57.143504+08:00",
+  "daily_summary": "当日变更集中在几个方向：(1) AMD gfx1250 后端对 TDM tensor descriptor 校验放宽，忽略 unit dim 对 shared order 的影响；(2) Gluon 异步拷贝在前端与 IR verifier 层增加元素类型一致性校验，修复 fp32->fp16 错配导致的数据错误/对齐 fault；(3) GSan 新增 gsan-profile 内存访问分析器（独立分配器、紧凑 metadata、多设备/分布式支持、PyTorch CUDAAllocator 集成），并重构 GSan 分配器公共代码；(4) JIT 缓存预加载支持类 constexpr 序列化；(5) 前端支持 bool 参数注解；(6) AMD 升级 codegen build 以支持 name=value 形式 llvm_cl_opts；(7) triton_kernels NVFP4 ROUND_UP 改为向上取整（ceil）E4M3 scale；(8) FPSan 下 FP16/BF16 copysign 改用内联 PTX 位操作保留 NaN payload。整体偏向 bugfix + 新特性（profiler）并存，风险中等。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 的影响主要集中在两个上游核心文件：python/triton/compiler/code_generator.py（builtin_namespace 增加 bool、新增 bool(tensor) 报错检查）属于必然影响路径，Ascend 通过 monkey-patch 覆写 CodeGenerator.__init__，需确认新增检查不影响其 patch 与 hacc.target 注入；python/triton/runtime/jit.py（serialize_specialization_data 常量编码增加 class 分支、preload 解码增加 class 解析）属于必然影响路径，Ascend 复用 JITFunction/JITCallable 与特化缓存键机制，需评估新增 class 常量序列化对其缓存/预加载流程的影响。其余 commit（AMD TDM、Gluon async copy、GSan profiler、bool 前端、AMD codegen build、NVFP4 scale、FPSan copysign）均为 NVIDIA/AMD 平台专属或第三方内核代码，与 Ascend 无耦合。",
+  "commits": [
+    {
+      "sha": "c1641abbb17a80b8c9cad1fa05b4c70d6ac260ab",
+      "comment": "AMD gfx1250 TDM 校验修复。TensorPtrOpsToLLVM.cpp 的 validateStridesAndSharedOrder 原本要求 shared order 严格等于 [rank-1,...,0]，但 getOrder 对含 unit dim 的 layout 会把 unit dim 排到末尾，导致合法 layout 被误报。改为先 erase_if 掉 shape[dim]==1 的维度，再用 llvm::is_sorted(greater) 检查剩余维度是否逆序，语义等价但容忍 unit dim。测试新增 tdm_unit_block_dims 用例覆盖 1x16x1x64 的 padded_shared layout。风险低，属纯 AMD 后端路径，但注意错误消息仍写 'requires shared order [rank-1, rank-2, ..., 0]'，与实现已不完全对应（可接受）。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "amd-backend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][gfx1250] Ignore unit dims when checking the shared order for TDM ops (#12331)\n\nWhen getting the order from the shared LL it will place unit dims at the\nback, since they do not affect the physical layout, so we should ignore\nthem in the verifier."
+    },
+    {
+      "sha": "93035c4472eb820f78074de0e28341fa321a759d",
+      "comment": "Gluon async_copy 元素类型一致性校验。问题：async_copy.async_load 只校验形状，fp32 pointer 到 fp16 shared buffer 会按字节原始拷贝（值错误），反向则在运行时报 misaligned address。修复分两层：(1) 前端在 NVIDIA ampere.async_load（Hopper/Blackwell 复用）与 AMD cdna4/cdna5 的 global_load_to_shared / shared_to_global 中检查指针 pointee 类型与目标 dtype 相等，与 smem.store 契约一致；(2) 在 TritonGPUOps.td 的 TTG_AsyncCopyGlobalToLocalOp 上新增 PredOpTrait，对绕过 builtin 的生产者做 verifier 校验。测试新增 invalid.mlir 的 dtype_mismatch 用例。风险低，但 PredOpTrait 通过 cast 直接取 operand 0/1 类型，若后续 op 定义改变 operand 顺序需同步；该 op 属 TritonGPU 方言，NVIDIA/AMD 共用。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "gluon",
+        "tritongpu"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[GLUON] Reject async copies between mismatched element types (#12341)\n\nFixes #12243.\n\nGluon's `async_copy.async_load` only checked that smem and pointer\nshapes match. An fp32 pointer into an fp16 shared buffer compiled and\ncopied raw bytes (wrong values), and the reverse faulted with a\nmisaligned address at runtime. `smem.store` has always rejected the same\nmismatch at compile time; the async path now does too.\n\nChanges:\n\n- Frontend checks in all three Gluon async-copy builtins: NVIDIA\n`ampere.async_load` (Hopper and Blackwell share it through re-export)\nand AMD `cdna4.global_load_to_shared` / `cdna5.global_to_shared` +\n`shared_to_global` (both copy directions). The pointer's element type\nmust equal the destination dtype, mirroring `smem.store`'s contract.\n- An IR verifier on `AsyncCopyGlobalToLocalOp` so producers that bypass\nthe Gluon builtins fail verification instead of lowering a mis-sized\ncopy.\n- A frontend regression pins both mismatch directions (fp32→fp16 and\nfp16→fp32) raising `CompilationError` at parse time.\n\nTests: the new case is red without the frontend check and green with it;\nthe full `test_frontend.py` sweep shows the same 41 pre-existing\nenvironment failures on the untouched tree (they need ptxas, absent on\nthis machine) and zero new failures from the diff (565 → 567 passing,\nthe delta being the new test). The C++ verifier follows the existing\n`verify()` idiom in Ops.cpp but was not rebuilt locally (no LLVM build\nhere), so its compile is covered by CI. The runtime byte-level repro\nfrom the issue needs a GPU, which this machine does not have; the\ncompile-time rejection is the behavioral contract being added."
+    },
+    {
+      "sha": "6caee94f73b140877238364d3ce37b9688e7dfb9",
+      "comment": "GSan 内存访问 profiler（gsan-profile）大型特性提交，约 4300 行新增。核心设计：(1) 新增独立 profiling 分配器 _profile_allocator.py + ProfileCUDAAllocator.cc/ProfileAllocator.cc，在 CUDA 初始化前显式安装为 torch CUDAAllocator，通过 enable/disable 与线程/设备路由只在 AllocationProfile 上下文内接管 tensor storage 分配；(2) 抽出 _allocator_common.py 与 AllocatorCommon.h/AllocatorPython.h/Compat.h/TMA.cuh 复用 VMM 树分配器、shareable handle、Python 参数解析等，同时把原 GSanAllocator.cc 中约 480 行重复代码删除；(3) 设备端 AllocationProfile.cu 实现紧凑 ProfileCell（每 16 字节数据一个 4 字节 cell，低位记录 written mask、高位记录 repeated write/read-before-write/atomic/read/write 与不可用粒度），并与 GSan 共享 TMA descriptor 解码；提供 no-op 的 gsan init/exit/barrier 入口复用现有 instrumentation ABI；(4) profile.py 的 AllocationProfile 上下文管理器负责 storage 生命周期跟踪、retirement stream 异步汇总、多设备与 Gloo/NCCL 分布式报告合并；(5) gsan_profile.cc 通过 nanobind 暴露 layout 常量，CUDABackend/driver.py 增加 gsan-profile instrumentation_mode 分支与 hidden launch state 参数。测试覆盖极广（1486 行）：粒度/写一次判定、atomic/向量化 atomic、TMA/gather/reduce、warp specialization、CUDA graph、多流/多线程/多设备、IPC/分布式、分配器复用与 retirement 失败上报等。潜在风险：改动覆盖 Python/C++/CUDA/CMake 多层，直接替换 torch allocator 的实现依赖 PyTorch 内部接口（TRITON_TORCH_EXTENDED_ALLOCATOR 条件编译）；_allocator.py 的 load_allocator 用 header hash 做 cache 失效，逻辑正确但增加了编译复杂度。属 NVIDIA 专属实验特性，对非 NVIDIA 后端无影响。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "gsan",
+        "instrumentation",
+        "nvidia-backend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[GSan] Add memory access profiler (#12338)\n\nChoosing GSan's shadow granularity and `write_once` policy currently\nrequires manual inspection. Add a `gsan-profile` instrumentation mode\nthat records observed accesses and reports granularity and write-once\ncandidates for each tracked storage lifetime.\n\nThe profiler uses a dedicated allocator with compact metadata, while\nsharing allocation and descriptor helpers with GSan. A direct PyTorch\nCUDAAllocator is installed explicitly before CUDA initialization;\nprofiling is enabled only inside `AllocationProfile`. Storage retirement\nsummarizes and resets metadata in stream order, allowing allocator reuse\nwithout retaining tracked tensors. Reports are available after context\nexit.\n\nSupports multiple CUDA devices, shared IPC/FABRIC mappings, and\ncollective Gloo/NCCL reports. Unmanaged memory and raw allocator clients\nare ignored. Runtime constants are shared through native bindings, and\nthe device entry points match the current atomic instrumentation ABI,\nincluding vectorized atomic element widths.\n\nIncludes an explicit test bootstrap and regression coverage for storage\nreuse, streams, graph capture, TMA, atomic accesses, and distributed\nprofiling. Recommendations describe observed instrumented executions and\nrequire validation in a separate GSan run.\n\n## Validation\n\n- Rebuilt on GB300 and ran `make`.\n- Full profiler suite: **110 passed**, including single-node multi-GPU\nand Gloo/NCCL distributed cases.\n- Startup isolation: **6 passed**; new vectorized atomic coverage: **8\npassed**.\n- Compiler lit suite: **305 passed, 2 unsupported**.\n- Existing GSan allocator/race and TMA-marker checks: **19 passed**.\n- Python syntax, Ruff, shell syntax, and diff whitespace checks passed.\n\nMulti-node FABRIC tests were not rerun after this rebase."
+    },
+    {
+      "sha": "473737fea3f594f270b12c018199e772b124e821",
+      "comment": "JIT 缓存预加载支持类 constexpr 序列化。问题：jit_cache_hook 在 constexpr 为 class 时 serialize_specialization_data 抛 TypeError（type 不可 JSON 序列化）。修复：serialize_specialization_data 中将 isinstance(value, type) 编码为 {\"class\": \"module:qualname\"}（在 dtype/constexpr/JITFunction 分支之后），preload 的 _decode_constant 增加 class 分支，通过 importlib.import_module + getattr 逐级解析 qualname，并校验解析结果确为 type，失败抛出明确 RuntimeError（函数内局部类因包含 <locals> 无法解析）。测试覆盖：直接引用类/嵌套类/aggregate/JITFunction/dtype、冻结进程中的跨模块导入、builtins:MissingClass 与 builtins:len 两种非法引用、局部类报错、以及端到端 cache hook + preload 的 class kernel 编译执行。该文件 python/triton/runtime/jit.py 属 Ascend 必然影响路径（Ascend 直接复用 JITFunction/JITCallable 与特化缓存键计算），需评估新增的 class 常量编码是否影响 Ascend 的缓存键生成与 preload 流程，以及 importlib 解析在 Ascend 环境下的可用性。风险中等（涉及缓存键格式，虽然对已有 key 类型是向后兼容的扩充）。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "medium-risk",
+        "jit",
+        "runtime"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "修改了 python/triton/runtime/jit.py 的 serialize_specialization_data（新增 class 常量编码分支）与 JITFunction.preload 的常量解码（新增 class 解析分支）。Ascend 直接复用 JITFunction/JITCallable 及其特化缓存键计算逻辑，若 Ascend 的 kernel 使用类作为 constexpr 参数，缓存键与预加载行为会随之改变；若 Ascend 不涉及类 constexpr，则现有行为向后兼容（新增分支仅在 isinstance(value, type) 时触发）。需确认 Ascend 侧是否有自定义 preload/缓存序列化覆写或依赖旧的常量编码格式。",
+        "testing": "Ascend 的 JIT 缓存/预加载测试需确认在不同 constexpr 类型下的行为；若 Ascend 有涉及类 constexpr 的 kernel 用例，应补充预加载回归测试；若无，则现有测试不受影响。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/ 中的 JIT 缓存/preload 相关测试",
+          "Ascend 侧 kernel 使用类 constexpr 参数的端到端编译缓存验证"
+        ]
+      },
+      "message": "[Runtime] Serialize class-valued constexprs for preload (#12430)\n\nJIT cache hooks currently fail with `TypeError: Object of type type is\nnot JSON serializable` when a constexpr argument is a class, even though\nordinary JIT compilation accepts it.\n\nRecord class objects by module and qualified name, then resolve those\nreferences in the same constant encoder/decoder used for JITFunction\narguments. Like the existing JITFunction support, this handles\nreferences supplied directly as constexpr arguments. Class instances\nremain unsupported, and unresolved class references (including\nfunction-local classes) fail explicitly.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/runtime/jit.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "568e9d3629e498eb31405df60a15c46ae73a645f",
+      "comment": "前端支持 bool 参数注解。code_generator.py 的 builtin_namespace 加入 bool，使 kernel 中 flag: bool 注解能正确解析；同时在 visit_Call 中新增对 fn is bool 且参数含 tensor 的显式报错（此前 bool(tensor) 会产生未定义行为或错误 lowering）。测试新增 test_bool_parameter_annotation，验证 flag.dtype == tl.int1 与 arith.select 生成。注意该改动位于 python/triton/compiler/code_generator.py，属 Ascend 必然影响路径（Ascend monkey-patch 覆写 CodeGenerator.__init__ 注入 hacc.target），但本次仅修改 builtin_namespace 类属性与 visit_Call 逻辑，未触及 __init__ 签名或 module.set_attr 时机，理论上不影响 Ascend patch 的生效。新增 bool(tensor) 报错为正确性收紧，若 Ascend 侧 kernel 或 DSL 扩展依赖对 tensor 调用 bool，需同步适配。风险低。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "frontend",
+        "code-generator"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "修改 python/triton/compiler/code_generator.py：builtin_namespace 新增 bool，visit_Call 新增 bool(tensor) 的错误检查。Ascend 通过 _apply_ascend_patch 在运行时覆写 CodeGenerator.__init__ 注入 hacc.target，本次未修改 __init__ 签名或 module.set_attr 时机，patch 机制不受影响；但新增的 bool 内置名与 bool(tensor) 报错会改变 Ascend 前端对相关表达式的处理（Ascend kernel 使用 bool 注解或 bool(tensor) 时行为与上游一致）。",
+        "testing": "Ascend 若有 kernel 使用 bool 参数注解或对 tensor 调用 bool 的用例，需验证行为与上游一致；若无则现有测试不受影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Frontend] Support bool parameter annotations (#12403)",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/compiler/code_generator.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "b10226036e9ac8338534ff7bed63ca5bb36e047c",
+      "comment": "AMD codegen build 升级至 build 6，使其能解析 name=value 形式的 LLVM cl flags，从而让 llvm_cl_opts 中的值真正到达 AMDGPU codegen。cmake/amd-llvm-info.json 更新 build_number 与各平台 sha256。测试重写：test_llvm_cl_opts_set_bare_option 保留裸选项名用例；test_llvm_cl_opts_set_option_value 改用 misched=ilpmax / misched=ilpmin 对比 amdgcn 输出，因 -misched 优先级高于 target/函数属性选择的 scheduler，在各架构上稳定生效；同时更新 HIPOptions 中 llvm_cl_opts 的示例注释。风险低，纯 AMD 后端与 LLVM 预编译产物更新。",
+      "tags": [
+        "chore",
+        "bugfix",
+        "low-risk",
+        "amd-backend",
+        "build"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Use new AMD CodeGen build and update test (#12391)\n\nPin the AMD codegen library to build 6, which parses \"name=value\" LLVM\nflags, so values given through llvm_cl_opts now reach AMDGPU codegen.\n\nTest llvm_cl_opts with string values: misched=ilpmax and misched=ilpmin\neach change the generated AMDGCN. -misched takes precedence over the\nscheduler selected by the target or a function attribute, so the test\nholds on every architecture. Keep a separate test for bare option names."
+    },
+    {
+      "sha": "3419b56873c5eed1d4885087c909a038614a46ff",
+      "comment": "triton_kernels NVFP4 ROUND_UP scale 改为向上取整。问题：原先 ROUND_UP 直接用 nearest-even 转 E4M3，可能把 1.03125 舍入为 1.0（低于要求的 scale）。修复在 _downcast_to_mxfp.py 与 mxfp.py 的 torch 参考实现中一致实现：先 clamp(max=448) 转 scale_dtype，若结果小于未舍入值则按 uint8 位加一（E4M3 正数编码单调），并以 0x7E 作为饱和边界防止 448 继续进位。测试覆盖精确值/次正规/饱和/全部有限非负 E4M3 区间（含 3 个内点）、axis 0 与 -1、BF16/FP32 输入、masked 量化 helper；matmul 测试在 NVFP4 下先 apply_precision 再转 FP32 以保留参考精度、避免中间 BF16 舍入选错 ceil scale。属 triton_kernels 数值库代码，与编译器后端无关。风险中低（数值语义修正，可能改变既有 NVFP4 下游结果的量化 scale）。",
+      "tags": [
+        "bugfix",
+        "numerics",
+        "triton_kernels",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[triton_kernels] Ceiling-round E4M3 scales for ROUND_UP (#12401)\n\n## Summary\n\nNVFP4 `ROUND_UP` currently casts the block scale to E4M3 with\nnearest-even rounding, which can round below the required scale. For\nexample, a scale of `1.03125` becomes `1.0` instead of `1.125`.\n\nMake `ROUND_UP` choose the smallest representable E4M3 scale greater\nthan or equal to the unrounded scale, saturating at `448`. Apply the\nsame behavior to the Triton implementation and PyTorch reference. Add\nregression coverage for exact values, subnormals, saturation, every\nfinite nonnegative E4M3 interval, both supported axes, BF16/FP32 inputs,\nand the masked quantization helper.\n\nThe matmul tests also preserve FP32 reference results through NVFP4\noutput quantization. This avoids an intermediate BF16 rounding step that\ncan select a different ceiling-rounded block scale.\n\n## Validation\n\n- All 11 [CI\nchecks](https://github.com/triton-lang/triton/actions/runs/39651028615)\npassed on `a0648d037699cb5e93022a068d8bc828674bba94`, including GB200,\nH100, A100, AMD, macOS, and pre-commit checks.\n- The confirming GB200 run passed after preserving FP32 in the matmul\ntest reference; test tolerances are unchanged.\n- `git diff --check` and local YAPF, mypy, and installed Ruff checks\npassed.\n\n## New contributor declaration\n\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description explaining why the change is\nneeded.\n- [x] Pre-commit checks passed in CI.\n- [x] I have added tests in `python/triton_kernels/tests/test_mxfp.py`.\n- [x] I have not added any `lit` tests.\n\n---------\n\nCo-authored-by: amyyang-openai <186749752+amyyang-openai@users.noreply.github.com>"
+    },
+    {
+      "sha": "034dc0adbe34789612ed3b4590330b544a02f59f",
+      "comment": "FPSan 下 16 位 copysign 的 NaN payload 保留。问题：LLVM 可能把整数符号位操作识别为 llvm.copysign.bf16/f16，NVPTX 经 neg.bf16 规范化 NaN，破坏 FPSan 用浮点值承载整数 payload 的语义。修复：python/src/llvm.cc 新增 lowerNVPTXFCopySign，在 enableFpSan 时与 lowerNVPTXFAbs 一同调用，对 half/bfloat 的 copysign intrinsic（含 FixedVector）用内联 PTX 汇编实现 mag ^ ((mag ^ sign) & 0x8000)，三输入便于 ptxas 融合为单条 LOP3；通过 InlineAsm 阻止 SelectionDAG 再次识别为 copysign。跳过 hasNoNaNs 的调用。测试覆盖 half/bfloat、lanes 1/4、fpsan 与空模式，断言 PTX 中不出现 abs/neg.f16/bf16 且 xor/and 指令条数与 lanes 一致。风险中等：直接修改 LLVM lowering 的 inline asm，需保证寄存器约束 'h' 与 16-bit 类型在各 PTX 版本下正确；属 NVIDIA FPSan 专属路径。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "nvidia-backend",
+        "fpsan",
+        "llvm"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Preserve 16-bit copysign NaN payloads under FPSan (#12418)\n\nFPSan BF16 payloads can be corrupted after LLVM recognizes integer\nsign-bit manipulation as `llvm.copysign.bf16`, exposed by #12319. NVPTX\ncan lower that intrinsic through `neg.bf16`, which canonicalizes NaNs. A\ndistributed BF16 collective consequently produced -4 where its FPSan\nresult should have been 1.\n\nFor FPSan compilation, lower FP16/BF16 `copysign` to bit-preserving\ninteger PTX operations after LLVM optimization. Use `mag ^ ((mag ^ sign)\n& sign_mask)`, following [LLVM\n#230107](https://github.com/llvm/llvm-project/pull/230107), so ptxas can\nfuse the three-input operation into one LOP3. Cover scalar and\nfixed-vector forms alongside the existing FP32 `fabs` regression.\n\nValidation on GB300:\n- Four-GPU collective reproducer passes with fresh caches; the\nunmodified compiler fails under matching conditions.\n- All 10 focused compile-only cases pass (eight new copysign cases and\ntwo existing fabs cases).\n- All five existing payload tests pass: abs, cast truncation/extension,\ncast extension, downcast placement, and the FP32 signaling-NaN loop.\n\nMatched SASS checks on SM90 and SM100 confirm one LOP3 per FP16/BF16\nelement, versus two for the previous mask/mask/or sequence, for both\nscalar and four-element vectors."
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

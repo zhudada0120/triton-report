@@ -997,6 +997,30 @@
       "interface_changes": "前端 hint 保真修复：新增单结果恒等 op tt.annotate（含 fold 与 canonicalizer：无属性时折叠、单结果 producer 时把属性下推后折叠），用于把 tt.call 上的 hint 精确附着到某个结果；TritonInlinerInterface::handleResult 对单结果 call 且存在 hint 时创建 AnnotateOp，AxisInfo 通过 IdentityOpAxisInfoVisitor 穿透，TritonToTritonGPU 用 GenericOpPattern，LLVM lowering 中 AnnotateOpConversion 直接替换。python/src/ir.cc 的 set_attr 对多结果 definingOp 自动插入 annotate 并重定向 uses。这是 TTIR 核心 IR 变更，影响所有后端，需注意 IR 兼容性与新增 op 在所有 pass 中的处理（已加 fold/canonicalize/lowering/axis）。",
       "change_summary": "[FRONTEND] Preserve per-result hints through inlining (#12388)",
       "ascend_impact": true
+    },
+    "473737fea3f594f270b12c018199e772b124e821": {
+      "date": "2026-10-22",
+      "affected_modules": [
+        "python/triton/runtime/jit.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/runtime/jit.py"
+      ],
+      "interface_changes": "JIT 缓存预加载支持类 constexpr 序列化。问题：jit_cache_hook 在 constexpr 为 class 时 serialize_specialization_data 抛 TypeError（type 不可 JSON 序列化）。修复：serialize_specialization_data 中将 isinstance(value, type) 编码为 {\"class\": \"module:qualname\"}（在 dtype/constexpr/JITFunction 分支之后），preload 的 _decode_constant 增加 class 分支，通过 importlib.import_module + getattr 逐级解析 qualname，并校验解析结果确为 type，失败抛出明确 RuntimeError（函数内局部类因包含 <locals> 无法解析）。测试覆盖：直接引用类/嵌套类/aggregate/JITFunction/dtype、冻结进程中的跨模块导入、builtins:MissingClass 与 builtins:len 两种",
+      "change_summary": "[Runtime] Serialize class-valued constexprs for preload (#12430)",
+      "ascend_impact": false
+    },
+    "568e9d3629e498eb31405df60a15c46ae73a645f": {
+      "date": "2026-10-22",
+      "affected_modules": [
+        "python/triton/compiler/code_generator.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/compiler/code_generator.py"
+      ],
+      "interface_changes": "前端支持 bool 参数注解。code_generator.py 的 builtin_namespace 加入 bool，使 kernel 中 flag: bool 注解能正确解析；同时在 visit_Call 中新增对 fn is bool 且参数含 tensor 的显式报错（此前 bool(tensor) 会产生未定义行为或错误 lowering）。测试新增 test_bool_parameter_annotation，验证 flag.dtype == tl.int1 与 arith.select 生成。注意该改动位于 python/triton/compiler/code_generator.py，属 Ascend 必然影响路径（Ascend monkey-patch 覆写 CodeGenerator.__init__ 注入 hacc.target），但本次仅修改 builtin_namespace 类属性与 visit_Call 逻辑，未触及 __init__ 签名或 module.set_attr 时机，理论上不影响 Ascend patch 的生效。新增 bool(tens",
+      "change_summary": "[Frontend] Support bool parameter annotations (#12403)",
+      "ascend_impact": false
     }
   }
 }

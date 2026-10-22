@@ -1,0 +1,101 @@
+{
+  "date": "2026-10-22",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-10-23T04:57:14.726723+08:00",
+  "daily_summary": "当日变更的主体是一次大型 Launcher 架构重构（#2685，约 4500 增 / 2190 删，22 个文件）：把原先在 Python 中按每个 kernel 动态生成 C++ 源码再编译 .so 的启动器模式，替换为固定的共享 native runtime（launcher_runtime.cpp + ABI 头 + 参数打包/网格变换/性能剖析/缓存层），Python 侧只负责生成不可变的 LaunchSpec 数据并复用同一个 runtime，同时把 host 扩展构建、CANN 版本查询、编译指纹计算的缓存策略统一下沉到 utils.py，并新增动态 DotRow 程序网格契约的支持。其余四个 commit 是配套的小改动：删除已失效的 scatter 预期失败测试、放通非 2 的幂 arange（只在补丁里去掉旧的 SIMT 检查残留）、以及 CI 中停掉非 main 分支的 LLVM wheel 构建。整体方向是提升 NPU 启动路径的性能与可维护性，同时把大量隐式生成代码变成显式数据契约，测试体系相应从\"检查生成的 C++ 文本\"迁移到\"检查 LaunchSpec 数据 + C ABI 行为\"。",
+  "test_impact_summary": "本次变更对测试看护影响很大：Launcher 重构删除了 make_launcher/generate_npu_header_src 等可被测试字符串断言的生成函数，导致原先大量基于 C++ 源码文本匹配的测试（test_launcher_export_api.py 的旧版本、differential 测试、91095 e2e 测试、strided_axis_coalescing e2e）必须重写，该 commit 已同步把这些测试改为检查 LaunchSpec 字段/flag，并新增 test_launcher_runtime.py（真实设备数值与内存所有权）、test_launcher_plan.py（约 1000 行覆盖缓存/指纹/编译器版本/DotRow 网格）、launcher_grid_test.cpp 原生网格探针，以及 C ABI 的非法参数/边界拒绝测试，覆盖度实际上更扎实但换了一套看护点。需要关注的新看护面包括：共享 runtime 的进程内源快照与跨进程缓存失效、构建指纹（-O2 标志、编译器 GNU build-id、CANN 版本文件）驱动的 artifact 失效、值折叠参数在 descriptor/tuple 展开下的 ABI 位置、taskqueue 下 workspace 所有权转移、DotRow 因子 2/4/8/16/32 的网格变换与 65535 block 上限。其余三个代码/测试 commit（删除失效 scatter 测试、arange 非 2 的幂、CI wheel 配置）看护需求很低，但 arange 放通后建议补一个非 2 的幂 arange 的端到端数值用例，确认 TritonToLinalg 链路对新 shape 的处理正确。整体上现有上游语义测试无法覆盖这些变更，必须依赖本 commit 自带的新测试套件，后续改动 Launcher/utils 时回归风险较高。",
+  "commits": [
+    {
+      "sha": "0ab6bf7d621c8dbffd81c449a0ba351515484fb6",
+      "comment": "这是当日最大的变更，实质是把 Ascend 后端的 kernel 启动器从\"每 kernel 生成一份 C++ 源码并编译 .so\"重构为\"固定共享 native runtime + Python 侧不可变 LaunchSpec 数据\"。driver.py 删除了约 1300 行 make_launcher/generate_npu_header_src/ty_to_cpp 等代码生成逻辑，改为调用新增的 third_party/ascend/backend/launcher.py：make_launch_spec 把 metadata 翻译成冻结 dataclass LaunchSpec（flags 位掩码 + workspace/lock/物理核数/coalesce/task type 等），argument_types 负责签名与常量折叠展开，get_runtime/export_launcher 分别构建共享 runtime .so 与惰性 C 导出适配器，二者都以 utils.npu_extension_fingerprint 的构建指纹（编译命令、编译器版本、CANN 版本、python ABI、包版本、extra_cflags）加源文件内容哈希作为缓存键，并用 _get_or_build_npu_artifact 做跨进程文件锁协调。新增 launcher_src/ 下 9 个文件：launcher_abi.h 定义版本化 POD C ABI（TritonNpuLaunchSpecV1/ArgTypeV1/LaunchRequestV1，含 DOT_ROW/IAT/PTSM 等 flag），launcher_args.h 实现参数布局与网格变换（prepareGrid 支持 X 轴 ceil-div 的 DotRow 因子 2~32、IAT、PTSM 以及 AUTO_MAP 物理块封顶，并做溢出与整除校验），launcher_runtime.cpp 实现 plan 生命周期、参数打包、workspace/lock 分配、profile 上报与 Python 入口，launcher_export.cpp 以固定适配器导出旧 triton_launch_kernel 符号，launcher_cann.h/launcher_cache.h/launcher_backend.h/launcher_profiler.h 分别封装 CANN 9.0 aclrt 与旧 rt 接口、cache 路径 dlopen 解析、torch_npu/mindspore 双后端分配与提交、Msprof 埋点。utils.py 侧新增 _npu_ext_build_command 拆分、_npu_ext_build_options 缓存、ELF 解析读取 GNU build-id 来标识编译器安装、_npu_compiler_version 跨进程缓存（带损坏修复与自定义 cache manager 回退）、npu_extension_fingerprint、_get_or_build_npu_artifact、get_cann_version 改为每次重读版本文件并按内容哈希缓存解析结果，_build_npu_ext 新增 extra_cflags 并真正检查返回码。npu_utils.cpp 新增 triton_allocate_workspace_on_stream/triton_release_workspace，使 workspace 在实际 launch stream 上分配、可在 host 回调返回后安全释放。backend_register.py 删掉了不再需要的 C++ 片段模板策略注册。风险点：1) 新旧 ABI 兼容——旧 triton_launch_kernel 符号签名保留但内部语义完全变了（参数打包、grid 变换、workspace 所有权），外部依赖该符号的代码需要重新验证；2) C ABI 结构体布局（TritonNpuLaunchSpecV1）一旦后续改动必须升 version，否则静态 constexpr 写入的 spec 会失配；3) 设备打印依赖 CANN 编译器内头文件解析，且在 runtime 构建期固化，跨 CANN 版本升级需要重新编译 runtime（已用 bisheng/version 文件身份纳入指纹，但逻辑较脆弱）；4) _runtime_sources 进程内快照意味着源码编辑需要新进程才生效，调试场景容易困惑；5) LaunchSpec 构造要求 metadata 必须显式提供 program_grid_mapping_applied/row_coalescing_applied/auto_blockify_enabled/ptsm_cap_authorized 四个 bool，任何旧缓存 metadata 或外部构造会直接抛错；6) DotRow 与既有 RowCoalescing/IAT/PTSM 互斥校验集中在 Python 与 C++ 两处，容易不一致。整体设计质量高、测试同步充分（新增 test_launcher_runtime.py/test_launcher_plan.py/launcher_grid_test.cpp 并重写受影响测试），属于高风险但测试覆盖较完整的核心重构。",
+      "tags": [
+        "refactor",
+        "performance",
+        "feature",
+        "high-risk",
+        "launcher",
+        "runtime",
+        "utils",
+        "test"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "删除 make_launcher/generate_npu_header_src/make_npu_launcher_stub 等被测试断言的生成函数，所有基于生成 C++ 文本的测试必须重写；同时新增共享 runtime、LaunchSpec、C ABI、DotRow 网格契约、指纹缓存等大量新看护面，必须新增测试。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_launcher_export_api.py",
+          "third_party/ascend/unittest/pytest_ut/test_launcher_runtime.py",
+          "third_party/ascend/unittest/pytest_ut/test_launcher_plan.py",
+          "third_party/ascend/unittest/pytest_ut/launcher_grid_test.cpp",
+          "third_party/ascend/unittest/pytest_ut/test_layout_memory_895_closure_differential.py",
+          "third_party/ascend/unittest/pytest_ut/test_layout_memory_91095_native_e2e.py",
+          "third_party/ascend/unittest/pytest_ut/test_strided_axis_coalescing_e2e.py",
+          "third_party/ascend/unittest/pytest_ut/test_backend_npu_utils_build_flags.py",
+          "third_party/ascend/unittest/pytest_ut/test_import_time.py",
+          "third_party/ascend/backend/launcher.py",
+          "third_party/ascend/backend/utils.py",
+          "third_party/ascend/backend/npu_utils.cpp"
+        ]
+      },
+      "message": "[Launcher](feat) restore shared runtime with dynamic DotRow support (#2685)\n\n* [Launcher](refactor) replace generated launchers with a shared runtime\n\n* [Launcher](test) align npu utils cache coverage with build fingerprints\n\nUpdate the stale cache-key test to patch the shared utils fingerprint\ninputs and validate the SHA-256 source/build identity instead of the\nremoved driver version helpers and legacy MD5 key.\n\nUse isolated fingerprint caches and retain checks for lazy torch_npu\nimports and package-version reuse across repeated preparation.\n\nValidation: 13 focused host tests passed on both A2 and Ascend 950PR.\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* [Launcher](style) format shared launcher sources and tests\n\nApply the repository's yapf 0.43.0 and clang-format 19.1.6 rules to the\nlauncher refactor so its sources and tests pass formatting checks.\n\nPython ASTs are unchanged. Verify the formatted native runtime with a\ncold-cache build and all 81 focused host tests on A2 and Ascend 950PR.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* [Launcher](perf) reuse host compiler versions across processes\n\nAvoid repeated Clang initialization on warm disk-cache startup by caching\nits version text under a validated ELF installation identity. Resolve the\nloader and shared dependencies in each new process, and track real paths,\nfile attributes, GNU build IDs and supported compiler environments.\n\nReuse per-key file locking and atomic publication for version records.\nRepair corrupt metadata, retry failed queries and fall back to live queries\nfor unknown installations, unavailable storage and custom cache managers.\nKeep the extension fingerprint fields and source content checks unchanged.\n\nAdd cross-process, concurrent, invalidation and recovery coverage in the\nexisting Python tests. A2 and Ascend 950PR each pass 101 host checks and 28\ndevice tests. Twelve paired fresh-process samples per platform reduce the\nfirst helper preparation median from 33.116 to 12.155 ms on A2 and from\n37.838 to 5.243 ms on 950, with no native builds or version queries after\ncache preparation. Cold-cache and steady-state controls are also recorded.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* [Launcher](perf) optimize the NPU submission helper\n\nBuild npu_utils with -O3 because it contains the per-call Torch-NPU\nsubmission path as well as initialization helpers. Include the same flags\nin its build fingerprint so cached unoptimized helpers are invalidated.\n\nAdd coverage that checks flag propagation, invalidation and subsequent\ncache reuse. The regression passed on A2 and Ascend 950PR as part of the\n148-test launcher suite used to validate the combined performance changes.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* [Launcher](perf) avoid redundant numeric conversion error queries\n\nQuery the CPython error indicator only when a numeric conversion returns\nits error sentinel. Check before narrowing so valid -1 and unsigned\nmaximum values still succeed. Preserve overflow, type errors, custom\nconversion exceptions and argument/hook ordering for values and handles.\n\nAdd native Python-entry coverage for sentinel values and error paths.\nPlan layout, invocation ownership and the C launch ABI are unchanged.\n\nValidation with the optimized submission helper: 148 launcher tests pass\non each of A2 and Ascend 950PR. Paired warmed-up direct/JIT calls and host\np50/p99 checks pass the 5%/10% regression budgets and A/A stability checks\non both platforms with taskqueue enabled. Cold first-use medians rise by\nabout 4.0% and 1.5%, while additional signatures reuse the shared runtime.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* [Launcher](test) verify rebased program-grid launch paths\n\nExercise the original-grid argument slots and transformed extents through\nboth Python and exported C launchers, reusing plans across different grids\nwith taskqueue enabled and disabled. Reject conflicting mapping flags in\nthe C API and format the metadata/grid tests added during the rebase.\n\nValidation: fresh builds and installs on A2 and Ascend 950; the focused\nlauncher, cache, and compiler compatibility suite reports 233 passed and\n28 existing skips on each platform.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* [Launcher](fix) honor compiler launch policy after rebase\n\nConsume auto_blockify_enabled instead of recomputing backend policy and the blacklist at launch time. Allow compiler-authorized RowCoalescing and IAT combinations while retaining the independent PTSM authorization check.\n\nCover compiler decisions across runtime policy, blacklist, pure-SIMT and mapping combinations. Adapt historical launcher differentials to pass through the current compiler policy before constructing a shared plan.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* [Launcher](perf) reuse runtime sources within the process\n\nRead the seven fixed runtime sources into a read-only process-local\nsnapshot instead of reopening them for every NPULauncher. Reuse the\nsnapshot for lazy export headers and retry after failed reads.\n\nKeep full source contents in artifact keys and check build settings,\ncache roots and artifacts on each preparation. Source edits take effect\nin a new Python process; kernel plans remain independent.\n\nCover repeated preparation, immutable snapshots, read-failure recovery,\nand fresh-process invalidation after same-size edits with preserved mtime.\n\nValidation: 296 passed and 40 existing skips on each of A2 and Ascend\n950PR. Six paired fresh-process runs per platform reduce same-process\nconstruction medians from 2.497 to 2.054 ms and 0.448 to 0.381 ms.\nWarm samples do not build native extensions.\n\nRefs: #2136\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* [Launcher](fix) release workspace after taskqueue execution\n\nTaskqueue callbacks can outlive execution and retain Invocation-owned\nworkspace after synchronization. Transfer its ownership to the execution\nscope and acquire a fresh workspace if the framework retries the call.\n\nAllocate workspace on the actual launch stream so the caching allocator\ncan safely reuse it after the host callback returns. Preserve the legacy\nhelper exports and existing launch ABI.\n\nAdd repeated-launch memory checks, explicit-stream and queued-launcher\nlifetime coverage, and cleanup checks for execution preparation failures.\n\nValidation: A2 and 950 launcher suites each passed 251 tests with no skips.\nThe 950 nonzero-workspace regression covers host ownership via metadata.\n\n* [Launcher](fix) preserve value-folded argument positions\n\nInterpret constants using original argument paths before tuple and\ntensor-descriptor expansion. Keep Python input positions while excluding\nfolded values from the device argument buffer, even if their signature\nstill carries a scalar type.\n\nCover sparse signatures, nested tuples, descriptors and folded arguments\nthrough the Python, lazy export and C ABI launch paths.\n\n* [Launcher](fix) preserve CANN version cache invalidation after rebase\n\nKeep the content-keyed version parser cache, but recheck the selected CANN version file so native extension fingerprints track root changes, replacements and files created after an earlier miss.\n\n* [Launcher](build) default host extensions to O2\n\nUse -O2 for npu_utils, the shared runtime and lazy C export adapters.\nThe A2/950 comparison found smaller native code sections without a\nconsistent overall runtime advantage from -O3.\n\nKeep fingerprint and compile flags in sync, and cover optimization-level\nchanges and cache reuse for the helper, runtime and export adapter.\nExisting -O3 artifacts remain separated by their build fingerprints.\n\nValidation: 286 tests passed on each of A2 and 950; three cold-build pairs\nand six interleaved warm-cache pairs per platform.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* [Launcher](fix) handle dynamic DotRow program-grid contracts\n\nThe shared launcher only recognized the IAT/PTSM subset of the compiler program-grid contract. Accept dynamic DotRow factors 2, 4, 8, 16 and 32, and preserve the original X/Y hidden arguments while lowering the device X grid.\n\nUse a distinct flag and the existing coalescing fields without changing the C spec layout. Validate native combinations and cover the complete compiler contract set, both launcher entries, taskqueue modes and compiler-generated DotRow tails.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* [import](test) check lazy initialization without timing thresholds\n\nThe one-second import check can fail when CI workers share CPU and I/O,\neven though unchanged reruns pass. Check the behavior protected by the\noriginal regression directly in a fresh Python subprocess: defer device\ntarget queries, driver initialization and runtime framework imports.\n\nKeep a generous subprocess timeout to bound hangs and report child-process\noutput on failure. Remove the three independent wall-clock assertions.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* [Launcher](test) bound grid ABI probe launches\n\nThe new factor=2 DotRow probe submitted 104499 physical blocks on A3,\nexceeding the legacy CANN limit of 65535 and leaving subsequent tests\non the same worker failing.\n\nUse a non-divisible grid whose largest transformed launch has 52275\nblocks and assert the bound before submitting. Keep every transform,\ntaskqueue mode, Python entry, and C export entry covered.\n\n* [Launcher](test) synchronize direct DotRow test inputs\n\nThe non-taskqueue DotRow ABI test initializes its buffers through the\nframework host queue before submitting the kernel directly to CANN.\nNoWait stream lookup can let a pending fill overwrite the kernel output.\n\nComplete input and sentinel initialization before both direct entries.\nKeep the taskqueue variant asynchronous and retain all exact-value and\nguard assertions.\n\nOn Ascend 950 with NPU-IR stable 998c6c1, fresh-process comparisons give\n11/12 passes before and 12/12 after; the complete runtime suite passes\nall 53 tests.\n\n---------\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n(cherry picked from commit fb8ac108b325fa0844d4bf2422fa1245e316a5e7)"
+    },
+    {
+      "sha": "9117db546aed31fcac3088d771ca674abbece473",
+      "comment": "从 test_cann_extension.py 中删除两个重复定义的 simple_scatter_kernel 以及对应的 test_mem3_ops/test_mem4_ops。这两个测试原本以 pytest.warns(FutureWarning)+pytest.raises(MLIRCompilationError) 的方式断言 scatter_ub_to_out 走旧路径会失败（注释标注 EXPECTED TO FAIL），属于跟踪某个已知失效行为的负向测试；本次删除说明该问题已经修复或该路径已不再可达，继续保留会因不再抛 MLIRCompilationError 而误报失败。注意 commit message 写的是\"delete test which has been fixed\"，但实际做法是直接删除测试而非改为正向断言——意味着修复后的 scatter_ub_to_out 正向行为目前没有任何端到端测试看护，存在回归空窗。改动只在测试文件，无生产代码风险。",
+      "tags": [
+        "test",
+        "bugfix",
+        "low-risk",
+        "test-infra"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "本次变更本身就是测试删除，且是移除已失效的负向预期。但建议后续补充 scatter_ub_to_out 的正向数值测试，当前删除后该路径失去看护。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_cann_extension.py"
+        ]
+      },
+      "message": "[tests](fix) delete test which has been fixed (#2658)\n\nCo-authored-by: wangxiaohua12345 <1350989037@qq.com>\n(cherry picked from commit d8f4576ab213de17dffd786cee246b5116e9b98d)"
+    },
+    {
+      "sha": "88d3e19c7a85b04b67f323736a252414872fcb14",
+      "comment": "通过修改 third_party/ascend/patch/triton-ascend-3.6.0.patch，去掉 TritonSemantic.arange 中对 range 必须是 2 的幂的校验。讽刺的是 patch 的 diff 内容本身是把一段\"仅 SIMT 模式下检查 2 的幂\"的改动回退成完全删除校验（新 hunk 里 -if (range & (range - 1)) != 0 且没有 + 行），也就是 release patch 层面现在编译进构建的 semantic.py 允许任意 range 的 arange。这与 commit 标题\"Allow non-power-of-two arange ranges\"一致，但需要确认下游 TritonToLinalg / 毕昇后端对非 2 的幂 block shape 的实际支持度：上游 arange 限制通常是为了配合 layout/block 尺寸必须是 2 的幂这一隐含约定，解禁后若 Ascend lowering 链路对非 2 的幂 shape 处理不完善可能出现编译期崩溃或错误结果。改动只有 1 行增/6 行删，风险取决于后端实际能力。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "medium-risk",
+        "language-frontend",
+        "patch"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "放宽语义限制后必须验证非 2 的幂 arange 在 Ascend 编译链（TritonToLinalg→毕昇）上能正确编译并产生正确结果；当前没有针对非 2 的幂 arange 的端到端测试，也没有反向确认哪些 range 会失败。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/",
+          "python/test/unit/language/test_core.py（arange 相关用例）",
+          "third_party/ascend/patch/triton-ascend-3.6.0.patch"
+        ]
+      },
+      "message": "[language](fix) Allow non-power-of-two arange ranges (#1884)\n\nSigned-off-by: Ritsuka314 <Ritsuka@huawei.com>\n(cherry picked from commit 43def1316afef4149c5b4761d8dc56af4d35c94c)"
+    },
+    {
+      "sha": "f8732aa6c79a5c916b0ccfaa41627207be7d9d98",
+      "comment": "在 .github/workflows/wheels.yml 的构建矩阵中注释掉 main-dev 和 release/3.2.2 两项 LLVM package 构建条目，只保留 main。属于纯粹的 CI 资源调度调整，降低非主分支的 wheel 构建频率，不涉及任何运行时或编译产物逻辑。风险仅在 CI 覆盖层面：main-dev 与 release 分支的 LLVM wheel 不再被持续验证，若这些分支后续需要发版需临时恢复配置。",
+      "tags": [
+        "ci",
+        "chore",
+        "low-risk",
+        "ci-workflow"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅修改 CI 构建矩阵，不影响代码或测试用例；但需意识到 main-dev/release/3.2.2 的 wheel 构建不再被 CI 看护。",
+        "suggested_test_areas": [
+          ".github/workflows/wheels.yml"
+        ]
+      },
+      "message": "[CI](chore) Remove the llvm package builds except for the main branch (#2705)"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

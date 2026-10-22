@@ -1,5 +1,5 @@
 {
-  "content_hash": "3abcbb0fcec85fcf",
+  "content_hash": "af37285e9cba47c9",
   "analysis": {
     "interface_summary": "定义 10 个类；定义 94 个函数",
     "key_interfaces": [
@@ -55,5 +55,5 @@
       "ConstexprFunction.__call__"
     ]
   },
-  "cached_at": "2026-10-16T04:37:16.495961+08:00"
+  "cached_at": "2026-10-23T04:55:57.409115+08:00"
 }

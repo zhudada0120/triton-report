@@ -1,4 +1,20 @@
 {
+  "0ab6bf7d621c8dbffd81c449a0ba351515484fb6": {
+    "date": "2026-10-22",
+    "msg": "[Launcher](feat) restore shared runtime with dynamic DotRow support (#2685)"
+  },
+  "9117db546aed31fcac3088d771ca674abbece473": {
+    "date": "2026-10-22",
+    "msg": "[tests](fix) delete test which has been fixed (#2658)"
+  },
+  "88d3e19c7a85b04b67f323736a252414872fcb14": {
+    "date": "2026-10-22",
+    "msg": "[language](fix) Allow non-power-of-two arange ranges (#1884)"
+  },
+  "f8732aa6c79a5c916b0ccfaa41627207be7d9d98": {
+    "date": "2026-10-22",
+    "msg": "[CI](chore) Remove the llvm package builds except for the main branch (#2705)"
+  },
   "f674d463597ca0c17b9565462128de120b924a4f": {
     "date": "2026-10-21",
     "msg": "[chore](feat) sync main from branch main-dev (#2675)"
