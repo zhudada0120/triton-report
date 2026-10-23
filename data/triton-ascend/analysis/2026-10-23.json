@@ -1,0 +1,196 @@
+{
+  "date": "2026-10-23",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-10-24T04:45:22.420020+08:00",
+  "daily_summary": "当日变更以文档与工具链为主，配合若干编译链与 lowering 修复：一是反转 libdevice SIMT 守卫改动并对 SIMT 编译路径补齐 debug/sanitizer 编译选项；二是恢复 BishengIR 文本直传（移除 mlirbc/bcmlir 字节码桥接阶段），并同步 LLVM patch 以恢复 bufferization::ToMemrefOp 及一系列自定义 parser/printer 兼容实现，配套把 lowering 中 ToBufferOp 改用 ToMemrefOp；三是修复 BlockPtr 地址链对 arith.trunci 与无 mask 单元素 load 的解析，修复 launcher profiling 中 const 指针签名解析；四是新增中译英文档自动翻译流水线（workflow、translate_md.py、skill 文档、大量 docs/locale/*.po），并删除过时的 triton_api / triton_api_extension 文档；另有 triton-dist 子模块 commit 号更新。",
+  "test_impact_summary": "当日变更对测试看护影响较大且呈两极：编译链方向（移除 mlirbc/bcmlir 阶段、恢复 ToMemrefOp、LLVM patch 大幅改写 op 打印/解析）属于跨模块契约变化，已随 commit 同步更新了大量 lit 测试（DynamicCVPipeline、TritonToLinalg、TritonToStructured 等）并新增 LLVM20Compat/OpCompat 全套兼容性测试与新 pytest（test_bishengir_export、test_compiler、test_to_buffer），但要重点看护：ttadapter 文本直传路径下 debug line 控制、ir_override 仅剩 ttir/ttadapter 两级、ubtuner 读取 ttadapter、以及 ToMemrefOp 在 bufferization 与 AtomicRMW/CAS/Scan 转换中的实际 NPU 执行正确性。BlockPtr 与 launcher 的两处修复均新增了针对性 pytest。文档翻译 commit 不改变运行行为，但新增的 translate workflow 与 .po 校验逻辑本身属于新增 CI 资产，需关注其长期稳定性而非功能回归。",
+  "commits": [
+    {
+      "sha": "1c8d7d93c298b829cbd39b5875900eb563f0ca3b",
+      "comment": "Revert 掉 #2638 对 libdevice 正向守卫的清理：在 third_party/ascend/backend/utils.py 重新引入 triton_enable_libdevice_simt(arch)，在 language/cann/libdevice.py 重新引入 _is_libdevice_simt_enabled 并把 tanh 的分派条件从 _is_a5_target(...) and fp32 改回基于 TRITON_ENABLE_LIBDEVICE_SIMT 环境开关 + is_compile_on_910_95。意图是恢复环境变量开关语义（SIMT libdevice 需显式开启），避免 910-95 fp32 tanh 无条件走 __hmf_tanh_fp32。风险在于该开关与 A5 目标判定双重条件耦合，环境变量未设置时行为回退到通用路径，需确认精度回归；属于对既有 libdevice 接口行为的选择性回滚。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "low-risk",
+        "language-cann-libdevice",
+        "backend-utils"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "回滚恢复到此前已有实现，属行为级回退而非新增接口；但 tanh 在 910-95 上随环境变量切换 dispatch，建议确认现有 libdevice/tanh 相关用例是否覆盖了开关打开与关闭两种路径。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut（libdevice/tanh 相关）",
+          "third_party/ascend/language/cann/libdevice.py"
+        ]
+      },
+      "message": "Revert \"[Libdevice](fix) Remove redundant positive libdevice guards (#2638)\" (#2735)\n\nThis reverts commit aa6819ccd8065d090c7edef13f994dbef0ebcc15."
+    },
+    {
+      "sha": "a83aa309f0ee2a8a2592d9c9bce80ccb260acafb",
+      "comment": "核心改动：恢复“BishengIR 文本直传”方案，删除 linalg_to_bc_by_triton_mlir_opt 与 bc_to_linalg_by_bishengir_opt 两个阶段，AscendBackend.add_stages 回到 ttir→ttadapter→npubin；parse patch 中移除 mlirbc/bcmlir 扩展名分支，binary_extensions 收为 {npubin}，use_bytecode 默认改为 False 并拒绝 .mlirbc/.bcmlir 的 ir_override；ubtuner 改从 ttadapter 读 IR。为配合去除 ToBufferOp（上游 bufferization 已改名/替换），把 LoadStoreConverter（AtomicRMW/AtomicCAS）与 TritonOpConverter（Scan、zeroPadDimTo）中的 bufferization::ToBufferOp 换为 ToMemrefOp，并在 NormalizeDebugLineLocations 中把 bufferization.to_memref 纳入 value-preparation op 集合；setup_patch 的 restore 列表新增 python/triton/extension/buffer/src/buffer_ir.cc，由 triton-ascend-3.6.0.patch 把 bl.to_buffer 构造改为 ToMemrefOp。llvm_patch_f6ded0b.patch 大幅重写：恢复 bufferization::ToMemrefOp 定义与 canonicalize/fold（foldToMemrefToTensorPair、ToMemrefOfCast、LoadOfToMemref、DimOfToMemrefOp、bufferize），并在 Arith/CF/Func/LLVM/Linalg/SCF 等 op 上用手写 parser/printer（hasCustomAssemblyFormat）替代 useCustomPropertiesEncoding，generic printer 过滤 op_bundle_sizes，FunctionImplementation 增加 no_inline 的 elision，以让 TA 生成的文本能被 BishengIR（LLVM 19 文本方言）消费。测试侧：更新 DynamicCVPipeline/TritonToLinalg 等 lit 断言（to_tensor 不再打印 `to tensor<...>`，llvm.intr.assume 改为带 op_bundle_sizes 的 generic 形式，linalg.matmul 打印 indexing_maps），新增 LLVM20Compat/OpCompat 全套兼容测试与 README，新增 pytest_ut/test_bishengir_export.py、test_compiler.py 的文本流水/拒绝退役覆盖，删除 test_ir_override 的 bcmlir 用例并新增 test_to_buffer_after_if。整体是跨 compiler/parse/ubtuner/C++ lowering/LLVM patch 的协同重构，风险集中在：文本直传后 debug line 控制、大模块序列化兼容性，以及 ToMemrefOp 在 NPU 侧实际执行正确性（尤其原子操作与 scan）。",
+      "tags": [
+        "refactor",
+        "feature",
+        "high-risk",
+        "compiler-pipeline",
+        "triton-to-linalg",
+        "llvm-patch",
+        "buffer-extension",
+        "ubtuner",
+        "test"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "编译阶段集合与 IR 文本格式同时改变（去掉 mlirbc/bcmlir、ToBufferOp→ToMemrefOp、LLVM 手写 parser/printer），原 lit FileCheck 断言与新编译产物不兼容，必须同步更新；commit 已更新大量 lit 与新增 pytest，但 AtomicRMW/CAS/Scan 路径改为 ToMemrefOp 后需在 NPU 上跑通验证。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/**",
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/**",
+          "third_party/ascend/unittest/Conversion/General/TritonToStructured/**",
+          "third_party/ascend/unittest/Conversion/LLVM20Compat/OpCompat/**",
+          "third_party/ascend/unittest/pytest_ut/test_bishengir_export.py",
+          "third_party/ascend/unittest/pytest_ut/test_compiler.py",
+          "third_party/ascend/unittest/pytest_ut/test_to_buffer.py",
+          "third_party/ascend/unittest/autotune_ut/test_ir_override.py"
+        ]
+      },
+      "message": "[compiler](fix) restore BishengIR text with buffer compatibility (#2707)\n\n* Revert \"Revert \"[compiler](feat) replace bytecode bridge with BishengIR text (#2417)\" (#2663)\" (#2679)\n\nThis reverts commit 33b14f2442ebaf58ec4100cb257b270ad7b976dd.\n\n(cherry picked from commit 4a8cf7cf6e4f9b92a11dc7846aca9976512880b9)\n\n* [buffer](fix) emit compatible to_memref from buffer extension\n\nUse the existing Ascend build patch to switch the unbound bl.to_buffer builder to the patched LLVM ToMemrefOp. Register the buffer binding in the existing patched-file restoration list; keep upstream Triton source unchanged in the PR.\n\nPreserve the public Python API and bind_buffer path. Assert compatible frontend operations and cover live buffer conversion after both runtime branches with fp16/fp32 NPU execution.\n\n---------\n\nCo-authored-by: LH-123L <liuhuan261@huawei.com>"
+    },
+    {
+      "sha": "b76352582e31bc6d9a89ad3c4522ca730423e0dd",
+      "comment": "仅更新 third_party/ascend/build/setup_patch.py 中 _ensure_distributed_submodule 的 Triton-distributed-ascend 固定 commit_id（22f740b… → 82b8c919…）。属于构建期依赖版本钉子更新，不影响主编译/运行路径，只在 TRITON_BUILD_TD=ON 时生效。风险低，但需保证新 commit 在对应 CANN/torch_npu 组合下可编译。",
+      "tags": [
+        "chore",
+        "low-risk",
+        "build",
+        "triton-dist"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅子模块固定版本号变化，无代码逻辑改动与新增接口；是否可构建由 CI 分布式构建任务覆盖即可。",
+        "suggested_test_areas": [
+          "triton-distributed 构建 CI（TRITON_BUILD_TD=ON）"
+        ]
+      },
+      "message": "[triton-dist](feat) update triton distributed commit id (#2706)"
+    },
+    {
+      "sha": "ce6a270130805349e9f8b0d74d4248348bb4982f",
+      "comment": "修复 launcher profiling 对 const 指针签名的解析：argument_types 中指针类型 ty[1:] 若带 'k' 前缀（如 *kfp16，表示 const 指针）会导致 convert_sigtype_to_int 查表失败/取错 dtype id，改为 ty[1:].removeprefix('k')。新增 pytest 参数化覆盖 fp16/bf16/fp32/i32/u32/i1 的 *k 与 * 两种写法一致性。改动小且聚焦，风险低，仅影响 profiler 参数类型上报。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "launcher",
+        "profiling"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "修复的是签名解析的具体分支，已新增 test_launcher_const_pointer.py 覆盖；建议同时确认 msprof/profiler 端到端采集对 *k 指针的类型标注无回归。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_launcher_const_pointer.py",
+          "third_party/ascend/backend/launcher.py"
+        ]
+      },
+      "message": "[Ascend](fix) Handle const pointers in launcher profiling (#2263)\n\nSigned-off-by: yangkaixin <yangkaixin1@huawei.com>\nSigned-off-by: Misaka19280hw <312455702+Misaka19280hw@users.noreply.github.com>\nCo-authored-by: yangkaixin <yangkaixin1@huawei.com>\nCo-authored-by: Misaka19280hw <312455702+Misaka19280hw@users.noreply.github.com>"
+    },
+    {
+      "sha": "aa6819ccd8065d090c7edef13f994dbef0ebcc15",
+      "comment": "被 1c8d7d9 回滚的原始改动：#2638 移除“冗余”的 libdevice 正向守卫——删除 utils.py 的 triton_enable_libdevice_simt，并把 libdevice.tanh 的 SIMT 分派条件简化为 _is_a5_target(_semantic) and original_dtype == fp32。该改动使 910-95 上 fp32 tanh 在无环境开关下也走 __hmf_tanh_fp32，可能改变数值结果或与 CANN libdevice 可用性耦合，是后续回滚的直接原因。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "medium-risk",
+        "language-cann-libdevice",
+        "backend-utils"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "改变了 910-95 上 tanh(fp32) 的分派条件，若缺少对应用例会出现精度看护盲区；该改动已被同日回滚，最终状态应以后续 revert 为准，需确认测试基线对齐到回滚后行为。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut（tanh/libdevice 精度）"
+        ]
+      },
+      "message": "[Libdevice](fix) Remove redundant positive libdevice guards (#2638)"
+    },
+    {
+      "sha": "75148df31c8d39b7ef5469dd72cd20c88a0b784d",
+      "comment": "为纯 SIMT 编译路径（is_pure_simt）补齐 debug 相关 bishengir 编译选项：在 ttir_to_npubin 中按 _is_ascend_sanitizer_enabled() / _is_debug_line_info_disabled() / _enable_msdebug() 追加 --enable-sanitizer=true、--enable-debug-info=true、--enable-debug-variables=true，与 SIMD 路径对齐，便于 SIMT kernel 的行号级 profiling 与 sanitizer 调试。风险在于这些选项会增大产物并可能影响编译时长/行为，需与 BishengIR 对 pure-simt 的选项支持度确认；已有 test_compiler_layout_memory_contract 中 argv 矩阵断言同步更新。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "compiler-pipeline",
+        "debug"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "编译命令行参数集合变化，现有基于 argv 精确匹配的契约测试已更新；建议补充 pure-simt + sanitizer/msdebug 组合的端到端（profiling 行号可见）验证。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "third_party/ascend/unittest/pytest_ut/test_compiler.py"
+        ]
+      },
+      "message": "[Compiler](feat) support debug compile option on simt (#2696)"
+    },
+    {
+      "sha": "4c06ef33e0ea6c25cecf839e27f1da71c96b7cbf",
+      "comment": "TritonToLinalg 的 BlockPtrAnalysis 增强：BlockDataParser::parse 新增对 arith::TruncIOp 的识别（parseTruncI 透传 in 继续解析），使 i64→i32 的地址链缩短不再报 unsupported producer；同时把模板函数 parseIndirectLoad 重命名为 parseDynamicOffset，并用 std::is_same_v<OpTy, triton::LoadOp> 区分：仅当 load 无 mask 或带 other 时，才把 tensor<1xT> 结果抽取为标量动态偏移（mask 无 other 时 lane 为 poison，不可提取），修复 mulBlock 双源断言。新增 pytest test_trunci_indirect_load 复现 inductor embedding 模式。改动语义敏感（访存/地址推断），需重点看护离散访存与 mask 组合场景。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "medium-risk",
+        "triton-to-linalg",
+        "block-ptr-analysis"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了对 trunci 与“无 mask/带 other 的单元素 load”这两类地址链输入的支持，判定条件收窄，需覆盖 masked-without-other 的回退路径与原有 UnstrucMemAcc 行为；已新增针对用例但建议扩充参数化。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_trunci_indirect_load.py",
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/**"
+        ]
+      },
+      "message": "[TritonToLinalg] BlockPtr support trunci and unmasked single-element loads in address chains (#2687)"
+    },
+    {
+      "sha": "5f1d99a87432c09815b6ded57624c04c00bbe0aa",
+      "comment": "新增中译英文档自动翻译能力：新增 .agents/skills/translate/skill.md（翻译标准/术语表/结构保持规范）、.github/workflows/schedule_doc_translate.yaml（定时/手动触发、同仓与 fork 两种分支推送模式、PR 自动创建与路径安全断言）、.github/workflows/scripts/translate_md.py（Sphinx gettext 抽取 + OpenAI 兼容 LLM 翻译、术语强制替换、枚举前缀修复、po 校验与自愈、X-Source-Commit/X-Skill-Version 增量记忆）；docs/zh/conf.py 增加大量英文构建钩子（source-read 的社区文档替换/回退文本/代码块注释翻译、doctree 三级回退模糊匹配与隐藏、_TranslateRemainingChinese transform、BOM 剥离）；readthedocs_checkout.sh 把 en 映射到 zh 源目录；新增 docs/locale/en/LC_MESSAGES 下大量 .po 译文；codespell 白名单加 Volcengine；.gitignore 忽略 *.mo。属于纯文档/CI 资产，不改变编译与运行路径，但体量大且新增了 LLM 调用与仓库写入权限流程，需关注 token 权限、目录泄漏断言与翻译产物的长期一致性。",
+      "tags": [
+        "docs",
+        "ci",
+        "feature",
+        "low-risk",
+        "doc-translate",
+        "sphinx"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "不涉及 triton-ascend 编译/运行代码，现有算子与编译测试无关；但 .po 校验与 workflow 本身属于新增 CI 逻辑，建议以文档构建 CI（含 README 所述 lit --filter=LLVM20Compat 与 translate 校验）作为看护手段。",
+        "suggested_test_areas": [
+          "docs CI（Sphinx en/zh 构建）",
+          ".github/workflows/scripts/translate_md.py 校验逻辑",
+          "readthedocs_checkout.sh 语言映射"
+        ]
+      },
+      "message": "[tools](feat) add translation functionality (#2471)\n\nCo-authored-by: yanggaofeng (C) <y60124509@china.huawei.com>"
+    },
+    {
+      "sha": "9a7d5ce499506036f396ec46424a6b7f239d09bb",
+      "comment": "删除过时的 docs/zh/triton_api/** 与 docs/zh|en/triton_api_extension/** 共 185 个文件（约 1.37 万行），并把 environment_variable_and_compiler_options_reference（中/英）中指向 triton_api_extension 的相对链接改成纯代码标识（`sync_block_all` 等）。属于文档清理，避免与 Sphinx autosummary/API 参考重复维护产生漂移；与同日翻译 workflow 将 triton_api/triton_api_extension 列入排除目录的策略一致。无代码影响，但需确认文档站 index/toctree 中已无悬空引用（commit 未改 index.rst，应由翻译 commit 的 conf.py 排除规则与后续目录调整承接）。",
+      "tags": [
+        "docs",
+        "chore",
+        "low-risk",
+        "documentation-cleanup"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅删除文档与修改文档内链接，不改变任何代码路径与测试契约；看护点在于文档构建是否出现 broken reference 警告。",
+        "suggested_test_areas": [
+          "docs 构建 CI（sphinx-build 链检查）"
+        ]
+      },
+      "message": "[Docs](fix) Remove obsolete triton_api and triton_api_extension docs (#2695)"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

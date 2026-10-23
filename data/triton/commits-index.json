@@ -1,4 +1,60 @@
 {
+  "5c36ec57d1955a091837dfe6f6893da5f83c88de": {
+    "date": "2026-10-23",
+    "msg": "[AMD] Build llvm @05e432a for CodeGen (#12471)"
+  },
+  "3b0d4f8022d94406079a140073db11d6f42f5071": {
+    "date": "2026-10-23",
+    "msg": "[Tools] Fix cached function and global alias source slicing (#12464)"
+  },
+  "e6ee20ba9113c0f8673393a3f5d40dd6073b6e43": {
+    "date": "2026-10-23",
+    "msg": "[AMD][ConSan] Improve async-copy waits and load/store tracking (#12210)"
+  },
+  "d0d53958528a261f35eaed9cf1c86fa81d82e238": {
+    "date": "2026-10-23",
+    "msg": "[AMD] Schedule async-wait barriers before potential global-memory waits (#12423)"
+  },
+  "941849d2e508931f0cb8cec2f67c0d3a6127828c": {
+    "date": "2026-10-23",
+    "msg": "[ConSan] Track TMA write footprints per issuing CTA (#12421)"
+  },
+  "b10bbbd3a6b9b600746149a3fee05e5e8afcd447": {
+    "date": "2026-10-23",
+    "msg": "[NVIDIA] Reject TMA views smaller than their CTA splits (#12420)"
+  },
+  "2fecfecf5ff7965580725b1e7544348857b49a94": {
+    "date": "2026-10-23",
+    "msg": "[ConSan] Fix TMA recipient tracking for shared-memory subviews (#12419)"
+  },
+  "389dd29e1d135b1ba4d449476dfa501c93d7148c": {
+    "date": "2026-10-23",
+    "msg": "[NVIDIA] Preserve separate FP32 adds around Ada FP8 dots (#12462)"
+  },
+  "1ec1eee840b8a35b15101e5ab9a4388e905291f3": {
+    "date": "2026-10-23",
+    "msg": "[NVWS] Wait for scale reads before reusing TMEM (#12461)"
+  },
+  "5c8eae7e93c21c433ee1db941c5de9a07ff5a960": {
+    "date": "2026-10-23",
+    "msg": "[ConSan] Initialize shared allocations with pointer elements (#12460)"
+  },
+  "5c73808a8b34a7d7e5058964c00496a80a5c2b64": {
+    "date": "2026-10-23",
+    "msg": "[triton_kernels] Add an explicit permutation for matmul absmax (#12459)"
+  },
+  "0385e7ae8134f8868181b99f7abff66017b54a77": {
+    "date": "2026-10-23",
+    "msg": "[Frontend][triton_kernels] Remove reshape reordering opt-ins (#12457)"
+  },
+  "e6aa06ce22e330ff982ff4d0d9c672b7db9e4023": {
+    "date": "2026-10-23",
+    "msg": "[triton_kernels] Remove explicit FP fusion options (#12456)"
+  },
+  "3d83739dda18cd431f7e2a225c93535e791e5f9f": {
+    "date": "2026-10-23",
+    "msg": "[triton_kernels] Reduce single-slice metadata and encoded scale conversion overhead (#12446)"
+  },
   "c1641abbb17a80b8c9cad1fa05b4c70d6ac260ab": {
     "date": "2026-10-22",
     "msg": "[AMD][gfx1250] Ignore unit dims when checking the shared order for TDM ops (#12331)"

@@ -1,4 +1,40 @@
 {
+  "1c8d7d93c298b829cbd39b5875900eb563f0ca3b": {
+    "date": "2026-10-23",
+    "msg": "Revert \"[Libdevice](fix) Remove redundant positive libdevice guards (#2638)\" (#2735)"
+  },
+  "a83aa309f0ee2a8a2592d9c9bce80ccb260acafb": {
+    "date": "2026-10-23",
+    "msg": "[compiler](fix) restore BishengIR text with buffer compatibility (#2707)"
+  },
+  "b76352582e31bc6d9a89ad3c4522ca730423e0dd": {
+    "date": "2026-10-23",
+    "msg": "[triton-dist](feat) update triton distributed commit id (#2706)"
+  },
+  "ce6a270130805349e9f8b0d74d4248348bb4982f": {
+    "date": "2026-10-23",
+    "msg": "[Ascend](fix) Handle const pointers in launcher profiling (#2263)"
+  },
+  "aa6819ccd8065d090c7edef13f994dbef0ebcc15": {
+    "date": "2026-10-23",
+    "msg": "[Libdevice](fix) Remove redundant positive libdevice guards (#2638)"
+  },
+  "75148df31c8d39b7ef5469dd72cd20c88a0b784d": {
+    "date": "2026-10-23",
+    "msg": "[Compiler](feat) support debug compile option on simt (#2696)"
+  },
+  "4c06ef33e0ea6c25cecf839e27f1da71c96b7cbf": {
+    "date": "2026-10-23",
+    "msg": "[TritonToLinalg] BlockPtr support trunci and unmasked single-element loads in address chains (#2687)"
+  },
+  "5f1d99a87432c09815b6ded57624c04c00bbe0aa": {
+    "date": "2026-10-23",
+    "msg": "[tools](feat) add translation functionality (#2471)"
+  },
+  "9a7d5ce499506036f396ec46424a6b7f239d09bb": {
+    "date": "2026-10-23",
+    "msg": "[Docs](fix) Remove obsolete triton_api and triton_api_extension docs (#2695)"
+  },
   "0ab6bf7d621c8dbffd81c449a0ba351515484fb6": {
     "date": "2026-10-22",
     "msg": "[Launcher](feat) restore shared runtime with dynamic DotRow support (#2685)"
