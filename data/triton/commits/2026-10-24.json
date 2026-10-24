@@ -1,0 +1,134 @@
+{
+  "date": "2026-10-24",
+  "repo": "triton-lang/triton",
+  "branch": "main",
+  "commits": [
+    {
+      "sha": "753b56ecb704cfc712daebcae554fbf78ca7343a",
+      "author": {
+        "name": "Lei Zhang",
+        "email": "antiagainst@gmail.com"
+      },
+      "date": "2026-10-24T23:55:54+08:00",
+      "message": "[AMD] Enable IEEE maximum/minimum for RDNA4 (#12480)\n\ngfx12 has IEEE-754 2019 maximum/minimum instructions (LLVM's\nFeatureIEEEMinimumMaximumInsts, which FeatureGFX12 includes), and\nsupportMaximumMinimum() already returns true for RDNA4m (gfx117x) and\nCDNA5 (gfx1250). Return true for RDNA4 (gfx120x) as well.",
+      "parents": [
+        "1d503a35275625d2c236605a42855bfd81267047"
+      ],
+      "stats": {
+        "total_additions": 2,
+        "total_deletions": 1,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "test/Conversion/amd/minmax.mlir",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -2,7 +2,7 @@\n // RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx950 | FileCheck %s --check-prefixes=CHECK,LLVM-MINMAX\n // RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1100 | FileCheck %s --check-prefixes=CHECK,SW-NAN\n // RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1170 | FileCheck %s --check-prefixes=CHECK,LLVM-MINMAX\n-// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1200 | FileCheck %s --check-prefixes=CHECK,SW-NAN\n+// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1200 | FileCheck %s --check-prefixes=CHECK,LLVM-MINMAX\n // RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1250 | FileCheck %s --check-prefixes=CHECK,LLVM-MINMAX\n //\n // This grouping reflects Triton's supportMaximumMinimum() table, not the"
+        },
+        {
+          "filename": "third_party/amd/lib/Dialect/TritonAMDGPU/IR/TargetFeatures.cpp",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 0,
+          "patch": "@@ -313,6 +313,7 @@ int32_t TargetFeatures::getBufferAtomicCachePolicy(bool hasUsers) const {\n bool TargetFeatures::supportMaximumMinimum() const {\n   return getISAFamily() == ISAFamily::CDNA4 ||\n          getISAFamily() == ISAFamily::RDNA4m ||\n+         getISAFamily() == ISAFamily::RDNA4 ||\n          getISAFamily() == ISAFamily::CDNA5;\n }\n \n"
+        }
+      ]
+    },
+    {
+      "sha": "1d503a35275625d2c236605a42855bfd81267047",
+      "author": {
+        "name": "neildhar",
+        "email": "neildhar@users.noreply.github.com"
+      },
+      "date": "2026-10-24T07:59:41+08:00",
+      "message": "Require an opt-in to honor enable_fp_fusion (#12479)\n\nReplace `TRITON_FORCE_DISABLE_FP_FUSION` with the opt-in\n`TRITON_ALLOW_FP_FUSION`.\n\nWithout the opt-in, implicit FP fusion is disabled regardless of the\n`enable_fp_fusion` launch option. Setting `TRITON_ALLOW_FP_FUSION=1`\nrestores the existing launch-option behavior and\n`TRITON_DEFAULT_FP_FUSION` fallback. Explicit fused operations such as\n`tl.fma` are unchanged.",
+      "parents": [
+        "7e013d6897e2037a73e8ddfe1aa2d8693d4bf349"
+      ],
+      "stats": {
+        "total_additions": 32,
+        "total_deletions": 25,
+        "files_changed": 6
+      },
+      "files": [
+        {
+          "filename": "README.md",
+          "status": "modified",
+          "additions": 3,
+          "deletions": 2,
+          "patch": "@@ -227,8 +227,9 @@ See [`python/triton/knobs.py`](python/triton/knobs.py) for the full list of conf\n - `MLIR_ENABLE_TIMING` dumps the timing information for each MLIR pass.\n - `LLVM_ENABLE_TIMING` dumps the timing information for each LLVM pass.\n - `TRITON_DEFAULT_FP_FUSION` overrides the default behavior of disabling fp fusion (mul+add->fma).\n-- `TRITON_FORCE_DISABLE_FP_FUSION=1` disables implicit fp fusion even when a kernel\n-  requests `enable_fp_fusion=True`. Explicit fused operations such as `tl.fma` are unchanged.\n+- `TRITON_ALLOW_FP_FUSION=1` allows kernels to control implicit fp fusion through\n+  `enable_fp_fusion`. Without this opt-in, implicit fusion is disabled. Explicit\n+  fused operations such as `tl.fma` are unchanged.\n - `MLIR_ENABLE_DIAGNOSTICS=<comma-separated>` controls diagnostic emission in MLIR.\n   Options are: `warnings`, `remarks`, `stacktraces`, `operations`.\n   Use comma-separated values to customize output. For example,"
+        },
+        {
+          "filename": "include/triton/Tools/Sys/GetEnv.h",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -34,7 +34,7 @@ inline const std::set<std::string> CACHE_INVALIDATING_ENV_VARS = {\n     \"TRITON_DISABLE_LINE_INFO\",\n     \"TRITON_DUMP_MIR\",\n     \"TRITON_ENABLE_LLVM_DEBUG\",\n-    \"TRITON_FORCE_DISABLE_FP_FUSION\",\n+    \"TRITON_ALLOW_FP_FUSION\",\n     \"TRITON_HIP_USE_ASYNC_COPY\",\n     \"TRITON_HIP_USE_BLOCK_PINGPONG\",\n     \"TRITON_HIP_USE_COEXEC_SCHEDULER\","
+        },
+        {
+          "filename": "python/test/unit/language/test_core.py",
+          "status": "modified",
+          "additions": 15,
+          "deletions": 11,
+          "patch": "@@ -1316,7 +1316,9 @@ def test_fdiv_approx(approx, reciprocal, enable_fp_fusion, device):\n     x_tri = to_triton(x, device=device)\n     y_tri = to_triton(y, device=device)\n     z_tri = to_triton(np.empty_like(x), device=device)\n-    compiled = kernel[(1, )](x_tri, y_tri, z_tri, approx, reciprocal, x.size, enable_fp_fusion=enable_fp_fusion)\n+    with triton.knobs.language.scope():\n+        triton.knobs.language.allow_fp_fusion = True\n+        compiled = kernel[(1, )](x_tri, y_tri, z_tri, approx, reciprocal, x.size, enable_fp_fusion=enable_fp_fusion)\n     expected = (np.float32(1.0) if reciprocal else x) / y\n     # AMD's 2.5 ULP bound allows 3 ULP against a rounded reference.\n     maxulp = 3 if approx and is_hip() else 2\n@@ -1496,7 +1498,9 @@ def test_sqrt_rn_special_values(enable_fp_fusion, device):\n     ], dtype=np.float32)\n     x_tri = to_triton(x, device=device)\n     y_tri = to_triton(np.empty_like(x), device=device)\n-    kernel[(1, )](x_tri, y_tri, x.size, enable_fp_fusion=enable_fp_fusion)\n+    with triton.knobs.language.scope():\n+        triton.knobs.language.allow_fp_fusion = True\n+        kernel[(1, )](x_tri, y_tri, x.size, enable_fp_fusion=enable_fp_fusion)\n     with np.errstate(invalid=\"ignore\"):\n         expected = np.sqrt(x.astype(np.float64)).astype(np.float32)\n     actual = to_numpy(y_tri)\n@@ -7382,8 +7386,8 @@ def test_dot_max_num_imprecise_acc(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, in_type_s\n \n @pytest.mark.parametrize(\"enable_fp_fusion\", [False, True])\n @pytest.mark.parametrize(\"default_override\", [False, True])\n-@pytest.mark.parametrize(\"force_disable\", [False, True])\n-def test_enable_fp_fusion(enable_fp_fusion, default_override, force_disable, device, fresh_knobs):\n+@pytest.mark.parametrize(\"allow_fusion\", [False, True])\n+def test_enable_fp_fusion(enable_fp_fusion, default_override, allow_fusion, device, fresh_knobs):\n     # Sequential multiply add can be fused by backend\n     @triton.jit\n     def mul_add(data):\n@@ -7391,7 +7395,7 @@ def test_enable_fp_fusion(enable_fp_fusion, default_override, force_disable, dev\n         tl.store(ptrs, tl.load(ptrs) * 1.5 + 1.0)\n \n     data = torch.randn((128, ), device=device, dtype=torch.float32)\n-    fresh_knobs.language.force_disable_fp_fusion = force_disable\n+    fresh_knobs.language.allow_fp_fusion = allow_fusion\n     if default_override:\n         fresh_knobs.language.default_fp_fusion = enable_fp_fusion\n         h = mul_add.warmup(data, grid=(1, ))\n@@ -7401,12 +7405,12 @@ def test_enable_fp_fusion(enable_fp_fusion, default_override, force_disable, dev\n     if not is_cuda():\n         return\n     found_fma = re.search(r'(mad|fma)\\.r[nzmp]\\.(ftz\\.)?f32', h.asm[\"ptx\"]) is not None\n-    assert found_fma == (enable_fp_fusion and not force_disable)\n+    assert found_fma == (enable_fp_fusion and allow_fusion)\n \n \n @pytest.mark.parametrize(\"explicit_fma\", [False, True])\n-@pytest.mark.parametrize(\"force_disable\", [False, True])\n-def test_force_disable_fp_fusion(explicit_fma, force_disable, device, fresh_knobs):\n+@pytest.mark.parametrize(\"allow_fusion\", [False, True])\n+def test_allow_fp_fusion(explicit_fma, allow_fusion, device, fresh_knobs):\n \n     @triton.jit\n     def mul_add(x, y, z, out, EXPLICIT_FMA: tl.constexpr):\n@@ -7418,10 +7422,10 @@ def test_force_disable_fp_fusion(explicit_fma, force_disable, device, fresh_knob\n     y = torch.tensor([1 - 2**-23], device=device, dtype=torch.float32)\n     z = torch.tensor([-1], device=device, dtype=torch.float32)\n     out = torch.empty_like(x)\n-    fresh_knobs.language.force_disable_fp_fusion = force_disable\n+    fresh_knobs.language.allow_fp_fusion = allow_fusion\n     kernel = mul_add[(1, )](x, y, z, out, explicit_fma, enable_fp_fusion=True)\n-    assert kernel.metadata.enable_fp_fusion == (not force_disable)\n-    assert out.item() == (-2**-46 if explicit_fma or not force_disable else 0)\n+    assert kernel.metadata.enable_fp_fusion == allow_fusion\n+    assert out.item() == (-2**-46 if explicit_fma or allow_fusion else 0)\n \n \n # -----------------------"
+        },
+        {
+          "filename": "python/test/unit/test_knobs.py",
+          "status": "modified",
+          "additions": 3,
+          "deletions": 3,
+          "patch": "@@ -573,7 +573,7 @@ def test_read_env(truthy, falsey, fresh_knobs_including_libraries, monkeypatch):\n     # bool defaulting to False\n     assert not fresh_knobs.runtime.debug\n     assert not fresh_knobs.language.default_fp_fusion\n-    assert not fresh_knobs.language.force_disable_fp_fusion\n+    assert not fresh_knobs.language.allow_fp_fusion\n     # str defaulting to None\n     assert fresh_knobs.compilation.use_ir_loc is None\n     # str defaulting to not None\n@@ -584,7 +584,7 @@ def test_read_env(truthy, falsey, fresh_knobs_including_libraries, monkeypatch):\n     assert len(fresh_knobs.build.backend_dirs) == 0\n \n     monkeypatch.setenv(\"TRITON_DEFAULT_FP_FUSION\", falsey)\n-    monkeypatch.setenv(\"TRITON_FORCE_DISABLE_FP_FUSION\", truthy)\n+    monkeypatch.setenv(\"TRITON_ALLOW_FP_FUSION\", truthy)\n     monkeypatch.setenv(\"TRITON_DEBUG\", truthy)\n     monkeypatch.setenv(\"USE_IR_LOC\", \"ttir\")\n     monkeypatch.setenv(\"TRITON_CACHE_DIR\", \"/tmp/triton_cache\")\n@@ -596,7 +596,7 @@ def test_read_env(truthy, falsey, fresh_knobs_including_libraries, monkeypatch):\n     triton.knobs.refresh_knobs()\n     assert fresh_knobs.runtime.debug\n     assert not fresh_knobs.language.default_fp_fusion\n-    assert fresh_knobs.language.force_disable_fp_fusion\n+    assert fresh_knobs.language.allow_fp_fusion\n     assert fresh_knobs.compilation.use_ir_loc == \"ttir\"\n     assert fresh_knobs.cache.home_dir == \"/tmp/triton_home\"\n     assert fresh_knobs.cache.dir == \"/tmp/triton_cache\""
+        },
+        {
+          "filename": "python/triton/knobs.py",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 2,
+          "patch": "@@ -495,10 +495,10 @@ class runtime_knobs(base_knobs):\n class language_knobs(base_knobs):\n     fp32_default: env_opt_str = env_opt_str(\"TRITON_F32_DEFAULT\")\n     default_fp_fusion: env_bool = env_bool(\"TRITON_DEFAULT_FP_FUSION\", False)\n-    force_disable_fp_fusion: env_bool = env_bool(\"TRITON_FORCE_DISABLE_FP_FUSION\")\n+    allow_fp_fusion: env_bool = env_bool(\"TRITON_ALLOW_FP_FUSION\")\n \n     def fp_fusion_enabled(self, requested: Optional[bool]) -> bool:\n-        return not self.force_disable_fp_fusion and (self.default_fp_fusion if requested is None else requested)\n+        return self.allow_fp_fusion and (self.default_fp_fusion if requested is None else requested)\n \n \n class nvidia_knobs(base_knobs):"
+        },
+        {
+          "filename": "third_party/amd/python/test/test_packed_f32_arith.py",
+          "status": "modified",
+          "additions": 8,
+          "deletions": 6,
+          "patch": "@@ -104,12 +104,14 @@ def test_cdna5_packed_f32_arith(op, packed_inst):\n \n def test_cdna5_packed_mul_sub_contracts_to_v_pk_fma_f32():\n     \"\"\"Packed fmul+fsub should be contracted into v_pk_fma_f32 when fp fusion is enabled.\"\"\"\n-    kernel = compile_gluon(\n-        gluon_mul_sub_kernel,\n-        {\"x_ptr\": \"*fp32\", \"y_ptr\": \"*fp32\", \"z_ptr\": \"*fp32\", \"out_ptr\": \"*fp32\", \"BLOCK\": \"constexpr\"},\n-        {\"BLOCK\": BLOCK},\n-        options={\"enable_fp_fusion\": True},\n-    )\n+    with triton.knobs.language.scope():\n+        triton.knobs.language.allow_fp_fusion = True\n+        kernel = compile_gluon(\n+            gluon_mul_sub_kernel,\n+            {\"x_ptr\": \"*fp32\", \"y_ptr\": \"*fp32\", \"z_ptr\": \"*fp32\", \"out_ptr\": \"*fp32\", \"BLOCK\": \"constexpr\"},\n+            {\"BLOCK\": BLOCK},\n+            options={\"enable_fp_fusion\": True},\n+        )\n     llir = get_func_body_llir(kernel.asm[\"llir\"])\n     assert re.search(r\"\\bfmul (?:\\w+ )*<2 x float>\", llir), llir\n     assert re.search(r\"\\bfsub (?:\\w+ )*<2 x float>\", llir), llir\n"
+        }
+      ]
+    },
+    {
+      "sha": "7e013d6897e2037a73e8ddfe1aa2d8693d4bf349",
+      "author": {
+        "name": "Vaisman",
+        "email": "vasili.svirski@gmail.com"
+      },
+      "date": "2026-10-24T00:49:23+08:00",
+      "message": "[TritonGPU] Fold only uniform select conditions into TMEM stores (#12476)\n\nResetting a tcgen05 accumulator with `tl.where` crashes compilation for\n`cuda:100`, with or without `warp_specialize`:\n\n```python\nfor kk in tl.range(0, K, BK):\n    acc = tl.dot(a_d.load([om, kk]), b_d.load([on, kk]).T, tl.where(kk == 0, 0.0, acc))\n```\n```\nAssertion `isa<To>(Val) && \"cast<Ty>() argument of incompatible type!\"' failed.\nPipeline failed while executing [`TritonGPUHoistTMEMAlloc` on 'builtin.module' operation]\n```\n\n`CombineTMEMStoreAndSelect` turns `tmem_store(select(cond, x,\ntmem_load))` into a `tmem_store` predicated on `cond`. Here `cond` is a\nsplatted `tensor<...xi1>`, which the pattern forwarded into the store's\nscalar `i1` predicate; a later rewrite then asserted on the invalid\nstore. Now a `tt.splat` condition is replaced by its scalar source, and\nany other tensor condition makes the pattern bail out, since a scalar\npredicate can't express a per-element select.\n\nTests in `hoist-tmem-alloc.mlir` cover a splatted condition in both\nselect orientations and a per-element condition (left as a select); each\ncrashes the pass without the fix.\n\nFull lit passes on 3b0d4f8022 (305 passed, 2 unsupported), and the\nkernel above now compiles for `cuda:100` with and without\n`warp_specialize`. Not run on Blackwell hardware.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref upstream/main --to-ref\nHEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [ ] I have not added any `lit` tests.\n- [x] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)",
+      "parents": [
+        "5c36ec57d1955a091837dfe6f6893da5f83c88de"
+      ],
+      "stats": {
+        "total_additions": 51,
+        "total_deletions": 0,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "lib/Dialect/TritonGPU/Transforms/HoistTMEMAlloc.cpp",
+          "status": "modified",
+          "additions": 6,
+          "deletions": 0,
+          "patch": "@@ -68,7 +68,13 @@ public:\n     if (valueFromTMEM == kUnknown) {\n       return failure();\n     }\n+    // The store predicate is a scalar i1, so only a uniform condition can be\n+    // folded into it. A splatted condition is uniform; use its scalar source.\n     Value pred = select.getCondition();\n+    if (auto splat = pred.getDefiningOp<tt::SplatOp>())\n+      pred = splat.getSrc();\n+    if (!pred.getType().isInteger(1))\n+      return failure();\n     // In case the false operand is overwriting, we need to negate the predicate\n     // (owerwrite when select would be false)\n     if (valueFromTMEM == kTrue) {"
+        },
+        {
+          "filename": "test/TritonGPU/hoist-tmem-alloc.mlir",
+          "status": "modified",
+          "additions": 45,
+          "deletions": 0,
+          "patch": "@@ -260,6 +260,51 @@ module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32, ttg.targ\n \n // -----\n \n+// The tmem_store predicate is a scalar i1: a splatted select condition folds\n+// into it as its scalar source, and a per-element condition must not fold.\n+\n+#blocked = #ttg.blocked<{sizePerThread = [1, 128], threadsPerWarp = [32, 1], warpsPerCTA = [4, 1], order = [1, 0]}>\n+#tmem = #ttng.tensor_memory_encoding<blockM = 128, blockN = 128, colStride = 1>\n+!acc = !ttg.memdesc<128x128xf32, #tmem, #ttng.tensor_memory, mutable>\n+module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32, ttg.target = \"cuda:100\", \"ttg.threads-per-warp\" = 32 : i32} {\n+  // CHECK-LABEL: @select_splat_cond(\n+  // CHECK: %[[NEG:.*]] = arith.xori %arg2, %true\n+  // CHECK-NEXT: ttng.tmem_store %arg3, %arg0[%arg1], %[[NEG]] :\n+  tt.func @select_splat_cond(%tm: !acc, %tok: !ttg.async.token, %cnd: i1, %x: tensor<128x128xf32, #blocked>) -> !ttg.async.token {\n+    %true = arith.constant true\n+    %v, %load_tok = ttng.tmem_load %tm[%tok] : !acc -> tensor<128x128xf32, #blocked>\n+    %c = tt.splat %cnd : i1 -> tensor<128x128xi1, #blocked>\n+    %s = arith.select %c, %v, %x : tensor<128x128xi1, #blocked>, tensor<128x128xf32, #blocked>\n+    %store_tok = ttng.tmem_store %s, %tm[%load_tok], %true : tensor<128x128xf32, #blocked> -> !acc\n+    tt.return %store_tok : !ttg.async.token\n+  }\n+\n+  // CHECK-LABEL: @select_splat_cond_inverted(\n+  // CHECK-NOT: arith.select\n+  // CHECK: ttng.tmem_store %arg3, %arg0[%arg1], %arg2 :\n+  tt.func @select_splat_cond_inverted(%tm: !acc, %tok: !ttg.async.token, %cnd: i1, %x: tensor<128x128xf32, #blocked>) -> !ttg.async.token {\n+    %true = arith.constant true\n+    %v, %load_tok = ttng.tmem_load %tm[%tok] : !acc -> tensor<128x128xf32, #blocked>\n+    %c = tt.splat %cnd : i1 -> tensor<128x128xi1, #blocked>\n+    %s = arith.select %c, %x, %v : tensor<128x128xi1, #blocked>, tensor<128x128xf32, #blocked>\n+    %store_tok = ttng.tmem_store %s, %tm[%load_tok], %true : tensor<128x128xf32, #blocked> -> !acc\n+    tt.return %store_tok : !ttg.async.token\n+  }\n+\n+  // CHECK-LABEL: @select_tensor_cond(\n+  // CHECK: %[[SEL:.*]] = arith.select %arg2\n+  // CHECK: ttng.tmem_store %[[SEL]], {{.*}}, %true :\n+  tt.func @select_tensor_cond(%tm: !acc, %tok: !ttg.async.token, %c: tensor<128x128xi1, #blocked>, %x: tensor<128x128xf32, #blocked>) -> !ttg.async.token {\n+    %true = arith.constant true\n+    %v, %load_tok = ttng.tmem_load %tm[%tok] : !acc -> tensor<128x128xf32, #blocked>\n+    %s = arith.select %c, %v, %x : tensor<128x128xi1, #blocked>, tensor<128x128xf32, #blocked>\n+    %store_tok = ttng.tmem_store %s, %tm[%load_tok], %true : tensor<128x128xf32, #blocked> -> !acc\n+    tt.return %store_tok : !ttg.async.token\n+  }\n+}\n+\n+// -----\n+\n #blocked = #ttg.blocked<{sizePerThread = [1, 128], threadsPerWarp = [32, 1], warpsPerCTA = [4, 1], order = [1, 0]}>\n #shared = #ttg.nvmma_shared<{swizzlingByteWidth = 128, transposed = false, elementBitWidth = 16}>\n #shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>\n"
+        }
+      ]
+    }
+  ]
+}

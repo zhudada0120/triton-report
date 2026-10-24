@@ -1,0 +1,77 @@
+{
+  "date": "2026-10-24",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-25T03:54:56.936725+08:00",
+  "daily_summary": "当日三个 commit 分属三个方向：(1) AMD 后端为 RDNA4 (gfx12/gfx120x) 打开 IEEE-754 maximum/minimum 指令支持，仅调整 TargetFeatures::supportMaximumMinimum 的 ISA family 判定并同步 lit 测试期望；(2) 语言/前端行为变更，将 TRITON_FORCE_DISABLE_FP_FUSION（默认关闭融合的强制开关）反转为 opt-in 的 TRITON_ALLOW_FP_FUSION，默认不再允许隐式 FP 融合，涉及 knobs、README、缓存失效环境变量列表及相关 Python 单测；(3) 修复 TritonGPU 的 HoistTMEMAlloc/CombineTMEMStoreAndSelect 模式在 select 条件为 splat tensor 时错误把 tensor 谓词塞进 tmem_store 的标量 i1 pred 导致 cast 断言崩溃的问题，仅折叠标量/splat 条件，逐元素条件直接 bail out，并补充 lit 用例。三个变更分别落在 AMD 专属后端、平台无关的语言/knobs 契约、以及 NVIDIA 专属 TMEM 路径。",
+  "ascend_impact_summary": "三个 commit 中只有第二个（enable_fp_fusion 语义反转）会传导到 triton-ascend：python/triton/knobs.py 的 language_knobs 与 fp_fusion_enabled() 是所有后端共享的前端/选项契约，TRITON_ALLOW_FP_FUSION 默认 False 意味着 Ascend 编译的 kernel 默认不再做隐式 mul+add 融合，且环境变量名变更会影响缓存失效键；triton-ascend 若通过 knobs 或 enable_fp_fusion 启动选项控制融合行为，需同步其 patch 与测试。另外，knobs.py 与 GetEnv.h 中的缓存失效变量列表变更会改变编译缓存键，需确认 ascend 自身缓存/调优路径无硬编码旧变量名。第一个 commit 属 third_party/amd 纯 AMD 专属，第三个 commit 属 NVIDIA TMEM/HoistTMEMAlloc 路径（Ascend 走 TritonToLinalg，不经过 TTGIR->LLVM/TMEM 路径），均不影响 triton-ascend。",
+  "commits": [
+    {
+      "sha": "753b56ecb704cfc712daebcae554fbf78ca7343a",
+      "comment": "变更意图：gfx12 (RDNA4) 具有 LLVM 的 FeatureIEEEMinimumMaximumInsts（由 FeatureGFX12 引入），而 TargetFeatures::supportMaximumMinimum() 已对 RDNA4m (gfx117x) 和 CDNA5 (gfx1250) 返回 true，唯独漏掉 RDNA4 (gfx120x)，导致 gfx120x 上 tl.maximum/tl.minimum 走 SW NaN 处理路径而非 v_max/v_min 指令。实现方式：在 third_party/amd/lib/Dialect/TritonAMDGPU/IR/TargetFeatures.cpp 的 supportMaximumMinimum() 中增加 getISAFamily() == ISAFamily::RDNA4 分支（一行），并把 test/Conversion/amd/minmax.mlir 中 gfx1200 那条 RUN 行的 FileCheck 前缀由 SW-NAN 改为 LLVM-MINMAX。风险很低：仅改变 AMD 特定 ISA 的代码生成选择，语义上 IEEE-754 2019 maximum/minimum 与软件模拟的 NaN 语义需保持一致；测试已同步更新前缀，但若某些 NaN payload 行为有差异需留意。该改动完全位于 AMD 后端与 AMD lit 测试中，对核心编译器与其他后端无影响。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "amd-backend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Enable IEEE maximum/minimum for RDNA4 (#12480)\n\ngfx12 has IEEE-754 2019 maximum/minimum instructions (LLVM's\nFeatureIEEEMinimumMaximumInsts, which FeatureGFX12 includes), and\nsupportMaximumMinimum() already returns true for RDNA4m (gfx117x) and\nCDNA5 (gfx1250). Return true for RDNA4 (gfx120x) as well."
+    },
+    {
+      "sha": "1d503a35275625d2c236605a42855bfd81267047",
+      "comment": "变更意图：把 FP 融合策略从“默认允许、可用 TRITON_FORCE_DISABLE_FP_FUSION 强制关闭”翻转为“默认禁止隐式融合、需 TRITON_ALLOW_FP_FUSION=1 显式 opt-in 才尊重 kernel 的 enable_fp_fusion 与 TRITON_DEFAULT_FP_FUSION 回退”，显式 tl.fma 等不受影响。实现方式：python/triton/knobs.py 中 language_knobs.force_disable_fp_fusion 改名为 allow_fp_fusion，fp_fusion_enabled() 由 `not force_disable and (...)` 改为 `allow_fp_fusion and (...)`；include/triton/Tools/Sys/GetEnv.h 的 CACHE_INVALIDATING_ENV_VARS 同步替换变量名；README.md 更新文档；python/test/unit/language/test_core.py 与 third_party/amd/python/test/test_packed_f32_arith.py 中原本依赖环境变量或启动选项的用例改为在 triton.knobs.language.scope() 上下文中显式设 allow_fp_fusion=True，test_force_disable_fp_fusion 重命名为 test_allow_fp_fusion 并调整断言；test_knobs.py 同步环境变量读写断言。潜在风险：这是跨后端的默认行为变更（所有后端 kernel 默认不再做 mul+add 隐式融合），可能影响性能预期与数值结果（对依赖 fused rounding 的 kernel），属于对用户可见的语义变化；需求方必须显式 opt-in。由于 fp_fusion_enabled 位于共享的 language_knobs，该变更会影响所有后端（含 triton-ascend）的编译选项默认值，且缓存失效环境变量列表变化会改变编译缓存键。",
+      "tags": [
+        "refactor",
+        "medium-risk",
+        "language-frontend",
+        "knobs",
+        "compiler-pipeline"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "python/triton/knobs.py 中 language_knobs.force_disable_fp_fusion 被重命名为 allow_fp_fusion，且 fp_fusion_enabled(requested) 的语义从“默认允许，可强制关闭”翻转为“默认禁止，需 TRITON_ALLOW_FP_FUSION opt-in”。triton-ascend 的 AscendBackend.add_stages/parse_options 与编译阶段会读取该 knob 决定是否把 mul+add 融合为 fma（若 Ascend 的 TTIR->Linalg 链遵循 ParseOptions 中的 enable_fp_fusion 标志），因此 Ascend 编译出的 kernel 默认将不再进行隐式 FP 融合，数值结果与性能会随上游默认值改变；同时任何 triton-ascend patch 或调优代码中引用 force_disable_fp_fusion 的写法（如 third_party/ascend/backend/__init__.py 的 monkey-patch 或 costmodel/autotuner 配置）会因属性名不存在而 AttributeError。include/triton/Tools/Sys/GetEnv.h 的 CACHE_INVALIDATING_ENV_VARS 替换也意味着旧环境变量名不再使缓存失效。",
+        "testing": "triton-ascend 的 kernel 数值/性能相关测试可能因默认禁用隐式融合而出现结果或性能变化（如依赖 fma 的精度/ULP 断言）；test_core.py 的 fdiv/sqrt 等用例上游已改为在 scope 中显式 allow_fp_fusion=True，Ascend 若复用或镜像上游测试需同步；若 Ascend 侧测试通过 force_disable_fp_fusion 或 TRITON_FORCE_DISABLE_FP_FUSION 控制融合，将直接失效。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/ (FP 融合/fma 相关算子数值测试)",
+          "third_party/ascend/backend/runtime/autotuner.py / costmodel 相关测试（若读取 fp fusion knob）",
+          "Ascend 侧镜像的 test_core.py 等价用例（enable_fp_fusion 参数化）"
+        ]
+      },
+      "message": "Require an opt-in to honor enable_fp_fusion (#12479)\n\nReplace `TRITON_FORCE_DISABLE_FP_FUSION` with the opt-in\n`TRITON_ALLOW_FP_FUSION`.\n\nWithout the opt-in, implicit FP fusion is disabled regardless of the\n`enable_fp_fusion` launch option. Setting `TRITON_ALLOW_FP_FUSION=1`\nrestores the existing launch-option behavior and\n`TRITON_DEFAULT_FP_FUSION` fallback. Explicit fused operations such as\n`tl.fma` are unchanged.",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "7e013d6897e2037a73e8ddfe1aa2d8693d4bf349",
+      "comment": "变更意图：修复 Blackwell (cuda:100) 上 tl.where 重置 tcgen05 accumulator 时 TritonGPUHoistTMEMAlloc 崩溃的问题。根因是 CombineTMEMStoreAndSelect 把 tmem_store(select(cond, x, tmem_load)) 折叠为带谓词的 tmem_store，直接转发 select.getCondition()；当 cond 是被 splat 的 tensor<...xi1> 时，该 tensor 被塞进 tmem_store 的标量 i1 pred 操作数，后续 rewrite 触发 `isa<To>(Val)` cast 断言失败。实现方式：在 lib/Dialect/TritonGPU/Transforms/HoistTMEMAlloc.cpp 中先把 tt::SplatOp 定义的谓词替换为其标量 src（splat 条件是 uniform，可安全折叠为标量 pred），再检查 pred 类型是否为 i1，若不是（即逐元素 tensor 条件）直接 return failure() 让模式不生效、保留原 select。配套在 test/TritonGPU/hoist-tmem-alloc.mlir 新增三个用例：splat 条件正向折叠（含对 pred 取反的 xori）、splat 条件反向（select(c, x, v) 形式）、逐元素 tensor 条件必须保持 select 不被折叠。风险较低：模式更保守，逐元素条件不再折叠会导致少量性能优化丢失，但避免了错误 IR。改动位于 TritonGPU 方言的 NVIDIA TMEM 分配提升路径，仅影响 NVIDIA TTGIR->LLVM 相关流程。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "triton-gpu",
+        "nvidia-backend",
+        "compiler-pass"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TritonGPU] Fold only uniform select conditions into TMEM stores (#12476)\n\nResetting a tcgen05 accumulator with `tl.where` crashes compilation for\n`cuda:100`, with or without `warp_specialize`:\n\n```python\nfor kk in tl.range(0, K, BK):\n    acc = tl.dot(a_d.load([om, kk]), b_d.load([on, kk]).T, tl.where(kk == 0, 0.0, acc))\n```\n```\nAssertion `isa<To>(Val) && \"cast<Ty>() argument of incompatible type!\"' failed.\nPipeline failed while executing [`TritonGPUHoistTMEMAlloc` on 'builtin.module' operation]\n```\n\n`CombineTMEMStoreAndSelect` turns `tmem_store(select(cond, x,\ntmem_load))` into a `tmem_store` predicated on `cond`. Here `cond` is a\nsplatted `tensor<...xi1>`, which the pattern forwarded into the store's\nscalar `i1` predicate; a later rewrite then asserted on the invalid\nstore. Now a `tt.splat` condition is replaced by its scalar source, and\nany other tensor condition makes the pattern bail out, since a scalar\npredicate can't express a per-element select.\n\nTests in `hoist-tmem-alloc.mlir` cover a splatted condition in both\nselect orientations and a per-element condition (left as a select); each\ncrashes the pass without the fix.\n\nFull lit passes on 3b0d4f8022 (305 passed, 2 unsupported), and the\nkernel above now compiles for `cuda:100` with and without\n`warp_specialize`. Not run on Blackwell hardware.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref upstream/main --to-ref\nHEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [ ] I have not added any `lit` tests.\n- [x] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)"
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

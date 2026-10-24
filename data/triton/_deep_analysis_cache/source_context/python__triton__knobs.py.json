@@ -1,7 +1,7 @@
 {
-  "content_hash": "9c47420a80a08348",
+  "content_hash": "ccc804c537d157c7",
   "analysis": {
-    "interface_summary": "定义 32 个类；定义 46 个函数",
+    "interface_summary": "定义 32 个类；定义 47 个函数",
     "key_interfaces": [
       "Env",
       "env_base",
@@ -75,8 +75,9 @@
       "HookChain.remove",
       "HookChain.__call__",
       "JITHook.__call__",
-      "PipelineStagesHook.__call__"
+      "PipelineStagesHook.__call__",
+      "language_knobs.fp_fusion_enabled"
     ]
   },
-  "cached_at": "2026-09-25T02:03:18.639966+08:00"
+  "cached_at": "2026-10-25T03:54:57.446928+08:00"
 }

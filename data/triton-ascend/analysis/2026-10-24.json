@@ -1,0 +1,33 @@
+{
+  "date": "2026-10-24",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-10-25T03:55:57.166604+08:00",
+  "daily_summary": "当日仅有一个提交，聚焦于 Ascend NPU launcher 运行时加载路径的健壮性修复：原先将 npu_utils.so / runtime .so 相对路径（cache_key/file）在编译期以 '#define TRITON_NPU_UTILS_RELATIVE' 形式烘焙进生成的 launcher C++ 源码，C++ 侧通过 cachePath() 拼接当前 cache 根目录；现在改为把绝对路径整体烘焙（TRITON_NPU_UTILS_PATH / TRITON_EXPORT_RUNTIME_PATH），C++ 侧 openRuntime() 先按绝对路径 dlopen，失败时再从绝对路径中解析出 '<cache-key>/<file>' 段并在当前 cache 根目录下重试，同时改进 dlerror 捕获与错误消息。其背景是 PyTorch Inductor 在运行时会重新指向 TRITON_CACHE_DIR（tempfile.mkdtemp），导致旧 URL 失效。随之更新了 launcher 相关单元测试的断言与新测试。",
+  "test_impact_summary": "该变更直接触及 launcher 运行时构建与 dlopen 缓存路径解析，属于 Ascend 后端 NPUDriver/launcher 生成链中的关键路径，且提交本身同步修改了 third_party/ascend/unittest/pytest_ut/test_launcher_plan.py：既有断言由“切换 cache 根后 runtime 目录名相同”改为“不同”（因为绝对路径烘焙进 key），并新增 test_runtime_rebuilds_when_inductor_repoints_cache_dir 覆盖 Inductor 重指 TRITON_CACHE_DIR 的场景，test_preparation_preserves_existing_content_keys 也同步适配 _runtime_config 签名。总体测试看护是主动且合理的，但回退分支（baked dlopen 失败 → 解析 cache-key 段 → 在 cachePath 下重试）在新增测试中仅通过“重新构建”路径间接覆盖，真正 dlopen 失败回退的失败/成功分支、无 cache-key 段路径、路径为空/相对路径异常等边界尚未直接针对 C++ openRuntime 进行测试；建议后续补充直接针对 launcher_cache.h 行为的覆盖（如模拟旧期生成产物 + 新 cache 根下的 fallback 命中），并关注 C++ 层新增的异常路径是否被 lit/gtest 覆盖。",
+  "commits": [
+    {
+      "sha": "96cd1c367e634bbaafeb6a6bf047c2c7564fce39",
+      "comment": "修复 Ascend launcher 在运行时 TRITON_CACHE_DIR 被重指（典型场景为 PyTorch Inductor 用 tempfile.mkdtemp 新建缓存目录）后，已构建的 runtime/export adapter 仍按编译期烘焙的相对路径拼接旧 cache 根而 dlopen 失败的问题。实现上：(1) Python 侧 third_party/ascend/backend/launcher.py 删除 _cache_relative()，_runtime_config() 与 export_launcher() 改为把 npu_utils.so / runtime .so 的绝对路径整体写入宏 TRITON_NPU_UTILS_PATH / TRITON_EXPORT_RUNTIME_PATH（宏名由 _RELATIVE 改为 _PATH）；(2) C++ 侧 launcher_cache.h 的 openRuntime() 从'直接用 cachePath(relative) 拼装'改为'先 dlopen 烘焙的绝对路径，失败则从绝对路径中截取倒数第二段起的 <cache-key>/<file> 相对路径，用当前 cachePath() 重试'，并保留模块不 dlclose（回调可能在 Python launcher 释放后执行），同时规范 dlerror() 清理与错误信息拼接、捕获 fallback 中的 std::exception；(3) launcher_backend.h / launcher_export.cpp 同步改用新宏。风险与注意点：a) 由于绝对路径参与 runtime config，cache 根切换会导致 runtime 重新构建（测试从“目录名相同”改为“不同”正反映此语义变化），这对依赖跨 cache 根复用已构建 runtime 的性能略有影响，但换来正确性；b) fallback 的相对路径解析基于 find_last_of('/') 两段，若构建产物路径中不含 cache-key 层级结构则将退化为只报原始错误，需确认与 get_cache_manager 的实际目录布局一致；c) 若旧期产物路径与新路径对应不同的 npu_utils.so 版本，fallback 可能 dlopen 到同 key 但内容不同的库（理论上 key 含指纹应保证一致），存在潜在版本错配风险；d) 属于 Ascend Launcher/NPUDriver.make_npu_launcher_stub 链路的核心改动，影响所有 NPU kernel 启动。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "launcher",
+        "npu-driver",
+        "cache"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "提交本身已同步更新 third_party/ascend/unittest/pytest_ut/test_launcher_plan.py：调整 test_preparation_cache_root_switch_and_deleted_artifacts 的目录名断言（改为不相等）、新增 test_runtime_rebuilds_when_inductor_repoints_cache_dir、并适配 test_preparation_preserves_existing_content_keys 对 _runtime_config 的新签名调用。由于 Python 侧删除了 _cache_relative 并改变宏语义，相关测试必须随提交更新，现有改动已覆盖主要行为；但 C++ openRuntime 的 fallback 分支（baked 路径 dlopen 失败后按 cache-key 重试成功/失败、空相对路径、异常捕获）尚无直接测试，建议补充。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_launcher_plan.py",
+          "third_party/ascend/backend/launcher.py",
+          "third_party/ascend/backend/launcher_src/launcher_cache.h",
+          "third_party/ascend/backend/driver.py (NPULauncher/NPUUtils.get_so_path)"
+        ]
+      },
+      "message": "[launch](fix)  Fix launcher runtime load when TRITON_CACHE_DIR is repointed at runtime (#2745)"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

@@ -1,0 +1,61 @@
+{
+  "date": "2026-10-24",
+  "repo": "triton-lang/triton-ascend",
+  "branch": "main",
+  "commits": [
+    {
+      "sha": "96cd1c367e634bbaafeb6a6bf047c2c7564fce39",
+      "author": {
+        "name": "LH-123L",
+        "email": "liuhuan261@huawei.com"
+      },
+      "date": "2026-10-24T16:31:56+08:00",
+      "message": "[launch](fix)  Fix launcher runtime load when TRITON_CACHE_DIR is repointed at runtime (#2745)",
+      "parents": [
+        "1c8d7d93c298b829cbd39b5875900eb563f0ca3b"
+      ],
+      "stats": {
+        "total_additions": 73,
+        "total_deletions": 23,
+        "files_changed": 5
+      },
+      "files": [
+        {
+          "filename": "third_party/ascend/backend/launcher.py",
+          "status": "modified",
+          "additions": 4,
+          "deletions": 10,
+          "patch": "@@ -296,13 +296,9 @@ def _runtime_sources():\n     })\n \n \n-def _cache_relative(path):\n-    return \"/\".join(Path(path).parts[-2:])\n-\n-\n @lru_cache(maxsize=32)\n-def _runtime_config(npu_utils_relative, backend, print_identity):\n-    config = f\"#define TRITON_NPU_UTILS_RELATIVE {json.dumps(npu_utils_relative)}\\n\"\n+def _runtime_config(npu_utils_path, backend, print_identity):\n+    config = f\"#define TRITON_NPU_UTILS_PATH {json.dumps(npu_utils_path)}\\n\"\n     if backend == \"mindspore\":\n         config += \"#define TRITON_LAUNCHER_MINDSPORE\\n\"\n     sources = {\"launcher_config.h\": config}\n@@ -357,9 +353,7 @@ def get_runtime(npu_utils_path, debug=False):\n         version_file = utils._find_cann_version_file()\n         print_identity = (bisheng, utils._file_identity(bisheng), version_file,\n                           utils._file_identity(version_file) if version_file else None)\n-    sources = {\n-        **_runtime_sources(), **_runtime_config(_cache_relative(npu_utils_path), utils.backend_policy, print_identity)\n-    }\n+    sources = {**_runtime_sources(), **_runtime_config(npu_utils_path, utils.backend_policy, print_identity)}\n     path = _build_shared(\"__triton_launcher_runtime\", sources, debug)\n     return _load_runtime(path), path\n \n@@ -368,7 +362,7 @@ def export_launcher(spec, types, runtime_path, debug=False):\n     \"\"\"Bind the legacy C ABI using constants and a fixed export adapter.\"\"\"\n     fields = \", \".join(str(value) for value in spec.as_dict().values())\n     initializers = \", \".join(f\"{{{kind}, {dtype}}}\" for kind, dtype in types) or \"{0, -1}\"\n-    config = (f\"#define TRITON_EXPORT_RUNTIME_RELATIVE {json.dumps(_cache_relative(runtime_path))}\\n\"\n+    config = (f\"#define TRITON_EXPORT_RUNTIME_PATH {json.dumps(runtime_path)}\\n\"\n               f\"static constexpr TritonNpuLaunchSpecV1 spec = {{1, sizeof(TritonNpuLaunchSpecV1), {fields}}};\\n\"\n               f\"static constexpr TritonNpuArgTypeV1 types[] = {{{initializers}}};\\n\"\n               f\"static constexpr size_t numTypes = {len(types)};\\n\")"
+        },
+        {
+          "filename": "third_party/ascend/backend/launcher_src/launcher_backend.h",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -69,7 +69,7 @@ struct BackendApi {\n   void (*async)(void *, const char *);\n \n   BackendApi() {\n-    void *handle = openRuntime(TRITON_NPU_UTILS_RELATIVE);\n+    void *handle = openRuntime(TRITON_NPU_UTILS_PATH);\n     workspace = resolve<decltype(workspace)>(\n         handle, \"triton_allocate_workspace_on_stream\");\n     releaseWorkspace ="
+        },
+        {
+          "filename": "third_party/ascend/backend/launcher_src/launcher_cache.h",
+          "status": "modified",
+          "additions": 45,
+          "deletions": 8,
+          "patch": "@@ -39,14 +39,51 @@ inline std::string cachePath(const char *relative) {\n   return std::string(base) + \"/.triton/cache/\" + relative;\n }\n \n-inline void *openRuntime(const char *relative) {\n-  auto path = cachePath(relative);\n-  // Keep the module loaded: enqueued callbacks may execute after the importing\n-  // Python launcher or exported adapter has been released.\n-  void *handle = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);\n-  if (!handle)\n-    throw std::runtime_error(\"dlopen \" + path + \" failed: \" + dlerror());\n-  return handle;\n+inline void *openRuntime(const char *baked) {\n+  if (baked == nullptr)\n+    throw std::runtime_error(\"openRuntime: null runtime path\");\n+\n+  const std::string path = baked;\n+  // Keep the module loaded (never dlclose): enqueued callbacks may execute\n+  // after the importing Python launcher or exported adapter has been released.\n+  dlerror(); // Clear any pending error so the captured reason is attributable.\n+  void *handle = dlopen(baked, RTLD_NOW | RTLD_LOCAL);\n+  if (handle != nullptr)\n+    return handle;\n+  const char *bakedError = dlerror();\n+  std::string message = \"dlopen \" + path + \" failed: \" +\n+                        (bakedError != nullptr ? bakedError : \"unknown error\");\n+  // Extract \"<cache-key>/<file>\" from the absolute path baked at build time so\n+  // the artifact can be relocated under a repointed TRITON_CACHE_DIR; returns\n+  // an empty string when the path carries no cache-key segment.\n+  const auto cacheRelative = [&path]() -> std::string {\n+    const size_t name = path.find_last_of('/');\n+    if (name == std::string::npos || name == 0)\n+      return {};\n+    const size_t key = path.find_last_of('/', name - 1);\n+    return key == std::string::npos ? std::string{} : path.substr(key + 1);\n+  };\n+  // The baked path is stale when TRITON_CACHE_DIR was repointed after build;\n+  // retry the same artifact under the current cache root.\n+  const std::string relative = cacheRelative();\n+  if (!relative.empty()) {\n+    try {\n+      const std::string fallback = cachePath(relative.c_str());\n+      dlerror();\n+      handle = dlopen(fallback.c_str(), RTLD_NOW | RTLD_LOCAL);\n+      if (handle != nullptr)\n+        return handle;\n+      const char *fallbackError = dlerror();\n+      message += \"; fallback dlopen \" + fallback + \" failed: \" +\n+                 (fallbackError != nullptr ? fallbackError : \"unknown error\");\n+    } catch (const std::exception &e) {\n+      // Environment fallback unavailable; report the baked path instead.\n+      message += \"; cache fallback unavailable: \";\n+      message += e.what();\n+    }\n+  }\n+\n+  throw std::runtime_error(message);\n }\n \n template <typename T> T resolve(void *handle, const char *name) {"
+        },
+        {
+          "filename": "third_party/ascend/backend/launcher_src/launcher_export.cpp",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -33,7 +33,7 @@ struct Adapter {\n   PyObject *(*python_launcher)(const TritonNpuLaunchPlan *);\n   TritonNpuLaunchPlan *plan;\n   Adapter() {\n-    void *runtime = triton::ascend::openRuntime(TRITON_EXPORT_RUNTIME_RELATIVE);\n+    void *runtime = triton::ascend::openRuntime(TRITON_EXPORT_RUNTIME_PATH);\n     auto create = triton::ascend::resolve<decltype(&triton_npu_create_plan_v1)>(\n         runtime, \"triton_npu_create_plan_v1\");\n     launch = triton::ascend::resolve<decltype(launch)>(runtime,"
+        },
+        {
+          "filename": "third_party/ascend/unittest/pytest_ut/test_launcher_plan.py",
+          "status": "modified",
+          "additions": 22,
+          "deletions": 3,
+          "patch": "@@ -422,7 +422,9 @@ def test_preparation_cache_root_switch_and_deleted_artifacts(prepared_backend, m\n         monkeypatch.setenv(setting, str(tmp_path / \"new-cache\"))\n     second = state.driver.NPULauncher(state.src, metadata())\n     assert second._runtime_path != first._runtime_path\n-    assert Path(second._runtime_path).parent.name == Path(first._runtime_path).parent.name\n+    # The helper's absolute path is baked into the runtime, so switching cache\n+    # roots rebuilds the runtime under a key tied to the helper's new location.\n+    assert Path(second._runtime_path).parent.name != Path(first._runtime_path).parent.name\n     assert len(state.builds) == 4\n     Path(second._runtime_path).unlink()\n     helper = state.driver.NPUUtils().get_so_path()\n@@ -433,6 +435,24 @@ def test_preparation_cache_root_switch_and_deleted_artifacts(prepared_backend, m\n     assert len(state.builds) == 6\n \n \n+def test_runtime_rebuilds_when_inductor_repoints_cache_dir(prepared_backend, monkeypatch, tmp_path):\n+    state = prepared_backend\n+    first = state.driver.NPULauncher(state.src, metadata())\n+    first_helper = state.driver.NPUUtils().get_so_path()\n+    # PyTorch Inductor repoints TRITON_CACHE_DIR at a fresh temporary root\n+    # (tempfile.mkdtemp) after the helper was already built: the launcher must\n+    # rebuild against the helper's new location instead of resolving the\n+    # stale restored value from the live environment.\n+    monkeypatch.setenv(\"TRITON_CACHE_DIR\", str(tmp_path / \"inductor-temp\"))\n+    second = state.driver.NPULauncher(state.src, metadata())\n+    second_helper = state.driver.NPUUtils().get_so_path()\n+    assert second_helper != first_helper\n+    assert Path(second_helper).parents[1] == tmp_path / \"inductor-temp\"\n+    assert second._runtime_path != first._runtime_path\n+    assert Path(first_helper).exists()\n+    assert len(state.builds) == 4\n+\n+\n def test_debug_dump_and_lazy_export_after_preparation_reuse(prepared_backend, monkeypatch, tmp_path):\n     state = prepared_backend\n     first = state.driver.NPULauncher(state.src, metadata())\n@@ -528,8 +548,7 @@ def test_preparation_preserves_existing_content_keys(prepared_backend):\n     expected = hashlib.sha256(json.dumps([source, state.fingerprint], sort_keys=True).encode()).hexdigest()\n     assert state.driver.NPUUtils().get_so_path() == get_cache_manager(expected).get_file(\"npu_utils.so\")\n     sources = launcher._runtime_sources()\n-    config = launcher._runtime_config(launcher._cache_relative(state.driver.NPUUtils().get_so_path()),\n-                                      utils.backend_policy, None)\n+    config = launcher._runtime_config(state.driver.NPUUtils().get_so_path(), utils.backend_policy, None)\n     key = hashlib.sha256(json.dumps([state.fingerprint, {**sources, **config}], sort_keys=True).encode()).hexdigest()\n     assert Path(instance._runtime_path).parent.name == get_cache_manager(key).key\n \n"
+        }
+      ]
+    }
+  ]
+}

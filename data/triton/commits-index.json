@@ -1,4 +1,16 @@
 {
+  "753b56ecb704cfc712daebcae554fbf78ca7343a": {
+    "date": "2026-10-24",
+    "msg": "[AMD] Enable IEEE maximum/minimum for RDNA4 (#12480)"
+  },
+  "1d503a35275625d2c236605a42855bfd81267047": {
+    "date": "2026-10-24",
+    "msg": "Require an opt-in to honor enable_fp_fusion (#12479)"
+  },
+  "7e013d6897e2037a73e8ddfe1aa2d8693d4bf349": {
+    "date": "2026-10-24",
+    "msg": "[TritonGPU] Fold only uniform select conditions into TMEM stores (#12476)"
+  },
   "5c36ec57d1955a091837dfe6f6893da5f83c88de": {
     "date": "2026-10-23",
     "msg": "[AMD] Build llvm @05e432a for CodeGen (#12471)"

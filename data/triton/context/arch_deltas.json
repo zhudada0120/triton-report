@@ -1033,6 +1033,18 @@
       "interface_changes": "移除前端与 triton_kernels 中显式开启 reshape 重排的用法：language/core.py 的 view() 改为 docstring 声明顺序保持、语义上以 can_reorder=False 调 reshape 并更新弃用提示；semantic.py 的 reduction(axis=None) 改为 can_reorder=False；flexpoint 与 swiglu 去掉 tl.ravel/reshape 的 can_reorder=True。这使全归约与 view 的元素顺序语义更严格（不再允许布局重排），可能带来额外布局转换开销，但保证语义确定。属于前端 API 语义收紧，所有后端共享。",
       "change_summary": "[Frontend][triton_kernels] Remove reshape reordering opt-ins (#12457)",
       "ascend_impact": false
+    },
+    "1d503a35275625d2c236605a42855bfd81267047": {
+      "date": "2026-10-24",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "变更意图：把 FP 融合策略从“默认允许、可用 TRITON_FORCE_DISABLE_FP_FUSION 强制关闭”翻转为“默认禁止隐式融合、需 TRITON_ALLOW_FP_FUSION=1 显式 opt-in 才尊重 kernel 的 enable_fp_fusion 与 TRITON_DEFAULT_FP_FUSION 回退”，显式 tl.fma 等不受影响。实现方式：python/triton/knobs.py 中 language_knobs.force_disable_fp_fusion 改名为 allow_fp_fusion，fp_fusion_enabled() 由 `not force_disable and (...)` 改为 `allow_fp_fusion and (...)`；include/triton/Tools/Sys/GetEnv.h 的 CACHE_INVALIDATING_ENV_VARS 同步替换变量名；README.md 更新文档；python/test/unit/language/test_core.py 与 third_party/a",
+      "change_summary": "Require an opt-in to honor enable_fp_fusion (#12479)",
+      "ascend_impact": false
     }
   }
 }

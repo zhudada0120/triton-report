@@ -1,5 +1,5 @@
 {
-  "content_hash": "40ea791ecf5bea90",
+  "content_hash": "28bdfc97e48da9d8",
   "analysis": {
     "interface_summary": "定义 2 个类；定义 38 个函数",
     "key_interfaces": [
@@ -7,5 +7,5 @@
       "TestManagerClass"
     ]
   },
-  "cached_at": "2026-10-22T04:58:30.014807+08:00"
+  "cached_at": "2026-10-25T03:54:57.440115+08:00"
 }

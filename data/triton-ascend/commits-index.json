@@ -1,4 +1,8 @@
 {
+  "96cd1c367e634bbaafeb6a6bf047c2c7564fce39": {
+    "date": "2026-10-24",
+    "msg": "[launch](fix)  Fix launcher runtime load when TRITON_CACHE_DIR is repointed at runtime (#2745)"
+  },
   "1c8d7d93c298b829cbd39b5875900eb563f0ca3b": {
     "date": "2026-10-23",
     "msg": "Revert \"[Libdevice](fix) Remove redundant positive libdevice guards (#2638)\" (#2735)"
