@@ -1,4 +1,12 @@
 {
+  "1ed999d6b21d7bd9e89b830f9eeb7e5d8ba8934b": {
+    "date": "2026-10-25",
+    "msg": "[NVWS] Find async MMA consumers of an aref inside scf.if (#12482)"
+  },
+  "ddfbfbe1ad647ec21e4299764cb1f971eb2664f2": {
+    "date": "2026-10-25",
+    "msg": "[WS] Partition tt.scan like tt.reduce in automatic warp specialization (#12472)"
+  },
   "753b56ecb704cfc712daebcae554fbf78ca7343a": {
     "date": "2026-10-24",
     "msg": "[AMD] Enable IEEE maximum/minimum for RDNA4 (#12480)"

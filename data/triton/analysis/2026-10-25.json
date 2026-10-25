@@ -1,0 +1,50 @@
+{
+  "date": "2026-10-25",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-26T04:04:54.530201+08:00",
+  "daily_summary": "当日两个 commit 均为自动 warp specialization（NVWS/WS，warp_specialize=True 路径）的崩溃修复：(1) 修复 LowerAref 中 getAsyncMMAv5Consumers 将 scf.if 的顶层祖先误当作 MMAv5OpInterface 强制转换导致的断言崩溃，改为在回调中收集真正的 MMA；两者都补了 lit 回归测试。(2) 让 tt.scan 在 PartitionScheduling/PartitionLoops 中获得与 tt.reduce 对等的分区调度与克隆支持，修复 tl.cumsum/tl.associative_scan 在 warp specialize 循环中的 dyn_cast 断言失败。两项变更都集中在 third_party/nvidia 的 NVWS 与 lib/Dialect/TritonGPU/Transforms/WarpSpecialization，属于 NVIDIA Blackwell/Hopper 的 warp 特化实现，与 ASR/后端可插拔接口无关。",
+  "ascend_impact_summary": "当日两处变更分别是 third_party/nvidia 的 NVWS LowerAref 崩溃修复与 TritonGPU 自动 warp specialization（PartitionScheduling/PartitionLoops/Partition）对 tt.scan 的调度支持，全部落在 Ascend 后端不使用的 NVIDIA 专属 warp 特化路径上（Ascend 走 TritonToLinalg，不使用 TTGIR 的 warp specialization 分区调度）。变更未触及 BaseBackend/DriverBase/后端发现机制、TritonSemantic/CodeGenerator/compiler.parse monkey-patch 点，也未改动 tt/ttg 方言 op 定义或 JIT/缓存契约，因此对 triton-ascend 无功能或测试影响，无需同步更新测试。",
+  "commits": [
+    {
+      "sha": "1ed999d6b21d7bd9e89b830f9eeb7e5d8ba8934b",
+      "comment": "修复 NVWS（warp specialization）LowerAref 在 cuda:100 上遇到 `scf.if` 内 `ttng.tc_gen5_mma` 消费 aref buffer 时的断言崩溃。根因是 getAsyncMMAv5Consumers 对 getTopLevelUsersInLoop 返回的 user 做 isa<MMAv5OpInterface> 过滤后再 cast，但该函数返回的是循环体内 MMA 的顶层祖先（对于 if 内的 MMA 即 scf.if），cast 失败触发 `cast<Ty>() argument of incompatible type`。修复把收集逻辑移入 filter 回调，回调看到的是真正的 user，dyn_cast 命中 MMAv5 后插入集合并返回 true，避免了错误的强制转换。变更限于 third_party/nvidia/lib/Dialect/NVWS/Transforms/LowerAref.cpp 与 test/NVWS/lower_aref.mlir 新增的回归用例（if 内 MMA 应被标记 is_async），实现精准、风险低；未在 Blackwell 实机验证，仅 lit 覆盖。属于 NVIDIA 专属 warp-specialize 代码，不涉及通用接口。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "nvidia-backend",
+        "warp-specialization",
+        "test"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅位于 third_party/nvidia/lib/Dialect/NVWS/Transforms/LowerAref.cpp（NVWS 方言 lowering）与 test/NVWS/lower_aref.mlir，属于 NVIDIA warp specialization 专属路径，Ascend 不使用 NVWS 方言、warp_specialize 或 tcgen05 MMA，也不从该目录取代码。",
+        "testing": "无影响。新增用例为 test/NVWS/lower_aref.mlir 的 lit 测试，Ascend 测试体系不运行该套 NVWS lit 测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVWS] Find async MMA consumers of an aref inside scf.if (#12482)\n\nA `tl.dot` under an `if` in a `warp_specialize=True` loop crashes\n`NVWSLowerAref` on `cuda:100` (it compiles without `warp_specialize`):\n\n```python\nfor kk in tl.range(0, K, BK, warp_specialize=True):\n    if kk % (2 * BK) == 0:\n        acc = tl.dot(a_d.load([om, kk]), b_d.load([on, kk]).T, acc)\n```\n\n```\nAssertion `isa<To>(Val) && \"cast<Ty>() argument of incompatible type!\"' failed.\n```\n\n`getAsyncMMAv5Consumers` casts the results of `getTopLevelUsersInLoop`\nto `MMAv5OpInterface`, but those are the MMAs' top-level ancestors in\nthe loop body; for an MMA inside an `scf.if` that is the `scf.if`. The\nMMAs are now collected in the filter callback, which sees the actual\nuser.\n\nThe new `lower_aref.mlir` case (an MMA inside an `scf.if` reading an\naref buffer) checks that the MMA is made async and crashes without the\nfix. Full lit passes on 1d503a3527 (305 passed, 2 unsupported); not run\non Blackwell hardware.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref upstream/main --to-ref\nHEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [ ] I have not added any `lit` tests.\n- [x] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)"
+    },
+    {
+      "sha": "ddfbfbe1ad647ec21e4299764cb1f971eb2664f2",
+      "comment": "修复 tl.cumsum / tl.associative_scan 位于 warp_specialize=True 循环内时编译崩溃（PartitionScheduling 中 tt.scan 走通用分支，导致其 combine region 内 op 没有 ttg.partition，cloneMultiPartitionDataOps 在 getPartitionIds 中触发 dyn_cast<DenseArrayAttr> 断言）。改动三处：(1) PartitionScheduling.cpp 的 buildGraph 为 tt.scan 增加专门分支，为每个 operand/result 建 port（支持 tuple scan 多操作数/多结果），访问其 region，并在 serialize 中为 scan 每个结果设置 ttg.partition.outputs，同时把 propagatePartitions 的处理从只对 tt.reduce 扩展到 tt.reduce/tt.scan；(2) Partition.cpp 的 verifyPartitionAttrs 允许 tt.scan 携带 ttg.partition.outputs；(3) PartitionLoops.cpp 新增 cloneScanOp，保留 axis/reverse/全部 operand/result 与 combine region 进行分区克隆，并在 cloneOpsInBlock 中分派。新增加载于 partition-scheduling.mlir 与 partition-loops.mlir 的 lit 用例，B200 上做了数值对比与 ConSan 验证。改动聚焦 TTGIR 的 warp specialization 分区调度 pass，逻辑复用了 tt.reduce 的既有模式，实现对等、风险可控；注意该 pass 只服务 NVIDIA 的 warp specialization 流水线。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "medium-risk",
+        "tritongpu",
+        "warp-specialization",
+        "test"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。虽然变更位于 lib/Dialect/TritonGPU/Transforms/WarpSpecialization/（在架构上属于 Ascend 一般不经的 TTGIR 路径），但具体改动仅为自动 warp specialization 的分区调度与克隆逻辑（buildGraph/partition verifier/cloneScanOp），而 Ascend 后端采用 TTIR → Linalg → bisheng 的转换链，不经过 warp specialization 分区调度，也不使用此处的 ttg.partition 序列化。变更未修改 tt/ttg 方言 op 定义、BaseBackend/DriverBase、JIT/缓存或 monkey-patch 目标接口。",
+        "testing": "无影响。新增/修改的是 test/TritonGPU/partition-scheduling.mlir、partition-loops.mlir 的 lit 测试，Ascend 测试体系不覆盖 TTGIR warp specialization 分区 pass。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[WS] Partition tt.scan like tt.reduce in automatic warp specialization (#12472)\n\nA `tl.cumsum` or `tl.associative_scan` inside a `warp_specialize=True`\nloop crashes compilation for `cuda:100` / `cuda:103`:\n\nCasting.h:650: decltype(auto) llvm::dyn_cast(From &) [To =\nmlir::DenseArrayAttr, From = mlir::Attribute]: Assertion\n`detail::isPresent(Val) && \"dyn_cast on a non-existent value\"' failed.\n\nShape of the reproducer: a persistent tcgen05 matmul whose tile loop is\n`tl.range(..., warp_specialize=True)` and whose epilogue scans the\naccumulator before storing it.\n\n```python\nfor tile in tl.range(tl.program_id(0), num_tiles, tl.num_programs(0), warp_specialize=True):\n    ...\n    for kk in range(0, K, BK):\n        acc = tl.dot(a_d.load([om, kk]), b_d.load([on, kk]).T, acc)\n    c_d.store([om, on], tl.cumsum(acc, 1).to(tl.float16))\n\nThe same kernel with a tl.max reduction in the epilogue instead compiles.\n\nCause\n\nbuildGraph in PartitionScheduling.cpp has a dedicated branch for tt.reduce that visits its combine region, and a later step propagates the reduce's partitions into that region. tt.scan falls into the generic branch, so the ops of its combine region never get a ttg.partition attribute, and cloneMultiPartitionDataOps asserts in getPartitionIds when it walks them.\n\nFix\n\n- PartitionScheduling.cpp: give tt.scan its own branch in buildGraph, with a port for every operand and result (a scan can carry several, e.g. tl.associative_scan over a tuple), propagate its partitions into the combine region, and record a partition output for each result.\n- Partition.cpp: allow ttg.partition.outputs on tt.scan in the partition verifier.\n- PartitionLoops.cpp: add cloneScanOp, which clones a scan into each of its partitions, keeping axis, reverse, all operands and results, and the combine region. Without it, cloneOp rejects any op with a region.\n\nThe change adds no synchronization of its own. In the kernels I tried, the scan was scheduled into the default (epilogue) partition.\n\nTests\n- partition-scheduling.mlir: a tuple scan in a partitioned loop; checks that the combine ops and tt.scan.return get the scan's partition and that both results get a partition output. Fails without the fix.\n- partition-loops.mlir: a tuple scan with reverse = true assigned to two partitions; checks it is cloned into both with axis/reverse and the combine region intact. Fails without the fix.\n\nValidation\n\nOn base 3b0d4f8022:\n- full lit suite: 305 passed, 2 unsupported, 0 failed;\n- compile-only for cuda:100: tl.cumsum, tl.associative_scan with a custom combine, and a tuple tl.associative_scan in the epilogue all compile, keep ttg.warp_specialize, and emit tcgen05.mma; tl.cumsum also on cuda:103; the no-scan and tl.max variants still compile.\n\nValidated on a B200 (exact comparison against a reference, also under ConSan, plus test_warp_specialization.py and the scan tests in test_core.py); details in the comment below.\n\nNew contributor declaration\n\n- [x] I am not making a trivial change, such as fixing a typo in a comment.\n- [x] I have written a PR description following these\n  rules.\n- [x] I have run pre-commit run --from-ref upstream/main --to-ref HEAD.\n- Select one of the following.\n  - [x] I have added tests.\n    - /test for lit tests\n    - /unittest for C++ tests\n    - /python/test for end-to-end tests\n  - [ ] This PR does not need a test because FILL THIS IN.\n- Select one of the following.\n  - [ ] I have not added any lit tests.\n  - [x] The lit tests I have added follow these best practices,\n    including the \"tests should be minimal\" section. (Usually running Python code\n    and using the instructions it generates is not minimal.)"
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}
