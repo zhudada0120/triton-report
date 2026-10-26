@@ -1,7 +1,7 @@
 {
-  "content_hash": "af37285e9cba47c9",
+  "content_hash": "51a720b84d27e8b9",
   "analysis": {
-    "interface_summary": "定义 10 个类；定义 94 个函数",
+    "interface_summary": "定义 10 个类；定义 95 个函数",
     "key_interfaces": [
       "DependenciesFinder",
       "KernelParam",
@@ -55,5 +55,5 @@
       "ConstexprFunction.__call__"
     ]
   },
-  "cached_at": "2026-10-23T04:55:57.409115+08:00"
+  "cached_at": "2026-10-27T06:01:00.116651+08:00"
 }

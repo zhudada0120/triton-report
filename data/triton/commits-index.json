@@ -1,4 +1,24 @@
 {
+  "1c5d5f6a100331df65a6d24fc554387ada9b2245": {
+    "date": "2026-10-26",
+    "msg": "[BACKEND] Mask/Broadcast regions that can be executed with just one thread (#12202)"
+  },
+  "4c315b2d10ee13aa504555dccf52cc80a27b5b73": {
+    "date": "2026-10-26",
+    "msg": "[GPU] Validate warp and CTA are positive powers of two (#12497)"
+  },
+  "b5eefe446d173fb5abaa83ab35c571fa600fc69c": {
+    "date": "2026-10-26",
+    "msg": "[AMD][GLUON] Deprecate load_shared_relaxed (#12478)"
+  },
+  "8d8129515f777782dbe5a302c598dc8dd78fb2f9": {
+    "date": "2026-10-26",
+    "msg": "[Runtime] Allow namedtuple fields to opt out of JIT specialization (#12490)"
+  },
+  "2c9fb87df0e656cefeb5d18d3ac1b06c1e0a25d1": {
+    "date": "2026-10-26",
+    "msg": "[AMD][Gluon] Add buffer descriptors and descriptor-based buffer ops (#12345)"
+  },
   "1ed999d6b21d7bd9e89b830f9eeb7e5d8ba8934b": {
     "date": "2026-10-25",
     "msg": "[NVWS] Find async MMA consumers of an aref inside scf.if (#12482)"

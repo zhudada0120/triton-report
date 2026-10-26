@@ -1045,6 +1045,42 @@
       "interface_changes": "变更意图：把 FP 融合策略从“默认允许、可用 TRITON_FORCE_DISABLE_FP_FUSION 强制关闭”翻转为“默认禁止隐式融合、需 TRITON_ALLOW_FP_FUSION=1 显式 opt-in 才尊重 kernel 的 enable_fp_fusion 与 TRITON_DEFAULT_FP_FUSION 回退”，显式 tl.fma 等不受影响。实现方式：python/triton/knobs.py 中 language_knobs.force_disable_fp_fusion 改名为 allow_fp_fusion，fp_fusion_enabled() 由 `not force_disable and (...)` 改为 `allow_fp_fusion and (...)`；include/triton/Tools/Sys/GetEnv.h 的 CACHE_INVALIDATING_ENV_VARS 同步替换变量名；README.md 更新文档；python/test/unit/language/test_core.py 与 third_party/a",
       "change_summary": "Require an opt-in to honor enable_fp_fusion (#12479)",
       "ascend_impact": false
+    },
+    "1c5d5f6a100331df65a6d24fc554387ada9b2245": {
+      "date": "2026-10-26",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "引入『单线程可执行区域』优化：新增 TTG 属性 ThreadDomainAttr（lane/warp/block 掩码），以及 TTG 方言 op TTG_ThreadPredicateOp（选择执行域）、TTG_ThreadScopeOp/ThreadYieldOp（保留作用域供内存 lowering 查询）、TTG_ThreadHandoffOp（把标量从 source 域广播到 destination 域，支持跨 warp/跨 CTA）。新增 TritonGPUOptimizeThreadRegions pass（lib/Dialect/TritonGPU/Transforms/OptimizeThreadRegions.cpp），把连续标量协议（atomic 结果、标量链、循环）包进 thread_scope 并以 leader 线程执行，escaped 值经 handoff 延迟广播，并支持将 handoff 下沉到兼容的物理 guard 乃至张量 tail，减少冗余线程参与。配套重构了 Allocation（getAtomicScratchBroadcastMask→ge",
+      "change_summary": "[BACKEND] Mask/Broadcast regions that can be executed with just one thread (#12202)",
+      "ascend_impact": false
+    },
+    "4c315b2d10ee13aa504555dccf52cc80a27b5b73": {
+      "date": "2026-10-26",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "在 TritonGPUDialect::verifyOperationAttribute 中为 ttg.num-warps 与 ttg.num-ctas 增加『正 2 的幂』校验（覆盖 0、负数、非 2 的幂），并在 CUDABackend 的 CUDAOptions.__post_init__ 中用新工具函数 is_power_of_two 校验 num_ctas（此前只校验 num_warps）。补全了 dialect 层与后端选项层的双重校验。风险较低：纯校验增强，但需要保证 CodeGenerator 在创建 module 时正确设置这些属性，否则可能对既有 IR 引入新的编译失败；对下游后端而言，如果 Ascend 侧传入非 2 的幂的 num_warps/num_ctas，将在此处提早报错，行为从『静默接受』变为『显式报错』。",
+      "change_summary": "[GPU] Validate warp and CTA are positive powers of two (#12497)",
+      "ascend_impact": false
+    },
+    "8d8129515f777782dbe5a302c598dc8dd78fb2f9": {
+      "date": "2026-10-26",
+      "affected_modules": [
+        "python/triton/runtime/jit.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/runtime/jit.py"
+      ],
+      "interface_changes": "为 namedtuple 参数引入字段级特化开关：namedtuple 类可定义 __triton_do_not_specialize__ 元组指定不参与值/对齐特化的字段（显式 constexpr 仍特化）。实现集中在 python/src/specialize.cc：新增 interned 字符串 do_not_specialize_attr、get_unspecialized_fields()（校验必须是 tuple、字段必须存在，否则 TypeError/ValueError），handle_tuple 识别 namedtuple 时按字段跳过特化（nested tuple 也传递 specialize_value=false），specialize_impl 在顶层对 tuple 参数强制 specialize_value=true 以便字段独立特化。JITFunction/Gluon JIT 的 docstring 补充说明，并在 test_specialize.py 中加入参考实现对照与新测试。风险点在于修改了原生特化实现的顶层 tuple 行为（specialize_v",
+      "change_summary": "[Runtime] Allow namedtuple fields to opt out of JIT specialization (#12490)",
+      "ascend_impact": false
     }
   }
 }

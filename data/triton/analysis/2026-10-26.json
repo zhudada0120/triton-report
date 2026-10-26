@@ -1,0 +1,144 @@
+{
+  "date": "2026-10-26",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-27T05:59:34.631315+08:00",
+  "daily_summary": "当日变更集中在 TritonGPU 中后端的执行域优化与 AMD/CDNA 后端能力扩展。最重要的一个 commit 引入了 thread region 优化：新增 ttg.thread_domain 属性以及 ThreadPredicateOp/ThreadScopeOp/ThreadHandoffOp 三个 TTGIR op，新增 TritonGPUOptimizeThreadRegions pass，把只依赖单线程的标量协议（atomic 结果、标量链）限制到 leader 线程并延迟广播，同时重构了 Atomic 结果广播/排序屏障相关的 Alloc/Membar/LLVM lowering 辅助函数。其余 commit 包括：为 ttg.num-warps/num-ctas 增加正 2 的幂校验、AMD Gluon 引入 buffer descriptor 及描述符版 buffer load/store/load_to_shared、废弃 AMD load_shared_relaxed、支持 namedtuple 字段级 __triton_do_not_specialize__。整体方向是提升 TritonGPU 层的细粒度线程控制能力、增强后端 API 表达力并加固配置校验。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 的影响集中在 Core IR 与运行时抽象层：commit 1 修改了 lib/Dialect/TritonGPU/IR 与 Analysis、Membar、Utility 以及 TritonGPUToLLVM 共享辅助接口（finalizeAtomicResults/broadcastTensorResult/insertAtomicOrderingBarriers 等签名变更，并新增 TTG 方言 op），而 TT 方言（include/lib/Dialect/Triton）虽未直接改动，但 Intrument/Allocation/Utility 的语义变更可能间接影响 Ascend 的 TritonToLinalg 输入；commit 4 修改了 python/src/specialize.cc（native_specialize_impl 的参数特化路径），属于 JIT 特化键计算核心路径，Ascend 直接复用；commit 2 的 num-warps/num-ctas 校验落在 TritonGPU dialect verifier 与 CUDABackend.parse_options，Ascend 复用 CodeGenerator 的 builder 属性并可复用该校验逻辑。commit 3 与 commit 5 基本为 AMD/NVIDIA 专属或纯文档/测试变更，对 Ascend 无影响。总体需关注 commit 1 与 commit 4 的接口/语义变化是否传导。",
+  "commits": [
+    {
+      "sha": "1c5d5f6a100331df65a6d24fc554387ada9b2245",
+      "comment": "引入『单线程可执行区域』优化：新增 TTG 属性 ThreadDomainAttr（lane/warp/block 掩码），以及 TTG 方言 op TTG_ThreadPredicateOp（选择执行域）、TTG_ThreadScopeOp/ThreadYieldOp（保留作用域供内存 lowering 查询）、TTG_ThreadHandoffOp（把标量从 source 域广播到 destination 域，支持跨 warp/跨 CTA）。新增 TritonGPUOptimizeThreadRegions pass（lib/Dialect/TritonGPU/Transforms/OptimizeThreadRegions.cpp），把连续标量协议（atomic 结果、标量链、循环）包进 thread_scope 并以 leader 线程执行，escaped 值经 handoff 延迟广播，并支持将 handoff 下沉到兼容的物理 guard 乃至张量 tail，减少冗余线程参与。配套重构了 Allocation（getAtomicScratchBroadcastMask→getResultScratchBroadcastMask、ThreadHandoffOp 的 scratch size/cross-CTA 判定）、Membar（ThreadHandoffOp/ThreadScopeOp 的屏障阶段）、Utility（atomicResultHasCTABroadcast、needsClusterBarrier 统一走 hasCrossCTAScratch）、TritonGPUToLLVM 的 Utility.h/.cpp（emitThreadPredicate/emitMemoryThreadPredicate、insertAtomicOrderingBarriers 去掉 emitBarrierAfter 参数改为内部按 getAtomicBarrierStages 决策、broadcastScalarResult/broadcastTensorResult/finalizeAtomicResults 去掉 valueElemTy/b 参数改由 resultVal 推导，使用 removeZeroBasesAlongDim/renameInDim/renameLinearLayoutDims 简化 CTA 广播 layout 计算），并增加 MemoryOpToLLVM 的 ThreadPredicate/ThreadHandoff 两个 conversion pattern、TritonGPUToLLVM 中 inlineThreadScopes 在 control-flow lowering 前把 ThreadScopeOp 直接内联为 CFG。NVIDIA 后端在 non-gsan/non-consan 路径插入该 pass；AMD 与 GSan 同步适配新签名。风险点：ThreadHandoffOpConversion 使用 llvm.sideeffect（noduplicate/convergent）来规避 LLVM peeling 分裂收敛，属于 workaround；变更波及多个共享 LLVM lowering 辅助签名（AMD/NVIDIA/GSan 全部尾随修改），扩展性较强，新增 op 涉及 RegionBranchOpInterface 需要 Membar/Allocation/ConSan 全链路适配；对上游共享 pass 管线（add_optimize_thread_regions 插在 allocate_shared_memory 之前）有顺序敏感性。",
+      "tags": [
+        "performance",
+        "feature",
+        "high-risk",
+        "triton-gpu-ir",
+        "membar-analysis",
+        "allocation-analysis",
+        "tritongpu-to-llvm"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "直接命中『必然影响』中的 lib/Dialect/TritonGPU/IR 相关路径（通过 include/triton/Dialect/TritonGPU/IR/TritonGPUAttrDefs.td、TritonGPUOps.td、lib/Dialect/TritonGPU/IR/Ops.cpp 新增 ThreadDomainAttr/ThreadPredicateOp/ThreadScopeOp/ThreadYieldOp/ThreadHandoffOp 及 verifier 与 RegionBranchOpInterface 实现）；同时 refactor 了 Ascend 可能复用到的共享基础设施：lib/Analysis/Allocation.cpp 的 getResultScratchBroadcastMask（原 getAtomicScratchBroadcastMask 重命名、支持 ThreadHandoffOp）、lib/Analysis/Utility.cpp 的 atomicResultHasCTABroadcast/needsClusterBarrier 语义变化、lib/Conversion/TritonGPUToLLVM/Utility.h 的 insertAtomicOrderingBarriers/finalizeAtomicResults/broadcastTensorResult 参数签名变化（但 Ascend 不走 TritonGPUToLLVM 路径，故该 lowering 部分实际不受 Ascend 调用影响）；TritonGPU 方言 op 变更不改变 Ascend 的 TTIR→TritonToLinalg 输入（TT 方言未改），但由于 Ascend 复用 MLIR TritonGPU 类型定义与 Analysis 基础设施，Load/Store 与 Membar 的共享语义调整可能间接传导。另外新 pass 只在 third_party/nvidia/backend/compiler.py 中注册，Ascend 的 add_stages 不调用它，因此 Ascend 编译期不会执行该优化。总体：接口定义层有可见变更，运行路径无实质改变，属可控影响。",
+        "testing": "TritonGPU 方言新增 op 的 verifier/lit 测试（test/TritonGPU/invalid.mlir、test/Conversion/atomic_ldst.mlir）与 NVIDIA 端 Python 测试（python/test/unit/language/test_core.py、python/test/gluon/test_core.py）为 NVIDIA 专属新增，不影响 Ascend 测试；但 test/Conversion/atomic_ldst.mlir 中 AtomicPoll 广播 lowering 改为 i8 传递的 CHECK 变化若 Ascend 有共享 lit 用例需注意。Ascend 若跑上游 TTGIR 相关 lit 或复用 Allocation/Membar 分析，需确认新 op 是否需在自家分析/遍历中跳过。",
+        "needs_test_update": false,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion",
+          "third_party/ascend/unittest/pytest_ut"
+        ]
+      },
+      "message": "[BACKEND] Mask/Broadcast regions that can be executed with just one thread (#12202)\n\nDifferent approach to https://github.com/triton-lang/triton/pull/12196.\n\nThe idea here is to find contiguous sets of ops that can be executed\njust by the leading thread, then transform them as\n\n```python\nvalue = 0\nif tid & mask == 0:\n    value = scalar_region()\n\nvalue = broadcast_from_tid0(value, mask)\n```\n\nExplicit `ttg.thread_scope` regions preserve ownership during lowering.\nOrdinary loads remain per CTA, while atomic-dependent operations stay\ntogether on the canonical CTA.\n\nOnly escaping values are broadcast, delayed until consumers need\nadditional copies.\n\n<!-- codex-thread: 01a12077-a3a9-7543-bb55-412f0187f9c3 -->",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "4c315b2d10ee13aa504555dccf52cc80a27b5b73",
+      "comment": "在 TritonGPUDialect::verifyOperationAttribute 中为 ttg.num-warps 与 ttg.num-ctas 增加『正 2 的幂』校验（覆盖 0、负数、非 2 的幂），并在 CUDABackend 的 CUDAOptions.__post_init__ 中用新工具函数 is_power_of_two 校验 num_ctas（此前只校验 num_warps）。补全了 dialect 层与后端选项层的双重校验。风险较低：纯校验增强，但需要保证 CodeGenerator 在创建 module 时正确设置这些属性，否则可能对既有 IR 引入新的编译失败；对下游后端而言，如果 Ascend 侧传入非 2 的幂的 num_warps/num_ctas，将在此处提早报错，行为从『静默接受』变为『显式报错』。",
+      "tags": [
+        "bugfix",
+        "validation",
+        "low-risk",
+        "triton-gpu-ir",
+        "backend-options"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "新增校验位于 TritonGPUDialect::verifyOperationAttribute（lib/Dialect/TritonGPU/IR/Dialect.cpp），属 TTGIR 方言定义路径，对所有后端共享生效。Ascend 复用 CodeGenerator 生成 TTIR 时若写入 ttg.num-warps/ttg.num-ctas 属性（通过 module.set_attr 由 CodeGenerator 设置），在后续 TTGIR 相关验证阶段将受到该正 2 的幂约束；若 Ascend 参数（num_warps/num_ctas）中允许非 2 的幂取值（例如 AutoTilingTuner 展开出的 multibuffer 相关配置或 custom tiling），可能在验证/编译时报错。CUDABackend.parse_options 中的 is_power_of_two 断言仅在 NVIDIA 后端，Ascend 的 AscendBackend.parse_options 不受此改动直接影响。",
+        "testing": "上游 test/TritonGPU/invalid.mlir 与 python/test/unit/language/test_compile_only.py::test_num_ctas_invalid 为新增用例，Ascend 不运行 NVIDIA 后端选项测试。若 Ascend 存在允许非 2 的幂 warps/ctas 的测试或路径，可能因新增方言校验而失败。",
+        "needs_test_update": false,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut",
+          "third_party/ascend/unittest/autotune_ut"
+        ]
+      },
+      "message": "[GPU] Validate warp and CTA are positive powers of two (#12497)",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "b5eefe446d173fb5abaa83ab35c571fa600fc69c",
+      "comment": "AMD Gluon 专属变更：废弃 cdna4.async_copy.load_shared_relaxed（改为 DeprecationWarning 并只等价调用 smem.load(layout)，不再设置 ttg.amdg.syncedViaAsyncWait 属性），同时移除 test_frontend.py 中两个对应的 IR 期望测试并更新 test_core.py 的用例与断言。理由是 #9883 的 asyncmark/wait_asyncmark 与 #10087 的 membar 改进已使旧 alias-scope 标注不再必要。风险低，但如果有下游代码依赖该属性做 alias 分析会退化，需确保 async copy 的 waitcnt 跟踪仍由 asyncmark 机制保证。",
+      "tags": [
+        "refactor",
+        "deprecation",
+        "low-risk",
+        "gluon-amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][GLUON] Deprecate load_shared_relaxed (#12478)\n\nSince the introduction of asyncmark/wait_asyncmark in #9883 and membar improvements in #10087 there is no need to use the old way to annotate local_load for alias scope on CDNA3/CDNA4 so we deprecate them for future removal.\nAfter async load to shared mem, kernel can directly standard smem.load to load from shared mem to register.\n\nSigned-off-by: Pengzhan Zhao <borontion@gmail.com>"
+    },
+    {
+      "sha": "8d8129515f777782dbe5a302c598dc8dd78fb2f9",
+      "comment": "为 namedtuple 参数引入字段级特化开关：namedtuple 类可定义 __triton_do_not_specialize__ 元组指定不参与值/对齐特化的字段（显式 constexpr 仍特化）。实现集中在 python/src/specialize.cc：新增 interned 字符串 do_not_specialize_attr、get_unspecialized_fields()（校验必须是 tuple、字段必须存在，否则 TypeError/ValueError），handle_tuple 识别 namedtuple 时按字段跳过特化（nested tuple 也传递 specialize_value=false），specialize_impl 在顶层对 tuple 参数强制 specialize_value=true 以便字段独立特化。JITFunction/Gluon JIT 的 docstring 补充说明，并在 test_specialize.py 中加入参考实现对照与新测试。风险点在于修改了原生特化实现的顶层 tuple 行为（specialize_value || PyTuple_Check(arg)），需保证 native 与 Python 参考实现对不支持的 tuple 子类保持一致；错误类型与错误消息是 API 契约的一部分。",
+      "tags": [
+        "feature",
+        "runtime",
+        "specialization",
+        "medium-risk",
+        "python-bindings"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "命中『必然影响』中的 python/src/specialize.cc 与 python/triton/runtime/jit.py：native_specialize_impl 的特化键计算逻辑变更，namedtuple 参数顶层会强制进入字段级特化路径，Ascend kernel 若使用 namedtuple 参数（例如 tiling 配置或张量描述结构），其特化键与缓存键将按新规则计算；__triton_do_not_specialize__ 成为对 Ascend 同样可用的字段级关闭特化机制。JITFunction 缓存键计算不变，但特化结果格式（types/keys 的 tuple 结构）与错误类型有所扩展。未引入新抽象方法或签名变更，故对 AscendBackend/DriverBase 契约无破坏。",
+        "testing": "上游 test/unit/runtime/test_specialize.py 新增 namedtuple 特化与非法字段用例；Ascend 侧若存在使用 namedtuple 参数的 kernel 测试，其缓存键/编译结果可保持一致，但建议验证。",
+        "needs_test_update": false,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut",
+          "third_party/ascend/unittest/autotune_ut"
+        ]
+      },
+      "message": "[Runtime] Allow namedtuple fields to opt out of JIT specialization (#12490)",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/runtime/jit.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "2c9fb87df0e656cefeb5d18d3ac1b06c1e0a25d1",
+      "comment": "AMD Gluon（CDNA3/CDNA4）新增 buffer descriptor 及描述符版 buffer 操作：新增 !amdg.buffer_desc<T> 类型、amdg.make_buffer_desc op 与 #amdg.cache_policy_gfx9<nontemporal> 属性；BufferLoadOp/BufferStoreOp/BufferLoadToLocalOp 的 base 放宽为 AnyTypeOf<[TT_Ptr, BufferDescType]>，并新增 soffset（i32 标量或与 offsets 同型的 tensor，需 lane-uniform，否则 lowering 报错）与 scope（MemSyncScope）操作数/属性；BufferEmitter 重构为接收 numRecords/soffsetBytes 并统一 fillCommonArgs，掩码越界从 0x80000000 改为 0xFFFFFFFF（原子按 size 对齐的 2^32 结尾），新增 getBufferLoadStoreCtrlBits 处理 SC0/SC1 与 NT 位。Python 侧在 gluon/language/amd/_buffer.py 增加共享实现与 buffer_descriptor 类型，cdna3/cdna4/buffer.py 暴露 make_buffer_descriptor/load/store/load_to_shared，cdna3 新增 _cache_policy.py；AxisInfo 让 descriptor 继承 base 的对齐，OptimizeBufferOpPtr 跳过 descriptor 基础（因其边界相对 base）。风险集中在掩码越界语义从 int32 上限迁移到 uint32 全范围（涉及所有 buffer op）、新类型/属性的 dialect 注册，以及对既有 buffer 路径的 ctrl bits 计算路径统一。",
+      "tags": [
+        "feature",
+        "amd-backend",
+        "gluon",
+        "medium-risk",
+        "amd-gpu-dialect"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][Gluon] Add buffer descriptors and descriptor-based buffer ops (#12345)\n\nGluon's AMD buffer ops always build a descriptor from a base pointer with a\nfixed 2^31 - 2 byte bound, so kernels needing real bounds, an SGPR offset or\nscope bits call LLVM buffer intrinsics directly. This adds those to Gluon for\nCDNA3/CDNA4.\n\n### API: `amd.cdna{3,4}.buffer`\n\n```python\ndesc = buf.make_buffer_descriptor(base, num_records)  # SGPR-resident, loop-carriable\nx = buf.load(desc, offsets, mask, other, *, soffset=None, scope=None, cache_policy=None)\nbuf.store(x, desc, offsets, mask, *, soffset=None, scope=None, cache_policy=None)\nbuf.load_to_shared(dest, desc, offsets, mask, other, *,\n                   soffset=None, scope=None, cache_policy=None)  # cdna4\n```\n\n- `num_records`: byte bound, unsigned 32-bit. An access is in bounds only if\n  `soffset + offset + size <= num_records` (checked per access, or per 4-byte\n  piece of wider ones; measured on gfx950). Out-of-bounds loads return zero,\n  stores are dropped.\n- `soffset`: scalar offset in elements, in the instruction's SGPR offset.\n- `scope` (`cta`/`gpu`/`sys`) sets SC0/SC1; `CachePolicy(nontemporal=...)`\n  sets NT, separately.\n\nExisting pointer-based `buffer_load` / `buffer_store` /\n`buffer_load_to_shared` are unchanged; they'll be deprecated later.\n\n### IR\n\n- `!amdg.buffer_desc<T>` and `amdg.make_buffer_desc %base, %num_records`,\n  lowered to `rocdl.make.buffer.rsrc`.\n- `amdg.buffer_load/store/load_to_local` accept a descriptor base and gain\n  `soffset` and `scope`; new `#amdg.cache_policy_gfx9<nontemporal>`.\n- AxisInfo gives the descriptor its base's alignment; `OptimizeBufferOpPtr`\n  skips descriptor-based ops.\n\n### Masking change (all buffer ops)\n\nMasked lanes used offset 0x80000000, which stops being out of bounds once\n`num_records > 2^31`. They now use 0xFFFFFFFF (the range check doesn't wrap at\n2^32), or for atomics, which fault on misaligned addresses, the size-aligned\noffset ending at 2^32."
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

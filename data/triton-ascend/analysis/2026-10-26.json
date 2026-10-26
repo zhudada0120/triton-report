@@ -1,0 +1,114 @@
+{
+  "date": "2026-10-26",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-10-27T06:02:39.158933+08:00",
+  "daily_summary": "当日变更集中在 Ascend 后端的能力扩展与工程化收敛五条主线：一是新增 TLA（Triton Language for Ascend）前端语言包，提供 buffer/alloc/copy/view/simd/scope 等独立命名空间，将 HIVM-HIR 级 IR 直接从前端生成并配套离线 lower_ttir 入口，同时附带 7 个 3-in-1 测试；二是将 Ascend 后端散落的 os.getenv 配置读取收敛为 typed triton.knobs.ascend（11 个描述符），并把影响编译/调优的环境变量纳入缓存失效键，同时修正 warmup 的 dtype 占位符与 store_binary_only 只存最终二进制；三是修复 FP16/BF16 标量实参被错误当作 F32 打包的问题，新增 F16/BF16 两种 launcher ABI kind 与 RNE 编码实现；四是将编译目标架构判定从 '_is_a5_target_arch' 泛化为 '_is_register_based_target_arch'，新增 Ascend910_96/Ascend960（A6）识别及 376KB UB 预算，并修正 runtime 侧 vector core 数量与 rf_size 适配；五是 CI 文档构建 runner 调整（a3 换 800i-4 双标签、a5 从 -4 改为 -2）。整体方向是前端多范式（Triton SIMT + TLA SIMD/cube）、配置规范化、ABI 精度正确性与新硬件（A6）前移适配。",
+  "test_impact_summary": "当日变更测试影响面显著扩大且多为新增看护点：TLA 前端引入了一整套全新编程范式（buffer/simd/scope/HIVM IR），其 IR 结构断言、离线 lower_ttir 流水线、三条后端产物（ir/compile/run）均需要长期看护，目前仅有 7 个 vector 用例且尚未接入 CI，cube/mix 路径为空缺，是最大的测试盲区；knobs 变更修改了缓存键语义、store_binary_only 落盘策略、warmup 占位符契约与 UB tuner 环境变量恢复行为，新增的 test_knob.py/test_warmup.py 覆盖较充分，但涉及真实设备编译两次比对 hash/npubin 的用例依赖 NPU，若无设备则会漏测；FP16/BF16 标量打包是 ABI 级修复，新增的 C++ 编码器 vs torch 逐位比对测试质量较高，覆盖了 RNE、subnormal、Inf/NaN 与交错参数槽位，风险已被较好封住；A6 目标的判定散落在 compiler/utils/runtime 三处（arch 前缀、soc name、UB/rf 预算、FFTS 策略、vector core 数），新增的 test_a6_target_contract 只覆盖了 compiler/utils 两个文件的纯函数策略，runtime/utils.py 中 num_vectorcore 读取与 rf_size 分支未被该契约测试覆盖，且 test 期望的 80% UB 上限与实现对齐是事后修正，提示后续新 arch 加入时易出现多处判定不一致。建议：把 TLA 测试接入 CI 的 ir 阶段（无设备可跑）、补充 A6 的 runtime 侧契约测试、并为 knobs 与 TLA builder hook 增加无设备可运行的静态校验用例。",
+  "commits": [
+    {
+      "sha": "b6dda4fa17bb00780199aa52f0549262cf2e1d1b",
+      "comment": "新增 TLA（Triton Language for Ascend）语言前端包 third_party/ascend/language/tla，是一个与既有 al/bl 接口完全不同编程范式的独立命名空间：core.py 定义 buffer_type/buffer（gm/ub/l1/l0a/l0b/l0c 六种 space，默认 row-major strides、支持 offset 为 None 表示动态 subview），alloc.py 提供显式 UB/L1 分配并附 hivm.multi_buffer 版本注解（versions 校验为正整数，gm 不允许前端分配），copy.py 仅支持 GM->UB/UB->GM 的 hivm.load/store DMA，view.py 分两条路径——指针入口走 1-D hivm.hir.pointer_cast + memref.reinterpret_cast（线性 offset = sum(off_i*stride_i)，strides 同时承担折叠系数与最终 memref strides），buffer 源走 memref.subview，simd.py 提供 30+ 个 AVE 向量寄存器算子（vlds/vsts/vextf/vintlv/vfma/vreduce/pge/vci/membar 等），均 1:1 映射 ave.hir.* 并通过 ascend_ir.cc 绑定构造，simd_semantic.py 以纯 Python 无依赖方式固化 2048-bit 向量寄存器不变量与 dist/part/pge 白名单，vf.py 用 context-manager 类 + TLA_WITH_DISPATCH 把 with tla.scope.simd() 交给 code_generator.handle_scope_with 发射 inline scope.scope（携带 hivm.vector_function/no_inline/tcore_type 等属性，由 bishengir outline-scope 提取为 VF），code_generator.py 还通过 dummy 块重访 body 收集 simd.vlds/vsts 的读写副作用并去重合并成 tla.memory_effect，compiler.py 的 lower_ttir 只跑 inliner + triton_to_linalg 并在 check_ttadapter 中校验单 public func.func、global_kernel/mix_mode/parallel_mode 与 SyncBlockLockArgIdx/WorkspaceArgIdx 两个 i64 属性，ast_to_ttir 接受 buffer_type 签名。关键风险点：1) 该前端依赖构建期补丁把 TLA_WITH_DISPATCH 合入上游 WITH_DISPATCH 并挂 tla_setup_unified_builder，若上游 code_generator.WITH_DISPATCH 或 CodeGenerator.__init__ 签名变动，整个前端会静默失效；2) builder.py 的 attach 方法列表与 ascend_ir.cc 绑定强耦合，新增 op 需两处同步；3) handle_scope_with 采用'先 dummy 访问再真实生成'的双重访问模式，若 body 内含非常量折叠副作用（如计数器/静态状态）可能被重复求值；4) copy 仅支持 GM<->UB，SIMD 与 DMA 之间缺少显式同步原语（依赖 membar 手动插入）；5) 测试目录 unittest/tla_ut 放在 third_party/ascend/unittest 下但 README 说未接入 CI，且用例脚本内含大量 sys.path hack 与 npu 依赖分支。",
+      "tags": [
+        "feature",
+        "high-risk",
+        "third_party/ascend/language/tla",
+        "third_party/ascend/unittest/tla_ut"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了一个完整的编程前端（TLA namespace）与离线 lowering 入口，现有任何测试都不覆盖其 buffer_type 校验、view 的 pointer_cast+reinterpret_cast 结构、simd op 的 dtype/lane 校验、scope VF 属性发射与 lower_ttir 的 ttadapter 边界校验；仓库虽自带 7 个 3-in-1 用例，但 README 明确尚未接入 CI，且无 cube/mix 路径与负数/非法输入用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/vector/*.py（接入 CI 的 ir 阶段）",
+          "third_party/ascend/unittest/tla_ut/{cube,mix}/（新建）",
+          "third_party/ascend/language/tla/simd_semantic.py 的白名单与 2048-bit 不变量单测",
+          "third_party/ascend/language/tla/compiler.py::lower_ttir/check_ttadapter 边界校验用例",
+          "third_party/ascend/language/tla/code_generator.py::handle_scope_with 的副作用收集与去重逻辑"
+        ]
+      },
+      "message": "[ascend](feat) add TLA language frontend (#2725)\n\n* [ascend] feat: add tla language package (python)\n\nAdd the TLA frontend: core buffer/copy/view primitives and simd/cube\nscopes, SIMD vector-register ops with semantic validation, scope-based\ncodegen, and the lower_ttir offline compile entry. Tests live under\nunittest/tla_ut and are not wired into CI yet.\n\n* [ascend](refactor) lower tla.view pointer entries as 1-D pointer_cast + reinterpret_cast\n\nPointer view entries (view(ptr, ...)) now lower to a 1-D identity\nhivm.hir.pointer_cast plus one memref.reinterpret_cast that carries the\nlinear element offset sum(off_i*stride_i) and the full sizes/strides,\nmatching npuir's canonical form, instead of folding the offset into the\npointer address. The 1-D entry stays identity (required by PointerCastOp's\nLLVM lowering); strides remain the final memref strides, row-major by\ndefault. tla.view registers a create_tla_reinterpret_cast builder hook,\nand the vector test cases assert the reinterpret_cast-based entry shape.\n\nAssisted-by: AI\n\n---------\n\nCo-authored-by: liupengcheng2012 <liupengcheng38@huawei.com>"
+    },
+    {
+      "sha": "2c4b878318b10c04712fecf7f5c18702ed9eadc1",
+      "comment": "把 Ascend 后端散落的 11 处 os.getenv 配置读取统一收敛为 typed 的 triton.knobs.ascend 描述符组（backend/knobs.py，使用 env_bool/env_str/env_opt_str，不修改 vendored knobs.py 而是在运行时挂到 triton.knobs 上），并保持环境变量名与默认值不变。核心设计点：1) install_ascend_knobs() 幂等、在 triton.backends.ascend 与 triton.backends.ascend.runtime 两处调用，原因是 runtime.autotuner 在包级 install 时尚未进入 sys.modules；2) 通过包装 jit/compiler/upstream autotuner/ascend autotuner 四个模块的 get_cache_invalidating_env_vars，把 _COMPILE_ENV_VARS（含不在 C++ CACHE_INVALIDATING_ENV_VARS 白名单的 NPU_DEVICE_LIMIT/TRITON_NPU_COMPILER_PATH 等）与 _AUTOTUNE_ENV_VARS 纳入缓存键，并按 knob 的'有效值'（而非仅环境变量）取值，工作区内 propagate_env=False 的 override 也能改变 hash；3) 明确把 compile_only/taskqueue/device_print/grid_warn_print 等运行时开关排除在键外避免误失缓存；4) ubtuner 用 knobs.ascend.scope() 替代原来 pop 环境变量的写法，修复了用户 ENABLE_PRINT_UB_BITS 被吃掉的问题；5) AutoTilingTuner 的 print_autotuning 从实例字段改为读取 knobs.autotuning.print（按 commit 后续 fix，已移除先引入的 property 方案）；6) warmup 用 MockTensor.wrap_dtype 包裹参数以复原上游 KernelInterface 契约，支持 torch.dtype 占位符；7) 构建期补丁把 store_binary_only 的硬编码 ('cubin','hsaco','json') 改为 (backend.binary_ext, 'json')，对 Ascend 即只保留 npubin+metadata。风险点：环境变量名如 ENABLE_PRINT_UB_BITS 不符合 TRITON_ 前缀且被 SIMD/测试侧直接使用；get_cache_invalidating_env_vars 的 monkey-patch 依赖模块已 import 的顺序敏感机制，新增 consumer 模块需再次登记到 _CACHE_KEY_MODULES；TRITON_AUTOTUNE_PARALLEL_COMPILE 的解析从 '== \"1\"' 变为 env_bool 的真值集合，legacy 值以外的输入行为发生变化（已在 commit 说明中标注）。",
+      "tags": [
+        "refactor",
+        "feature",
+        "medium-risk",
+        "third_party/ascend/backend",
+        "third_party/ascend/patch"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "变更直接改写了编译缓存键组成、store_binary_only 落盘内容、warmup 参数契约、UB tuner 环境变量生命周期与 autotuning 打印路径，属于影响面广且易回退的行为变更；commit 自带 test_knob.py（10 项）与 test_warmup.py（3 项）并同步修改了 autotune_ut 下三个用例（去掉 print_autotuning 实例字段、改用 knobs.autotuning.scope），说明现有测试确实需要更新。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_knob.py",
+          "third_party/ascend/unittest/pytest_ut/test_warmup.py",
+          "third_party/ascend/unittest/autotune_ut/test_autotune_param_valid.py",
+          "third_party/ascend/unittest/autotune_ut/test_compile_failure_cache.py",
+          "third_party/ascend/unittest/autotune_ut/test_do_bench_compat.py",
+          "third_party/ascend/backend/knobs.py::install_ascend_knobs 的幂等性与新增 consumer 模块登记"
+        ]
+      },
+      "message": "[knobs](feat) add triton.knobs.ascend and warmup coverage (#2734)\n\n* [knobs](feat) add triton.knobs.ascend and warmup coverage\n\nMotivation: Triton 3.6 replaced scattered configuration reads with typed\ntriton.knobs descriptors, but the Ascend backend still read its own switches\nthrough ad-hoc os.getenv calls. Those reads are untyped, hard to isolate in\ntests, and invisible to the compilation cache key. The warmup path also lacked\nAscend coverage and did not accept torch.dtype placeholders.\n\nDesign:\n- Add triton.knobs.ascend (11 descriptor fields) in backend/knobs.py, installed\n  when the backend is imported. Environment variable names and defaults are\n  unchanged; assignment propagates to the environment unless propagate_env is\n  False, and scope()/copy()/reset() behave like upstream knob groups.\n- Wrap get_cache_invalidating_env_vars in triton.runtime.jit,\n  triton.compiler.compiler, triton.runtime.autotuner and the Ascend autotuner so\n  compile- and autotune-affecting fields invalidate the cache. Runtime-only\n  switches (compile_only, taskqueue, device_print, grid_warn_print) and\n  autotune_parallel_compile deliberately stay out of the key.\n- Replace os.getenv reads in utils, driver, launcher, testing,\n  runtime.autotuner and runtime.ubtuner with knobs.ascend. The launcher\n  conversions live in launcher.py, which owns the shared runtime path. The UB\n  tuner now opens a knob scope instead of popping ENABLE_PRINT_UB_BITS, so a\n  user value is restored.\n- Make AutoTilingTuner.print_autotuning a property over knobs.autotuning.print\n  while keeping an instance-level override, and wrap dtype placeholders in\n  MockTensor in warmup() to restore the upstream KernelInterface contract.\n- Store-binary-only patch: keep only the backend's final binary and metadata\n  instead of a hard-coded cubin/hsaco/json list.\n- Tests: test_knob.py covers only behaviour this branch changes (knobs.ascend,\n  its consumers and cache keys, store_binary_only, autotuning.print and\n  compile_only) instead of re-porting upstream's generic knob tests.\n  test_warmup.py covers the autotuned warmup dtype-placeholder path.\n\nVerification: test_knob.py (10 tests) and test_warmup.py (3 tests) pass.\nT36 compiles twice, asserts the flags appear only when enabled and that\nmetadata.hash/npubin change, and runs in a temporary working directory\nbecause memory_display writes memory_info_aiv.json to the compiler cwd. The\nmemory_display command-line assertion is A2/A3-only: A5 compiles through\nbishengir's regbase PlanMemory, which has no memory-display option and never\nemits the JSON, so the test asserts only the flags the target path supports.\n\nRisks: TRITON_AUTOTUNE_PARALLEL_COMPILE now also accepts true/yes/on/y as\ntruthy; existing 0/1 values behave the same.\n\nCo-Authored-By: Claude Code <noreply@anthropic.com>\n\n* [knobs](fix) remove autotune property of print_autotuning\n\n* [comment](fix) optimize code comments\n\n* [knobs](fix) fix cache when propagate_env = False\n\n---------\n\nCo-authored-by: liusongshuo <liusongshuo@users.noreply.github.com>\nCo-authored-by: Claude Code <noreply@anthropic.com>\nCo-authored-by: hongziqi <1102229410@qq.com>"
+    },
+    {
+      "sha": "410730e949a3906a15803bd2f4d72609ccaeabb7",
+      "comment": "修复 Ascend launcher 把 fp16/bf16 标量实参错误按 F32 打包的精度问题：原先 _KINDS 把 fp16/bf16 都映射为 F32，导致 4 字节写入而设备侧按 2 字节读取，造成乱码。改动在 launcher.py 新增 F16/BF16 两个数据标签（CONSTEXPR..BF16 = range(14)，与 launcher_abi.h 的 enum 顺序严格对应），launcher_abi.h 追加 TRITON_NPU_F16/BF16 枚举并在注释中定义 C 参数缓冲为'编码后的 16 位设备值'，launcher_args.h 新增 floatToFP16/floatToBF16 两个 inline 实现（FP16 覆盖 subnormal/溢出/Inf/NaN 并显式做 RNE，BF16 用 (bits + 0x7fff + lsb) >> 16 的经典 RNE），launcher_runtime.cpp 在 convertArgument 中先 PyFloat_AsDouble 再按 kind 编码为 uint16 写出，ArgLayout 把 F16/BF16 归类为 size=2。设计上把'host 浮点解析'与'device 标量打包'分离，与既有 i16/u16 的 2 字节对齐规则一致，避免破坏后续参数槽位偏移。风险：floatToFP16 手写位运算边界较多（0x477ff000 溢出阈值、0x33000000 全下溢阈值、0x38800000 normal 分界），与硬件 FTZ/denormal 行为需保持一致；BF16 的 NaN 分支返回 (bits>>16)|0x40 会强制 quiet 位，对 signaling NaN 有归一化副作用；另枚举值追加到尾部依赖两端（Python 常量与 C enum）永远同步，属隐式契约。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "third_party/ascend/backend",
+        "third_party/ascend/backend/launcher_src"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "ABI 级行为变更，既有 test_launcher_plan.py 中 'bf16 -> F32' 的断言必需改为 BF16（本 commit 已改），test_launcher_export_api.py 的参数化需增加 f16/bf16 两种 kind（已加），并新增 test_launcher_scalar_types.py 以真实 C++ 编码器对照 torch 做 10 万随机位逐位比对；这一测试策略合理且必要，因为打包正确性无法通过 Python 侧单测覆盖。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_launcher_scalar_types.py",
+          "third_party/ascend/unittest/pytest_ut/test_launcher_export_api.py",
+          "third_party/ascend/unittest/pytest_ut/test_launcher_plan.py",
+          "launcher_src/launcher_abi.h 与 launcher.py 常量顺序一致性校验"
+        ]
+      },
+      "message": "[Runtime](fix) Pack FP16 and BF16 scalar arguments correctly (#2285)\n\nSeparate host float parsing from device scalar packing. Encode FP16\nand BF16 arguments as 16-bit values with round-to-nearest-even and\npreserve the existing argument-slot alignment. Cover rounding, special\nvalues, and half scalars interleaved with other argument types.\n\nSigned-off-by: yangkaixin <yangkaixin1@huawei.com>\nSigned-off-by: Misaka19280hw <312455702+Misaka19280hw@users.noreply.github.com>\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>\nCo-authored-by: yangkaixin <yangkaixin1@huawei.com>\nCo-authored-by: Misaka19280hw <312455702+Misaka19280hw@users.noreply.github.com>"
+    },
+    {
+      "sha": "52aeb4cd3752fc34e5cd68c620fab56b365409c9",
+      "comment": "把'是否走 A5 寄存器式流水线'的判定从 _is_a5_target_arch 泛化为 _is_register_based_target_arch，纳入 Ascend910_96/Ascend960（A6）前缀，并同步到 compile_on_910_95 选项、_is_internal_npu_options 的 metadata 往返识别、_normalize_compile_mode 的 simt_only 目标限制与 _normalize_bishengir_simt_optimization_for_context。utils.py 侧 is_compile_on_910_95（含 acl.get_soc_name 探测的 ascend910_96/ascend960 分支）与 ub_size_in_kbytes_for_arch 新增 A6=376KB 分支；runtime/utils.py 修正 num_vector_core 从 num_aicore 改为读取 prop['num_vectorcore']（并删除原来对 910B/910_93/95 统一 *2 的臆测），rf_size 分支扩展到 A6。风险点：1) 函数名 is_compile_on_910_95 语义已泛化为'寄存器式目标'但名称未改，属于命名债，容易让后续读者误判；2) A6 的判定散落在 compiler.py 与 utils.py 两处（各自维护前缀元组），本 commit 已出现两处不同的写法（一处是 startswith 元组拼接，一处是 or 串联），存在漂移风险；3) runtime 侧 num_vectorcore 的键名依赖驱动 props 实际提供，若旧驱动无此键会 KeyError（原代码用 num_aicore 是稳妥的），缺少 fallback；4) 删除 ASCEND_VARIANTS 的 *2 逻辑改变了 910B/910_93 的 vector core 数量语义，若下游 costmodel 依赖该值需回归。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "third_party/ascend/backend",
+        "third_party/ascend/backend/runtime"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 arch 家族（A6）的识别影响编译模式合法性、UB 预算、FFTS 策略与 runtime core 数，属于多分支判定；新增 test_a6_target_contract.py 用 AST 抽取纯函数做离线契约测试覆盖了 compiler/utils 侧，但 runtime/utils.py 的 num_vectorcore 读取与 rf_size 分支、以及 _normalize_compile_mode 对 A6 的 simt_only 放行均未被覆盖。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_a6_target_contract.py",
+          "third_party/ascend/backend/runtime/utils.py::_init_npu_params 的 A6 core/rf 分支",
+          "third_party/ascend/backend/compiler.py::_normalize_compile_mode 对 A6 的 simt_only 校验",
+          "costmodel 侧对 num_vector_core 语义变更的回归"
+        ]
+      },
+      "message": "[compiler](feat) detect Ascend910_9691 (A6) as register-based target … (#2634)\n\n* [compiler](feat) detect Ascend910_9691 (A6) as register-based target with 376KB UB\n\n(cherry picked from commit 12b1eec380d39620d42df47981c3a95acbe10068)\n\n# Conflicts:\n#\tthird_party/ascend/backend/utils.py\n\n* test: fix A6 UB budget assertion to match 80% cap\n\ngraph_ub_budget_bytes_for_arch caps UB at 80% of raw capacity per its\ndocstring, but test_a6_target_contract asserted ub*512 (50%). Align the\nexpectation with the implementation and reformat with yapf so pre-commit\npasses.\n\nFixes integration-tests-ascend and pre-commit (code formatting) on PR #2634.\n\n* adds compiler backend support for the A6 device\n\n* Apply suggestion from @hongziqi\n\nCo-authored-by: hongziqi <1102229410@qq.com>\n\n* 添加rf_size适配\n\n---------\n\nCo-authored-by: yezifa <yezifa1@huawei.com>\nCo-authored-by: hongziqi <1102229410@qq.com>"
+    },
+    {
+      "sha": "3672917336f61669f885ce10dbc5d3bdab23b42f",
+      "comment": "CI 基础设施调整，仅改两个 workflow：documentation.yml 中 a3 的 runs_on 从单标签 linux-aarch64-a3-4 改为自托管多标签数组 ['linux-aarch64-a3-800i-4','cn12-001']（利用 self-hosted 多标签 AND 语义把 a3 钉到特定机器），a5 从 linux-amd64-a5-4 改为 linux-amd64-a5-2；runner-preparation.yml 同步更新注释以保持文档与矩阵一致。不涉及任何产品代码、编译流水线或后端逻辑，纯 runner 容量/定位调整，无功能风险；潜在风险是标签拼写或 runner 实际在线状态若不匹配会导致文档构建 job 排队超时，但那属于运维可见性问题。",
+      "tags": [
+        "ci",
+        "low-risk",
+        ".github/workflows"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅调整 GitHub Actions 的 runner 标签与注释，不改变任何被测代码、测试用例或测试配置，现有测试无需更新。",
+        "suggested_test_areas": []
+      },
+      "message": "[CI](fix) Change the document build runner (#2784)"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

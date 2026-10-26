@@ -1,4 +1,24 @@
 {
+  "b6dda4fa17bb00780199aa52f0549262cf2e1d1b": {
+    "date": "2026-10-26",
+    "msg": "[ascend](feat) add TLA language frontend (#2725)"
+  },
+  "2c4b878318b10c04712fecf7f5c18702ed9eadc1": {
+    "date": "2026-10-26",
+    "msg": "[knobs](feat) add triton.knobs.ascend and warmup coverage (#2734)"
+  },
+  "410730e949a3906a15803bd2f4d72609ccaeabb7": {
+    "date": "2026-10-26",
+    "msg": "[Runtime](fix) Pack FP16 and BF16 scalar arguments correctly (#2285)"
+  },
+  "52aeb4cd3752fc34e5cd68c620fab56b365409c9": {
+    "date": "2026-10-26",
+    "msg": "[compiler](feat) detect Ascend910_9691 (A6) as register-based target … (#2634)"
+  },
+  "3672917336f61669f885ce10dbc5d3bdab23b42f": {
+    "date": "2026-10-26",
+    "msg": "[CI](fix) Change the document build runner (#2784)"
+  },
   "96cd1c367e634bbaafeb6a6bf047c2c7564fce39": {
     "date": "2026-10-24",
     "msg": "[launch](fix)  Fix launcher runtime load when TRITON_CACHE_DIR is repointed at runtime (#2745)"

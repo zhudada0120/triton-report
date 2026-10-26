@@ -1,5 +1,5 @@
 {
-  "content_hash": "b4a5500af32c84ab",
+  "content_hash": "b9288c39a52c1102",
   "analysis": {
     "interface_summary": "定义 2 个类；定义 8 个函数",
     "key_interfaces": [
@@ -11,5 +11,5 @@
       "GluonJITFunction.is_gluon"
     ]
   },
-  "cached_at": "2026-09-10T04:14:38.371651+08:00"
+  "cached_at": "2026-10-27T06:01:00.104415+08:00"
 }

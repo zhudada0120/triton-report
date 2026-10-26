@@ -1,0 +1,16 @@
+{
+  "content_hash": "8cfb7bac086a697d",
+  "analysis": {
+    "interface_summary": "定义 2 个类；定义 52 个函数",
+    "key_interfaces": [
+      "ProcessResult",
+      "ReplenishingProcessPool",
+      "ReplenishingProcessPool.__init__",
+      "ReplenishingProcessPool._start_process",
+      "ReplenishingProcessPool.start",
+      "ReplenishingProcessPool.close",
+      "ReplenishingProcessPool.run"
+    ]
+  },
+  "cached_at": "2026-10-27T05:59:35.110920+08:00"
+}
