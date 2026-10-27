@@ -1081,6 +1081,18 @@
       "interface_changes": "为 namedtuple 参数引入字段级特化开关：namedtuple 类可定义 __triton_do_not_specialize__ 元组指定不参与值/对齐特化的字段（显式 constexpr 仍特化）。实现集中在 python/src/specialize.cc：新增 interned 字符串 do_not_specialize_attr、get_unspecialized_fields()（校验必须是 tuple、字段必须存在，否则 TypeError/ValueError），handle_tuple 识别 namedtuple 时按字段跳过特化（nested tuple 也传递 specialize_value=false），specialize_impl 在顶层对 tuple 参数强制 specialize_value=true 以便字段独立特化。JITFunction/Gluon JIT 的 docstring 补充说明，并在 test_specialize.py 中加入参考实现对照与新测试。风险点在于修改了原生特化实现的顶层 tuple 行为（specialize_v",
       "change_summary": "[Runtime] Allow namedtuple fields to opt out of JIT specialization (#12490)",
       "ascend_impact": false
+    },
+    "a950b397451d3e90c9ba6d9e29be3bf470e2ac0b": {
+      "date": "2026-10-27",
+      "affected_modules": [
+        "python/triton/language/semantic.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/language/semantic.py"
+      ],
+      "interface_changes": "在多层禁用 AMD 多 CTA kernel 中的标量（非 block）原子操作。前端 TritonSemantic.atomic_cas / atom_red_typechecking_impl 在 backend_name=='hip' 且 num_ctas>1 且 ptr 非 block 时抛 ValueError；LLVM lowering 侧 AtomicCASOpConversion / AtomicRMWOpConversion 在 lookupNumCTAs>1 且结果非 RankedTensorType 时 emitError；lit 测试由原来的正例改为 expected-error。注意该改动直接修改了 python/triton/language/semantic.py（triton-ascend 通过 monkey-patch 覆写 dot，但不覆写 atomic_cas），并读取 self.builder.options.backend_name —— 若 Ascend 的 options 不含 backend_name 字段，则此新增分支在 Ascend ",
+      "change_summary": "[AMD] Disable scalar atomics in multi-cta kernels (#11475)",
+      "ascend_impact": false
     }
   }
 }

@@ -1,0 +1,277 @@
+{
+  "date": "2026-10-27",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-28T05:32:42.144519+08:00",
+  "daily_summary": "当日变更集中于 NVIDIA 与 AMD 两条后端主线。NVIDIA 侧：修复 thread-region 优化回归并回滚单 warp 分区的 warp-ID 折叠（即先引入 #12498 又在 #12518 撤销），为 CUDA device properties 增加 lru_cache，并落地 Blackwell 双 CTA（two-CTA）MMAv5 完整支持（AccelerateMatmul 选择逻辑、TMA 双 CTA barrier、TMEM 累加器安全复用、warp specialization/pipeliner 禁用分支等）；AMD 侧：将 MIR dump/swap 能力迁入独立 AMD codegen 库并新增两个入口点、禁用 multi-CTA 标量原子操作、为显式版本化的 libamdhip64 探测、为 Gluon 增加 buffer.atomic_load/atomic_store、优化 SW fp8e4nv->fp16 上转型、支持 3D scaled MFMA 布局，并修复 WMMA kWidth 跨多条指令时寄存器定位错误。整体是两大 GPU 后端的持续功能补齐与正确性修复，未触及 Python 后端抽象接口与 TTIR 前端。",
+  "ascend_impact_summary": "当日全部 commit 均属于 NVIDIA 或 AMD 平台专属实现，改动集中在 third_party/nvidia、third_party/amd、lib/Dialect/TritonGPU 的部分 pass 逻辑、NVIDIA 方言以及对应 lit/pytest 测试；没有任何文件落在 triton-ascend 的必然影响路径（python/triton/backends、semantic.py、code_generator.py、compiler.py::parse、python/src/ir.cc 的 TritonOpBuilder、interpreter.py、autotuner.py、jit.py、include/lib/Dialect/Triton 等）。因此对 triton-ascend 无功能与测试影响。",
+  "commits": [
+    {
+      "sha": "d3229a17e19855c704059d5aa2214659430deeac",
+      "comment": "回滚 #12498 引入的优化：在 ConvertWarpSpecializeToLLVM 中删除了“单 warp 分区将 ttg.warp_id 折叠为 0”的分支，同时删除了对应 lit 测试用例。原因应是该折叠在部分场景（如 warp specialization 后的 warp_id 语义/后续 nvgpu_to_llvm 交互）引起正确性问题。改动本身很小，但会降低 MMAv5 lowering 中 elect 分支的优化机会（性能回退），属于正确性优先的权衡。代码位于 NVIDIA 专属 lowering 路径，不涉及公共接口。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "third_party/nvidia",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Revert warp-ID folding for single-warp partitions (#12518)"
+    },
+    {
+      "sha": "75b1612805abe2127abc14297a67f932dfd48a7b",
+      "comment": "修复 thread-region 优化回归。三点改动：(1) 在 AxisInfoAnalysis 中把 ttg.ThreadHandoffOp 注册为 IdentityOpAxisInfoVisitor，使 thread handoff 之后的 splat 能保留 constancy/divisibility 信息，避免因丢失轴信息而生成多余的 full-domain handoff；(2) OptimizeThreadRegions 删去 RegionEffects::hasSCF 字段，并将 allowFullDomainHandoff 条件收紧为 atomicDependent || hasAtomic || needsBarrierBefore，避免对循环/条件中的普通 load 引入跨 warp 的 full-domain handoff；(3) 更新 lit 测试并新增 test-alignment.mlir 与 atomic_ldst.mlir 用例。注意注释中仍保留 'hasSCF' 相关语义判断需通过 needsBarrier 覆盖，需留意 loop 内 barrier 场景的回归风险。lib/Analysis 与 lib/Dialect/TritonGPU 属通用/后端共享层，但该 pass 实际只服务于 NV 路径的 thread-region 优化。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "lib/Analysis",
+        "lib/Dialect/TritonGPU",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 AxisInfo 分析与 OptimizeThreadRegions（TritonGPU thread-region 优化），Ascend 走 TTIR→Linalg 路径，不使用 thread_scope/thread_handoff 系列 op，也不复用该 pass。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Fix thread-region optimization regressions (#12505)\n\nPreserve axis information across thread handoffs, and avoid adding\nfull-domain handoffs for ordinary loads in loops and conditionals."
+    },
+    {
+      "sha": "1b4a2041b0e3eda43ad398636098ef9147e4663c",
+      "comment": "为 warp specialization 转换新增单 warp 分区的 warp_id 折叠：在 ConvertWarpSpecializeToLLVM::rewriteWarpSpecializeWarpIdsOnce 中，如果 lookupNumWarps(op)==1 则直接把 ttg.warp_id 替换为常量 0，从而让 LLVM 能消除 MMAv5 lowering 中 elect 的冗余分支（PR 描述给出了 PTX 前后对比）。原因是 #9535 之后该 fold 所在的 nvgpu_to_llvm 看不到分区级 warp 数。附带新增 lit 用例。该 commit 随后被 #12518 回滚，说明存在正确性/回归问题，值得注意转而在上游被 revert 的事实。",
+      "tags": [
+        "performance",
+        "bugfix",
+        "third_party/nvidia",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Fold warpid to 0 for single-warp partitions in warp specialize to llvm conversion (#12498)\n\nIf a warp specialization partition is assigned only 1 warp, the relative\nwarp id must be zero. Folding this to zero allow LLVM to remove a\nconditional branch on the warp id in the MMAv5 lowering that guarantees\nonly (one thread elected from) one warp issues a `tcgen05.mma`.\n\nThe `nvgpu_to_llvm` pass has supported this fold since #6823, but after\nthe warp specialization conversion pass was moved before `nvgpu_to_llvm`\nin #9535, the fold no longer covers the common scenario, as the\npartition is already lowered so the `lookupNumWarps` helper sees the\nnumber of warps of the module instead of the partition.\n\nFix: folds `ttg.warp_id` to zero during warp specialization conversion,\nwhile the partition's warp count is still available.\n\nThis can be reproduced from\n[08-warp-specialization.py](https://github.com/triton-lang/triton/blob/main/python/tutorials/gluon/08-warp-specialization.py),\ncompiled for sm100:\n\n```python\n# 08-warp-specialization.py:451\n@gluon.jit\ndef matmul_mma_partition(p, SchedulerImpl: gl.constexpr):\n    ...\n    for _ in range(scheduler.get_num_tiles()):\n        # Acquire the accumulator for the entire inner loop.\n        ...\n        for k in range(0, K, BLOCK_K):\n            # Acquire operands, issue MMA, and complete asynchronously.\n            mbarrier.wait(load_ready_bars.index(load_state.index), load_state.phase)\n            tcgen05_mma(p.a_bufs.index(load_state.index), p.b_bufs.index(load_state.index), acc_buf, use_acc=use_acc)\n            tcgen05_commit(load_empty_bars.index(load_state.index))\n            load_state = load_state.next()\n            use_acc = True\n     ...\n# 08-warp-specialization.py:540\n@gluon.jit\ndef matmul_warp_specialized_kernel(a_desc, b_desc, c_desc, SchedulerImpl: gl.constexpr, num_buffers: gl.constexpr,\n                                   SUBTILE_FACTOR: gl.constexpr, num_warps: gl.constexpr):\n    ...\n    gl.warp_specialize([                                    \n        (matmul_epilogue_partition, (p, SchedulerImpl)),\n        (matmul_load_partition, (p, SchedulerImpl)),\n        (matmul_mma_partition, (p, SchedulerImpl)),\n    ], [1, 1], [24, 24])\n    ...\n```\n\nptx for the k-loop, upstream:\n\n```\n$L__BB0_23:\n\t...\n\t@!%p17 bra \t$L__BB0_24;\n$L__BB0_21:\n\t...\n\twaitLoop:\n\tmbarrier.try_wait.parity.shared::cta.b64 complete, [%r83], %r885;\n\t@!complete bra.uni waitLoop;\n\tbar.warp.sync \t-1;\n\tshfl.sync.idx.b32 \t%r85, %r3, 0, 31, -1;\n\tsetp.ne.b32 \t%p12, %r85, 7;\n\t@%p12 bra \t$L__BB0_23;\n// %bb.22:\n\t...\n\telect.sync \t%r92|%p14, -1;\n\t@%p14 tcgen05.mma.cta_group::1.kind::f16 [ %r59 + 0 ], %rd13, %rd14, %r86, %p13;\n\t...\n\tbra.uni \t$L__BB0_23\n```\n\nptx for the k-loop, after fix applied:\n\n```\n$L__BB0_19:\n\t...\n\twaitLoop:\n\tmbarrier.try_wait.parity.shared::cta.b64 complete, [%r80], %r881;\n\t@!complete bra.uni waitLoop;\n\t...\n\tbar.warp.sync \t-1;\n\telect.sync \t%r89|%p12, -1;\n\t@%p12 tcgen05.mma.cta_group::1.kind::f16 [ %r55 + 0 ], %rd13, %rd14, %r81, %p11;\n\t...\n\t...\n\t...\n\t@%p15 bra \t$L__BB0_19;\n```"
+    },
+    {
+      "sha": "d1e7340cd5299f6e9e760cce57fb7fc78f3ec162",
+      "message": "[QoL] Extend llvm build targets to support building AMD codegen commit (#12356)\n\nExtends `make dev-install-llvm` to build AMD's codegen llvm as well. By\ndefault we will still only build `core` llvm so no functional changes.\nIt also support every combination of using prebuilt vs build from source\nfor core and amd.",
+      "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 triton-ascend。",
+      "tags": [
+        "feature",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "54f03eb5c4599960aefd27437c066f778d49cfa9",
+      "comment": "将 TRITON_DUMP_MIR / TRITON_SWAP_MIR 的 MIR dump/swap 从 Triton 核心 LLVM 迁向 AMD 独立 codegen 库的第二步。为 libtriton_amd_codegen.so 新增 triton_amdgpu_translate_to_mir、triton_amdgpu_translate_mir_to_asm 两个 C 入口；将 amdgpu_codegen.cc 中公共 prologue 抽成 prepareModule/createTargetMachine/collectOptionSettings/publish/reportTimings 等辅助函数复用；codegenABIVersion 由 1 升到 2（CodegenOptions 新增加 enableMISched/emitObject 两个尾字段）；DAGBuilder.{h,cpp} 从 third_party/amd/lib/Target/MIRDAG 移动到 backend/codegen/ 并将全局 sink 改为 thread_local；更新导出符号表、CMake（新增 MIRParser 依赖）与 llvm-build.yml 的 build_number。核心库仍在 MIRDAG/CMakeLists 中引用同一文件，python/src/llvm.cc 的 include 路径同步更新，属迁移兼容。变更目前无人调用，运行期无行为变化；但 codegenABIVersion 与 CodegenOptions 布局变更要求所有调用方（含未来 AMD Python 侧）同步，存在 ABI 演进风险。",
+      "tags": [
+        "refactor",
+        "feature",
+        "third_party/amd",
+        "build",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动只涉及 AMD 独立 codegen 动态库与 AMD 的 MIR 工具链，Ascend 不使用 triton_amdgpu_* 入口点。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Add MIR dump/swap to AMD CodeGen LLVM (#12122)\n\nSecond of three changes moving the MIR dump/swap stage (`TRITON_DUMP_MIR`,\n`TRITON_SWAP_MIR`) from Triton's core LLVM onto the AMD code generator's\nLLVM, so dumped and rescheduled MIR comes from the same compiler as the\nshipped code. Builds on #12123. Nothing calls the new code yet, so this is a\nno-op at runtime.\n\nAdds two entry points to `libtriton_amd_codegen.so`:\n\n- `triton_amdgpu_translate_to_mir`: LLVM IR to MIR text plus scheduling DAG.\n- `triton_amdgpu_translate_mir_to_asm`: MIR text to AMDGCN assembly or object.\n\nThey share `triton_amdgpu_compile`'s module prologue, return buffers instead\nof touching the filesystem, and report errors through `fail()` instead of\n`report_fatal_error`.\n\nOther changes:\n\n- `codegenABIVersion` goes to 2 for two new trailing `CodegenOptions` fields.\n- `DAGBuilder.{h,cpp}` move into `backend/codegen/`. The core library compiles\n  the same file until the follow-up drops its MIR path. Its sinks\n  become `thread_local`, so concurrent dumps don't clobber each other.\n- All entry points drain `-time-passes` and share a `publish()` helper."
+    },
+    {
+      "sha": "8fa612157a8f3dc1c29307e12b0332d775999362",
+      "message": "[CD] Build free-threaded 3.14t and 3.15t wheels (#12502)\n\n## What\nBuild `cp314t` and `cp315t` wheels in `wheels.yml`, next to the existing\n`cp311` version-specific wheel. They go through the same `cibuildwheel`\ninvocation, with the regular (non-abi3) environment.\n\n## Why\n#10958 made the Python 3.12+ wheel an abi3 wheel (`cp312-abi3`). abi3\nwheels cannot be used on free-threaded interpreters: pip's tag logic\nrejects `cp312-abi3` on 3.14t and 3.15t, and PEP 803 lists `cp314-abi3`\n/ `cp315-abi3` as incompatible with free-threaded builds. So\nfree-threaded users currently get no triton wheel from this workflow,\nand downstream (PyTorch) has to build them separately.\n\n3.13t stays out (#10547): manylinux dropped it. The current manylinux\nREADME lists 3.14t and 3.15t.\n\n## Checks\n- `cibuildwheel` 4.3.4 lists `cp314t-manylinux_{x86_64,aarch64}` and\n`cp315t-manylinux_{x86_64,aarch64}` with the `CIBW_BUILD` / `CIBW_SKIP`\nvalues from this workflow, no `--enable` needed.\n- The abi3 build keeps its own `CIBW_ENVIRONMENT` with\n`TRITON_STABLE_ABI=ON`; the free-threaded builds don't set it.\n- Not built end to end yet. Run time: the two existing builds take about\n50-55 min per job, so four builds should stay well under the 180 min\ntimeout; the PR run of this workflow will show the real number.\n\n## Stale manylinux image on the self-hosted runner\nThe first run of this PR failed on the self-hosted x86_64 runner: it\nreused a cached `quay.io/pypa/manylinux_2_28_x86_64:latest` that\npredates CPython 3.15 (its interpreter list stops at cp314 and still has\ncp313t, which upstream manylinux dropped in May), so\n`manylinux-interpreters ensure cp315-cp315t` failed. The workflow now\n`docker pull`s the image before building and prunes the untagged one it\nleaves behind. The GitHub-hosted aarch64 runner starts fresh and is\nunaffected.\n\n## Note\n`release/3.9.x` has its own copy of `wheels.yml`; this PR does not\nchange it.\n\n---------\n\nCo-authored-by: Andrey Talman <atalman@users.noreply.github.com>",
+      "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 triton-ascend。",
+      "tags": [
+        "chore"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "a950b397451d3e90c9ba6d9e29be3bf470e2ac0b",
+      "comment": "在多层禁用 AMD 多 CTA kernel 中的标量（非 block）原子操作。前端 TritonSemantic.atomic_cas / atom_red_typechecking_impl 在 backend_name=='hip' 且 num_ctas>1 且 ptr 非 block 时抛 ValueError；LLVM lowering 侧 AtomicCASOpConversion / AtomicRMWOpConversion 在 lookupNumCTAs>1 且结果非 RankedTensorType 时 emitError；lit 测试由原来的正例改为 expected-error。注意该改动直接修改了 python/triton/language/semantic.py（triton-ascend 通过 monkey-patch 覆写 dot，但不覆写 atomic_cas），并读取 self.builder.options.backend_name —— 若 Ascend 的 options 不含 backend_name 字段，则此新增分支在 Ascend 上会抛 AttributeError。这是本日唯一触及必然影响路径文件的 commit，需要重点评估。",
+      "tags": [
+        "bugfix",
+        "frontend",
+        "third_party/amd",
+        "python/triton/language/semantic.py",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "python/triton/language/semantic.py 的 TritonSemantic.atomic_cas 与 atom_red_typechecking_impl 新增了访问 self.builder.options.backend_name 与 num_ctas 的判断。triton-ascend 的 AscendBackend.parse_options 返回的 options 对象若不包含 backend_name/num_ctas 属性，则所有 Ascend 标量原子操作（atomic_cas/atomic_rmw）在语义层就会抛 AttributeError 而非正常编译；若包含 backend_name 且值不是 'hip'，则条件短路不影响行为。Ascend 的 _patched_dot monkey-patch 不受影响（未改 dot 签名）。",
+        "testing": "若 Ascend options 不含 backend_name，则现有原子操作相关 end-to-end 测试会出现 AttributeError 回归，需验证 options 字段可访问性。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/backend/compiler.py (parse_options 是否暴露 backend_name/num_ctas)",
+          "third_party/ascend/unittest/pytest_ut/ (atomic_cas/atomic_rmw 相关用例)"
+        ]
+      },
+      "message": "[AMD] Disable scalar atomics in multi-cta kernels (#11475)\n\nScalar atomics in multi-cta kernels currently can not be implemented on\nAMD side. Disable it from the compiler and frontend side.\n\n---------\n\nSigned-off-by: Pengzhan Zhao <borontion@gmail.com>",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/language/semantic.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "afe4a4f236aa25f4eaae2b4538ba3bc0371d93c3",
+      "comment": "重写 _get_path_to_hip_runtime_dylib 的库查找逻辑：在每个搜索目录内按 libamdhip64.so.7 → .6 → 无版本名 的优先序探测（TheRock 发行版可能缺少 symlink），并抽出 find_in_dir 辅助函数统一 backend/lib、torch/lib、LD_LIBRARY_PATH、HIP_PATH、hipconfig、ROCM_PATH、ldconfig、/opt/rocm/lib 各路径的处理；ldconfig 解析改为按 '/name' 后缀匹配以避免误匹配。纯 AMD driver.py（运行时）改动，说明与代码更清晰，但 .7 优先可能在混装 ROCm 6/7 环境中选择非预期版本。",
+      "tags": [
+        "bugfix",
+        "third_party/amd",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。仅 third_party/amd/backend/driver.py，Ascend 使用自己的 NPUDriver 与 CANN 库查找逻辑。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Probe and load explicitly versioned runtime (#10133)\n\nSymlinks can be missing like TheRock releases. It's also generally\ngood to be explicit regarding which major version we are loading\ngiven compatibility.\n\nIn each search location, probe libamdhip64.so.7 and libamdhip64.so.6\nbefore falling back to the unversioned libamdhip64.so, which may be\nmissing or point to an unexpected version."
+    },
+    {
+      "sha": "71114a1107e6deb62d52fb5e6ac82530db6961b5",
+      "comment": "为 AMD Gluon 增加 buffer.atomic_load/buffer.atomic_store 全链路支持：定义 amdg.buffer_atomic_load / amdg.buffer_atomic_store 两个带 AtomicOpInterface 的 op（含 verifier：load 只允许 acquire/relaxed，store 只允许 release/relaxed，元素位宽 8–64，sofset 需 wave uniform）；gluon_ir.cc 增加 create_buffer_atomic_load/store 绑定；cdna3/cdna4 的 buffer.py 暴露 API 并重构文档格式；BufferEmitter 新增 emitAtomicLoad（llvm.amdgcn.raw.ptr.atomic.buffer.load），store 复用带 coherence 位的 buffer store；lowering 中按 scope 插入 acquire/release fence 并进行 redundant-thread predicate 与 broadcast；同时修正 fillCommonArgs 的参数命名 isAtomic→isAtomicRMW（因为原子 load 不属于 RMW 情形，避免使用对齐到 size 的越界限位）。附带大量 lit/pytest（handoff、mask/bounds、wave-uniform soffset 校验），并删除旧的 buffer_ops_to_llvm_errors.mlir。属于 AMD/CDNA 专属特性，接口只在 Gluon AMD 命名空间。",
+      "tags": [
+        "feature",
+        "third_party/amd",
+        "gluon",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。所有改动位于 AMD 方言（TritonAMDGPUOps.td）、AMD Gluon 前端（experimental/gluon/language/amd/*）、AMD lowering 与 python/src/gluon_ir.cc 的 AMD 专属 builder 方法；Ascend 不使用 Gluon AMD 命名空间，也不加载 TritonAMDGPU 方言。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][Gluon] Add buffer.atomic_load and buffer.atomic_store (#12493)\n\nAdd `amdg.buffer_atomic_load` / `amdg.buffer_atomic_store`, the buffer\ncounterparts of `tt.atomic_load` / `tt.atomic_store`, and expose them as\n`cdna{3,4}.buffer.atomic_load` / `atomic_store`. They take a buffer\ndescriptor (or pointer), offsets, an optional mask and `soffset`, and\nthe usual `sem` (acquire/relaxed for loads, release/relaxed for stores)\nand `scope`.\n\nLoads lower to `llvm.amdgcn.raw.ptr.atomic.buffer.load`, which LLVM\nnever removes or hoists, so a relaxed atomic load can poll a flag in a\nloop. LLVM has no atomic buffer store intrinsic, so stores lower to a\nplain buffer store, as LLVM's own lowering of atomic stores through\nbuffer pointers does. Both set the scope's coherence bits (SC0/SC1) on\nthe access and get the same program-level ordering as the `tt` atomics:\nCTA barriers around the op and an acquire or release fence at the scope.\nAs with `tt.atomic_load`, one thread loads each element and broadcasts\nit to the element's other copies."
+    },
+    {
+      "sha": "cb0f110def4df43728fcd8c450eb31251abd786f",
+      "comment": "为 CudaUtils.get_device_properties 增加 functools.lru_cache(maxsize=None)，对外返回缓存字典的 copy 以免调用方改动污染缓存。CUDA 设备属性不可变，此优化消除每次启动/查询时的 pybind 调用与字典构造开销，对 host 侧启动延迟有正面影响；copy 的额外开销相比原调用小。属 NVIDIA driver 层小优化，无接口语义变化。",
+      "tags": [
+        "performance",
+        "third_party/nvidia",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。仅 third_party/nvidia/backend/driver.py 的 CudaUtils。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Cache CUDA device properties (#12491)\n\n<!---\nThe core Triton is a small number of people, and we receive many PRs\n(thank\nyou!).  To help us review your code more quickly, **if you are a new\ncontributor (less than 3 PRs merged) we ask that you complete the\nfollowing\ntasks and include the filled-out checklist in your PR description.**\n\nComplete the following tasks before sending your PR, and replace `[ ]`\nwith\n`[x]` to indicate you have done them.\n-->\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [ x I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)"
+    },
+    {
+      "sha": "7e0b1a07009d3746fedffbc397b3c389e1015078",
+      "comment": "重写 AMD 软件路径 fp8e4nv→fp16 上转：把逐元素 i16 位移+加常量+8 项 denorm LUT 的实现换成两两打包进 i32、以 vector<2xf16> 乘 2^(15-7) 一步完成 rebias 与次正规数规范化（与 fp8→bf16 路径一致），NaN 仍逐元素检查；前提是 fp16 denorm 不被 flush（当前后端只设置 denormal-fp-math-f32，成立）。使 RDNA3 上该转换从“不支持”变为支持，并纳入测试覆盖（新增 all-encodings 测试、启用 RDNA3 上 fp8e4nv 上转）。性能上对部分 GEMM 有约 3x 提升。风险点：隐含依赖 LLVM 不对 fp16 denorm 做 flush，若将来设置变化会静默产生错误结果；已用注释说明。",
+      "tags": [
+        "performance",
+        "third_party/amd",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 AMD TritonAMDGPUToLLVM 的 ConvertFpCastOpToLLVM 与 AMD 架构判定测试。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Speed up SW fp8e4nv -> fp16 upcast with packed fmul (#12492)\n\nThe software fp8e4nv -> fp16 path (used on RDNA3 and CDNA2/3) rebiased\nthe exponent with an integer add and then fixed up subnormals with an\n8-entry select LUT per element. Instead, multiply by 2^(15-7) in fp16,\nwhich rebiases the exponent and normalizes subnormals in one step, as\nthe fp8 -> bf16 path already does. Values are converted in pairs packed\ninto an i32, so masking and sign handling use 32-bit ops and the rebias\nis a single packed multiply. NaN is still checked per element.\n\nThis requires fp16 denormals to be preserved, which holds today since\nthe backend only sets `denormal-fp-math-f32`.\n\nThis can improve runtime 3x for some GEMM kernels on RDNA3.\n\n---------\n\nCo-authored-by: Lei Zhang <antiagainst@gmail.com>"
+    },
+    {
+      "sha": "41cc5b945d83aecf22b34aa64d00ef1f4e8e78a8",
+      "comment": "将 chooseScaledMfmaScaleLayout（lib/Dialect/TritonGPU/IR/LinearLayoutConversions.cpp）从只支持 2D 泛化为 rank 维：kSize 取 dotOperandShape[rank-1]，对 rank-2 之外的前置维度用 identity1D 补齐 tileLayout，warpsPerCTANew 与 warpOrder 改为基于 order 的拷贝并仅交换最后两维（dotOperandIdx==1 时），cgaLayout 使用 get1CTALayout(ctx, rank)。使 3D scaled MFMA（warp 沿 batch 维分布）可用，并新增 CDNA4 端到端测试。该文件属 TritonGPU 共享布局转换代码，但 chooseScaledMfmaScaleLayout 只在 AMD scaled MFMA 路径调用，NVIDIA 与 Ascend 不走该函数。",
+      "tags": [
+        "feature",
+        "third_party/amd",
+        "lib/Dialect/TritonGPU",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。虽然修改了 lib/Dialect/TritonGPU/IR/LinearLayoutConversions.cpp，但仅改 chooseScaledMfmaScaleLayout（AMD scaled MFMA layout 推导），Ascend 不产生 AMDMFMALayout、不走 TTGIR scaled 路径。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Support scaled mfma 3d case (#12500)\n\nSimilar to 3D scaled wmma, generalize the `chooseScaledMfmaScaleLayout`\nfor 3D scaled mfma, where warps are distributed along batch dimension.\n\n---------\n\nSigned-off-by: Pengzhan Zhao <borontion@gmail.com>"
+    },
+    {
+      "sha": "15e2477627e648b487bb0bab5a6fa9d1d7a742a7",
+      "comment": "本次最大改动：为 Blackwell MMAv5 落地 two-CTA 模式（PTX 13+ 要求同一 kernel 内 tcgen 指令 CTA 模式一致，故在 AccelerateMatmul 中以 canUseTwoCTAsInModule 一次性决定整个 module 是否启用）。实现要点：(1) 仅对 descriptor/TMA 加载的 A、B 启用，通过 getTwoCTADescriptorLoad/inferTwoCTAOperandLayouts 沿 reshape/transpose/split 等 view 链传播 RHS 沿 N 分裂的 CGA layout；B 的 CGA 分裂把 block 维 basis 映射为 [[0,1],[0,0],[0,2]] 形式；对 4/8 CTA 要求相邻 CTA 配对，并列形式给出多种不支持回退条件（N<16、fp8 时 N<32、M>128、N>256、标量 dot_scaled 等）。(2) createTMABarrierAndWait 对“仅被 MMA/等待消费”的 MMA-only 加载组改用 pair-shared barrier（createBarrierAlloc 新增 twoCTAs 参数，createScalarAlloc 中构造配对 CGA layout 并将 memdesc 形状改为 {numBuffers, numCTAs/2}），否则在 wait 之后插入 ttng.cluster_barrier。(3) createBarrierAndWaitOps 在 two_ctas 时把完成 barrier 环扩到 max(numStages, schedule.getNumStages())，避免两槽复用导致的 peer 死锁。(4) 新增 protectTwoCTAAccumulatorReuse：在 TMEM 读取后加 pair-shared arrive、在两 CTA 复用累加器前 wait，支持单/多 reader、嵌套 scf.if、条件读取（通过额外 iter_args 传 ring index/phase），并将不支持的嵌套循环读取保持原样（保守不插入）。(5) AssignLatencies/AutomaticWarpSpecialization 在 two-CTA 时禁用自动 warp specialization；TMALowering 非流水 TMA 在 two-CTA module 中插入 cluster_barrier；HoistMBarrierLifecycle 移除 two-CTA 的 assert 并用 DominanceInfo 安全地 hoist 初始 phase（避免把被外层条件共用的常量 sink 进 then 区）。改动了 PipeliningUtility.h 的 createScalarAlloc/createBarrierAlloc 签名（新增默认参数，向后兼容）。测试覆盖 accelerate-matmul、pipeline-lower-loop、automatic-warp-specialization、hoist-mbarrier-lifecycle、tma_lowering 的 lit 用例以及 test_matmul.py 的 two-CTA 端到端与教程。风险较高：涉及同步协议、TMEM 复用与 pipeline 调度多处语义，若某些视图链或 reader 形态未覆盖则可能死锁或读脏数据；同时对带默认参数的头文件签名变更虽向后兼容，但下游若按旧签名重载需注意。",
+      "tags": [
+        "feature",
+        "performance",
+        "third_party/nvidia",
+        "lib/Dialect/TritonGPU",
+        "lib/Dialect/TritonNvidiaGPU",
+        "high-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动全部位于 NVIDIA 专属路径：TritonGPU 的 AccelerateMatmul/Pipeliner/warp-specialization（其中 two-CTA 分支由 ttng.two-ctas 属性与 NvidiaMmaEncoding 门控，Ascend 不产生这些条件）、TritonNvidiaGPU 方言 pass，以及教程。PipeliningUtility.h 中 createScalarAlloc/createBarrierAlloc 新增的 twoCTAs 为默认参数，不改变 Ascend 的调用方式。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TRITONGPU] Support two-cta mode (#10676)\n\nEnable two-CTA MMAv5 with TMA synchronization and safe TMEM accumulator\nreuse, including multiple/nested TMEM readers and unary operand views.\n\nLocal B200 measurements of `09-persistent-matmul.py`, `M=N=8192`, in\n**TFLOP/s** (higher is better):\n\n| Precision | K | cuBLASLt | 1 CTA | 1 CTA + WS | 2 CTAs |\n|---|---:|---:|---:|---:|---:|\n| FP16 | 512 | 1431.6 | 1085.5 | 1240.9 | 1163.2 |\n| FP16 | 2048 | 1320.1 | 1193.9 | 1251.7 | 1190.8 |\n| FP16 | 4096 | 1328.9 | 1174.7 | 1205.4 | 1241.2 |\n| FP16 | 8192 | 1262.0 | 1163.3 | 1188.0 | 1227.5 |\n| FP8 | 512 | 2560.4 | 2119.6 | 2377.3 | 2126.3 |\n| FP8 | 2048 | 2786.3 | 2485.4 | 2657.5 | 2527.1 |\n| FP8 | 4096 | 2744.2 | 2612.3 | 2636.8 | 2615.4 |\n| FP8 | 8192 | 2717.3 | 2442.2 | 2501.3 | 2555.5 |\n\nMedian of six Proton rounds with 1,000 launches each; all correctness\nchecks passed. WS denotes warp specialization.\n\n<git-pr-chain>\n\n#### PR chain\n\n1. 👉 #10676 👈 **YOU ARE HERE**\n1. #10812\n1. #10817\n\n</git-pr-chain>"
+    },
+    {
+      "sha": "34ec0aedd0670bb59520499a1788eb5ba823159a",
+      "comment": "修复 AMD WMMA 操作数在 kWidth 跨多条指令时的寄存器定位错误。原实现用 K 坐标对 dot layout 的伪逆取 startReg 再连续读 kBase 个寄存器，当 16x16x16（kBase=8）、kWidth=16 时两条指令都解析到寄存器 0，导致 8-15 从未被读取、结果静默错误。修复为：getInstrsPerKChunk 计算每个 kWidth chunk 覆盖的指令数（kWidth / kPerSubtile），kElemIdx 定位到 chunk 起点，startReg 加上 (kIdx % instrsPerChunk) * kPerSubtile 的 chunk 内偏移；padding 循环改用 subTileStride = kPerSubtile * instrsPerChunk（保证 subtile 跨越整块 chunk）。同时在 TritonGPU InferLayoutInterface 中为 WMMA v2+ 增加校验：当 kWidth*2 > instrShape[2] 且 K < kWidth*2 时报错 'WMMA dot operand kWidth = X requires K >= Y'，避免 chunk 被广播到不同 K 的 lane 而产生错误。附带 wmma2 kWidth=16 与 wmma3 f32 kWidth=8 的 lowering lit 用例、verifier 负例以及 CDNA4 上 wide kWidth 的端到端 GEMM 测试。双操作数的 K 置换一致，求和不变，故正确性修复不影响数值语义（除原错误场景）。",
+      "tags": [
+        "bugfix",
+        "third_party/amd",
+        "lib/Dialect/TritonGPU",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。lowering 修复在 third_party/amd/lib/TritonAMDGPUToLLVM/DotOpToLLVM/WMMA.cpp；lib/Dialect/TritonGPU/IR/Dialect.cpp 的新增校验仅对 AMDWmmaEncodingAttr 生效（Ascend 不产生该 encoding）。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Fix WMMA operands whose kWidth spans several instructions (#12477)\n\nA WMMA v2 dot operand with kWidth = 16 and a 16x16x16 instruction (kBase\n= 8) is accepted by the verifier and gives a valid layout: each lane\nholds 16 contiguous K elements, so one kWidth chunk covers two\ninstructions. The lowering, however, located each instruction's\nregisters by pseudo-inverting its first K coordinate and reading kBase\nconsecutive registers from there. Both instructions of a chunk resolved\nto register 0, so registers 8-15 were never read and the dot silently\nproduced wrong results (max abs error ~30 for a 64x64x64 f16 GEMM on\ngfx1201).\n\nLocate the chunk start instead and offset each instruction to its part\nof the chunk. The resulting K permutation is the same for A and B, so\nthe sum over K is unchanged. Subtiles along the non-K dimension are then\na whole chunk apart.\n\nA chunk spanning several instructions is only valid when the dot's K\ncovers it; otherwise the layout broadcasts its elements to lanes the\ninstructions read as different K. Reject that case in the dot verifier."
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

@@ -1,4 +1,48 @@
 {
+  "cd2354d2d2c7ec89679c1a836c3fd8ff01ef5416": {
+    "date": "2026-10-27",
+    "msg": "[Libdevice](feat) adapt libdevice A6 feature- #2767 #2767"
+  },
+  "e7631f88f143af0cacddf3bf09f44e8d2929102e": {
+    "date": "2026-10-27",
+    "msg": "[TritonToLinalg](fix) consume memref carrier for scalar loads on distributed custom op results (#2781)"
+  },
+  "97ec8d2d9ca104fcf20c1e3e31ff94b527e112cb": {
+    "date": "2026-10-27",
+    "msg": "[triton-mlir-opt](feat) remove the bytecode bridge: triton-mlir-opt (#2746)"
+  },
+  "6ebaeaa89938988864097a7fe3d2918f9b6ab45e": {
+    "date": "2026-10-27",
+    "msg": "[TritonToUnstructure](fix) Preserve selected pointers across loops (#2284)"
+  },
+  "43827e69cb5f7f3ffde5a4cc5cd7d39ffed3aeff": {
+    "date": "2026-10-27",
+    "msg": "[Conv1d](feat) Add asymmetric padding support (#2355)"
+  },
+  "ff99e1cc65624ad54a423177a8a734ac0499ab46": {
+    "date": "2026-10-27",
+    "msg": "[Libdevice](feat) adapt libdevice A3 feature (#2741)"
+  },
+  "e2b3e77730c5590d28b28985a7768137af47839e": {
+    "date": "2026-10-27",
+    "msg": "[DynamicCVPipeline] preserve block boundaries when merging ifs (#2505)"
+  },
+  "69fcb9ca3d490cdb41f13f49886f64f3b32ac21f": {
+    "date": "2026-10-27",
+    "msg": "[Docs](fix) Ascend wording rectification (#2796)"
+  },
+  "75a426ef28dc1cdeb3b1a480202d7e94060394e4": {
+    "date": "2026-10-27",
+    "msg": "[doc](fix) remove obsolete parameters and examples (#2800)"
+  },
+  "1295314301b6edbddc5fde43bbdde5d4fa3cdf17": {
+    "date": "2026-10-27",
+    "msg": "[Docs](fix) fix the AIDD issue in the document.  (#2794)"
+  },
+  "8eeac322e88faffdcba0f8d3f8687460dcb1f230": {
+    "date": "2026-10-27",
+    "msg": "[image](feat) Release 3.6.0 images (#2778)"
+  },
   "b6dda4fa17bb00780199aa52f0549262cf2e1d1b": {
     "date": "2026-10-26",
     "msg": "[ascend](feat) add TLA language frontend (#2725)"

@@ -1,0 +1,214 @@
+{
+  "date": "2026-10-27",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-10-28T05:33:37.878764+08:00",
+  "daily_summary": "当日变更以 Ascend 后端硬件适配扩展和算子/编译链修复为主：libdevice 连续两次扩展（新增 A6/910_96 架构的 libdevice.9201.bc 选择、A3/A2 架构的 libdevice.220.bc 选择及 workspace ABI 传递机制）、移除 triton-mlir-opt 与 linalg<->bytecode 桥接、TritonToLinalg 修复 distributed custom op 标量 load 的 memref carrier、TritonToUnstructure 修复 arith.select 指针跨循环不变量、conv1d 支持非对称 padding、DynamicCVPipeline 的 if 合并保护 block_id、以及大量文档/镜像/发布相关的 CI 与措辞修订。整体体现出从“打通编译链与 device 数值正确性”到“工具链精简与发布工程化”的双线推进。",
+  "test_impact_summary": "当日变更对测试看护提出了较高要求：libdevice 两次改动均引入了按架构选择 bitcode 与 workspace extra_buffers 的新逻辑，已有 pytest 需同步更新为按 arch 参数化，并且新增的 workspace ABI 需要 lit 层面的样例覆盖；移除 triton-mlir-opt 桥接改变了编译阶段集合（ttir/ttadapter/npubin）以及 binary_extensions 字段的语义，原依赖于 mlirbc/bcmlir 的断言需要删除，同时应补充文本 pipeline 直连的负向保护测试；TritonToUnstructure 与 conv1d 的修复均自带了 lit + device pytest 回归用例，属于正向补齐；DynamicCVPipeline 的 if 合并 guard 也新增了多组合场景的 lit 用例。综合看，现有测试基线对新特性覆盖面合理，但 A6（910_96/960）架构目前仅在 libdevice 选择逻辑上有测试，尚无端到端设备用例，属于新的看护空白点。",
+  "commits": [
+    {
+      "sha": "cd2354d2d2c7ec89679c1a836c3fd8ff01ef5416",
+      "comment": "为 libdevice 增加 A6（Ascend910_96/Ascend960）架构适配。compiler.get_libdevice 新增 910_96/960 前缀分支，返回新加入的 libdevice.9201.bc；语言层 libdevice.py 新增 _is_a6_target，并把原本散落在数十个 extern 算子（reciprocal/log1p/tan/tanh/pow/erf/erfinv 等）上的 `_is_a5_target` 判断统一扩展为 `a5 or a6`，tanh 还额外对 fp32 走专用 extern。非对称判断逻辑清晰，但把同一模式复制粘贴到 30 多处，后续若引入 A7 等新架构会进一步扩散维护成本，建议后续抽象成 target 集合判定。test_compiler.py 原先断言 910_96/960 为 unsupported，现已改为只拒绝 unknown，并新增 A6 的正向用例。风险点：新增的 .bc 文件为二进制，无法在 diff 中审查其内容正确性，需依赖产物侧校验。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "backend",
+        "libdevice"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "行为变更：之前被拒绝的 910_96/960 架构现在被接受并映射到 libdevice.9201.bc，测试已同步更新但仅覆盖选择逻辑；libdevice.py 中约 30 个算子的 A6 分支缺少端到端数值测试。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler.py::test_get_libdevice_selects_architecture_specific_bitcode",
+          "third_party/ascend/unittest/pytest_ut/test_07_extern_functions.py",
+          "third_party/ascend/language/cann/libdevice.py 的 A6 extern 算子路径"
+        ]
+      },
+      "message": "[Libdevice](feat) adapt libdevice A6 feature- #2767 #2767\n\nCo-authored-by: lijiarong <lijiarong17@huawei.com>"
+    },
+    {
+      "sha": "e7631f88f143af0cacddf3bf09f44e8d2929102e",
+      "comment": "TritonToLinalg 的 BlockPtrAnalysis 中新增对 distributed custom op（如 distributed.consume_token）直接产出的标量指针的分支：识别 definingOp 为 distributed 类型 custom op 后，若 memref 为 rank-1 MemRefType 直接返回该 memref，否则构造 BlockData 并 cast 成 1 元素视图。目的是避免 tt.load/tt.store 在后续转换中强制插入 memref-to-pointer cast，从而消除一个可能无法被后续 pass 消解的中间表示。改动只有 22 行且局部，风险较低；但 insert 位置在原有 BlockArgument 分支之前，需确认不会误命中非 distributed 类型的 pointer 定义 op（isDistributedTypeCustomOp 应具备严格判定）。缺少独立 lit 测试是一处缺口。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "compiler",
+        "TritonToLinalg"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "修复了分布式 custom op 结果被用于 tt.load/tt.store 的场景，但该 commit 未附带任何 lit/device 回归用例，属于典型需要补测试的修复。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/",
+          "third_party/ascend/unittest/pytest_ut/ 中 distributed custom op 相关端到端用例"
+        ]
+      },
+      "message": "[TritonToLinalg](fix) consume memref carrier for scalar loads on distributed custom op results (#2781)"
+    },
+    {
+      "sha": "97ec8d2d9ca104fcf20c1e3e31ff94b527e112cb",
+      "comment": "移除 triton-mlir-opt 工具及其承载的 linalg<->bytecode 桥接：删除 third_party/ascend/bin/ 子目录（CMakeLists.txt + triton-mlir-opt.cpp）、移除 utils.py 中 _get_triton_mlir_opt_path/_get_bishengir_opt_path、移除 AscendBackend.binary_extensions 字段、同步更新 release patch 中 compiler.py/CompiledKernel 相关 hunk，并把 buffer_ir.cc 的 ToBufferOp 改回 ToMemrefOp（patch 中该 hunk 被删去，说明该改动已进入上游）。这是一次明显的编译链简化（文本 pipeline 直接 ttir→ttadapter→npubin），减少了字节码往返，长期收益大；但删除模块级函数与二进制产物属于破坏性变更，任何外部脚本或依赖 triton-mlir-opt 的路径将直接失效。CompiledKernel 读取 asm 文件时不再用 binary_extensions 判定 bytes/text，需确认 npubin 后缀仍按 binary_ext 判断（binary_ext 仍为 npubin），行为在默认路径上应等价。风险中等：影响面是工具链与 patch 同步。",
+      "tags": [
+        "refactor",
+        "medium-risk",
+        "compiler",
+        "build",
+        "patch"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "删除了 binary_extensions 字段与两个工具路径函数，并改变了 stage 集合的 stage_name 映射；test_compiler.py 与 test_compiler_layout_memory_contract.py 已同步删除相关断言，但还需要补充保证不再走字节码桥接的负向回归，以及确认 asm 文件读写（二进制/文本）在 npubin 之外不再依赖 binary_extensions。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler.py::test_text_pipeline_uses_ttadapter_directly",
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "third_party/ascend/CMakeLists.txt 与 third_party/ascend/backend/utils.py 的构建产物一致性"
+        ]
+      },
+      "message": "[triton-mlir-opt](feat) remove the bytecode bridge: triton-mlir-opt (#2746)"
+    },
+    {
+      "sha": "6ebaeaa89938988864097a7fe3d2918f9b6ab45e",
+      "comment": "TritonToUnstructure 的 ReplaceArguments 中把 isOpaqueScalarPointerIfResult 扩展为 isOpaqueScalarPointerSelection，同时覆盖 scf.if 与 arith.select 的指针结果；当循环 backedge 是这类选择结果时，先行选择 complete-address 协议，避免 init/region arg 被改写成 i64 而 yield 仍是指针的混搭。实现只是把判定谓词从单 op 扩到两类 op（isa_and_nonnull<scf::IfOp, arith::SelectOp>），改动面小、语义直接。配套新增了 for/while 两种循环的 lit 用例与 device 数值回归，覆盖 0/1/5 三种 trip count，测试做得比较扎实。属于高质量 bugfix。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "compiler",
+        "TritonToUnstructure"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "commit 已自带 lit IR 测试（scalar_pointer_select_backedge.mlir）与 NPU 设备数值回归（test_scalar_pointer_select_loop.py），覆盖 for/while 与空循环边界，测试点位已补齐，无需额外更新。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToUnstructure/scalar_pointer_select_backedge.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_scalar_pointer_select_loop.py"
+        ]
+      },
+      "message": "[TritonToUnstructure](fix) Preserve selected pointers across loops (#2284)\n\nTreat arith.select pointer results like scf.if pointer results when\nchoosing the representation of a loop boundary. Carry complete addresses\nconsistently through for and while loops instead of mixing i64 offsets\nwith pointer backedges. Add IR and device numerical regressions.\n\nSigned-off-by: yangkaixin <yangkaixin1@huawei.com>\nSigned-off-by: Misaka19280hw <312455702+Misaka19280hw@users.noreply.github.com>\nCo-authored-by: yangkaixin <yangkaixin1@huawei.com>\nCo-authored-by: Misaka19280hw <312455702+Misaka19280hw@users.noreply.github.com>"
+    },
+    {
+      "sha": "43827e69cb5f7f3ffde5a4cc5cd7d39ffed3aeff",
+      "comment": "为 conv1d 增加非对称 padding 支持，是跨 Python 前端、C++ IR、方言与 lowering 的全链条改动：AscendNPUIROpBuilder.create_conv1d 由 int64 padding_size 改为 py::object padding（int 走 I64IntegerAttr、序列走 DenseI32ArrayAttr，且强制 len==2）；TritonAscendOps.td 中属性由 I64Attr padding_size 改为 AnyAttr padding 并补充完整维度约束文档；语义层与 TritonToHFusion 都新增了统一的 parseConv1dParamAttr/parseParam 解析，并在 output length 推导中用 pads[0]+pads[1]；前端 core.py 把 padding_size 改名 padding，用装饰器显式拒绝旧关键字并给出替换提示，同时支持将 int/tuple/list 规整化，'same' 模式现在生成非对称 (floor, ceil) 而不是丢弃余数——这修复了奇数 padding 的既有不精确，属于行为修正。风险点在于：任意 AnyAttr 放宽了 verifier 对属性类型的约束（C++ 侧依靠 dyn_cast 兜底）；hfusion.conv1d 的 padding 属性类型从 i32 变为 i64，可能影响下游毕昇 IR 对该 op 的解析；padding_size 关键字硬拒绝是破坏性 API 变更，虽然给出了明确错误信息，但外部存量 kernel 会直接编译失败。测试覆盖相对完整（前端单测、JIT 编译错误、真实 TTIR 属性、lit IR 检查），但缺少 NPU 上非对称 padding 的数值端到端用例。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "frontend",
+        "dialect",
+        "TritonToHFusion"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "API 重命名（padding_size->padding）与 IR 属性类型变更（i64->i32/i64 DenseI32Array/Integer）会影响所有既有 conv1d 用例；commit 已更新 lit 与新增前端单测，但非对称 padding 的 device 数值验证仍缺失。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_cann_extension.py（conv1d padding 相关新增用例）",
+          "third_party/ascend/unittest/Conversion/General/TritonAscendAllPass/conv1d.mlir",
+          "third_party/ascend/unittest/pytest_ut/ 中 conv1d NPU 端到端数值测试"
+        ]
+      },
+      "message": "[Conv1d](feat) Add asymmetric padding support (#2355)\n\n* support 2-element padding for conv1d\n\nSigned-off-by: Misaka19280hw <312455702+Misaka19280hw@users.noreply.github.com>\n\n* feat(conv1d): rename padding_size param to padding\n\nSigned-off-by: Misaka19280hw <312455702+Misaka19280hw@users.noreply.github.com>\n\n* [tests](fix) Align padding and shared data IR checks\n\nSigned-off-by: Misaka19280hw <312455702+Misaka19280hw@users.noreply.github.com>\n\n* [Conv1d](fix) Unwrap dimensions before computing same padding\n\nSigned-off-by: Misaka19280hw <312455702+Misaka19280hw@users.noreply.github.com>\n\n* [Conv1d](docs) Document 1:2 mode limitation\n\n* [Conv1d](fix) Explain padding keyword migration\n\n* [Conv1d](docs) Move mode limitation to a separate docs PR\n\n---------\n\nSigned-off-by: Misaka19280hw <312455702+Misaka19280hw@users.noreply.github.com>\nCo-authored-by: lowdy1 <xiahouweidong@gmail.com>\nCo-authored-by: Misaka19280hw <312455702+Misaka19280hw@users.noreply.github.com>"
+    },
+    {
+      "sha": "ff99e1cc65624ad54a423177a8a734ac0499ab46",
+      "comment": "为 A3/A2 架构（Ascend910B/910_93）适配 libdevice，并引入“前端计算 workspace、C++ 透传”的 ABI 机制。核心改动：新增 _is_a3_target；新增 _libdevice_elementwise/_extern_elementwise，在 extern 结果 op 上挂 extra_buffers_types 与 extra_buffers_sizes 属性，按行数 + 64 lanes 或按元素数向上取 8 对齐计算 workspace 大小；把约 40 个原 A5-only 的算子放开到 A3；compiler.py 新增 libdevice.220.bc 并按 arch 选择、NPUOptions.bisheng_options 由固定 default 改为 init 后在 arch 已知时注入（避免 dataclass 阶段拿不到 arch 的设计修正）；TritonOpConverter 在 ExternElementwiseClOp 转 hivm custom op 时透传这两个属性。实现思路合理（把 ABI 计算放在有静态 shape 的前端），但工作量集中在同一模式的大量复制，且 workspace 的 (rows, dtype, operation_sized) 三元组是魔法数字，可读性与可维护性一般。风险中等：bisheng_options 由 init=False 的常量变为依赖 arch 的派生值，虽然测试断言 options.__dict__ 与 baseline 一致、hash 不变，但任何在 arch 为空时读取 bisheng_options 的路径会拿到 None。测试侧新增 816 行 lit 覆盖每个算子的 workspace 尺寸，覆盖度很好；但 _extern_elementwise 在非 A3 路径回落到 core.extern_elementwise，需确认 A5 行为不受属性挂载影响。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "backend",
+        "libdevice",
+        "TritonToLinalg"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 workspace ABI（extra_buffers_types/sizes）这一层跨 Python/C++ 的契约，以及 NPUOptions.bisheng_options 的延迟注入语义；已有 test_compiler.py 与 test_07_extern_functions.py 已同步更新，但 A3 上大量放开算子的数值正确性仍依赖算子级测试补充。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/libdevice_extra_buffer.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_compiler.py（get_libdevice/bisheng_options 断言）",
+          "third_party/ascend/unittest/pytest_ut/test_07_extern_functions.py"
+        ]
+      },
+      "message": "[Libdevice](feat) adapt libdevice A3 feature (#2741)\n\n* add custom op extra buffer feature\n\n* update 220.bc\n\n* update extra_buffer table\n\n* add testcase\n\n* fix testcase\n\n---------\n\nCo-authored-by: lijiarong <lijiarong17@huawei.com>"
+    },
+    {
+      "sha": "e2b3e77730c5590d28b28985a7768137af47839e",
+      "comment": "DynamicCVPipeline 的 PreserveControlAttrsCanonicalize pass 中，为 SCF 的 CombineIfs/CombineNestedIfs 两个通用合并 pattern 加 block_id 守卫：因这两个 pattern 定义在匿名命名空间无法直接子类化匹配，代码通过 getDebugName 后缀匹配（\"CombineIfs\"/\"CombineNestedIfs\"）把原生 pattern 包进 BlockIdAwareIfMergePattern，在委托前检查两个 if 的 ssbuffer.block_id 是否一致，不一致则 notifyMatchFailure。这个方案绕过 MLIR 的 pattern 注册可见性限制，思路巧妙但对上游 MLIR 的 debug name 依赖很脆弱——一旦 LLVM 升级导致 pattern 改名，守卫会静默失效退化为不保护（且不会报错）。同时它显式保留了 getBenefit/hasBoundedRewriteRecursion/addDebugLabels，考虑较周全。测试新增 4 个场景（相邻不同 id、嵌套不同 id、混合 id 部分合并、条件传播允许跨 id 简化），覆盖比较到位。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "compiler",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "commit 自带 102 行 lit 用例覆盖四种关键组合，包括“条件传播可跨 block_id”这一边界，测试点已充分；无需额外补充，但建议评估在 LLVM 版本升级 CI 中加一条 guard 生效性断言。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/preserve_control_attrs_canonicalize_test.mlir"
+        ]
+      },
+      "message": "[DynamicCVPipeline] preserve block boundaries when merging ifs (#2505)"
+    },
+    {
+      "sha": "69fcb9ca3d490cdb41f13f49886f64f3b32ac21f",
+      "comment": "纯文档措辞整改：README/README_zh/installation_guide/quick_start/index.rst 中把 \"Ascend\"/\"昇腾\" 统一为 \"Huawei Ascend\"/\"华为昇腾\"，并把产品列表写法由 A2/A3/950 改为 Atlas A2/A3 与 Ascend 950PR&950DT。属于品牌合规性修订，不涉及代码与行为。",
+      "tags": [
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅修改 Markdown/RST 文案，不影响任何代码路径或构建产物。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](fix) Ascend wording rectification (#2796)"
+    },
+    {
+      "sha": "75a426ef28dc1cdeb3b1a480202d7e94060394e4",
+      "comment": "删除性能指南中已废弃的 care_padding 相关示例（中英文各 36 行），并把示例编号从 1/2 顺延为单一示例 1。care_padding 属于已移除参数，继续保留在文档中会误导用户，属于合理的文档清理。",
+      "tags": [
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯文档删除，不涉及代码。",
+        "suggested_test_areas": []
+      },
+      "message": "[doc](fix) remove obsolete parameters and examples (#2800)"
+    },
+    {
+      "sha": "1295314301b6edbddc5fde43bbdde5d4fa3cdf17",
+      "comment": "文档/社区文件的 AIDD（AI 文档检测）问题批量修复，19 个文件：Markdown 列表编号 `1)` 改为 `1.`、CODE_OF_CONDUCT 删除占位符 REPORT 句、GOVERNANCE 小标题 Principles->Rules、README 中 linux->Linux / SGlang 大小写统一、CONTRIBUTOR 表序号因去重重排（149->147 起）、codespell 白名单补充 mbarriers/TMEM/TTGIR/mbarrier、TritonInstrument.md 的表格与编号修正、f2reduce/proton README 的 licence 拼写与列表格式。有一处内容修正：precision.md 中 torch.testing.assert_close(ref, cal) 改为 (cal, ref)（参数顺序）——虽然 assert_close 本身对称，但在报错信息语义上更合理。整体为合规性/可读性整理，无功能影响。",
+      "tags": [
+        "docs",
+        "chore",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "全部为文档与 CI 词表白名单改动，无代码逻辑变化。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](fix) fix the AIDD issue in the document.  (#2794)\n\n* fix AIDD issue\n\n* fix AIDD issue\n\n* fix AIDD issue\n\n* fix AIDD issue\n\n* fix AIDD issue\n\n* fix AIDD issue\n\n* fix AIDD issue\n\n* fix AIDD issue\n\n* fix AIDD issue\n\n---------\n\nCo-authored-by: liujiaxin02 <liujiaxin108@h-partners.com>"
+    },
+    {
+      "sha": "8eeac322e88faffdcba0f8d3f8687460dcb1f230",
+      "comment": "发布 3.6.0 镜像：新增 .github/workflows/release-docker-images-nightly.yml（9 种 device_type×os 矩阵构建、amd64/arm64 双架构、SWR 登录推送、imagetools 生成多架构 manifest 并在失败时回退 docker manifest）、新增 475 行的多阶段 Dockerfile（Python 源码编译 -> CANN/torch_npu/triton-ascend 安装 -> LLVM 自建 -> runtime 层组装）、更新 OVERVIEW/OVERVIEW.zh/installation_guide/quick_start 中镜像表与版本号、docker/copyright.sh 版本变量升级。CI 侧值得注意：build job 的 outputs 使用 `${{ env.PUSH_IMAGE == 'true' && 'type=registry,...' || '' }}`，空字符串对 build-push-action 是合法的“不推送”，逻辑成立但依赖表达式隐式转换，可读性欠佳；merge job 有 `if: ${{ inputs.push_images }}`，与 build job 的 PUSH_IMAGE env 展开方式不一致，需确认 fork 场景下行为。此外 wget 下载 CANN 依赖 Referer 头，属于已知的上游防盗链要求，脆弱但必要。总体是发布工程化建设，风险集中在 CI 而非产品代码。",
+      "tags": [
+        "ci",
+        "feature",
+        "medium-risk",
+        "release",
+        "docker"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "属于发布流水线与镜像产物变更，不改变产品代码路径；但建议对新增 workflow 的 fork/无凭据分支做一次 dry-run 验证，并确认多架构 manifest 合并的 tag 与 OVERVIEW.md 文档表一致。",
+        "suggested_test_areas": [
+          ".github/workflows/release-docker-images-nightly.yml",
+          "docker/triton_ascend-cann-torch_npu.Dockerfile",
+          "docker/OVERVIEW.md 与 docs/*/installation_guide.md 的镜像标签一致性"
+        ]
+      },
+      "message": "[image](feat) Release 3.6.0 images (#2778)"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

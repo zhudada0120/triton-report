@@ -1,4 +1,60 @@
 {
+  "d3229a17e19855c704059d5aa2214659430deeac": {
+    "date": "2026-10-27",
+    "msg": "[NVIDIA] Revert warp-ID folding for single-warp partitions (#12518)"
+  },
+  "75b1612805abe2127abc14297a67f932dfd48a7b": {
+    "date": "2026-10-27",
+    "msg": "[NVIDIA] Fix thread-region optimization regressions (#12505)"
+  },
+  "1b4a2041b0e3eda43ad398636098ef9147e4663c": {
+    "date": "2026-10-27",
+    "msg": "[NVIDIA] Fold warpid to 0 for single-warp partitions in warp specialize to llvm conversion (#12498)"
+  },
+  "d1e7340cd5299f6e9e760cce57fb7fc78f3ec162": {
+    "date": "2026-10-27",
+    "msg": "[QoL] Extend llvm build targets to support building AMD codegen commit (#12356)"
+  },
+  "54f03eb5c4599960aefd27437c066f778d49cfa9": {
+    "date": "2026-10-27",
+    "msg": "[AMD] Add MIR dump/swap to AMD CodeGen LLVM (#12122)"
+  },
+  "8fa612157a8f3dc1c29307e12b0332d775999362": {
+    "date": "2026-10-27",
+    "msg": "[CD] Build free-threaded 3.14t and 3.15t wheels (#12502)"
+  },
+  "a950b397451d3e90c9ba6d9e29be3bf470e2ac0b": {
+    "date": "2026-10-27",
+    "msg": "[AMD] Disable scalar atomics in multi-cta kernels (#11475)"
+  },
+  "afe4a4f236aa25f4eaae2b4538ba3bc0371d93c3": {
+    "date": "2026-10-27",
+    "msg": "[AMD] Probe and load explicitly versioned runtime (#10133)"
+  },
+  "71114a1107e6deb62d52fb5e6ac82530db6961b5": {
+    "date": "2026-10-27",
+    "msg": "[AMD][Gluon] Add buffer.atomic_load and buffer.atomic_store (#12493)"
+  },
+  "cb0f110def4df43728fcd8c450eb31251abd786f": {
+    "date": "2026-10-27",
+    "msg": "[NVIDIA] Cache CUDA device properties (#12491)"
+  },
+  "7e0b1a07009d3746fedffbc397b3c389e1015078": {
+    "date": "2026-10-27",
+    "msg": "[AMD] Speed up SW fp8e4nv -> fp16 upcast with packed fmul (#12492)"
+  },
+  "41cc5b945d83aecf22b34aa64d00ef1f4e8e78a8": {
+    "date": "2026-10-27",
+    "msg": "[AMD] Support scaled mfma 3d case (#12500)"
+  },
+  "15e2477627e648b487bb0bab5a6fa9d1d7a742a7": {
+    "date": "2026-10-27",
+    "msg": "[TRITONGPU] Support two-cta mode (#10676)"
+  },
+  "34ec0aedd0670bb59520499a1788eb5ba823159a": {
+    "date": "2026-10-27",
+    "msg": "[AMD] Fix WMMA operands whose kWidth spans several instructions (#12477)"
+  },
   "1c5d5f6a100331df65a6d24fc554387ada9b2245": {
     "date": "2026-10-26",
     "msg": "[BACKEND] Mask/Broadcast regions that can be executed with just one thread (#12202)"
