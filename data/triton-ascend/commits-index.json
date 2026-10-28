@@ -1,4 +1,12 @@
 {
+  "d85207762c276aa9966b980556335aff972ca548": {
+    "date": "2026-10-28",
+    "msg": "[Launcher](fix) Initialize lock workspaces in stream order (#2829)"
+  },
+  "87cd8f424d57a8e3dc3c718798bffd489c5f01f6": {
+    "date": "2026-10-28",
+    "msg": "Revert \"[tools](feat) add translation functionality (#2471)\" (#2801)"
+  },
   "cd2354d2d2c7ec89679c1a836c3fd8ff01ef5416": {
     "date": "2026-10-27",
     "msg": "[Libdevice](feat) adapt libdevice A6 feature- #2767 #2767"

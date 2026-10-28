@@ -1093,6 +1093,38 @@
       "interface_changes": "在多层禁用 AMD 多 CTA kernel 中的标量（非 block）原子操作。前端 TritonSemantic.atomic_cas / atom_red_typechecking_impl 在 backend_name=='hip' 且 num_ctas>1 且 ptr 非 block 时抛 ValueError；LLVM lowering 侧 AtomicCASOpConversion / AtomicRMWOpConversion 在 lookupNumCTAs>1 且结果非 RankedTensorType 时 emitError；lit 测试由原来的正例改为 expected-error。注意该改动直接修改了 python/triton/language/semantic.py（triton-ascend 通过 monkey-patch 覆写 dot，但不覆写 atomic_cas），并读取 self.builder.options.backend_name —— 若 Ascend 的 options 不含 backend_name 字段，则此新增分支在 Ascend ",
       "change_summary": "[AMD] Disable scalar atomics in multi-cta kernels (#11475)",
       "ascend_impact": false
+    },
+    "0cf3bf6e2a55f1e7cf201fdb93f821053574d687": {
+      "date": "2026-10-28",
+      "affected_modules": [
+        "python/triton/runtime/interpreter.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/runtime/interpreter.py"
+      ],
+      "interface_changes": "解释器运行时多处修复：(1) GridExecutor 在 callable grid 分支中用 inspect.getcallargs(self.fn, *args_dev, **kwargs) 调用 grid，使 callable grid 能拿到原始启动参数（含关键字参数），并移到 args_hst 重映射之前；(2) InterpretedFunction.run 按 JITFunction 的优先级（kwargs['debug'] / self.kwargs['debug'] / knobs.runtime.debug）重建 InterpreterOptions 写入 interpreter_builder.options，每次启动而不是固定一次；(3) _internal_testing 在解释器模式下跳过 torch.cuda.synchronize；(4) 删除冗余 test_tensor_member，Makefile test-interpret 增加 test_debug.py 并把相关测试标 interpreter。这是通用解释器路径的改动，涉及 Interpr",
+      "change_summary": "[INTERPRETER] Fix multiple interpreter runtime issues (#12520)",
+      "ascend_impact": false
+    },
+    "d364bf19639a3f4a8aecb45bca0a533e2ecb6258": {
+      "date": "2026-10-28",
+      "affected_modules": [
+        "include/triton/Dialect/Triton/",
+        "lib/Dialect/Triton/",
+        "python/src/ir.cc",
+        "python/triton/language/semantic.py",
+        "python/triton/runtime/interpreter.py"
+      ],
+      "affected_interfaces": [
+        "include/triton/Dialect/Triton/",
+        "lib/Dialect/Triton/",
+        "python/src/ir.cc",
+        "python/triton/language/semantic.py",
+        "python/triton/runtime/interpreter.py"
+      ],
+      "interface_changes": "移除编译器对 can_reorder 的支持，前端保留该参数以兼容。TT_ReshapeOp 删除 allow_reorder 属性、builder 的 allowReorder 参数与 assemblyFormat 相应段；DialectInferLayoutInterface::inferReshapeOpEncoding 去掉 allowReorder 形参（Gluon 与 TritonGPU 两个实现同步）；ReshapeOp::build/verify/canonicalize/fold 不再依赖该属性；TritonGPU 的 CanonicalizeConvertFromReshape 与 CanonicalizeConvertFromConvert 中基于 allowReorder 的重写被删除，OptimizeThreadLocality 的 OptimizeReshapeLayoutPattern 与 Utility.cpp 的 canUseResultEncoding 分支整体删除；TritonSemantic.reshape 与 GluonSemantic.res",
+      "change_summary": "Remove can_reorder (#12521)",
+      "ascend_impact": true
     }
   }
 }

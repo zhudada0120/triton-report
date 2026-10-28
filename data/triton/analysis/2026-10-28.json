@@ -1,0 +1,283 @@
+{
+  "date": "2026-10-28",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-29T05:57:48.399843+08:00",
+  "daily_summary": "当日变更集中在 AMD 后端与 Gluon（AMD）方向：GFX1250-strict 上启用硬件加速的 block32 scaled upcast 和更完整的 WMMA 指令；把 MIR dump/swap 从 python/src/llvm.cc 迁移到 AMD CodeGen 独立库（translate_to_mir / translate_mir_to_asm），并用 RAII guard 管理 live MIR DAG 发射；AMD LLVM 依赖 bump 到 08b05a3352ee；Gluon 中 gfx9 CachePolicy 提升到 cdna3/cdna4 命名空间并接入 async_copy，同时为 CDNA 各子模块补充文档并 deprecate 旧的指针式 buffer ops。此外还有跨后端的通用变更：FPSan 的 i8 MMA 分解限定为 CUDA 目标（修复 out-of-tree 后端）、解释器运行时的多个修复（metadata/debug flag/callable grid/builder options）、移除编译器中的 can_reorder（前端保留兼容），以及修复 Gluon function constexpr 的 preload 序列化。",
+  "ascend_impact_summary": "当日多数提交为 AMD 专属（GFX1250-strict scaled upcast/WMMA、AMD MIR codegen 迁移、AMD LLVM bump、Gluon AMD CachePolicy 与文档），不影响 triton-ascend。真正有影响的是通用层变更：(1) 0cf3bf6e 修改 python/triton/runtime/interpreter.py 的 InterpreterBuilder.create_reshape 签名与 GridExecutor/InterpretedFunction 的 metadata/debug/options 处理——命中必然影响路径，triton-ascend 的 AscendInterpreterBuilder 及其 AscendReduceOps/AscendScanOps 需要同步；(2) d364bf19 移除 ReshapeOp 的 allow_reorder 并改动 python/src/ir.cc 的 create_reshape 绑定与 python/triton/language/semantic.py 的 reshape 签名——命中必然影响路径（semantic.py monkey-patch、ir.cc TritonOpBuilder 绑定、TTIR 定义），triton-ascend 的 _patched_dot 及 TritonToLinalg 链路需适配；(3) 3fb4c03b 位于 lib/Dialect/TritonInstrument，属共享 pass 基础设施，但对 Ascend 无实际路径依赖，影响可忽略。",
+  "commits": [
+    {
+      "sha": "8afd743d38de3937f8a2874b48dfcd781312342f",
+      "comment": "AMD GFX1250-strict 启用硬件加速的 block32 scaled_upcast。TargetFeatures::supportsCvtPkScalePk8Upcast 去掉 !isGFX1250Strict() 限制（LLVM 已支持 strict 上的 v_cvt_scale_pk8_* 的 block32 模式）；ScaledUpcastFp8Op::verify 新增 lane^16 广播性检查，仅当 scale layout 在 lane16 维度上是广播时才走硬件路径，否则保持软件路径；ScaledUpcastToLLVM.cpp 把 usePk8 判定重构为统一布尔并相应调整断言分组宽度（8 或 4）。测试把 GFX1250/STRICT 两个 FileCheck prefix 合并为 COMMON，并删除 strict 走软件路径的断言。实现是 AMD 后端内部逻辑，无跨后端接口变更。",
+      "tags": [
+        "feature",
+        "performance",
+        "low-risk",
+        "amd-backend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][GFX1250-strict] Enable HW-accelerated block32 scaled_upcast (#12499)\n\nGFX1250-strict only supports Block32 opcodes for hardware instructions for scaled upcast. Layouts which require block16 will go through the software path."
+    },
+    {
+      "sha": "3fb4c03b88855c9d56209f1f8ec890310b85e6cb",
+      "comment": "FPSan 的 i8 MMA 分解只在 CUDA 目标上启用。原实现仅用 getAMDArch 排除 AMD，导致 out-of-tree 后端（如 NPU）也会被重写成它无法 lowering 的 #ttg.nvidia_mma layout。改为读取 module 的 ttg.target 属性，前缀不是 'cuda' 就返回 false。CUDA 与 AMD 行为不变，属于通用 sanitizer pass 的目标判定修正，改动很小但语义清晰。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "triton-instrument"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（该改动实际是让 FPSan 的 i8 MMA 分解不再作用于非 CUDA 目标，对 Ascend 后端是豁免而非破坏；triton-ascend 不启用 FPSan 该路径）",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[FPSan] Only use the i8 MMA decomposition on CUDA targets (#12198)\n\nThe i8 MMA decomposition emits `#ttg.nvidia_mma` layouts but was only\nskipped for AMD, so out-of-tree backends get NVIDIA layouts they can't\nlower.\nKeep it to CUDA targets - CUDA and AMD behave as before."
+    },
+    {
+      "sha": "0cf3bf6e2a55f1e7cf201fdb93f821053574d687",
+      "comment": "解释器运行时多处修复：(1) GridExecutor 在 callable grid 分支中用 inspect.getcallargs(self.fn, *args_dev, **kwargs) 调用 grid，使 callable grid 能拿到原始启动参数（含关键字参数），并移到 args_hst 重映射之前；(2) InterpretedFunction.run 按 JITFunction 的优先级（kwargs['debug'] / self.kwargs['debug'] / knobs.runtime.debug）重建 InterpreterOptions 写入 interpreter_builder.options，每次启动而不是固定一次；(3) _internal_testing 在解释器模式下跳过 torch.cuda.synchronize；(4) 删除冗余 test_tensor_member，Makefile test-interpret 增加 test_debug.py 并把相关测试标 interpreter。这是通用解释器路径的改动，涉及 InterpreterBuilder 使用方。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "interpreter",
+        "runtime"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "涉及 python/triton/runtime/interpreter.py（必然影响路径）。InterpreterBuilder.create_reshape 签名由 (self, arg, shape, allow_reorder) 变为 (self, arg, shape)，与同一日 d364bf19 的 reshape 移除 can_reorder 配套；triton-ascend 的 AscendInterpreterBuilder 若覆写或调用 create_reshape 需同步签名。此外 GridExecutor 的 callable grid 调用改为在 args_hst 重映射前用 args_dev 调用，InterpretedFunction.run 每次启动新建 InterpreterOptions(debug=...)，若 Ascend 解释器路径依赖旧的 grid 参数形态或全局 options 固定行为，需相应核对。",
+        "testing": "triton-ascend 的 ascend_interpreter 相关用例（AscendReduceOps/AscendScanOps 及 create_reshape 覆写）需在解释器模式下复测，尤其是含 callable grid、带 debug 标志、以及 reduction（axis=None 会走 reshape）的 kernel。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/backend/ascend_interpreter.py",
+          "third_party/ascend/unittest/pytest_ut (解释器模式用例)",
+          "python/test/unit/runtime/test_launch.py (callable grid 回归参考)"
+        ]
+      },
+      "message": "[INTERPRETER] Fix multiple interpreter runtime issues (#12520)\n\n1. pass runtime metadata\nhttps://github.com/triton-lang/triton/pull/12454\n2. pass the debug flag https://github.com/triton-lang/triton/pull/12434\n3. remove redundant test test_tensor_member\n4. create a new builder option for each kernel launch instead of fixing\nit",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/runtime/interpreter.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "ff868dc6596ce2e4b476ec2754f27f3444e90c16",
+      "comment": "把 AMD MIR dump/swap 从 Triton 核心库迁到 AMD CodeGen 独立库。删除 python/src/llvm.cc 中 translateLLVMIRToMIR / translateMIRToASM 及其 pybind 绑定（并删除仅为此存在的 third_party/amd/lib/Target/MIRDAG 目录），改由 third_party/amd/backend/compiler.py 通过 ctypes 调用 triton_amdgpu_translate_to_mir / triton_amdgpu_translate_mir_to_asm，抽出 _serialize_for_amd_codegen / _codegen_options / _raise_codegen_error 复用，并自行拼接 MIR+DAG dump 文件（格式字节级不变）。同步更新 amd-llvm-info.json 的 build_number 与 sha256。测试改从 compiler 而非 triton._C.libtriton.llvm monkey-patch，_find_llc 仅认 AMD codegen 的 LLVM（AMD_LLVM_BUILD_DIR），否则 skip。整体是 AMD 后端解耦重构。",
+      "tags": [
+        "refactor",
+        "medium-risk",
+        "amd-backend",
+        "build"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（删除的 translate_to_mir / translate_mir_to_asm 是 AMD 专属 pybind 绑定，triton-ascend 不调用；TritonOpBuilder 等 Ascend 依赖的 llvm.cc 基础接口未变）",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Move MIR dump/swap to AMD CodeGen stage (#12528)\n\nLast of the three changes started in #12123 and #12122. Calls the entry\npoints #12122 added and deletes what they replace: translateLLVMIRToMIR,\ntranslateMIRToASM and their m.def bindings in python/src/llvm.cc, plus\nthird_party/amd/lib/Target/MIRDAG/, which existed only to serve that\npath.\n\ncompiler.py gains translate_to_mir and translate_mir_to_asm next to\ncompile_amdgpu, sharing the serialization and options helpers. The\nwrapper assembles the dump file from the two returned buffers, so the\non-disk format is byte-for-byte unchanged and existing tooling keeps\nworking.\n\nTesting: test_mir_stage.py and test_knobs.py pass on gfx950 against the\ndownloaded artifact. Dump then swap the unmodified MIR back gives AMDGCN\nbyte-identical to compile_amdgpu; the same swap with the machine\nscheduler disabled differs, confirming the swap really drives the\nscheduler's slot.\n\nOn gfx1250 the whole dump -> reschedule -> swap -> run loop was\nexercised on a ~17k-instruction GEMM: a byte-identical re-emission still\nruns, a large legal reordering still computes the right answer, and an\norder respecting no dependence at all is rejected.\n\ntest_dag_matches_llvm now skips unless AMD_LLVM_BUILD_DIR points at an\nllc from the code generator's LLVM. It used to fall back to Triton's\ncore llc or a system one; both are different revisions and reject the\nMIR, and the prebuilt package ships no llc. The cross-check therefore\nonly runs in a source build.\n\nMIR files dumped before this change came out of a different LLVM and are\nnot expected to parse under TRITON_SWAP_MIR. Regenerate them."
+    },
+    {
+      "sha": "dc1d703de64da250b7a0e0b88459e976f0a863e6",
+      "comment": "Gluon AMD：把 gfx9 的 CachePolicy 从 buffer 子模块提升到 amd.cdna3 / amd.cdna4 顶层命名空间（不再从 .buffer 导出），因为它是 gfx9 通用缓存提示而非 descriptor buffer ops 专属；同时给 cdna4.async_copy.global_load_to_shared 增加 cache_policy 关键字参数，与 cache_modifier 互斥，通过 _cache_policy_attr 统一转换为 CachePolicyGfx9 属性，并在 AsyncCopyGlobalToLocalOpConversion 中复用 buffer load 的 aux 编码（getBufferLoadStoreCtrlBits）使 nontemporal 正确设置 global_load_lds 的 NT 位。附带文档与 lit/pytest 用例。纯 AMD Gluon 路径。",
+      "tags": [
+        "feature",
+        "refactor",
+        "low-risk",
+        "gluon",
+        "amd-backend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（Gluon AMD 专属；Ascend 不使用 Gluon/AMDGCN lowering）",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][Gluon] Move gfx9 CachePolicy to cdna3/cdna4 namespaces (#12526)\n\nExpose the gfx9 CachePolicy directly as amd.cdna3.CachePolicy and\namd.cdna4.CachePolicy instead of under the buffer submodules, since it\nis not specific to descriptor-based buffer ops.\n\nThread cache_policy through cdna4.async_copy.global_load_to_shared. It\nis mutually exclusive with cache_modifier. Lower the gfx9 policy on\nttg.async_copy_global_to_local by reusing the buffer ops' aux encoding,\nso nontemporal sets NT on global_load_lds."
+    },
+    {
+      "sha": "b8dceab0e49e140fdef5abb5382f2678da3879e8",
+      "comment": "Gluon AMD 文档与弃用标记：为 cdna4/async_copy、cdna5/async_copy、cluster、mbarrier、tdm 增加模块级 docstring；在 cdna3.buffer_load/buffer_store 与 cdna4.async_copy.buffer_load_to_shared 的 docstring 中标注 Deprecated 并指向 descriptor 版接口；更新 cdna3/buffer.py 模块说明。无功能代码变更。",
+      "tags": [
+        "docs",
+        "low-risk",
+        "gluon",
+        "amd-backend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][Gluon] Add CDNA submodule docs and deprecate old buffer ops (#12527)"
+    },
+    {
+      "sha": "96ffafdd35cbd70f0a12a81ba2b3d1acb43888a2",
+      "comment": "GFX1250-strict 启用剩余 WMMA 指令。随 LLVM bump，wmma scale 16x16x128 f8f6f4 等 intrinsic 在 strict 上已可用，故移除 WmmaGroup.cpp 中的 kWmmaRestrictedInstsFeature 标记、ScaledBlockedToScaledWMMAF8F6F4 的 unsupportedFeatures 参数与匹配失败分支，以及 AccelerateAMDMatmul 的传参；同时在 DecomposeAMDScaledBlocked 中对已带 AMDWmmaEncodingAttr 的结果直接 failure，避免重复分解。lit 测试删除 strict 的 expected-error 并改为正向断言。AMD 后端内部，无接口变更。",
+      "tags": [
+        "feature",
+        "performance",
+        "low-risk",
+        "amd-backend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Enable Remaining GFX1250-strict WMMA Instructions (#12474)\n\nInitial support for GFX1250-strict enabled support for only one WMMA\ninstruction initially due to LLVM version only supporting one\ninstruction on strict. After LLVM bump many more are enabled. This PR\nremoves the outdated WMMA gates and enables strict support fully."
+    },
+    {
+      "sha": "9bf3826c6ea36a11b507c40010bc09b72713fce4",
+      "comment": "用 RAII guard 取代 armLivePipelineDAGEmission/disarmLivePipelineDAGEmission 这对函数：LivePipelineDAGEmission 构造时保存外层 sink、析构时恢复（而非置 nullptr），从而支持单线程嵌套，并把'guard 生命周期必须覆盖 addPassesToEmitFile 与 PassManager::run'这一约束搬到调用点的类型系统上。同步更新 DAGBuilder.h 的 include guard 与注释、两个调用点（llvm.cc 与 amdgpu_codegen.cc 去掉 scope_exit）、以及 amd-llvm-build-info.json 的 build_number。功能等价，属于 AMD codegen 内部代码质量改进。",
+      "tags": [
+        "refactor",
+        "low-risk",
+        "amd-backend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Scope live MIR DAG emission with an RAII guard (#12519)\n\nFollows #12122. No functional change for the existing callers, which\nalready armed and disarmed around a single addPassesToEmitFile plus\nPassManager run.\n\narmLivePipelineDAGEmission/disarmLivePipelineDAGEmission are replaced by\na LivePipelineDAGEmission guard that saves the enclosing sink on\nconstruction and restores it on destruction.\n\nThe sink is read at two different moments: pipeline construction, when\nthe TargetPassConfig callback substitutes the emitting pass for the\nmachine scheduler, and pipeline execution, when that pass writes the\nDAG. The arm window has to span both, on one thread. A guard whose\nlifetime is that window states the requirement at the call site instead\nof in a header comment, and makes the pairing impossible to forget.\n\ndisarm also reset the sink to null rather than to its previous value, so\na nested arm on one thread silently disabled the enclosing one. Saving\nand restoring removes that limitation instead of documenting it.\n\nBumps the code generator's build_number so the artifact picks up the\nchange."
+    },
+    {
+      "sha": "ad50bab56a7ded8442f985c741449d5d3e35ae59",
+      "comment": "AMD codegen 的 LLVM 依赖 bump 到 08b05a3352ee，_AMDGPUCodegenOptions 结构新增 enable_misched / emit_object 两个字段并把 codegenABIVersion 从 1 提到 2（必须与 amdgpu_codegen.cc 中的版本号一致）。这是为后续把 MIR dump/swap 迁入独立 codegen 库做的 ABI 准备，结构体布局变更属于强耦合点。",
+      "tags": [
+        "chore",
+        "medium-risk",
+        "amd-backend",
+        "build"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（纯 AMD codegen ABI 与依赖版本）",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Bump AMD codegen to LLVM @08b05a3352ee (#12496)"
+    },
+    {
+      "sha": "d364bf19639a3f4a8aecb45bca0a533e2ecb6258",
+      "comment": "移除编译器对 can_reorder 的支持，前端保留该参数以兼容。TT_ReshapeOp 删除 allow_reorder 属性、builder 的 allowReorder 参数与 assemblyFormat 相应段；DialectInferLayoutInterface::inferReshapeOpEncoding 去掉 allowReorder 形参（Gluon 与 TritonGPU 两个实现同步）；ReshapeOp::build/verify/canonicalize/fold 不再依赖该属性；TritonGPU 的 CanonicalizeConvertFromReshape 与 CanonicalizeConvertFromConvert 中基于 allowReorder 的重写被删除，OptimizeThreadLocality 的 OptimizeReshapeLayoutPattern 与 Utility.cpp 的 canUseResultEncoding 分支整体删除；TritonSemantic.reshape 与 GluonSemantic.reshape 去掉 can_reorder（Gluon 不再做 not-supported 检查）；language/core.py 的 reshape/view/dot 与 standard.py 的 ravel 保留参数但忽略；python/src/ir.cc 的 create_reshape 去掉 allowReorder；InterpreterBuilder.create_reshape 同步；大量 lit/pytest 用例改为不再带 allow_reorder 并产生 layout 变化（出现了 convert_layout 与 linear layout）。影响面广，属跨后端 IR 语义清理。",
+      "tags": [
+        "refactor",
+        "high-risk",
+        "triton-ir",
+        "tritongpu",
+        "language-frontend",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": true,
+        "functionality": "命中必然影响路径。python/triton/language/semantic.py 的 TritonSemantic.reshape 签名由 reshape(input, dst_shape, can_reorder) 改为 reshape(input, dst_shape)，而 triton-ascend 的 _apply_ascend_patch 用 _patched_dot 覆写 TritonSemantic.dot，其内部若构造/转发 reshape 调用（含 multi-rank dot 的 batch 展平路径）会因参数数量不匹配抛 TypeError；同时 dot 的 reduce 路径中 reduction(axis=None) 也对 reshape 调用签名敏感。python/src/ir.cc 的 TritonOpBuilder.create_reshape 不再接受 allowReorder，AscendNPUIROpBuilder 若通过该绑定创建 reshape 需同步。include/triton/Dialect/Triton/IR/TritonOps.td 中 TT_ReshapeOp 删除 allow_reorder 属性并改变 assemblyFormat，直接改动 TTIR 定义——Ascend 复用 AST→TTIR 前端且 TritonToLinalg 以 TTIR 为输入；同时 ReshapeOp 的 canonicalize（reshape(expand_dims)/reshape(reshape)）与 fold 行为变化（不再有 allow_reorder 分支，且两段 reshape 合并时不再传播 reorder 语义）会改变 Ascend 收到的 IR 形态。lib/Dialect/Gluon 与 TritonGPU 的实现改动不影响 Ascend。",
+        "testing": "triton-ascend 需检查所有会走 reshape 的路径：dot 的多维 batch 展平（core.py 内 _semantic.reshape 调用点被改）、reduction(axis=None) 的展平、以及 TritonToLinalg 对 tt.reshape 的解析（assemblyFormat 变更后旧文本 IR 无法解析）。现有 lit 用例若含 tt.reshape ... allow_reorder 将解析失败。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/backend/__init__.py (_apply_ascend_patch/_patched_dot)",
+          "third_party/ascend/lib (TritonToLinalg reshape 相关 pass 与 lit 用例)",
+          "third_party/ascend/unittest/pytest_ut (含 dot/reduce 的算子用例)",
+          "third_party/ascend/patch/triton-ascend-<version>.patch"
+        ]
+      },
+      "message": "Remove can_reorder (#12521)\n\nRemove can_reorder from the compiler while keeping the flag in the\nfrontend for backward compatibility.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "include/triton/Dialect/Triton/",
+          "lib/Dialect/Triton/",
+          "python/src/ir.cc",
+          "python/triton/language/semantic.py",
+          "python/triton/runtime/interpreter.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": true,
+        "affected_interfaces": [
+          "triton::DialectInferLayoutInterface::inferReshapeOpEncoding (include/triton/Dialect/Triton/IR/Dialect.h) — pure-virtual signature drops the `bool allowReorder` parameter; triton-ascend implements it in GluonInferLayoutInterface (lib/Dialect/Gluon/IR/Dialect.cpp:76) and TritonGPUInferLayoutInterface (lib/Dialect/TritonGPU/IR/Dialect.cpp:3047)",
+          "triton::ReshapeOp (include/triton/Dialect/Triton/IR/TritonOps.td) — `allow_reorder` UnitAttr removed; builders/`ReshapeOp::create` drop the `allowReorder` arg; `getAllowReorder()` accessor removed",
+          "triton::TritonSemantic.reshape / GluonSemantic.reshape (python/triton/language/semantic.py, python/triton/experimental/gluon/language/_semantic.py) — `can_reorder` parameter removed",
+          "TritonOpBuilder.create_reshape (python/src/ir.cc:1546) — drops `allowReorder` argument",
+          "InterpreterBuilder.create_reshape (python/triton/runtime/interpreter.py:625) — drops `allow_reorder` argument"
+        ],
+        "adaptation_effort": "high",
+        "adaptation_guide": "This is a breaking C++ interface change plus a Python frontend/IR-API change, and triton-ascend depends on the removed APIs in both its vendored triton core and its Ascend-specific passes. Required changes:\n\n1) C++ interface overrides (signature must drop the bool):\n   - lib/Dialect/Gluon/IR/Dialect.cpp:76 `GluonInferLayoutInterface::inferReshapeOpEncoding`\n   - lib/Dialect/TritonGPU/IR/Dialect.cpp:3047 `TritonGPUInferLayoutInterface::inferReshapeOpEncoding`\n\n2) ReshapeOp tablegen + core op (mirror upstream d364bf19639a):\n   - include/triton/Dialect/Triton/IR/TritonOps.td:472-485 remove `allow_reorder` UnitAttr, builder's `allowReorder` CArg, and the `allow_reorder` assemblyFormat alternative\n   - lib/Dialect/Triton/IR/Ops.cpp:810-893 update `ReshapeOp::build`, `canonicalize` (reshape(reshape) folding), `fold`, and `verify` to drop `getAllowReorder()`/`allowReorder`\n   - lib/Dialect/TritonGPU/IR/Ops.cpp:108-130 and 295-320 remove the `CanonicalizeConvertFromReshape` allow-reorder folding and the `cvt(reshape)->reshape` pattern that rely on `getAllowReorder()` (delete `hasEncoding`/`hasDotOperandEncoding` helpers that become unused)\n\n3) Transforms/passes (Ascend-specific logic that must be reworked, not just signature-fixed):\n   - lib/Dialect/TritonGPU/Transforms/OptimizeThreadLocality.cpp: delete `OptimizeReshapeLayoutPattern` (line ~30-80, removed upstream) and update `ReshapeOp::create(..., /*allowReorder=*/true, ...)` call at ~460\n   - lib/Dialect/TritonGPU/Transforms/RemoveLayoutConversions.cpp:202 rework the layout-anchor heuristic `return reshape.getAllowReorder()`\n   - lib/Dialect/TritonGPU/Transforms/Utility.cpp:470-510 & 640-650 drop `op.getAllowReorder()` from `inferReshapeOpDstEncoding`/`inferDstEncoding`/`inferSrcEncoding` and remove the reshape branch in `canUseResultEncoding`\n   - lib/Dialect/Triton/Transforms/Combine.cpp:190 remove the `reshapeOp.getAllowReorder()` guard\n   - lib/Dialect/TritonGPU/Transforms/DecomposeScaledBlocked.cpp and OptimizeDotOperands.cpp: drop the `allowReorder` argument from `ReshapeOp::create`/`MemDescReshapeOp::create`\n   - lib/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.cpp:293 update the `can_reorder=False` comment (cat lowering may need re-evaluation now that reordering is gone)\n\n4) Python frontend/runtime:\n   - python/src/ir.cc:1546 `create_reshape` drop `allowReorder`\n   - python/triton/language/semantic.py:625 `reshape` drop `can_reorder`; update call sites at ~644 (`cat`), ~670 (`join`), ~1698 (`reduction` reshape to `[numel]`)\n   - python/triton/language/core.py: reshape/view/cat/dot — keep `can_reorder` as an ignored backwards-compat kwarg in `reshape`/`ravel`, drop internal `_semantic.reshape(..., can_reorder=...)` calls (~1785,1890,1906,2049-2057)\n   - python/triton/language/standard.py:69 `ravel` keep `can_reorder` arg but ignore it\n   - python/triton/experimental/gluon/language/_semantic.py:217 `GluonSemantic.reshape` drop `can_reorder`; update reduction reshape at ~441\n   - python/triton/runtime/interpreter.py:625 `create_reshape` drop `allow_reorder`\n\n5) Tests / unit tests:\n   - unittest/Dialect/TritonGPU/DialectTest.cpp:166/191/467 `inferReshapeOpEncoding` calls (drop the allow-reorder argument if still present)\n   - Update the vendored .mlir tests that use `allow_reorder` (test/TritonGPU/canonicalize.mlir, test/TritonGPU/combine.mlir, test/TritonGPU/optimize-locality.mlir, test/TritonGPU/loop-pipeline-hip.mlir, test/TritonGPU/amd/*.mlir, test/Triton/combine.mlir, test/Triton/ops.mlir) to match the new assembly syntax and expected-output changes.\n\nNote: triton-ascend's checked-out HEAD appears partially synced already (Dialect.h, Gluon/TritonGPU Dialect.cpp, and the unittest already use the 5-arg `inferReshapeOpEncoding`), but TritonOps.td, Ops.cpp, the transforms, and the Python layer still use the old `allow_reorder`/`can_reorder` API, so a full, consistent sync of this commit plus the Ascend-specific rework above is still required.",
+        "risk": "High. (1) `inferReshapeOpEncoding` is a pure-virtual interface; an inconsistent port (header updated but tablegen/Ops.cpp/transforms not) leaves the build broken. (2) `getAllowReorder()` was load-bearing in Ascend-specific passes — `RemoveLayoutConversions::isLayoutAnchor`, `Combine.cpp`, and especially `OptimizeThreadLocality` (the removed `OptimizeReshapeLayoutPattern`) — so these need semantic rework, not just mechanical edits, and removing them may change layout-propagation/anchor behavior and thus generated code/correctness. (3) The `cat` lowering in TritonToTritonGPUPass and Gluon `cat`/`reduction` paths currently assert on `can_reorder`; after removal their reshape-based lowering must be re-validated. (4) Broad blast radius across vendored .mlir tests (CHECK lines/expected layouts change as seen upstream, e.g. new `#ttg.linear` reshapes with explicit `ttg.convert_layout` inserted), requiring careful test regeneration to avoid silent regressions."
+      }
+    },
+    {
+      "sha": "a66cb2dcc015a7ee66123322d32864ad80b1b70b",
+      "comment": "把 CodeGen 用的 LLVM 构建源从 llvm/llvm-project@05e432a8 换成 triton-lang/llvm-project@08b05a3352ee，build_number 重置为 1。仅为 cmake/amd-llvm-build-info.json 的依赖指向变更，服务于后续 AMD codegen 需要的新 intrinsic/MIR 能力。",
+      "tags": [
+        "chore",
+        "low-risk",
+        "build",
+        "amd-backend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Build LLVM @08b05a3352ee for CodeGen (#12523)"
+    },
+    {
+      "sha": "0bad43da903188ee14de128792b04cf28ee119a6",
+      "comment": "修复 Gluon kernel 以 @gluon.jit 函数作为 constexpr 参数时 JIT cache hook 的序列化失败（GluonJITFunction 不是 JSON serializable）。根因是 serialize_specialization_data 用 value.__class__.__name__ == 'JITFunction' 精确匹配类名，排除了 GluonJITFunction 子类；改为 isinstance(value, JITFunction)。反序列化无需改动，因为 Gluon 函数已在 _triton_jit_function_registry 中。新增 test_preload_gluon_function_kernel 覆盖编译→hook→清缓存→preload→复用整条链路。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "runtime",
+        "jit",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（triton-ascend 不子类化 JITFunction，改动方向是放宽类型判断，对 Ascend 无负面作用；且 Ascend 不走 Gluon 路径）",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Runtime] Serialize Gluon function constexprs for preload (#12514)\n\nJIT cache hooks fail with `TypeError: Object of type GluonJITFunction is\nnot JSON serializable` when a Gluon kernel takes a `@gluon.jit` function\nas a constexpr argument, even though ordinary compilation accepts it.\n\n`serialize_specialization_data` matched function references by the exact\nclass name `JITFunction`, which excludes subclasses such as\n`GluonJITFunction`. Gluon functions are already registered in\n`_triton_jit_function_registry`, which preload uses to resolve\nreferences, so decoding needs no change.\n\nSigned-off-by: Prajapati, Dimple <dimple.prajapati@amd.com>",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/runtime/jit.py"
+        ],
+        "recommend_refresh": true
+      }
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

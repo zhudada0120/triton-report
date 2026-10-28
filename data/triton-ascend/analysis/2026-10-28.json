@@ -1,0 +1,55 @@
+{
+  "date": "2026-10-28",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-10-29T06:01:26.775993+08:00",
+  "daily_summary": "当日两个 commit 方向差异很大：一是 Ascend 后端 NPU launcher 的锁 workspace 初始化修复（#2829），把同步的 aclrtMemcpy/rtMemcpy 换成流序的 aclrtMemcpyAsync/rtMemcpyAsync，并引入进程级不可变 pinned-host 模板缓存，避免连续 launch 覆盖前序 kernel 仍在使用的锁；二是整体回滚此前引入的 LLM 文档自动翻译功能（#2801），删除 .agents/skills/translate、schedule_doc_translate.yaml、translate_md.py 及 docs/locale/en/** 下全部约 2.3 万行 .po 译文，同时把 docs/zh/conf.py 中为英文构建服务的三级回退 transform（fuzzy 匹配、codeblock 翻译、BOM 剥离、community 文档替换）全部移除，回退 readthedocs_checkout.sh 的 en→zh 映射，并在 ub_overflow.md 中意外引入了一个 UTF-8 BOM。总体看是「运行时正确性修复 + 文档基础设施大幅回退」的组合变更，前者是低风险精准 bugfix，后者属于大范围 docs/ci 回退，需要审查文档构建是否仍能正常出站。",
+  "test_impact_summary": "两个 commit 对测试看护的要求完全不同。launcher 变更改动了 Ascend kernel 启动路径上的锁初始化语义（从同步 memcpy 变为流序异步拷贝 + 进程级模板缓存），属于运行时行为变更，现有 pytest_ut 多为单次 kernel 启动，很难覆盖「连续 launch 覆盖前序 kernel 锁」和「graph replay / 异构锁初值」场景，建议补充多 kernel 连续启动、含有序锁初值、含 FFTS/graph 场景的回归用例，并关注异步拷贝引入的时序竞态。文档回退 commit 删除了整套翻译工具链与 .po 译文，同时移除了 conf.py 中英文构建的运行时 hook，这意味着英文站点的构建路径被实质改变——需要验证 README/文档 CI（docs-ci）在英文 READTHEDOCS_LANGUAGE=en 下仍能正常构建、无中文泄漏、无 sphinx 配置残留引用（如 exclude_patterns、autodoc_mock_imports 重复项），并确认 ub_overflow.md 新增的 BOM 不会导致 MyST 首标题解析失败。整体而言，launcher 修复需要新增看护用例，文档回退需要对文档构建 CI 做一次冒烟验证，但两者都不需要改动 Ascend 算子端到端功能测试。",
+  "commits": [
+    {
+      "sha": "d85207762c276aa9966b980556335aff972ca548",
+      "comment": "修复 Ascend NPU launcher 中 lock workspace 初始化的竞态问题（#2815）。原实现用同步 cann_memcpy（aclrtMemcpy/rtMemcpy）把 host 端临时 vector<int64_t> 初始化数据拷到 device，同步拷贝在流语义上不保证与后续 kernel 之间的顺序，且当连续 launch 时，前一个 kernel 仍可能在使用锁 workspace，而后一次 launch 的同步 memcpy 可能覆写它，导致链式 kernel 死锁/错误。本次改动：(1) launcher_cann.h 中把 cann_memcpy 全量替换为带 stream 参数的 cann_memcpy_async（aclrtMemcpyAsync/rtMemcpyAsync），使初始化拷贝进入 launch stream 的序；(2) launcher_runtime.cpp 新增 initializeLocks，用进程级静态 std::map<tuple<ordered_locks, unordered_locks, participants, lock_init_value>, void*> 缓存不可变 pinned-host 模板（cann_malloc_host 分配），拷贝时直接复用模板做 H2D 异步拷贝，避免栈上临时 vector 在异步拷贝完成前析构（这是一个经典 use-after-free 隐患）。模板故意不释放，以便挂起中的异步拷贝与 graph 捕获在 planner 生命周期之后仍安全引用。未变更 lock_init_value 为 0 且非 unordered 的快路径（仍走 cann_memset_async）。潜在风险：静态 map 永不释放，进程生命周期内对每组不同 (locks, participants, lock_init_value) 组合常驻一份 pinned host 内存，属于可接受的有界泄漏；pinned host 分配失败路径已返回错误，但缓存 map 在持锁期间分配，若 cann_malloc_host 很慢会阻塞其它并发 launch；另外 graph replay 场景依赖模板不被回收，需确认 CANN 侧 graph 捕获的 memcpy 节点确实持有源地址。整体属于精准的运行时正确性修复，改动面小、风险可控。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "launcher",
+        "runtime"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "变更改变了 kernel 启动路径上锁 workspace 初始化的时序语义（同步 memcpy → 流序异步 memcpy）并引入进程级模板缓存，现有 pytest_ut 多为单算子单次启动，无法暴露连续 launch 覆盖锁、graph replay 引用模板、ordered locks 非零初值等边界场景，需要补充针对性回归用例以防回归。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/device_ut/",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/",
+          "third_party/ascend/backend/launcher_src/launcher_runtime.cpp",
+          "third_party/ascend/unittest/autotune_ut/"
+        ]
+      },
+      "message": "[Launcher](fix) Initialize lock workspaces in stream order (#2829)\n\nUse immutable pinned-host templates and stream-ordered asynchronous copies\nso consecutive launches cannot overwrite locks used by earlier kernels.\nRetain templates for pending copies and graph replay, including unordered\nlocks and ordered locks with a nonzero initial value.\n\nRefs #2815\n\nSigned-off-by: zhanwei33 <493694187@qq.com>"
+    },
+    {
+      "sha": "87cd8f424d57a8e3dc3c718798bffd489c5f01f6",
+      "comment": "整体回滚 commit 5f1d99a（#2471）引入的 LLM 文档自动翻译功能（#2801），删除规模约 2.3 万行，文件数 43。核心删除内容：(1) 工具链：删除 .agents/skills/translate/skill.md（翻译规范/术语表）、.github/workflows/scripts/translate_md.py（Sphinx gettext + OpenAI 兼容 API 的翻译引擎）、.github/workflows/schedule_doc_translate.yaml（定时/手动触发的翻译 CI 与 PR 自动创建）；(2) 译文产物：删除 docs/locale/en/LC_MESSAGES/** 下全部 .po（涵盖 FAQ、架构、安装、autotune、debug、examples、migration、programming_guide、release_note 等），意味着英文站点不再有翻译目录；(3) 构建侧：docs/zh/conf.py 大幅精简，移除为英文构建服务的全部 hook——_on_source_read_strip_bom、_on_source_read（community 文档替换）、_on_source_read_fallback（按 X-Source-Commit 回退到旧中文源）、_on_source_read_codeblocks（源级代码块内中文注释翻译）、_on_translate_remaining_chinese/_TranslateRemainingChinese transform（三级回退：精确匹配 → difflib fuzzy → 隐藏）、_on_doctree_resolved_codeblocks、_on_doctree_read_backup 等，同时移除 gettext_compact/gettext_additional_targets/locale_dirs 设置，排除模式改回简单的 zh/en 互斥；(4) readthedocs_checkout.sh 把 READTHEDOCS_LANGUAGE=en 的映射从 zh 改回 en，恢复英文源的正常渲染路径；(5) .gitignore 移除 docs/locale/**/*.mo 规则；codespell 白名单移除 Volcengine。正向变化：docs/zh/conf.py 同时把 autosummary 扩展正式加入 extensions、补上 _load_module 与 do_bench_npu 的 API 注入，并注册 python-api/_inject_ascend_notes 扩展，看起来是把之前被打补丁的文档配置回迁到主干；但注意 docs/en/conf.py 也新增了重复的 suppress_warnings 与 myst 配置块（疑似合入残留，无功能影响但冗余）。副作用：docs/zh/debug_guide/ub_overflow.md 首行被引入 UTF-8 BOM，可能影响 MyST 对首个 H1 的解析（架构上下文指出这正是被删掉的 _on_source_read_strip_bom 所防范的场景），建议清理。整体来看，这是一个「移除未达成预期（或存在维护成本）的翻译基础设施」的决策性回退，涉及 CI、文档构建和大量生成文件；鉴于翻译链路是旁路，不影响 Ascend 编译/运行时，但需要验证英文文档站与 docs-ci 是否仍能正常构建。",
+      "tags": [
+        "revert",
+        "docs",
+        "ci",
+        "medium-risk",
+        "docs-build"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "该 commit 为文档/CI 基础设施回退，不触及 Ascend 编译器、driver、launcher 与算子实现，现有 Triton/Ascend 功能测试无需变更。但回退改变了英文文档构建路径与 CI 工作流，需要对文档 CI 做冒烟验证（英文 READTHEDOCS_LANGUAGE=en 构建、无中文泄漏、conf.py 无残留引用、新增 BOM 不破坏首标题解析），这类验证通常属于 docs-ci 而非 pytest 看护范围，故判定为不需要在 triton-ascend 测试套件中新增用例。",
+        "suggested_test_areas": [
+          "docs/zh/conf.py",
+          "docs/en/conf.py",
+          ".github/workflows/scripts/readthedocs_checkout.sh",
+          "docs/zh/debug_guide/ub_overflow.md",
+          ".github/docs-ci/codespell.whitelist.json"
+        ]
+      },
+      "message": "Revert \"[tools](feat) add translation functionality (#2471)\" (#2801)\n\nThis reverts commit 5f1d99a87432c09815b6ded57624c04c00bbe0aa."
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

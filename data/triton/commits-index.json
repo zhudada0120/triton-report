@@ -1,4 +1,52 @@
 {
+  "8afd743d38de3937f8a2874b48dfcd781312342f": {
+    "date": "2026-10-28",
+    "msg": "[AMD][GFX1250-strict] Enable HW-accelerated block32 scaled_upcast (#12499)"
+  },
+  "3fb4c03b88855c9d56209f1f8ec890310b85e6cb": {
+    "date": "2026-10-28",
+    "msg": "[FPSan] Only use the i8 MMA decomposition on CUDA targets (#12198)"
+  },
+  "0cf3bf6e2a55f1e7cf201fdb93f821053574d687": {
+    "date": "2026-10-28",
+    "msg": "[INTERPRETER] Fix multiple interpreter runtime issues (#12520)"
+  },
+  "ff868dc6596ce2e4b476ec2754f27f3444e90c16": {
+    "date": "2026-10-28",
+    "msg": "[AMD] Move MIR dump/swap to AMD CodeGen stage (#12528)"
+  },
+  "dc1d703de64da250b7a0e0b88459e976f0a863e6": {
+    "date": "2026-10-28",
+    "msg": "[AMD][Gluon] Move gfx9 CachePolicy to cdna3/cdna4 namespaces (#12526)"
+  },
+  "b8dceab0e49e140fdef5abb5382f2678da3879e8": {
+    "date": "2026-10-28",
+    "msg": "[AMD][Gluon] Add CDNA submodule docs and deprecate old buffer ops (#12527)"
+  },
+  "96ffafdd35cbd70f0a12a81ba2b3d1acb43888a2": {
+    "date": "2026-10-28",
+    "msg": "[AMD] Enable Remaining GFX1250-strict WMMA Instructions (#12474)"
+  },
+  "9bf3826c6ea36a11b507c40010bc09b72713fce4": {
+    "date": "2026-10-28",
+    "msg": "[AMD] Scope live MIR DAG emission with an RAII guard (#12519)"
+  },
+  "ad50bab56a7ded8442f985c741449d5d3e35ae59": {
+    "date": "2026-10-28",
+    "msg": "[AMD] Bump AMD codegen to LLVM @08b05a3352ee (#12496)"
+  },
+  "d364bf19639a3f4a8aecb45bca0a533e2ecb6258": {
+    "date": "2026-10-28",
+    "msg": "Remove can_reorder (#12521)"
+  },
+  "a66cb2dcc015a7ee66123322d32864ad80b1b70b": {
+    "date": "2026-10-28",
+    "msg": "[AMD] Build LLVM @08b05a3352ee for CodeGen (#12523)"
+  },
+  "0bad43da903188ee14de128792b04cf28ee119a6": {
+    "date": "2026-10-28",
+    "msg": "[Runtime] Serialize Gluon function constexprs for preload (#12514)"
+  },
   "d3229a17e19855c704059d5aa2214659430deeac": {
     "date": "2026-10-27",
     "msg": "[NVIDIA] Revert warp-ID folding for single-warp partitions (#12518)"
