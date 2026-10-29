@@ -1,4 +1,20 @@
 {
+  "a414a5cb704b4ba5fef99c1bf52111575212ba84": {
+    "date": "2026-10-29",
+    "msg": "Revert \"[Launcher](fix) Initialize lock workspaces in stream order (#2829)\" (#2856)"
+  },
+  "0253b68b73086148265fdf87100a7c8285cea7a0": {
+    "date": "2026-10-29",
+    "msg": "[docs] Fix terminology, formatting, and content errors in Chinese documentation (#2843)"
+  },
+  "c259a893a2517eeddf5ddf3225fecffc1f2ab1af": {
+    "date": "2026-10-29",
+    "msg": "[docs](fix) release 3.6.0.post2 (#2854)"
+  },
+  "eb4a7f09c45d85a76f29da58569268b086874904": {
+    "date": "2026-10-29",
+    "msg": "[docs](fix) modify AIDD issue (#2853)"
+  },
   "d85207762c276aa9966b980556335aff972ca548": {
     "date": "2026-10-28",
     "msg": "[Launcher](fix) Initialize lock workspaces in stream order (#2829)"

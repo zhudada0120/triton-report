@@ -1,4 +1,32 @@
 {
+  "cc7121564aae5692195ff998af7426f1a8b916dc": {
+    "date": "2026-10-29",
+    "msg": "[NVIDIA] Update CGALayout retrieval in matmul and promote LHS transformations (#12533)"
+  },
+  "b89bce47e2d9e1c7fb4bd568c1e55e19c476a31e": {
+    "date": "2026-10-29",
+    "msg": "[INTERPRETER] Handle negative reduce/scan ops (#12540)"
+  },
+  "cd2e01c6686d6503802e6cdfac56d5a5dfdb27a1": {
+    "date": "2026-10-29",
+    "msg": "[AMD][AOT] Fix zero-sized grid handling in HIP wrapper (#12530)"
+  },
+  "59585fd33fe8283df3586bb59cdb2da5ed17d3f3": {
+    "date": "2026-10-29",
+    "msg": "[AMD][Breaking] Tighten gfx1250 TDM verifiers (#12534)"
+  },
+  "2c73acc5f8337dbca50ae2b3326edfd92442e874": {
+    "date": "2026-10-29",
+    "msg": "[AMD][gfx1250] Check MXFP GEMM prefetches in LLVM IR (#12539)"
+  },
+  "dcbd6631952337c0d209a5249070eb83035b29fc": {
+    "date": "2026-10-29",
+    "msg": "[KERNELS] Treat inactive matmul gather rows as zero inputs (#12538)"
+  },
+  "51a275355124fbcbc5f152e5fb15dcf2faf23615": {
+    "date": "2026-10-29",
+    "msg": "[BACKEND] Populate shared-memory CTA replicas in local_store (#12535)"
+  },
   "8afd743d38de3937f8a2874b48dfcd781312342f": {
     "date": "2026-10-28",
     "msg": "[AMD][GFX1250-strict] Enable HW-accelerated block32 scaled_upcast (#12499)"

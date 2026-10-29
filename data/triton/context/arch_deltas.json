@@ -1125,6 +1125,18 @@
       "interface_changes": "移除编译器对 can_reorder 的支持，前端保留该参数以兼容。TT_ReshapeOp 删除 allow_reorder 属性、builder 的 allowReorder 参数与 assemblyFormat 相应段；DialectInferLayoutInterface::inferReshapeOpEncoding 去掉 allowReorder 形参（Gluon 与 TritonGPU 两个实现同步）；ReshapeOp::build/verify/canonicalize/fold 不再依赖该属性；TritonGPU 的 CanonicalizeConvertFromReshape 与 CanonicalizeConvertFromConvert 中基于 allowReorder 的重写被删除，OptimizeThreadLocality 的 OptimizeReshapeLayoutPattern 与 Utility.cpp 的 canUseResultEncoding 分支整体删除；TritonSemantic.reshape 与 GluonSemantic.res",
       "change_summary": "Remove can_reorder (#12521)",
       "ascend_impact": true
+    },
+    "b89bce47e2d9e1c7fb4bd568c1e55e19c476a31e": {
+      "date": "2026-10-29",
+      "affected_modules": [
+        "python/triton/runtime/interpreter.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/runtime/interpreter.py"
+      ],
+      "interface_changes": "修复解释器对负 axis 的 reduce/scan 支持，作为 #12431 的更优修复。原 ReduceScanOpInterface.check_axis 仅在 axis >= len(shape) 时抛 ValueError，负 axis 未归一化便直接传入后续逻辑，导致 -1、-2 等合法 axis 行为不一致。改动将 axis 先经 tl.core._unwrap_if_constexpr 解包 constexpr，再通过 tl.core._wrap_axis(axis, len(shape)) 归一化为非负并写回 self.axis，从而让 -1/-2 与 len-1/len-2 等价；越界（如 -3 对 2D）由 _wrap_axis 抛出。测试同步更新：invalid_config 加入 -3，negative_config 替换为 xor_sum 在 (4,8) 上 axis [-1,-2] × keep_dims 的参数化；test_reduce 的指针构造与 numpy 轴校验改为按 -len(shape) <= axis < len(shape) 判断，并补充",
+      "change_summary": "[INTERPRETER] Handle negative reduce/scan ops (#12540)",
+      "ascend_impact": false
     }
   }
 }

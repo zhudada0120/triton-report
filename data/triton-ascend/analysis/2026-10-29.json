@@ -1,0 +1,76 @@
+{
+  "date": "2026-10-29",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-10-30T06:07:55.515922+08:00",
+  "daily_summary": "当日变更以文档为主（4/4 commit 中 3 个为纯文档），唯一涉及代码的是对 PR #2829（在 stream 顺序内初始化 lock workspace）的 revert。该 revert 撤回了 launcher_runtime.cpp 中基于 host 端 pinned 模板缓存 + aclrtMemcpyAsync 的锁初始化方案，恢复为使用同步 cann_memcpy 从栈上临时向量构造 init 数据后下发。其余三个 commit 分别修复中文文档术语/格式/内容错误、发布 3.6.0.post2 版本说明、以及修正 AIDD 相关内容（示例、迁移指南、性能指南的排版与表述）。整体方向是发布收尾期的文档质量提升与一项有风险的运行时行为回退。",
+  "test_impact_summary": "测试看护影响集中在那一个代码 revert 上：锁 workspace 初始化路径由异步 memcpy + host FIFO 缓存模板回退为同步 memcpy + 每次分配栈上 init 向量。该路径属于 NPU launcher 的启动热路径，影响 kernel 启动时的锁初始化语义（unordered_locks 与 lock_init_value 分支），现有 launcher/device_ut 测试若未覆盖 unordered_locks 与 lock_init_value 组合场景则存在回归盲区；此外同步 aclrtMemcpy/rtMemcpy 在流上引入了 host 侧阻塞点，性能类测试（benchmark/autotune_ut 或 profiler 对比）需留意是否需要更新基线。三个文档 commit 不影响测试。",
+  "commits": [
+    {
+      "sha": "a414a5cb704b4ba5fef99c1bf52111575212ba84",
+      "comment": "对 PR #2829 的 revert，撤回 launcher 锁 workspace 的初始化优化。具体变更：launcher_cann.h 中删除 cann_memcpy_async(dst,destMax,src,count,kind,stream) 封装，恢复为同步 cann_memcpy(dst,destMax,src,count,kind)（对应 aclrtMemcpy/rtMemcpy）；launcher_runtime.cpp 中删除 initializeLocks() 及其进程级 static std::map<Key,void*> 模板缓存（该缓存以 (ordered_locks, unordered_locks, participants, lock_init_value) 为 key 保留 pinned host 模板，以支持 queued copy/graph capture 生命周期），改为在 execute() 内每次构造 std::vector<int64_t> init 并同步 memcpy 到 device；unordered_locks 分支从原先由 async 模板路径统一处理改为显式构造 init 向量。回退动机应为该优化引入了进程级不可释放的 host 内存 + 静态 mutex/生命周期管理复杂度，或存在 stream 顺序/图捕获场景下的正确性问题。风险：1) 同步 memcpy 在 kernel 启动路径上引入 host 阻塞，与 stream 异步语义不一致，可能影响启动吞吐与 multi-stream 并发；2) 每次 launch 分配并填充 vector（锁字节数较大时）产生额外 host 开销；3) 原 PR 修的问题（锁初始化顺序）若真实存在，revert 后可能复现——需确认 revert 理由与后续替代方案。属于 launcher 运行时代码，直接影响 NPUDriver → NPULauncher → aclrtLaunchKernel 链路，不应被视作纯整理。",
+      "tags": [
+        "refactor",
+        "bugfix",
+        "medium-risk",
+        "launcher",
+        "runtime"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "锁 workspace 初始化路径语义变更：由异步 memcpy+host 模板缓存改为同步 memcpy+每次构造 init 向量。unordered_locks 与 lock_init_value 两个分支的组合行为需要验证（初始化值、participants 填充、同步完成后才 launch 的顺序保证），且同步拷贝对 stream 顺序与多流并发的影响需回归；若现有 device_ut/launcher 测试未覆盖 unordered_locks/lock_init_value 组合，则存在覆盖盲区。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/device_ut/",
+          "third_party/ascend/backend/launcher_src/launcher_runtime.cpp",
+          "third_party/ascend/unittest/autotune_ut/ (启动开销/多流场景)",
+          "sync_block / lock workspace 相关内核测试"
+        ]
+      },
+      "message": "Revert \"[Launcher](fix) Initialize lock workspaces in stream order (#2829)\" (#2856)\n\nThis reverts commit d85207762c276aa9966b980556335aff972ca548."
+    },
+    {
+      "sha": "0253b68b73086148265fdf87100a7c8285cea7a0",
+      "comment": "纯中文文档质量修复，覆盖 6 个文件：FAQ.md（arm→ARM、tiling→Tiling、版本号加代码格式、句末补句号、增加 950PR&950DT→A2/A3 迁移提示、Python 代码块语言标注修正为小写 python）；architecture_design_and_core_features.md（存储层级→内存层级、去冗余加粗、产品名前后空格、中英文标点统一）；autotune_guide.md（inplace→in-place、片上存储→片上内存、冒号/句号的用法、ms 加代码格式）；installation_guide.md（Arm→ARM）；max_autotune_guide.md（修正展开配置数量 12→24 的计算错误，并补齐 cube 类型支持的调优参数 num_stages/unit_flag/limit_auto_multi_buffer_of_local_buffer）；quick_start.md（代码块 shell→text）。其中 max_autotune_guide 的配置数量修正与 cube 参数说明属于实质性内容纠错，与 third_party/ascend/backend/runtime 的 max_autotune 参数展开逻辑相关，建议对照代码确认文档描述与实现一致。无代码变更。",
+      "tags": [
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯文档修改，不涉及代码或测试逻辑。仅 max_autotune_guide.md 中配置数量（12→24）与 cube 调优参数列表属于内容纠错，建议人工核对源码以确认文档与 max_autotune 实现一致，但不产生新的测试需求。",
+        "suggested_test_areas": []
+      },
+      "message": "[docs] Fix terminology, formatting, and content errors in Chinese documentation (#2843)\n\nFix terminology, formatting, punctuation, and content errors across\n6 Chinese documentation files:\n\n- FAQ.md: fix \"arm\"->\"ARM\", \"tiling\"->\"Tiling\", add code formatting for\n  version strings, add periods, add 950PR&950DT->A2/A3 migration note\n- architecture_design_and_core_features.md: fix \"存储层级\"->\"内存层级\",\n  remove unnecessary bold, fix spacing around product names\n- autotune_guide.md: fix \"inplace\"->\"in-place\", \"片上存储\"->\"片上内存\",\n  fix periods to colons, add code formatting for \"ms\"\n- installation_guide.md: fix \"Arm\"->\"ARM\"\n- max_autotune_guide.md: fix config count 12->24, update cube params description\n- quick_start.md: fix code block language \"shell\"->\"text\"\n\nCo-authored-by: yanggaofeng (C) <y60124509@china.huawei.com>"
+    },
+    {
+      "sha": "c259a893a2517eeddf5ddf3225fecffc1f2ab1af",
+      "comment": "3.6.0.post2 版本发布文档更新：README.md/README_zh.md 增加 2026.10.29 发布消息；docs/en/release_note.md 与 docs/zh/release_note.md 在发布计划表中新增 3.6.0.post2 行（分支切出 2026-10-15、发布 2026-10-29、性质为补丁版本），并更新分支维护状态表（release/3.6.0 现发布 3.6.0.post2 与 3.6.0；release/3.2.2 现发布 3.2.2.post2 与 3.2.2），新增 3.6.0.post2 的依赖版本矩阵行（Triton 3.6.0 / LLVM 相关 2.10.0.post7 / torch-npu 2.13.0）与硬件支持表行。英文版顺带删除了 3.2.2.post2 在依赖矩阵中的一行（疑似与 3.2.2 重复整理）。纯发布元数据，不涉及构建/入口/版本号代码（setup_ascend.py 等）变更，与后端实现无耦合。风险：需确认英文/中文两版表格一致、删除的 3.2.2.post2 行为有意整理。",
+      "tags": [
+        "docs",
+        "chore",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯发布说明与 README 文本更新，不影响任何编译/运行时行为，无需测试变更。若 CI 有文档链接或版本一致性检查，可顺带验证新增版本的依赖矩阵行与 setup 中的实际依赖一致。",
+        "suggested_test_areas": []
+      },
+      "message": "[docs](fix) release 3.6.0.post2 (#2854)"
+    },
+    {
+      "sha": "eb4a7f09c45d85a76f29da58569268b086874904",
+      "comment": "修正 AIDD（文档自动检查）报出的问题，涉及 15 个中文文档：examples/01~07（标题中英文括号间空格、标点统一、「缩减操作」→「中的缩减操作」、Padding 句末句号、因果注意力引号改为中文引号、kernel→Kernel 大小写统一、补全 import 示例）；09_costmodel_example.md（「前端算子」→「前端 Kernel」）；libdevice_developer_guide.md（Triton Kernel 大小写、返回值标点）；migration_guide/architecture_difference.md（修正乱码字符⽂/⼤/⼼/⼿ 等异体字、「更高效triton写法」→「更高效Triton写法」、cube/vector 大小写统一）；migrate_from_gpu.md（32字节→32Byte、句子补句号、「会输出IR」错字修正、离散访存描述与 block_ptr shape/stride 说明细化）；performance_guidelines.md（Kernel/Tiling/Mask 大小写统一、diff 代码块标记空格修正、int64 退化描述表述澄清）；programming_guide/cube_operator.md（BLOCK_SIZE_M/N/K→BLOCK_M/N/K，与示例代码中的实际参数命名对齐）；programming_guide/index.md（列表标记 *→-、32B→32Byte、UB 占用估算中「单张量」→「单个float16张量」、add_kernel 注释中英混排改为中文、补充 import triton）；programming_guide/vector_operator.md（Mask 大小写、UB 预算代码示例补 import triton、32B→32Byte）。其中 cube_operator.md 的参数名修正与 vector_operator.md 示例补 import 属于会影响示例可运行性的实质修改，其余为排版/术语。无代码变更。",
+      "tags": [
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯中文文档排版与术语修正，不涉及代码逻辑。仅少量示例代码文本被修改（如 vector_operator.md 补充 import triton、cube_operator.md 参数名 BLOCK_M/N/K 对齐），若文档示例被作为 doctest 或示例测试源使用，可顺带验证可运行，但仓库测试体系未见文档示例自动化执行。",
+        "suggested_test_areas": []
+      },
+      "message": "[docs](fix) modify AIDD issue (#2853)\n\n* modify aidd issue\n\n* modify aidd issue"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

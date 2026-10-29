@@ -1,0 +1,165 @@
+{
+  "date": "2026-10-29",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-10-30T06:06:51.748220+08:00",
+  "daily_summary": "当日变更集中在 TritonGPU/TritonNvidiaGPU 中端优化与共享内存/CTA 语义：修正 matmul 与 LHS 提升中 CGA layout 的取值来源（改为跟随 MMA 操作数而非 load 结果），新增 local_store 对 CTA 副本的跨 CTA 存储与广播支持（invertAndComposeStore）并收紧 padded shared 布局的 block 基约束。此外修复了解释器对负 axis 的 reduce/scan 处理，AMD 侧修复零尺寸 grid 的 AOT HIP wrapper 行为、大幅收紧 gfx1250 TDM 相关 verifier（含一处 breaking 的 tile/buffer 尺寸一致要求），并调整了 MXFP GEMM 的 prefetch 断言位置。triton_kernels 侧定义了 gather 索引 -1 表示非活跃行的显式契约并在 _matmul/_p_matmul 与参考实现中统一按零输入处理。整体方向是补齐 Cluster/CTA 语义正确性、收紧 IR verifier 契约、修正解释器与参考实现行为。",
+  "ascend_impact_summary": "当日 6 个 commit 中，绝大多数属于 NVIDIA/AMD 专属路径或纯测试/内核库代码，对 triton-ascend 无影响。唯一需要关注的是 b89bce47：它修改了 python/triton/runtime/interpreter.py 的 ReduceScanOpInterface.check_axis（由直接抛错改为通过 tl.core._unwrap_if_constexpr 与 _wrap_axis 归一化负 axis），并调整了 python/test/unit/language/test_core.py 的 reduce 测试。interpreter.py 属于 Ascend 的必然影响路径之一（AscendInterpreterBuilder/AscendReduceOps/AscendScanOps 依赖解释器 op 注册协议与 ReduceOps/ScanOps 基类接口），但本次改动仅涉及 check_axis 的 axis 语义，不改变 op 注册协议或基类接口签名，属于语义放宽（支持负 axis），Ascend 侧若已有自定义 reduce/scan 测试中依赖旧的不抛错行为需复核，功能上不破坏接口。其余 commit 涉及 NVIDIA 的 CGA layout/local_store、AMD 的 TDM/HIP wrapper、triton_kernels 与测试文件，均落在绝不影哬或纯测试路径，ascend_affected 为 false。",
+  "commits": [
+    {
+      "sha": "cc7121564aae5692195ff998af7426f1a8b916dc",
+      "comment": "修正 AccelerateMatmul 与 PromoteLHSToTMem 中 CGA layout 的取值来源。原逻辑在 getSharedMemoryMMAOperand 中沿 convert_layout 回溯到源值 arg 后，用 arg 的类型（load 结果）决定 CGA layout，导致在 '%25 = tt.load(CGA [[1,0]] split K) -> convert_layout(CGA [[0,1]] split N) -> tt.dot' 场景下错误地按 split K 分配共享内存。改动改为先取 vType（MMA 操作数的 CGA layout）用于 NVMMASharedEncodingAttr/MemDescType 与后续 TensorMemoryEncodingAttr，仅保留从 arg 推导 memory order 的行为；PromoteLHSToTMem 同样改用 lhs 的 encoding 而非 srcLayout。新增两条 lit 测试分别覆盖 mmav5_operand_cta_redistribution 与 promote_lhs_cta_redistribution，并新增 hopper_fp8_source_order_requires_transpose_b 确保警告仍基于 convert_layout 之前的源 order。风险点：当操作数与源 CGA layout 不同而 memory order 仍需按源判断时，两处来源不同源（order 来自 arg、CGA 来自 vType），需确保 LocalAllocOp 创建在 arg 之后且类型一致；测试覆盖了该路径，风险中等偏低。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "medium-risk",
+        "TritonGPU",
+        "TritonNvidiaGPU",
+        "MMA"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Dialect/TritonGPU/Transforms/AccelerateMatmul.cpp 与 lib/Dialect/TritonNvidiaGPU/Transforms/PromoteLHSToTMem.cpp，属于 NVIDIA MMA/TMEM 专属优化路径，Ascend 不走 TritonGPU→LLVM 与 NVMMA/TensorMemory 编码，也不加载 TritonNvidiaGPU 方言。",
+        "testing": "无影响。新增/修改的 test/TritonGPU/accelerate-matmul.mlir 与 promote-lhs-to-tmem.mlir 为 NVIDIA lit 测试，Ascend 不运行。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Update CGALayout retrieval in matmul and promote LHS transformations (#12533)\n\nWe should follow the operand's CGA layout instead of the load resultant.\n\n```\n%25 = tt.load ...                  // CGA [[1,0]]: split K\n%27 = ttg.convert_layout %25 ...   // CGA [[0,1]]: split N\ntt.dot %26, %27, ...\n```\n\nSplit N is correct instead of split K"
+    },
+    {
+      "sha": "b89bce47e2d9e1c7fb4bd568c1e55e19c476a31e",
+      "comment": "修复解释器对负 axis 的 reduce/scan 支持，作为 #12431 的更优修复。原 ReduceScanOpInterface.check_axis 仅在 axis >= len(shape) 时抛 ValueError，负 axis 未归一化便直接传入后续逻辑，导致 -1、-2 等合法 axis 行为不一致。改动将 axis 先经 tl.core._unwrap_if_constexpr 解包 constexpr，再通过 tl.core._wrap_axis(axis, len(shape)) 归一化为非负并写回 self.axis，从而让 -1/-2 与 len-1/len-2 等价；越界（如 -3 对 2D）由 _wrap_axis 抛出。测试同步更新：invalid_config 加入 -3，negative_config 替换为 xor_sum 在 (4,8) 上 axis [-1,-2] × keep_dims 的参数化；test_reduce 的指针构造与 numpy 轴校验改为按 -len(shape) <= axis < len(shape) 判断，并补充 AXIS == -2 的二维分支。实现方式简洁且复用语言层已有辅助函数，风险较低；需注意 _wrap_axis 对 axis=None 的处理以及 keep_dims 与负 axis 组合的语义在测试中是否完整覆盖。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "interpreter",
+        "runtime"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "python/triton/runtime/interpreter.py 属于 Ascend 必然影响路径（AscendInterpreterBuilder/AscendReduceOps/AscendScanOps 继承 InterpreterBuilder 及 ReduceOps/ScanOps 基类）。本次改动只修改 ReduceScanOpInterface.check_axis 的实现——将对 axis 的越界检查替换为 tl.core._unwrap_if_constexpr + tl.core._wrap_axis 归一化并写回 self.axis。这不改变 op 注册协议或基类方法签名，AscendInterpreterBuilder/AscendReduceOps/AscendScanOps 无需改代码即可继续工作；但行为上负 axis 从'可能异常/不一致'变为'合法且归一化为非负'，若 Ascend 侧有代码读取 check_axis 之后的 self.axis 或依赖旧的不抛错语义，需确认归一化后的取值符合预期。",
+        "testing": "python/test/unit/language/test_core.py 的 reduce 测试更新为支持负 axis（invalid_config 加入 -3，negative_config 改为 xor_sum × axis [-1,-2] × keep_dims），这些是上游通用 Python 测试，Ascend 若复用同一测试集运行 reduce/scan 负 axis 用例，将直接受益于覆盖增强；若 Ascend 自有 reduce/scan 解释器测试仍以旧语义（负 axis 不归一化）编写，可能出现断言不匹配。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/（reduce/scan 算子负 axis 与 keep_dims 组合用例）",
+          "python/test/unit/language/test_core.py（若 Ascend 复用上游 reduce 测试集，确认 -1/-2 与越界 -3 行为一致）"
+        ]
+      },
+      "message": "[INTERPRETER] Handle negative reduce/scan ops (#12540)\n\nA better fix for https://github.com/triton-lang/triton/pull/12431",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/runtime/interpreter.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "cd2e01c6686d6503802e6cdfac56d5a5dfdb27a1",
+      "comment": "修复 AMD HIP AOT wrapper 对零尺寸 grid 的处理。此前生成的 C wrapper 用 'gX * gY * gZ > 0' 判断后返回 hipErrorInvalidValue，与常规 HIP JIT launcher 把零尺寸 grid 视为 no-op 的行为不一致；且 gX*gY*gZ 在 unsigned int 下可能溢出（例如 65536×65536 时乘积回绕为 0），误判为零尺寸。改动改为在计算完 global/profile scratch 之前即显式判断 gX==0 || gY==0 || gZ==0 并返回 hipSuccess，避免无谓的 scratch 查询与参数打包；非零 grid 行为与模块加载顺序不变。改动很小、语义清晰，但注意提前返回跳过了 global_scratch/profile_scratch 的获取，需确认 profiling 场景下零 grid 不期望产生 scratch 副作用。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "AMD",
+        "runtime",
+        "AOT"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/amd/tools/hip/compile.c，是 AMD HIP AOT wrapper 的 C 源码模板，Ascend 使用自己的 NPU launcher（make_npu_launcher_stub/NPULauncher），不经过该模板。",
+        "testing": "无影响。未新增测试文件，仅修改 AMD 专属 wrapper 生成逻辑。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][AOT] Fix zero-sized grid handling in HIP wrapper (#12530)\n\nFixes #12509\n\nThe generated HIP AOT wrapper returns `hipErrorInvalidValue` when any\ngrid dimension is zero, while the regular HIP JIT launcher treats this\ncase as a no-op.\n\nThis change makes the AOT wrapper return `hipSuccess` for zero-sized\ngrids without launching the kernel. It also replaces the `gX * gY * gZ >\n0` check with explicit zero checks to avoid unsigned integer overflow.\n\nThe existing module loading order and non-zero grid launch behavior\nremain unchanged. I verified the fix locally by compiling and running\nthe generated C wrapper with a fake HIP runtime, covering zero-sized\ngrids, normal launches, and HIP error propagation. No AMD GPU is\nrequired for these checks."
+    },
+    {
+      "sha": "59585fd33fe8283df3586bb59cdb2da5ed17d3f3",
+      "comment": "大幅收紧 AMD gfx1250 TDM 相关 verifier，并附带一处 breaking 变更。核心改动在 TritonAMDGPUOps.td 与 Dialect.cpp：AsyncTDMWait/AsyncTDMIntrinsicWait 的 num/count 改为 ConfinedAttr<I32Attr,[IntNonNegative]>；新增 verifyTDMDescriptor（1D–5D 限制、block 维度 >0 且 ≤65535、元素位宽限定 8/16/32/64、shared layout rank 与 descriptor rank 一致）与 verifyTDMBuffer（buffer 必须在 shared memory、元素类型一致、不得有未切片的 pipeline 维、gather/scatter 的行数须与索引数一致、普通 load/store 允许仅去除前导 unit 维后形状一致）；breaking 点即 tile 尺寸必须与 shared buffer 逻辑视图一致，向更大 LDS 分配写入需先 memdesc_subslice。此外强化 padding 约束（单一 interval、dword 对齐、interval 2–256 dwords、padding 1–128 dwords）、partitioned shared 的 shapePerCTA 可整除性、padded layout 的 offset 映射一致性（isCanonicalRowMajor），并给 TDMPrefetchOp 增加 verifier 要求索引数与 descriptor 维数一致。TensorPtrOpsToLLVM.cpp 在 make_tensor_descriptor 降级时同步加入等价检查以保证诊断一致性。测试侧在 test/TritonGPU/amd/invalid.mlir 新增约 179 行负例，多处既有测试改为通过 memdesc_subslice 传入收缩视图（buffer-region-layout-alias、amd-consan、amd-update-async-wait-count*、triton_gpu.tdm_stride_order），python/test 的 gluon scatter/gather 用例改为 smem.slice(0, NUM_INDICES)。变更面较大但集中在 AMD TDM 路径，风险在于下游依赖旧宽松语义的 IR 会被拒绝（breaking）。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "medium-risk",
+        "AMD",
+        "TDM",
+        "TritonAMDGPU"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更集中在 third_party/amd/（TritonAMDGPUOps.td、Dialect.cpp、TensorPtrOpsToLLVM.cpp）及 AMD 专属 lit 测试，属于 AMD TDM 方言与 HIP 降级路径；Ascend 不加载 TritonAMDGPU 方言、不实现该 TargetInfo，TDM 相关 verifier 与其无关。",
+        "testing": "无影响。修改的 test/Analysis/test-buffer-region-layout-alias.mlir、test/Conversion/amd/*、test/TritonGPU/amd/*、third_party/amd/python/test/test_gluon_cdna5.py 均为 AMD 专属测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][Breaking] Tighten gfx1250 TDM verifiers (#12534)\n\nThis PR tightens the verifier around TDM ops. There is one breaking\nchange which requires the tile size to agree with the shared buffer\nsize, this means we require a subview if we want to store into a larger\nlds allocation.\n\nOtherwise all changes should be NFC and only reject cases which produced\nincorrect lowerings before this PR, e.g. storing into a LDS buffer which\nis too small, or using i1 (bool) which requires a followup PR to be\nproperly supported."
+    },
+    {
+      "sha": "2c73acc5f8337dbca50ae2b3326edfd92442e874",
+      "comment": "调整 gfx1250 MXFP GEMM 示例中 L2 prefetch 的断言位置。问题在于 gfx1250 的 entry sequence 即使显式关闭 L2 prefetch 也可能生成 global_prefetch_b8，导致原本检查 asm['amdgcn'] 中是否含 'global_prefetch_b8' 的断言在禁用 prefetch 的配置下误失败。改动改为在 LLVM IR（k.asm['llir']）中检查 'llvm.amdgcn.global.prefetch'，分别覆盖 L2_PREFETCH_DISTANCE >= 0 与 < 0 两种情况，并补充注释说明 entry code 的干扰。仅涉及 third_party/amd/python/examples/gluon/mxfp_gemm_cdna5.py 的两处断言，属于测试稳定性修复，无编译/运行语义变化。",
+      "tags": [
+        "test",
+        "bugfix",
+        "low-risk",
+        "AMD",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅修改 third_party/amd/python/examples/gluon/mxfp_gemm_cdna5.py 的 pytest 断言，属于 AMD Gluon CDNA5 示例测试，不涉及任何被 Ascend 使用的接口。",
+        "testing": "无影响。Ascend 不运行 AMD Gluon 示例测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][gfx1250] Check MXFP GEMM prefetches in LLVM IR (#12539)\n\nThe gfx1250 entry sequence can contain `global_prefetch_b8` even when\nthe MXFP GEMM example disables L2 prefetching. This makes both runtime\ntests fail their ISA absence checks.\n\nCheck `llvm.amdgcn.global.prefetch` in LLVM IR instead, preserving the\nchecks for both enabled and disabled prefetching."
+    },
+    {
+      "sha": "dcbd6631952337c0d209a5249070eb83035b29fc",
+      "comment": "为 triton_kernels matmul 的 gather 语义定义明确契约：gather 索引 -1 表示非活跃输入行，其值贡献为零且不读取源 value/scale，bias 等 epilogue 仍生效；同时要求活跃索引在 [0, a.shape[-2]) 内。实现上：matmul.py 的 matmul_torch 参考实现改为构造零张量后仅对 idx>=0 的行做拷贝（避免 Python 负索引取到最后一行），并补充 docstring；_matmul.py 在 x 与 x_scales 的 tl.load 上分别以 (offs_x_m >= 0) 与 (offs_x_m[:,None] >= 0) 掩码，未使用 gather 时不加掩码以避免额外开销；MX scale 的 padding 值按平台区分——默认 0.0 以配合 async-copy 零填充，Hopper（uint8 scale 且 9<=cap<10）用 127 中性 E8M0 padding 以减少 spill；tensor scale 读取在 REQUANTIZE_X 与 epilogue 路径改为 other=1.0 并加非活跃行掩码。_p_matmul.py 同样在持久化路径为 x/x_scales/tensor_scales 增加非活跃行掩码。测试新增 test_gather_inactive_rows 与 test_gather_inactive_scales，覆盖 persistent/split_k/k/全非活跃/tensor_scale/bias/requantize 组合，并用 NaN 填充负索引可达内存以侦测越界读。逻辑改动集中在 kernel 库侧，风险点为 Hopper 与 Blackwell 的 scale padding 选择必须保持数值中性，以及 EVEN_K + 非 SPLIT_K 路径新增的 mask 可能带来性能开销。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "test",
+        "medium-risk",
+        "triton_kernels",
+        "matmul"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更全部位于 python/triton_kernels/（matmul.py、matmul_details/_matmul.py、_p_matmul.py）及其测试，属于 triton_kernels 库的 matmul 实现与参考语义，不涉及 BaseBackend/DriverBase/TargetInfoBase/JIT/编译器抽象接口；Ascend 后端不使用该 matmul kernel 库，且相关路径含 cuda_capability_geq 等 NVIDIA 专属条件。",
+        "testing": "无影响。新增的 test_gather_inactive_rows/test_gather_inactive_scales 均以 is_hopper_or_newer 为前置条件，属 NVIDIA 专属测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[KERNELS] Treat inactive matmul gather rows as zero inputs (#12538)\n\n## Summary\n\nDefine `-1` gathers as zero input rows in GPU kernels and\n`matmul_torch`; bias and other epilogue operations still apply. Mask\nvalue/scale reads only when gathers exist. Use zero microscale padding\nfor efficient asynchronous copies, retaining neutral E8M0 padding on\nHopper's nonpersistent gathered path to reduce spilling. Production\nimpact is unconfirmed.\n\n**Desired features:** zero contribution for inactive inputs, matching\nGPU/reference behavior, explicit contract, regression tests, and no\ninactive-row checks without gathers.\n\n## Validation\n\n| Original reproducer | Before | After |\n|---|---|---|\n| H200 value loads | 16 failed | 16 passed |\n| GB300 value loads | 8 failed, 8 passed | 16 passed |\n| GB300 scale loads (values already masked) | 24 failed | 24 passed |\n\nRetained suite: 68 H200 cases (4 Blackwell-only skips), 72 GB300 cases.\nCompiler build: `941849d2e508`.\n\n`pytest -s --tb=short python/triton_kernels/tests/test_matmul.py -k\ntest_gather_inactive`\n\nSynthetic CUDA-graph benchmarks cover dense/gathered FP8, FP32, MXFP8\nand NVFP4, plus two additional MXFP8 shapes. Large scale-padding\nregressions are removed. Known limits at M/N/K=1024/2048/2048, forced\ntile 64/64/128, split-K=1: H200 gathered persistent MXFP8 is ~2.7%\nslower; nonpersistent two-warp FP32 with TensorFloat-32 still spills\n(~83% slower). These are configuration-specific, not end-to-end\nmeasurements.\n\n## Lines Changed\n\n| Type | Added | Removed | Net |\n|---|---:|---:|---:|\n| Tests | 85 | 2 | 83 |\n| Core Logic | 45 | 14 | 31 |\n| AutoGenerated | 0 | 0 | 0 |\n| Total | 130 | 16 | 114 |\n\n## Reviewers Guide\n\nGPU masks/padding: `_matmul.py`, `_p_matmul.py`. Contract/reference:\n`matmul.py`. Regressions: `test_matmul.py`. No file moves."
+    },
+    {
+      "sha": "51a275355124fbcbc5f152e5fb15dcf2faf23615",
+      "comment": "让 ttg.local_store / local_alloc 在 Cluster 场景下正确填充 shared memory 的 CTA 副本。此前 lowerLocalStore 用 invertAndComposeLocal(sharedLayout, regLayout, {block}) 得到 store 映射，当 shared layout 对某些 block 位是复制（值为 0）而源寄存器布局未覆盖这些 CTA 位时，副本不会被写入。改动新增 Tools/LayoutUtils 的 invertAndComposeStore：先做常规 invertAndComposeLocal，若结果非满射则通过 getMissingCTAReplicaBits 找出 sharedLayout 中为 0 偏移的 block 位与 regLayout 中对应自由位的差集，为缺失位追加 register 基向量，再在 MemoryOpToLLVM.lowerLocalStore 中按 resizeInDim(register, numStoreRegs) 广播源值，使同一值重复写入各 CTA 的本地副本；lowerLocalStore 的 inVals 由 ArrayRef 改为 SmallVector 引用以支持广播。同时把 isCrossCTALoadStore 增加 isStore 参数，MBarrierUtilities 与 ConcurrencySanitizer 的 LocalStoreOp/LocalAllocOp 路径改用 store 版本（AsyncSharedStore 与 load 仍用原版本），保证 barrier 插入与 ConSan 的接收 CTA 掩码与真实 store 映射一致。PaddedSharedEncodingAttr::verify 新增约束：block 维必须满足 removeZeroBasesAlongDim(block) 为单射，即跨 CTA 广播要求 block 基为零，避免有歧义的偏移映射；原 'Broadcasting in block dim is allowed' 负例改为报错、新增零 block 基的正例。测试新增 unittest/Tools/LinearLayoutTest 两个用例（含 skip offset hole 与相关 block 位场景）、python/test/gluon/test_core.py 的 test_local_store_sharded_to_replicated（覆盖 shared_cga 为全零/全零+零/混合的参数化）、以及 test/Conversion/tritongpu_to_llvm.mlir 中 local_store_populates_both_ctas 期望 nvvm.mapa 与两次 llvm.store。改动跨 C++ 工具层、LLVM 降级、NVGPU 工具、ConSan 与 verifier，逻辑较深，风险中高，主要风险是广播后寄存器基增多可能影响性能、以及 padded/memdesc 现有 IR 若不满足零 block 基约束会被 verifier 拒绝。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "high-risk",
+        "TritonGPU",
+        "TritonNvidiaGPU",
+        "LayoutUtils",
+        "ConSan"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Tools/LayoutUtils.cpp、lib/Conversion/TritonGPUToLLVM/MemoryOpToLLVM.cpp、lib/Dialect/TritonGPU/IR/Dialect.cpp、lib/Dialect/TritonNvidiaGPU/Transforms/MBarrierUtilities.cpp、lib/Dialect/TritonInstrument/Transforms/ConcurrencySanitizer.cpp 与 include 头文件，均属于 TritonGPU→LLVM 降级与 NVIDIA Cluster/CTA 副本语义路径；Ascend 走 TritonToLinalg 而非 TritonGPU→LLVM，不实现 TargetInfoBase，不使用 mbarrier/ConSan 的这些路径。虽然 PaddedSharedEncodingAttr::verify 属于共享 TTGIR 定义，但 Ascend 不使用 TTGIR 及其 padded shared 编码，且无调用点受 isCrossCTALoadStore 新参数影响。",
+        "testing": "无影响。新增/修改的 unittest/Tools/LinearLayoutTest.cpp、python/test/gluon/test_core.py、test/Conversion/tritongpu_to_llvm.mlir、test/TritonGPU/verify-padded-layouts.mlir 均为上游 TritonGPU/Gluon/LLVM 降级测试，Ascend 不运行。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Populate shared-memory CTA replicas in local_store (#12535)\n\nAdd register bases for shared-memory CTA replicas that the source layout\ndoes not already cover, and broadcast the source values across those\nbases. Use the same store layout for barrier insertion and ConSan.\nRequire zero block bases for CTA replication in padded shared layouts."
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}
