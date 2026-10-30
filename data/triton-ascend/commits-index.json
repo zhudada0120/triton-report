@@ -1,4 +1,44 @@
 {
+  "0ae6cfae8e09cfe29d3b7500b14b29314717cdd2": {
+    "date": "2026-10-30",
+    "msg": "[build](fix) Distinguish between local build and pipeline build wheel (#2798)"
+  },
+  "1095f7d6873926f788fa5557d19aa6eda7e15871": {
+    "date": "2026-10-30",
+    "msg": "[Docs](fix) add build tip and install verification. (#2869)"
+  },
+  "5441dffce357832cd290d96cb0b7d80910f0532d": {
+    "date": "2026-10-30",
+    "msg": "[Docs](feat) add Triton Msdebug user guide (#2371)"
+  },
+  "581d038d070b7fea64755379ec42e1390288cebf": {
+    "date": "2026-10-30",
+    "msg": "[DynamicReuse](test) add test cases for automatic constexpr reuse (#2831)"
+  },
+  "e7809b9b30b72158fb4ecfdb16b50374888b8849": {
+    "date": "2026-10-30",
+    "msg": "[autotune](fix) delete gc (#2414)"
+  },
+  "f810ca5879fd13cd562a2b8bd25bf2eb5a07e46f": {
+    "date": "2026-10-30",
+    "msg": "[ascend](feat) TLA: device print/assert and cube pipeline alignment (#2810)"
+  },
+  "b7c0c6b1e00b6812d71c661c5f056db000d8bcb1": {
+    "date": "2026-10-30",
+    "msg": "[ssbuffer](fix) Replace the conditions of \"splittedif\" and \"ssbufif\" (#2302)"
+  },
+  "ab486e6d1882ed83c2ab6b1b4845563a9119d53f": {
+    "date": "2026-10-30",
+    "msg": "[backend](feat) pass device info for Ascend 950 targets (#2776)"
+  },
+  "690924d08826caff6159119c84fd01ecc62593ec": {
+    "date": "2026-10-30",
+    "msg": "[ascend](feat) bug fix and refactor for TLA frontend (#2744)"
+  },
+  "f0f6981374c0d17c3794112a7a0d6e09bcb5a659": {
+    "date": "2026-10-30",
+    "msg": "[ascend](feat) add A6 target support and fix option accessors (#2748)"
+  },
   "a414a5cb704b4ba5fef99c1bf52111575212ba84": {
     "date": "2026-10-29",
     "msg": "Revert \"[Launcher](fix) Initialize lock workspaces in stream order (#2829)\" (#2856)"

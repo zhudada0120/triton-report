@@ -1,4 +1,24 @@
 {
+  "2bdead3a37e9d4d43cf5124ccb8d145bda3a47b7": {
+    "date": "2026-10-30",
+    "msg": "[Proton] Isolate ChromeTraceWriter test output files (#12301)"
+  },
+  "cbcc0a11aafd8446973d79423691fcad19fa71f3": {
+    "date": "2026-10-30",
+    "msg": "[Interpreter] Fix NaN/Inf handling in interpreter float conversions (#12489)"
+  },
+  "cdd55d35fc54106a4517313e2ada10732ec2cff9": {
+    "date": "2026-10-30",
+    "msg": "[AMD] Add ScopedNoAliasAA to the MIR scheduling DAG emitter (#12551)"
+  },
+  "efd111260de24ef5153d923e73581b67d77bd871": {
+    "date": "2026-10-30",
+    "msg": "[AMD][CI] Bump rocjitsu to 20261029 (#12546)"
+  },
+  "f53372790560b2f79833bd16613adee2c518af9f": {
+    "date": "2026-10-30",
+    "msg": "[NFC] Migrate from deprecated mlir Op::create builder (#12545)"
+  },
   "cc7121564aae5692195ff998af7426f1a8b916dc": {
     "date": "2026-10-29",
     "msg": "[NVIDIA] Update CGALayout retrieval in matmul and promote LHS transformations (#12533)"

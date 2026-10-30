@@ -1,0 +1,200 @@
+{
+  "date": "2026-10-30",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-10-31T05:46:55.952318+08:00",
+  "daily_summary": "当日变更主要围绕构建/CI 可复现性、文档完善、TLA（Triton Ascend Language）前端能力扩展、动态 CV pipeline 与 ssbuffer 条件修复、A6（Ascend960）目标支持及架构分类集中化、以及设备信息传递给 950 目标等几个方向。其中 TLA 相关提交（#2810、#2744）引入了 device_print/assert、cube pipeline 对齐、scope/vector 抽象、sync 接口、reshape、寄存器向量值类型等大量前端与 C++ builder 能力，是本日最大的功能增量；#2798 重构了 wheel 构建流程区分本地构建与流水线构建；#2748 集中化 arch 分类并修复 option accessor；#2302 新增 splitted_if 包裹 ssbuffer.if 的 pass。整体看，功能与基础设施并重，测试覆盖需求明显上升。",
+  "test_impact_summary": "当日变更对测试看护影响显著。TLA 系列提交（#2810、#2744）新增了大量前端接口（device_print、sync、vector scope、reshape、tla.vector 值类型）与 C++ builder 绑定，并伴随大量 tla_ut 用例与 lit 测试，需要重点看护 IR 结构与端到端运行；#2302 新增 DynamicCVPipeline pass 及多个 lit 测试，需确认 pass 行为与回退逻辑；#2748 引入 A6 支持与 arch 表集中化，新增/更新了 test_a6_target_contract.py 与 test_ascend_arch_table.py，需关注 FFTS 策略与 import cycle 回归；#2776 修改了 950 target 设备信息传递并调整了测试；#2798 为构建脚本与 CI 变更，测试影响主要在 CI 流水线本身；#2831 新增 reuse_ut 系列用例并接入 pipeline，需在 NPU 环境验证；#2414 删除 gc 并更新测试；#2869、#2371 为文档变更，无需测试更新。总体而言，TLA 与 arch/A6 是测试看护重点，现有测试在部分区域（如 A6 实机运行、TLA reshape 的 compile/run 阶段）仍存在 TODO 缺口。",
+  "commits": [
+    {
+      "sha": "0ae6cfae8e09cfe29d3b7500b14b29314717cdd2",
+      "comment": "该提交修复 wheel 构建问题，区分本地构建与流水线构建。核心改动包括：fetch-npuir-stable.sh 支持传入 40-hex 完整 SHA（用于 pinned wheel 场景），并保留 branch 名解析逻辑；wheels.Dockerfile 新增 NPUIR_REF 参数，在镜像内预取 AscendNPU-IR 源码并冻结 gitlink 避免被 submodule update 覆盖，同时为 TRITON_BUILD_NPUIR=ON 的 in-image fallback 注入 clang++ wrapper；wheels.yml 新增 Build-Pinned-Wheels job，仅在 PR 修改 AscendNPU-IR gitlink 或 workflow_dispatch 指定时构建验证 wheel；build_npuir.py 大幅简化，改为通过 root repo 的 git submodule update 初始化 pinned 版本，不再自行 fetch stable branch；setup_patch.py 移除 _ensure_npuir_sources，依赖 root setup.py 的 submodule 初始化。整体看是构建/CI 基础设施改动，逻辑较清晰，但涉及多个构建路径（本地、CI、pinned 验证），需确保各路径一致性。风险中等，主要在于 submodule 管理路径变更可能影响现有构建行为。",
+      "tags": [
+        "ci",
+        "build",
+        "refactor",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "变更主要集中在 CI 工作流与构建脚本，不涉及运行时功能逻辑，现有测试无需更新；但建议在 CI 中验证 pinned wheel 构建路径。",
+        "suggested_test_areas": [
+          ".github/workflows/wheels.yml",
+          ".github/workflows/build/wheels.Dockerfile",
+          "third_party/ascend/build/build_npuir.py"
+        ]
+      },
+      "message": "[build](fix) Distinguish between local build and pipeline build wheel (#2798)\n\n* Fix the wheel build issue\n\n* Add a manual packet generation process\n\n* Remove the redundant clone steps\n\n* fetch npuir nested submodules single-level to avoid GitHub externals"
+    },
+    {
+      "sha": "1095f7d6873926f788fa5557d19aa6eda7e15871",
+      "comment": "该提交为文档更新，在 README.md、README_zh.md、docs/en/installation_guide.md、docs/zh/installation_guide.md 中补充了 pip install 的 --extra-index-url 华为云镜像、--no-build-isolation 加速提示，以及新增安装验证命令（python3 -c \"import triton.backends.ascend as ascend;print('triton-ascend version:', ascend.__version__)\"）。纯文档变更，无代码逻辑影响，风险低。",
+      "tags": [
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯文档变更，不涉及代码或测试逻辑，无需测试更新。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](fix) add build tip and install verification. (#2869)\n\n* [Docs](fix) add --no-build-isolation note and install verification for source installs\n\nSigned-off-by: li-lizhe <147392333@qq.com>\n\n* [Docs](fix) add build tip and install verification.\n\n* update doc\n\n---------\n\nSigned-off-by: li-lizhe <147392333@qq.com>\nCo-authored-by: li-lizhe <147392333@qq.com>"
+    },
+    {
+      "sha": "5441dffce357832cd290d96cb0b7d80910f0532d",
+      "comment": "该提交新增 Triton msdebug 使用指南中文文档（约 897 行），涵盖环境准备、命令参考、断点设置、内存与变量打印、单步调试、中断运行、核切换、程序状态检查、SIMT 线程切换、Core Dump 解析、常见问题与 kernel.o 调试信息检查等内容，并在 debug_guide/index.md 中挂载导航，同时在 codespell 白名单中加入 LLDB。纯文档变更，不涉及代码，风险低。文档内容详尽，有助于用户排查 NPU 上的 Triton kernel 问题。",
+      "tags": [
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯文档变更，不涉及代码或测试逻辑，无需测试更新。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](feat) add Triton Msdebug user guide (#2371)\n\n* [Docs] add Triton Msdebug user guide\n\n* [Docs](fix) resolve msDebug guide checks\n\n* [Docs](fix) refine msDebug guide navigation\n\n* [Docs](fix) normalize msdebug casing"
+    },
+    {
+      "sha": "581d038d070b7fea64755379ec42e1390288cebf",
+      "comment": "该提交为 automatic constexpr reuse 功能新增测试用例。将原 test_constexpr_reuse.py 移动到 reuse_ut/ 目录，新增 reuse_common.py（提供 reuse_mode fixture，通过环境变量 TRITON_ASCEND_ENABLE_DYNAMIC_REUSE 参数化 0/1/2 三种模式，并使用 kernel_load_start_hook 统计实际加载次数）、test_scalar_alignment_reuse.py（验证 simd 模式下 scalar 16 字节对齐不触发重编译）、test_scale_reuse.py（验证 constexpr SCALE 变化在 mode 1/2 下复用同一 kernel）、test_tile_reuse.py（验证 mode 2 下 TILE 作为 schedule 参数复用 kernel 并重新推导 grid）。同时在 integration-tests-ascend.yml 中增加 reuse_ut 的 pytest 运行。测试设计较为严谨，通过 hook 观测真实加载次数，并重置全局 ReuseHandler 避免跨模式污染。风险低，属于测试增强。",
+      "tags": [
+        "test",
+        "feature",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 reuse_ut 测试套件并接入 CI pipeline，需要在 NPU 环境下验证这些用例，同时确认 TRITON_ASCEND_ENABLE_DYNAMIC_REUSE 相关 patch 已生效（依赖 AscendBackend.get_jit_reuse_handler）。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/reuse_ut/",
+          ".github/workflows/integration-tests-ascend.yml"
+        ]
+      },
+      "message": "[DynamicReuse](test) add test cases for automatic constexpr reuse (#2831)\n\n* [ascend](test) add NPU device tests for automatic constexpr reuse\n\n* move\n\n* fix precommit\n\n* add test cases to pipeline"
+    },
+    {
+      "sha": "e7809b9b30b72158fb4ecfdb16b50374888b8849",
+      "comment": "该提交删除 AutoTilingTuner.run 中 did_benchmark 且非 disk_cache_hit 时调用的 gc.collect()（原为编译失败配置导致内存泄漏的 workaround），并同步删除 test_do_bench_compat.py 中所有与 gc 调用相关的断言和 monkeypatch。改动极小，意图是移除不必要的 GC 调用（可能影响性能）。风险低，但需确认移除后内存泄漏问题不会回归，尤其是配置失败场景。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "已同步删除测试中的 gc 断言，测试需保持与新行为一致；建议在内存压力场景下观察是否出现泄漏回归。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/autotune_ut/test_do_bench_compat.py",
+          "third_party/ascend/backend/runtime/autotuner.py"
+        ]
+      },
+      "message": "[autotune](fix) delete gc (#2414)\n\nSigned-off-by: gymgit1 <guoyiming17@huawei.com>"
+    },
+    {
+      "sha": "f810ca5879fd13cd562a2b8bd25bf2eb5a07e46f",
+      "comment": "该提交是 TLA 前端的大型功能提交，包含多个子变更：1) 新增 tla.device_print 直接发射 hivm.hir.debug（替代 tt.print，支持 UB buffer 与 buf[i0,i1] 元素范围），合并 device_print/device_assert 为 tla/debug.py，并在 tla_builder.cc 绑定 create_hivm_debug；2) 对齐 TLA cube kernel 与 npuir pipeline，tla.copy/tla.mmad 支持 4-D NZ 物理形状，删除 is_mem_unique 选项，simd scope 固定 hivm.vf_mode<SIMD>；3) 从 scope 推断 kernel core type（AIC/AIV/MIX），写入 hivm.func_core_type 与 mix_mode；4) 支持 TLA_IR_DUMP_DIR 仅 dump 最终 ttadapter IR；5) core.py 集中化 buffer space 词汇（SPACES/space_of/is_ub）；6) 新增 tla.scope.vector 用于 vector-core region；7) 新增 tla.sync 接口（barrier/set_flag/wait_flag/sync_all/block_set_flag/block_wait_flag）及 C++ 绑定；8) 新增 tla.simd.vexp 与 flash-attn 测试；9) 修复 gemm_bias 中真实的 AIC/AIV 数据竞争；10) 删除冗余 tla.core_mode 属性。改动量大（27 文件），涉及 Python 前端、C++ builder 与多处测试，是本日最重要的功能增量。风险中等，需关注 sync 语义正确性、core type 推断一致性以及 4-D NZ 形状支持。",
+      "tags": [
+        "feature",
+        "refactor",
+        "medium-risk",
+        "TLA",
+        "sync"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增大量功能（device_print、sync、vector scope、vexp、core type 推断），并伴随新增/修改多个 tla_ut 测试（device_print.py、sync_intra/inter、scope/*、cube/flash_attn.py、gemm_bias.py 等），需要确保这些测试在 IR 阶段和 NPU 实机上通过；同时需验证 hivm.vf_mode 固定、tla.core_mode 删除后 core type 推断仍正确。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/debug/",
+          "third_party/ascend/unittest/tla_ut/sync/",
+          "third_party/ascend/unittest/tla_ut/scope/",
+          "third_party/ascend/unittest/tla_ut/cube/",
+          "third_party/ascend/language/tla/"
+        ]
+      },
+      "message": "[ascend](feat) TLA: device print/assert and cube pipeline alignment (#2810)\n\n* [ascend](feat) add tla.device_print emitting hivm.hir.debug directly\n\nMotivation: the original tla.device_print reused tl.device_print (plain\ntt.print), which only accepts TT_Type operands; the pure-buffer interface\nset has no scalar-extraction op, so a UB buffer element could not be\nprinted at the buffer stage (a buffer_access is not convertible to a\ntensor, and there is no scalar-extraction op to make one).\nDesign: emit hivm.hir.debug directly from the TLA frontend with debugtype\n\"print\" (the hfusion.print -> hivm.hir.debug convention), whose operand\naccepts AnyInteger/AnyFloat/TensorOrMemref: UB buffers and buf[i0, i1, ...]\nelement ranges (lowered to a 0-d subview) can be printed at the buffer\nstage.  Merge device_print.py and device_assert.py into tla/debug.py; bind\ncreate_hivm_debug in tla_builder.cc and mount it via setup_unified_builder.\nKeep the inside-scope / non-UB rejection, and update the tla_ut device_print\ntest to assert hivm.hir.debug at both the AST and lowered stages.\nRisks: None\n\nAssisted-by: AI\n\n* [ascend](refactor) align TLA cube kernels with the npuir pipeline\n\n- accept physical 4-D NZ shapes in tla.copy and tla.mmad (gemm tests updated)\n- drop the unused is_mem_unique alloc option\n- pin hivm.vf_mode<SIMD> on simd scopes\n\nAssisted-by: AI\n\n* [ascend](feat) infer TLA kernel core type from scopes\n\nClassify single-kernel TLA modules as AIC, AIV or MIX in Python using scope core-mode markers. Stamp hivm.func_core_type and keep mix_mode consistent, leaving unscoped kernels to backend inference.\n\nValidation: not run as requested.\n\n* [ascend](feat) dump final ttadapter IR via TLA_IR_DUMP_DIR\n\nMotivation: tla_ut IR tests need a quick, device-free way to inspect the\nfinal IR handed to npuir; dumping every intermediate stage was noise.\nDesign: lower_offline writes only 01_linalg.mlir (the ttadapter boundary)\nunder $TLA_IR_DUMP_DIR/<kernel>/.  The entry func name is read before\nlowering because the pass manager rewrites the module in place\n(tt.func -> func.func); explicit output_dir keeps the original per-stage\ndump behavior in compile_offline.\nRisks: None\n\nAssisted-by: AI\n\n* [ascend](refactor) centralize TLA buffer space vocabulary in core.py\n\nMotivation: buffer-space checks were spread as hardcoded strings (the\nbuffer_type validation tuple and duplicated \"ub\" comparisons in\ndevice_print), and a draft IR-type string match silently failed because\nIR values expose get_type() rather than a .type attribute.\nDesign: core.py now defines the single space vocabulary (SPACES, with\nthe HIVM mnemonic reverse map used by tla_builder.cc) and exposes\nspace_of()/is_ub(); buffer_type validation and device_print's UB checks\nare rewritten on top of them.  Semantic dispatch in copy/cube/alloc/view\nkeeps comparing the frontend enum, now backed by SPACES.\nRisks: None\n\nAssisted-by: AI\n\n* [ascend](feat) add tla.scope.vector for vector-core regions\n\nMotivation: TLA needs a vector-core container that hosts non-SIMD ops\n(GM<->UB copies) and nests tla.scope.simd() VFs, matching the affinity\ncanonical input (outer VECTOR scope wrapping DMA + an outlined SIMD VF).\n\nDesign: expose the base scope class as tla.scope.vector; it stamps only\nhivm.tcore_type<VECTOR> plus tla.core_mode=\"vector\" (no VF markers), so\noutline-scope never extracts it and InlineScope(forceInline) folds it\nback at the end of the HIVM pipeline. Register it in TLA_WITH_DISPATCH;\nsimd scopes keep their VF markers whether nested or standalone. Add 5\nIR/compile tests (scope/): copy_only (DMA-only vector scope), simd_only\n(standalone simd regression), nested_simd (vector wrapping simd),\nmulti_vf (two sibling simd scopes in one vector scope), gm2l1 (GM->L1\nnd2nz inside a vector scope, IR-only fragment).\n\nRisks: None\n\nAssisted-by: AI\n\n* [ascend](feat) add TLA sync interfaces\n\nAdd tla.sync split into per-op builder bindings (barrier, set_flag,\nwait_flag, sync_all, block_set_flag, block_wait_flag) with shared pipe\nvalidation and core-type inference in the builder.\n\nTests live under tla_ut/sync and follow the 3-stage case template:\n- sync_intra: out = a + b with hand-inserted MTE2->V->MTE3 pipeline\n  synchronization, barrier and sync_all, verified end to end.\n- sync_inter: cube gemm handoff to the vector core through an FFTS flag,\n  verified end to end.\n\nAssisted-by: AI\n\n* [ascend](feat) add TLA inter-core sync tests and tla.simd.vexp\n\nMotivation: gemm_bias had a real data race on shared UB - the AIC\nfixpipe writes c_ub while the AIV vload reads it with no ordering - and\nsoftmax needs elementwise exp on the AIV core, which the TLA frontend\ndid not expose. Both need test coverage for the hand-inserted\ninter-core (AIC <-> AIV) synchronization pattern where intra-core\nordering is left to the compiler.\nDesign: fix gemm_bias by raising flag 0 on PIPE_FIX in the cube scope\nafter fixpipe and waiting on PIPE_V in the vector scope before the SIMD\nstage, which also hosts the nested SIMD VF and the UB->GM store. Add an\n\"exp\" branch to the TLA unary builder (hivmave::VFExpOp) and a\ntla.simd.vexp wrapper; add a single-tile flash-attention forward test\n(Q@K^T softmax @ V) signaling three handoff flags (S/P/O), with the\nsoftmax row loop in tl.range and the run stage checked against a torch\nreference.\nRisks: mmad with f32 inputs passes IR verification, but hardware support\nneeds real-device validation.\n\nAssisted-by: AI\n\n* [ascend](chore) format TLA sync and flash-attn sources\n\nReformat C++/Python touched by the TLA sync and flash-attention work\n(clang-format / black style). No behavior change.\n\nAssisted-by: AI\n\n* [ascend](refactor) drop bare tla.core_mode scope attribute\n\nMotivation: the TLA scope classes already stamp the dialect attribute\ncode_generator and read back by compiler.infer_func_core_type, duplicating\nthe same information under a non-dialect attribute name. Bare frontend keys\nhave already caused silent core-type mismatches in bishengir passes (the\ntcore_type incident), so the redundant second source should be removed.\nDesign: delete the \"tla.core_mode\" write in handle_scope_with and infer\nAIC/AIV/MIX in infer_func_core_type from the printed #hivm.tcore_type<...>\nattribute (the binding exposes no generic attribute reader). Update the\nnested_simd / copy_only IR assertions accordingly.\nRisks: None\n\nAssisted-by: AI\n\n---------\n\nCo-authored-by: liupengcheng2012 <liupengcheng38@huawei.com>\nCo-authored-by: miushuxin <yaoji2@huawei.com>"
+    },
+    {
+      "sha": "b7c0c6b1e00b6812d71c661c5f056db000d8bcb1",
+      "comment": "该提交修复 DynamicCVPipeline 中 splitted_if 与 ssbuffer.if 的条件关系，新增 SplittedIfWrapSsbufIfPass（约 560 行），在 AddControlFlowConditionPass 流程中作为 Step7 加入。该 pass 将 ssbuffer.if 包裹在 splitted_if 条件的外层 if 中，并处理 for/while 循环下 else 分支的计数器更新与 while_arg 克隆，包含大量 def-chain 移动与边界条件校验（如多个 splitted_if、id 不一致、tensor compute 在 then 外等情况会跳过并回退）。同时将 isRealTensorComputeOp 从 AnalyzeSplitIf.cpp 移到 Common/Utils.h 复用，并新增多个 lit 测试覆盖 for/while/异常场景。改动复杂，逻辑分支多，风险中等偏高，需重点验证 pass 的正确性与回退路径。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "DynamicCVPipeline",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 pass 并随附多个 lit 测试（splitted-if-wrap-ssbuf-if-*.mlir），需确保这些测试通过；同时需验证 while 循环的 else 分支克隆逻辑与回退属性（ERRCODE_FAILED）行为。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AddControlFlowCondition/",
+          "third_party/ascend/lib/DynamicCVPipeline/AddControlFlowCondition/SplittedIfWrapSsbufIf.cpp"
+        ]
+      },
+      "message": "[ssbuffer](fix) Replace the conditions of \"splittedif\" and \"ssbufif\" (#2302)\n\n* [ssbuffer](fix) Replace the conditions of \"splittedif\" and \"ssbufif\"\n\n* [ssbuffer](fix) fix Replace the conditions of \"splittedif\" and \"ssbufif\"\n\n* [ssbuffer](fix) fix ut\n\n---------\n\nCo-authored-by: sxm <sunxianmiao@h-partners.com>"
+    },
+    {
+      "sha": "ab486e6d1882ed83c2ab6b1b4845563a9119d53f",
+      "comment": "该提交为 Ascend 950 目标传递设备信息。新增 _is_a5_target_arch 判断（Ascend910_95/Ascend950 前缀），在 get_common_bishengir_compile_options 中将 A5 target 归一化为 \"Ascend950\"，在 linalg_to_bin_enable_npu_compile_910_95 与 ttir_to_npubin 中为 A5 目标添加 --custom-aic-number 和 --custom-aiv-number 参数。同时更新 cmake/bisheng-version.txt 的 npuir 版本与 sha256，删除 test_cann_extension.py 中两个预期会失败的废弃测试，并在 test_compiler_layout_memory_contract.py 中新增 test_npuir_device_options 参数化测试覆盖多种 arch 与 device_limit 组合，修正了 metadata 中 target 的构造方式。风险中等，需关注 A5 target 归一化对下游编译选项的影响。",
+      "tags": [
+        "feature",
+        "bugfix",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "已新增 test_npuir_device_options 并更新现有测试的 metadata 构造，需验证新测试通过；同时删除的废弃测试不应影响现有覆盖。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "third_party/ascend/backend/compiler.py"
+        ]
+      },
+      "message": "[backend](feat) pass device info for Ascend 950 targets (#2776)"
+    },
+    {
+      "sha": "690924d08826caff6159119c84fd01ecc62593ec",
+      "comment": "该提交是 TLA 前端的 bug fix 与重构合集：1) TritonToLinalgPass 的 finalizePointerCasts 保留源内存空间，修复 TLA GM pointer entry 的验证失败；2) 将 AscendNPUIROpBuilder 抽取到 include/Utils/AscendNPUIROpBuilder.h，新增 tla_builder.cc 承载完整 TLABuilder 绑定（AVE SIMD/VF ops、TLA buffer helpers、hivm load/store/scope ops）；3) 新增 TLA cube scope、mmad 与 DMA copy 路由；4) 新增 tla.reshape 仅改 rank 的 buffer reshape；5) 按 scope 类拆分 mlir_attrs，删除 VF effect recording 与 tla.memory_effect；6) 新增 tla_ut pytest 一键 runner（conftest.py）；7) 新增 tla.vector/vector_type 隔离 SIMD 寄存器值类型。改动量大（23 文件），涉及 C++ builder、Python 前端与测试框架，是本日 TLA 能力的另一大增量。风险中等，需关注 pybind ownership 修复（create_scope_op/get_scope_entry_block）、指针空间保留以及 vector 类型与 tensor 的隔离。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "feature",
+        "TLA",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 tla_ut/conftest.py 收集机制、tla_ut/cube/gemm_basic.py、gemm_bias.py、tla_ut/mlir/test_pointer_cast_space.mlir、tla_ut/vector/reshape.py、vector_type.py 等测试，需确保这些用例在 IR 与 NPU 实机阶段通过；同时需验证 create_scope_op 返回 OpState 与 get_scope_entry_block 的 pybind 修复不会引入 block 悬垂问题。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/conftest.py",
+          "third_party/ascend/unittest/tla_ut/cube/",
+          "third_party/ascend/unittest/tla_ut/mlir/",
+          "third_party/ascend/unittest/tla_ut/vector/",
+          "third_party/ascend/language/tla/cpp/tla_builder.cc"
+        ]
+      },
+      "message": "[ascend](feat) bug fix and refactor for TLA frontend (#2744)\n\n* [TritonToLinalg](fix) keep source memory space in pointer_cast rewrite\n\nfinalizePointerCasts now builds the pointer_cast result memref from the\nsource memory space of the cast type instead of dropping it. A TLA GM\npointer entry on a 1-D pointer_cast must survive the rewrite, otherwise\nthe downstream memref.reinterpret_cast compares a plain memref<?xf32>\nagainst a GM result type and fails verification. Add a lit test under\ntla_ut/mlir asserting the space-preserving rewrite for GM pointer\nentries.\n\nAssisted-by: AI\n\n* [ascend](refactor) extract AscendNPUIROpBuilder\n\nExtract the shared AscendNPUIROpBuilder base out of ascend_ir.cc into\ninclude/Utils/AscendNPUIROpBuilder.h so backend-local subclasses can\ninherit it across TUs, while pybind registration stays module_local to\nthe ascend plugin module. Remove the inline OpBuilder definition from\nascend_ir.cc in favor of the shared header, and introduce tla_builder.cc\nwith the full TLABuilder bindings (AVE SIMD/VF ops, TLA buffer helpers,\nhivm load/store and scope ops), wired into the ascend \"ir\" submodule via\ntriton_ascend.cc.\n\nAssisted-by: AI\n\n* [ascend](feat) add TLA cube scope, mmad and DMA copy routes\n\nImplement the tilelang-ascend-style cube path on top of the TLA\nfrontend: scope.cube outlines to a real AIC scope\n(#hivm.func_core_type<AIC>, no vector_mode) whose body carries\ntla.cube.mmad (hivm.hir.mmadL1) and tla.copy routes for GM->L1\n(hivm.hir.nd2nz), L0C->UB/GM (hivm.hir.fixpipe, dma_mode inferred\nfrom dst rank: 2D -> nz2nd, 4D -> normal).\n\nC++ side (tla_builder.cc) binds create_hivm_nd2nz/fixpipe/mmadl1 and\nreworks create_scope_op to return the OpState alone plus a new\nget_scope_entry_block exposed with py::return_value_policy::reference.\nThis fixes a pybind ownership bug: Block is wrapped without a\npy::nodelete holder, so the previous std::pair<OpState, Block*> return\nlet the automatic policy delete the scope region block when the Python\nwrapper was GC'd, emptying the scope region and corrupting the block\nlist. ast_to_ttir now mirrors the runtime Ascend patch and injects\nTargetDevice enum symbol, e.g. Ascend910_9589, since\nsymbolizeTargetDeviceEnum matches exactly) so FixpipeOp::verify\naccepts dst=UB / NZ2DN fixpipe on Ascend950.\n\nKernel mode now has a single TLA-side entry: _infer_kernel_mode tags\nthe ttadapter entry mix_mode=\"mix\" when the module carries cube work\n(hivm.hir.mmadL1, the marker the scope-level AIC tagging in\ncode_generator._vf_scope_attrs is built on), instead of letting\nTritonToLinalgPass tag TLA cube kernels \"aiv\" (it only sees TTIR dot /\nhivm CustomOps). A new tla_builder set_op_attr binding writes the attr\non the entry operation directly, because module.get_function misses it\nafter triton_to_linalg lowers the entry from triton::FuncOp to mlir\nfunc::FuncOp.\n\nTwo offline TLA tests under unittest/tla_ut/cube (gemm_basic,\ngemm_bias) lock the generated ttadapter-boundary IR: scope attrs,\nnd2nz/mmadL1/fixpipe/store counts, buffer address spaces, the\nkernel-entry ABI attributes and the mix_mode tag; the vector regression\n(norm_forward) stays green.\n\nAssisted-by: AI\n\n* [ascend](feat) add tla.reshape rank-only buffer reshape frontend\n\nAdd a tla.reshape builtin that reinterprets a contiguous row-major buffer\nunder a new static shape, lowering to memref.collapse_shape/expand_shape\nwith explicit reassociation indices (mirroring npuir's\nCanonicalizeTensorReshape): flatten to 1-D when the source rank is > 1,\nthen unflatten to the target shape when its rank is > 1, so pure\nflatten/unflatten emit a single op.  Element counts must match and the\nsource must be an identity-layout buffer; strided tiles and count\nmismatches are rejected at trace time.  Expose the two reshape ops on the\nTLA builder (create_tla_collapse_shape/create_tla_expand_shape, factored\ninto a shared template) and add an offline IR test covering flatten,\nunflatten, merge+split and split cases plus the two negative paths.\n\n* [extension](refactor) per-class TLA scope attrs, drop VF effect recording\n\nMotivation: AIC (cube) scopes must not carry hivm.vector_function or the\noutline marker, otherwise outline-scope extracts them into an AIV vector\nfunction; the tla.memory_effect attribute and its _VF_EFFECTS inference\nare unused.\n\nDesign: each scope class (simd/cube) owns mlir_attrs(builder), so adding\na new scope type only needs a subclass; SIMD scopes keep the manual-VF\nmarkers, cube scopes carry only hivm.tcore_type<CUBE>. The\ntla.memory_effect attribute, the dummy-visit effect inference and the\nsimd._record_vf_effect plumbing are removed. The vf module is renamed to\nscope.py to match the tla.scope namespace.\n\nRisks: None\n\nAssisted-by: AI\n\n* [ascend](feat) add pytest one-click runner for tla_ut cases\n\nMotivation: tla_ut case files are named by op (rope.py, cast_back.py, ...)\nand driven by env TLA_TEST_STAGE through a per-file main(); pytest's default\ntest_*.py pattern collects none of them, and the root unittest/conftest.py\nassign_npu fixture crashes on machines without an NPU, so the 3-in-1\nir/compile/run cases could only run one file at a time. A pytest.ini-based\ncollection also collides with the repo .gitignore.\n\nDesign: tla_ut/conftest.py collects every *.py module via pytest_collect_file\n(except conftest.py itself), maps TLA_TEST_STAGE onto pytest skips via\nutils.tla_test_utils.get_stages(), shadows the root assign_npu fixture for\nno-NPU ir-only mode, and supplies the output_dir fixture used by\ntest_ir(output_dir=None). Any tla_ut subdirectory can be run directly with\npytest, including pytest . at the unittest root. The per-case\npython <case>.py entry keeps working unchanged.\n\nRisks: None\n\nAssisted-by: AI\n\n* [ascend](feat) isolate TLA SIMD register values from Triton tensors\n\nMotivation: TLA SIMD ops were front-end wrapped as tl.tensor, letting Triton\nblock semantics leak into SIMD register values. Vector values will also be\ncarried across scf.for iterations, which requires a dedicated value type with\nthe same __eq__/mangle protocol as buffer_type.\nDesign: add tla.vector/tla.vector_type wrapping MLIR vector<NxT> handles, with\nto_ir/mangle/__eq__ and flatten protocols mirroring tla.buffer/buffer_type;\nbind create_tla_vector_type in tla_builder.cc. Switch SIMD results and\npredicates to tla.vector, validate operands/masks, keep scalar tensor indices,\nand factor the duplicated binary/interleave bodies into _binary/_interleave.\nSIMD ops are written directly inside tla.scope.simd() (ave.hir ops cannot be\ninlined through tt.call helpers).\nRisks: None\n\nAssisted-by: AI\n\n---------\n\nCo-authored-by: liupengcheng2012 <liupengcheng38@huawei.com>"
+    },
+    {
+      "sha": "f0f6981374c0d17c3794112a7a0d6e09bcb5a659",
+      "comment": "该提交新增 A6（Ascend960 系列）目标支持并修复 option accessor。核心改动：在 utils.py 中集中化架构分类表（AscendArchGen/_ARCH_TABLE/_FFTS_UNSUPPORTED_ARCHS），提供 arch_generation/is_register_based_arch/rf_size_in_kbytes_for_arch/ub_size_in_kbytes_for_arch/is_ffts_supported/force_disable_ffts 等函数；A6 复用 A5 寄存器流水线但 UB 容量修正为 320KB；将 is_compile_on_910_95 标记为 deprecated 并指向 is_register_based_arch；修复 compiler.py 中 NPUOptions.compile_on_register_based 的 property accessor（原为模块级 property 对象导致 AttributeError），并改为惰性 import 避免循环依赖；更新 dtype_guard、autotuner、ubtuner、runtime/utils、hardware_consts 与 cann/language 扩展等调用点；删除 language/cann/extension/builder.py 中不再使用的 is_910_95 绑定；重写 test_a6_target_contract.py 并新增 test_ascend_arch_table.py 覆盖 arch 表、FFTS 策略、SOC 缓存与 deprecated helper。改动涉及多个模块，风险中等，需关注 import cycle 修复与 FFTS 策略语义（capability vs policy）的保持。",
+      "tags": [
+        "feature",
+        "refactor",
+        "bugfix",
+        "A6",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 test_ascend_arch_table.py 并重写 test_a6_target_contract.py，需验证 A6 架构分类、UB/RF 容量、FFTS 策略、SOC 检测缓存与 option accessor 正确；同时需确认 is_compile_on_910_95 的 deprecated 行为不会破坏现有调用。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_a6_target_contract.py",
+          "third_party/ascend/unittest/pytest_ut/test_ascend_arch_table.py",
+          "third_party/ascend/backend/utils.py",
+          "third_party/ascend/backend/compiler.py"
+        ]
+      },
+      "message": "[ascend](feat) add A6 target support and fix option accessors (#2748)\n\n* [ascend](feat) add A6 target support via centralized arch table\n\nIntroduce third_party/ascend/backend/ascend_arch.py as the single source of\ntruth for target generation, UB / RF capacity, and backend feature flags.\nA6 (Ascend960 series) reuses the A5 register-based pipeline, so it is\ndescribed as a sibling generation (GEN6) instead of being hardcoded inline\nat every call site.\n\nAll backend call sites that previously open-coded arch prefix checks now\ndelegate to the table: compiler option normalization, dtype guards, the\nautotuner / ubtuner runtime helpers, and the CANN extension + libdevice\npaths.  ub_size_in_kbytes_for_arch, is_ffts_supported and force_disable_ffts\ndelegate as well, so per-generation capacities and the FFTS policy live in\nexactly one place.\n\nCo-authored-by: yezifa <yezifa1@huawei.com>\n\n* [compiler](fix) restore SOC detection cache and fix option accessor\n\nTwo defects surfaced once arch classification was centralized:\n\n- utils.py: is_compile_on_910_95() declares _is_compile_on_910_95 as\n  ``global`` and reads it before assigning, so the module-level binding must\n  exist and be documented.  Without it the accessor raises NameError when\n  called without an explicit arch, which broke test collection and the JIT\n  examples that rely on runtime SOC detection.\n- compiler.py: NPUOptions.compile_on_register_based was decorated with\n  @property at module scope, so reading it returned the property object\n  instead of a boolean and raised AttributeError on the underlying attribute.\n  Provide a real accessor and bind the property to it.\n\nAdd the offline contract test covering the legacy FFTS policy, the option\naccessor, the SOC cache binding, and runtime SOC detection.\n\n* [compiler](fix) correct A6 UB capacity to 320 KB\n\nThe A6 register-based target was carrying a 376 KB unified buffer, which\noverstates the real capacity.  Lower it to 320 KB in the centralized\nascend_arch generation table and align both offline contract tests.\n\ngraph_ub_budget_bytes_for_arch keeps its 80 percent cap, so the derived\ngraph-optimization budget moves from 308019 to 262144 bytes automatically.\n\n* [style](NFC) reformat A6 arch table files with yapf\n\nRun yapf (repo style: pep8 base, 120-column limit) over the centralized arch\ntable and its offline test so the pre-commit hook is satisfied.  Purely\nmechanical: joins wrapped tuples that now fit in 120 columns and drops\nmanual dict-value alignment.\n\n* [compiler](refactor) fold A6 arch classification into utils.py\n\nMerge the centralized arch-classification table from the standalone\nthird_party/ascend/backend/ascend_arch.py module into utils.py, as\nreviewers requested (\"maybe put this into utils.py better, dont add new\nfiles\").  This collapses a new module down to one source of truth that\nbackends, runtime and language layers already import.\n\n  - AscendArchGen, _ARCH_TABLE, arch_generation, is_register_based_arch,\n    rf_size_in_kbytes_for_arch, ub_size_in_kbytes_for_arch and\n    is_ffts_supported all move into utils.py.\n  - All call sites (compiler.py, dtype_guard.py, runtime/autotuner.py,\n    runtime/utils.py, runtime/cv_autotune/hardware_consts.py and the five\n    cann/language extension modules) import the helpers from utils instead.\n  - Remove the redundant is_ffts_disabled_arch helper: is_ffts_supported and\n    force_disable_ffts already cover the two distinct policies (FTS\n    capability vs. the register-based force-disable rule), so callers only\n    need one FFTS predicate.\n  - utils.is_register_based_arch is the public entry point;\n    utils.is_compile_on_910_95 is kept as a deprecated alias that emits a\n    FutureWarning pointing at is_register_based_arch, while still doing\n    runtime SOC detection for callers that invoke it without an arch.\n\nThe dead self.print_autotuning assignment in the autotuner is dropped\nwhile here: it is written but never read; the real switch is\nknobs.autotuning.print.\n\n* [compiler](fix) resolve import cycle after folding arch table into utils\n\nFolding AscendArchGen/_ARCH_TABLE into utils.py introduced a cycle:\ncompiler.py imported is_register_based_arch from utils at module scope,\nwhile utils is loaded during backend registration which in turn imports\ncompiler — so the symbol was not yet bound when the test ast-loader exec'd\nthe function body (ImportError on A3).\n\nFix: in compiler.py import is_register_based_arch lazily (inside\n_is_register_based_target_arch, _full_row_copy_compile_options and the\nNPUOptions accessor) so the helper resolves after utils finishes\ninitializing.  Update the offline contract test to inject a lightweight\ntriton.backends.ascend.utils shim, keeping it importable without an\ninstalled Triton wheel.\n\nNo change to runtime behavior or arch policy; this only fixes the\nimport ordering that surfaced the cycle.\n\n* [compiler](fix) restore original FFTS capability predicate\n\nFolding the arch table into utils.py made is_ffts_supported drift from its\npre-refactor behaviour: the ffts_unsupported column was matched by prefix,\nand unknown targets failed closed.\n\nAscend910A / Ascend310B4 lack FFTS support yet must not be force-disabled,\nso the predicate needs two properties the table cannot express:\n\n* the legacy names are compared exactly, not by prefix, so a distinct SOC\n  such as \"Ascend910A2\" keeps FFTS;\n* targets absent from the table default to supported, so a SOC that is not\n  classified yet does not silently lose the launch-time FFTS flag.\n\nDrop the redundant ffts_unsupported column, merge the two identical LEGACY\nrows, and restore the original body on top of is_register_based_arch.\nforce_disable_ffts is untouched.\n\n---------\n\nCo-authored-by: yezifa <yezifa1@huawei.com>"
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}
