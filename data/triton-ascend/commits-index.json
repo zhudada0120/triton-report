@@ -1,4 +1,72 @@
 {
+  "408e31592b50e930fc6f01c244f309444005d575": {
+    "date": "2026-10-31",
+    "msg": "Revert \"[ssbuffer](feat) select outer double-buffer sync flags- #2731\""
+  },
+  "d392e01f12c65659f7eba902e825df69d63a9dac": {
+    "date": "2026-10-31",
+    "msg": "[TritonToLinalg](fix) Handle missing scales in native scaled dot (#2276)"
+  },
+  "9f1551541c8ae8b5decbf540efdfbbd10e1cc965": {
+    "date": "2026-10-31",
+    "msg": "[TritonToLinalg](fix) Preserve wide dot accumulators (#2273)"
+  },
+  "73c790bef30debc67fe43496436c5c371188ed8b": {
+    "date": "2026-10-31",
+    "msg": "[Ascend](fix) Add missing FP8 dot deprecation option (#2267)"
+  },
+  "b0e20645a52ce50388b32674a416ef28763dde80": {
+    "date": "2026-10-31",
+    "msg": "[TritonToLinalg](fix) preserve indirect memory access order (#2172)"
+  },
+  "9cc64299e67d49845a242274d8003c0982c3fc5d": {
+    "date": "2026-10-31",
+    "msg": "[customOp](fix) Remove unused Datalayout enum values from user interface (#2886)"
+  },
+  "08d8084fcf1d8f8104a0d8121a20cd10708d764b": {
+    "date": "2026-10-31",
+    "msg": "[ascend](feat) TLA: debugop (#2871)"
+  },
+  "fac5037623918b65d618134d75e0ddfe3adfd3ee": {
+    "date": "2026-10-31",
+    "msg": "[ssbuffer](feat) Support for customOp"
+  },
+  "45d452fb98e8db423e4c1ad3176871d5c006df6a": {
+    "date": "2026-10-31",
+    "msg": "[ssbuffer](feat) clone cube block dependency before splitifbyblockid (#2864)"
+  },
+  "77131840620921a0f4171ec42d5002a46bfba09d": {
+    "date": "2026-10-31",
+    "msg": "[ssbuffer](feat) select outer double-buffer sync flags- #2731"
+  },
+  "e76cc20ec1c084b58bd9e9191ceacd5033c4da48": {
+    "date": "2026-10-31",
+    "msg": "[ascend](feat) add TLA SIMD/Sync/DMA interfaces (#2892)"
+  },
+  "993ffdb49504383bd44a0c57ae9faa75d6117a04": {
+    "date": "2026-10-31",
+    "msg": "[ssbuffer]fix: OpClassifier wrongly clones iter_args init as VECTOR (#2802)"
+  },
+  "8ba5ea9b6d57b37aca55dfc9eace4379f9850d8f": {
+    "date": "2026-10-31",
+    "msg": "[ssbuffer](fix) split-if: plan the yield carrier per slot instead of relaying through the last if (#2674)"
+  },
+  "90d6ea75b206af86eb6c1493844d9643943fe570": {
+    "date": "2026-10-31",
+    "msg": "[CustomOp](feat) support CUBE_ONLY CustomOp (#2785)"
+  },
+  "68a9023cec7adcecacb0e80a0781bd50924c3b47": {
+    "date": "2026-10-31",
+    "msg": "[ascend](chore) update npuir submodule and patch fix code (#2826)"
+  },
+  "f774362987141171f49e626a1975d01308e06dd1": {
+    "date": "2026-10-31",
+    "msg": "ci: remove internal cache-service references (#2795)"
+  },
+  "73cf47a80d99a9e301c7f766d88690e01cdb521a": {
+    "date": "2026-10-31",
+    "msg": "[docs](feat) add operator warmup and triton.knobs.ascend docs (#2827)"
+  },
   "0ae6cfae8e09cfe29d3b7500b14b29314717cdd2": {
     "date": "2026-10-30",
     "msg": "[build](fix) Distinguish between local build and pipeline build wheel (#2798)"

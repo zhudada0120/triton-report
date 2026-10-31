@@ -1,0 +1,102 @@
+{
+  "date": "2026-10-31",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-11-01T04:45:10.348269+08:00",
+  "daily_summary": "当日变更集中在 AMD/CDNA5 与 NVIDIA 后端代码生成细节上：一是为 gfx1250 (CDNA5) 新增基于 descriptor 的 buffer 访存算子（make_buffer_descriptor/load/store）及其 CachePolicy、scope、边界语义，并在 TritonAMDGPU 方言、Attr 定义、LLVM lowering 与 Python Gluon 前端全链路打通；二是 CDNA5 改用硬件 V_TANH 实现 fast_tanhf 并让精确 tanh 回到 OCML，属于数值语义修正；三是在 TritonNvidiaGPU 的 AssignCGALayouts pass 中把 CGA 布局重物化的根节点从单一 root 扩展为可沿 DAG 收集多个 dot/reduce 消费者，消除冗余 layout convert；四是移除与 tl.fma 重复的 libdevice fma/fma_rn（破坏性变更）；五是对 tl.sort/tl.topk/tl.bitonic_merge 的 dim 参数做负索引归一化。整体方向是后端 codegen 精度/性能优化与前端易用性小修，核心抽象接口（BaseBackend/DriverBase/TargetInfoBase）没有变化。",
+  "ascend_impact_summary": "当日 5 个 commit 中，4 个属于 pure platform-specific（third_party/amd、third_party/nvidia、lib/Dialect/TritonNvidiaGPU）或纯测试/docs，对 triton-ascend 无影响。唯一需要关注的是移除 libdevice fma/fma_rn 的破坏性变更：它仅改动 python/triton/language/extra/libdevice.py 桩与 third_party/{nvidia,amd} 的 libdevice 模块，不影响 Ascend 使用的 third_party/ascend/language/cann/libdevice.py，也未被 _apply_ascend_patch 的 monkey-patch 触及（该 patch 只覆写 TritonSemantic.dot、CodeGenerator.__init__、compiler.parse），因此 Ascend 编译链不受影响。sort/topk 的 _wrap_axis 归一化改动位于 python/triton/language/standard.py，属于 Ascend 复用的平台无关前端；但因 Ascend 改用 TritonToLinalg 路径且 sort 语义在 TTIR 层面不变（仅常量归一化），仅当 Ascend 端使用 tl.sort/tl.topk/tl.bitonic_merge 且依赖旧报错行为时才需关注，实际无功能影响。",
+  "commits": [
+    {
+      "sha": "0861b90f695e3c866f6f7eadd4be8339378ab017",
+      "comment": "为 gfx1250 (CDNA5) 新增基于 descriptor 的 buffer 访存算子。改动覆盖完整链路：(1) TritonAMDGPUAttrDefs.td 新增 TemporalHintGfx12 枚举与 CachePolicyGfx12Attr；(2) Dialect.cpp 的 verifyBufferCachePolicy/verifyBufferAccessPolicy 增加 gfx12 policy 校验，拒绝 store 上的 last_use 以及 last_use+sys scope；(3) Utility.cpp 的 getBufferLoadStoreCtrlBits 重构为按 isGfx9/isGfx12/isCDNA5 分支，gfx12 用 TH 位（aux |= temporal），CDNA5 用 SCOPE[4:3] 编码 scope（CTA 映射为 CU=默认），并明确仅在 CDNA3/4/5 支持 scope；(4) gluon_ir.cc 新增 get_amd_cache_policy_gfx12 binding；(5) Gluon 前端新增 cdna5/_cache_policy.py 与 cdna5/buffer.py，复用 amd/_buffer.py 的共享实现，并通过 Scope/CachePolicy 组合校验；(6) 新增 lit 测试与 CDNA5 pytest（边界、位掩码、scope/cache policy 组合、last_use）。实现思路清晰，把'性能提示'与'一致性 scope'解耦，符合文档说明的边界语义（跨 num_records 只保留至少 4 字节内结束的 4 字节片段）。潜在风险：重构 getBufferLoadStoreCtrlBits 后 gfx9 路径从'累加 aux 后统一返回'改为'每个 case 直接 return'，行为等价但若后续增加非 scope 位需注意；另外 CDNA5 的 scope 编码依赖 SCOPE 位位置（3），与硬件 ISA 强耦合，缺少 RDNA4 的 scope 支持（isGfx12 但非 CDNA5 时会走 else 分支报错），需确认 RDNA4 是否确实不支持 scope。该 PR 未改动核心抽象接口。",
+      "tags": [
+        "feature",
+        "amd",
+        "gluon",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动全部位于 third_party/amd（TritonAMDGPU 方言 attr/verifier/lowering）、python/src/gluon_ir.cc 的 AMD 专属 binding 以及 python/triton/experimental/gluon/language/amd/**（Gluon AMD 后端专属实现）。Ascend 不加载 TritonAMDGPU 方言、不使用 Gluon AMD 模块、不走 TritonGPUToLLVM 的 AMD lowering 路径。gluon_ir.cc 中新增的是 GluonOpBuilder 上的一个 .def 新方法，不改变 TritonOpBuilder 构造器或 getI64ArrayAttr 等被 AscendNPUIROpBuilder 继承的基础接口。",
+        "testing": "无影响。新增的 lit 测试 test/Conversion/amd/buffer_ops_gfx12_policy.mlir 与 third_party/amd/python/test/test_gluon_cdna5.py 均为 AMD 专属，Ascend 测试体系不覆盖。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][Gluon] Add descriptor buffer ops for gfx1250 (#12512)\n\nExpose the descriptor-based buffer ops on gfx1250 as\n`ttgl.amd.gfx1250.buffer` (`cdna5.buffer`): `make_buffer_descriptor`,\n`load` and `store`, with `soffset`, `scope` and a gfx1250 `CachePolicy`.\ngfx1250 has no buffer loads to LDS, so there is no `load_to_shared`.\n\n- `#amdg.cache_policy_gfx1250<temporal = ...>` sets the TH field:\n  regular, nontemporal, high_temporal or, for loads only, last_use. TH 3\n  means write-back on stores and a cache bypass at system scope, so the\n  verifier rejects last_use on stores and with the sys scope.\n- `scope` sets the SCOPE field as LLVM's gfx125x memory model does: cta\n  = SCOPE_CU (the default, as a workgroup runs on one WGP), gpu =\n  SCOPE_DEV and sys = SCOPE_SYS.\n\nBounds, as measured on gfx1250: soffset is counted, an access that ends\nwithin num_records is in bounds as a whole, and masking with a\n0xFFFFFFFF offset holds for any 32-bit num_records. Unlike gfx950, an\naccess that crosses num_records keeps only its 4-byte pieces that end at\nleast 4 bytes before it, so vectorized accesses near the bound can drop\nelements that fit. num_records stays 32-bit for now although the gfx1250\nV# holds 45 bits."
+    },
+    {
+      "sha": "60a21adc7581e78df07f2b3716ed0950c3488a8c",
+      "comment": "破坏性变更：删除 libdevice 中与 tl.fma 重复的 fma/fma_rn。理由成立——tl.fma 已 lower 到 MLIR math.fma（round-to-nearest-even），而 libdevice 的 __nv_fmaf/__nv_fmaf_rn、__ocml_fma_f32/f64 完全等价，属于冗余 API。改动同时清理了 python/triton/language/extra/libdevice.py 的后端无关桩、CUDA/HIP 的 libdevice 实现、Gluon frontend 测试改用 ttgl.fma 并更新期望 IR（math.fma，且隐式广播场景因复用 broadcast 而少了两条 broadcast），FPSan 三元 extern 用例从 fma 换成 fma_rz（HIP 因无剩余三元 libdevice float extern 而清空列表），并删除 test_fpsan_libdevice_fma_equivalence。合理之处：保留 _rz/_rd/_ru 变体（tl.fma 尚无舍入模式参数），PR 描述也标明将跟进为 tl.fma 增加舍入模式。风险点：(1) 这是 BC-breaking，外部用户若直接调用 libdevice.fma/fma_rn 会 AttributeError，需在 release note 中明确；(2) 删除 fma_rz 之外的改动会影响 FPSan 测试覆盖面（HIP 三元 extern 覆盖归零），后续若加舍入模式应补回；(3) 迁移路径依赖 ttgl.fma/tl.fma 在 Gluon 中可用，测试已验证。",
+      "tags": [
+        "refactor",
+        "bc-breaking",
+        "cuda",
+        "amd",
+        "test",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。被删除的 fma/fma_rn 位于 python/triton/language/extra/libdevice.py（后端无关桩）、third_party/nvidia/language/cuda/libdevice.py 和 third_party/amd/language/hip/libdevice.py。Ascend 通过 get_module_map 使用 third_party/ascend/language/cann/libdevice.py，不引用上述三个模块中的 fma 实现。该改动也未被 third_party/ascend/backend/__init__.py::_apply_ascend_patch 涉及——该 patch 只覆写 TritonSemantic.dot、CodeGenerator.__init__ 和 compiler.parse，与 libdevice 模块内容无关。Ascend 用户若调用 tl.fma 仍走 math.fma，不受影响；若 Ascend 侧 kernel 引用了 gl.extra.libdevice.fma 则会报错，但这属于 cann libdevice 自身的导出集合，不在此 commit 范围内。",
+        "testing": "无影响。删除的 test_fpsan_libdevice_fma_equivalence 与修改的 test/gluon/test_frontend.py、test/gluon/test_fpsan.py、python/test/unit/cuda/test_libdevice_cuda.py 均为 CUDA/Gluon 专属测试，Ascend 测试不使用。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BC-Breaking][Libdevice] Remove fma and fma_rn, redundant with tl.fma (#12558)\n\n## Summary\n\n`tl.fma` lowers to MLIR `math.fma` (round-to-nearest-even), so the\nlibdevice\n`fma` (`__nv_fmaf`/`__nv_fma`, `__ocml_fma_f32`/`f64`) and `fma_rn`\n(`__nv_fmaf_rn`/`__nv_fma_rn`) wrappers duplicate a core language\nbuiltin.\nThe non-default rounding variants `fma_rz`/`fma_rd`/`fma_ru` have no\ncore\nequivalent yet and are kept.\n\n## Changes\n\n- Remove `fma`/`fma_rn` from the CUDA\n(`third_party/nvidia/language/cuda/libdevice.py`)\nand HIP (`third_party/amd/language/hip/libdevice.py`, `fma` only)\nlibdevice\nmodules and from the backend-agnostic stub\n(`python/triton/language/extra/libdevice.py`).\n- Gluon frontend tests: use `ttgl.fma` in place of `libdevice.fma`;\nupdate\nexpected IR (`math.fma`, with broadcast reuse in the implicit-broadcast\ncase).\n- FPSan ternary extern test: switch the ternary extern vehicle from\n`fma`/`__nv_fmaf` to `fma_rz`/`__nv_fmaf_rz`. HIP has no remaining\nternary\n  libdevice float extern, so its case list is now empty.\n- Remove `test_fpsan_libdevice_fma_equivalence`, which only compared\n  `tl.fma` against `libdevice.fma`.\n\nI will draft a followup PR to look to remove any remaining usage by\nadding a rounding mode to `tl.fma` as a followup."
+    },
+    {
+      "sha": "e9d175a65165179994581a43260c48bf8e66056a",
+      "comment": "优化 TritonNvidiaGPU 的 AssignCGALayouts pass：把 CGA 布局重物化的根从单一 OpOperand 扩展为 MapVector<OpOperand*, Attribute> 的 root 集合，从而能'穿过 DAG 而非树'收集同一 load 的所有 dot/reduce 消费者，当它们请求的 CGA 布局一致时一次性克隆并在新布局下复用，避免为每个消费者各生成一份 convert_layout。实现上新增 collectRoots 递归遍历 use 链（限制单结果、无 region、memory-effect-free、可重物化），addRoot 用 TypeSwitch 统一处理 DotOp/ReduceOp；plan 的独占使用检查从 `&use != &root` 改为 `!roots.contains(&use)`；assignDotCGALayout/assignReduceCGALayout 改为返回 CGALayouts 结构体的 getCGALayouts，新增 assignCGALayouts 模板统一转换成 convert。pass 改为先收集所有 dot/reduce 消费者再统一处理，避免 walk 中修改 IR。新增的 lit 测试覆盖 dot 共享 descriptor_load 与 reduce 共享 load 两种场景，并验证 CHECK/E2E/PIPELINE 三层。设计合理，但需注意：collectRoots 目前受限为单结果/无 region，注释已明确指出；如果两个消费者请求布局不一致则整体失败回退到旧行为，是正确的保守策略。该 pass 为 NVIDIA 专属，不涉及通用抽象。",
+      "tags": [
+        "performance",
+        "nvidia",
+        "refactor",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更文件为 lib/Dialect/TritonNvidiaGPU/Transforms/AssignCGALayouts.cpp 与 test/TritonNvidiaGPU/assign_cga_layouts.mlir，属于 NVIDIA 专属方言与 pass。Ascend 不走 TritonNvidiaGPU 方言、也不运行 CGA 布局分配 pass（其布局相关优化在 TritonToLinalg 转换链中独立完成）。虽然 TTIR 中的 tt.dot/tt.reduce 是 Ascend 复用的 op，但此 commit 只修改了 NVIDIA pass 对它们的处理方式，未改动 op 定义、verifier 或 builder。",
+        "testing": "无影响。新增的 lit 检查针对 NVIDIA CUDA 目标（ttg.target = \"cuda:100\"），Ascend 不运行该测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TRITONGPU] Remove unnecessary layout conversions in CGA assignment (#12552)\n\nWe can slice through a DAG instead of a tree. In the following cases no\nlayout conversion is required\n\nbefore this PR we will have two convert layouts.\n```\n%b = tt.descriptor_load ... -> tensor<32x128xf16, #dot_b_old>\n%b0 = ttg.convert_layout %b ... -> tensor<32x128xf16, #dot_b_new>\n%d0 = tt.dot ..., %b0, ...\n%b1 = ttg.convert_layout %b ... -> tensor<32x128xf16, #dot_b_new>\n%d1 = tt.dot ..., %b1, ...\n```\nafter this PR convert layouts are removed\n```\n%b = tt.descriptor_load ... -> tensor<32x128xf16, #dot_b_new>\n%d0 = tt.dot ..., %b, ...\n%d1 = tt.dot ..., %b, ...\n```"
+    },
+    {
+      "sha": "8abae58bc5c04ec245ac75e3abd9a16f067c6b2d",
+      "comment": "修正 CDNA5 的 tanh 语义。此前 __ocml_tanh_f32 在 CDNA5 被拦截并 lower 到硬件 llvm.amdgcn.tanh.f32，导致精确 API 走了近似硬件（cubic 近似），与 NVIDIA 的语义不一致（__nv_tanhf 为精确软件实现）。本 PR 删除该拦截，令 tanh 在 CDNA5 也走 OCML 精确实现；同时把硬件 V_TANH 移到 fast_tanhf（__triton_hip_fast_tanhf）路径，替代原先约 8 条 op、含两次 transcendental 的 exp2 稳定化公式。改动集中在 BuiltinFuncToLLVM.cpp 的两处分支与 lit 测试新增 gfx1250 RUN 行与两个函数。方向正确：近似能力放到 approx API，精确 API 跨架构/厂商一致。注意 PR 自身标注 TODO——硬件 cubic 与旧 fast_tanhf 公式的数值对比（max ULP、>=8 饱和、< 2^-10 恒等域、Inf/NaN）尚未在真实 gfx1250 上验证，存在数值回归风险；此外对已有 CDNA5 用户而言精确 tanh 的数值会变化（虽属修正）。该改动不影响核心抽象接口。",
+      "tags": [
+        "bugfix",
+        "amd",
+        "performance",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/amd/lib/TritonAMDGPUToLLVM/BuiltinFuncToLLVM.cpp 与 test/Conversion/amd/builtin_func_to_llvm.mlir，属 AMD HIP 后端的 TritonGPU→LLVM 转换实现。Ascend 不加载该 lowering、不使用 __triton_hip_fast_tanhf/__ocml_tanh_f32 符号（Ascend 走 third_party/ascend/language/cann/libdevice.py 的 CANN 版本）。",
+        "testing": "无影响。lit 测试为 AMD 专属。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Use hardware tanh for fast_tanhf on CDNA5, keep tanh exact (#12560)\n\n## Summary\n\nCDNA5 (gfx1250) adds a native `V_TANH` instruction (F32/F16/BF16) that\nwas not present in CDNA4. The hardware tanh is a cubic approximation\n(ISA: identity below 2^-10, saturate at >= 8, `TanhCubicApproximation`\nin between), so it belongs behind the approximate `fast_` API, not the\nprecise one. This PR:\n\n- **`libdevice.fast_tanhf`** (`__triton_hip_fast_tanhf`): on CDNA5,\nlower to `llvm.amdgcn.tanh.f32` (single transcendental op instead of the\n~8-op stable exp expansion with two transcendental-pipe ops). All other\ntargets keep the current formula.\n- **`libdevice.tanh`** (`__ocml_tanh_f32`): remove the CDNA5 intercept\nthat lowered precise tanh to the approximate hardware instruction, so\n`tanh` uses the exact OCML implementation on every arch. This matches\nNVIDIA semantics: precise `__nv_tanhf` is exact software,\n`__nv_fast_tanhf` -> `tanh.approx.f32` is the approximate hardware path.\n\n## Test Plan\n\n`lit -v test/Conversion/amd/builtin_func_to_llvm.mlir`\n\n- gfx1250 (ftz on/off): `fast_tanhf` emits `llvm.amdgcn.tanh.f32` with\nno exp2 formula; `tanh` stays an `__ocml_tanh_f32` call\n- gfx942/gfx950: `fast_tanhf` keeps the exp2-formula fallback\n\nVerified by building `triton-opt` and running the lit test (all RUN\nlines pass).\n\n## TODO before ready\n\nNumeric validation of the hardware cubic vs the old `fast_tanhf` formula\non real gfx1250 (max ULP, >= 8 saturation, < 2^-10 identity region,\nInf/NaN). Note the precise-`tanh` change is a numerics change for\nexisting CDNA5 users (approx hardware -> exact OCML); it restores\ncross-arch/cross-vendor consistency for the precise API."
+    },
+    {
+      "sha": "b93ed65354e62bab1b21f9e95baea6789c28dde7",
+      "comment": "修复 tl.sort/tl.topk/tl.bitonic_merge 对 dim=-1 的拒绝问题。原先直接用 len(x.shape)-1 if dim is None else dim，-1 与最内维相等但 static_assert 直接比较失败。改动把 core._wrap_axis 包装为 constexpr_function 以便在 @jit 中被调用（与已有的 _get_int_dtype 同一模式），在 sort_impl 与 bitonic_merge 中对 dim 做归一化后再 static_assert。副作用是非法越界 dim 的报错从'only minor dimension is currently supported'变为 _wrap_axis 的'invalid axis'，语义更准确。topk 通过调用 sort_impl 间接受益。新增 test_sort_negative_dim 覆盖 sort/topk/bitonic_merge 三个 API 与 descending 两态，标记 interpreter，作者声明未在 GPU 上跑。改动小且局部，风险低；需确认 _wrap_axis 对 constexpr 与非常量 dim 的行为一致（standard.py 中 dim 注释为 constexpr，_wrap_axis 本身处理 constexpr 值）。",
+      "tags": [
+        "bugfix",
+        "frontend",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动仅涉及 python/triton/language/standard.py 的 dim 归一化与新增测试，属于前端常量折叠层面的语义修正，不改变生成的 TTIR 形态（归一化后的 _dim 仍是同一常量），Ascend 的 TritonToLinalg 转换链接收到的 TTIR 与之前完全一致。未触碰 TritonSemantic.dot、CodeGenerator.__init__ 或 compiler.parse 这三个被 _apply_ascend_patch 覆写的入口。",
+        "testing": "无影响。新增的 test_sort_negative_dim 位于 python/test/unit/language/test_standard.py，是跨后端通用测试；triton-ascend 若在自己的测试体系里复用该测试文件可直接获益，但不需要因本 commit 做适配性改动。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[FRONTEND] Normalize negative dim in sort/topk (#12559)\n\n`tl.sort`, `tl.topk` and `tl.bitonic_merge` reject `dim=-1`:\n\n```\ntl.sort(x, dim=-1)  # CompileTimeAssertionFailure: only minor dimension is currently supported\n```\n\neven though -1 is the minor dimension. Normalize `dim` with\n`core._wrap_axis` before the check. It's wrapped with\n`constexpr_function` in standard.py so it can be called from `@jit`\ncode, like `get_int_dtype`. Any other dim is still rejected with the\nsame message, and an out-of-range dim now gets `_wrap_axis`'s \"invalid\naxis\" error.\n\n`test_sort_negative_dim` calls `tl.sort`, `tl.topk` and\n`tl.bitonic_merge` with `dim=-1` and compares against torch. It fails\nwithout this change. I ran it with `TRITON_INTERPRET=1` and checked the\ncompiled path through the frontend, but haven't run it on a GPU.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)"
+    }
+  ],
+  "architecture_based_on_sha": "040039b88c1f81351253ed4baaf2b0e648c1835f",
+  "architecture_generated_at": "2026-08-27T10:29:02.141018+08:00"
+}

@@ -1,0 +1,326 @@
+{
+  "date": "2026-10-31",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-11-01T04:45:57.827376+08:00",
+  "daily_summary": "当日变更集中在 Ascend 后端的两大方向：(1) DynamicCVPipeline/SSBUFFER 编译链的大规模演进——引入 scope.scope 打包自定义算子（PackMemref/UnpackScope/CloneCubeDepInIf 等新 pass）、重构 AddMultiBufferOuterScope 的外层双缓冲同步标志选择（并随后被 revert）、修复 SplitIfByBlockId 的 yield 承载规划、修正 OpClassifier 对 iter_args init 的错误 VECTOR 着色；(2) TritonToLinalg 的 dot 降级修复（native scaled dot 缺失 scale 的默认值、保留宽累加器、间接访存顺序），以及 Ascend 后端对 fp8 dot 弃用选项、customOp 的 DataLayout/AddressSpace 枚举暴露、TLA 语言扩展（SIMD/Sync/DMA 接口、@tla.jit 运行时前端、npuir 子模块升级）的补齐。整体是围绕 Ascend NPU 编译正确性与 TLA 编程模型能力的密集迭代，其中 TLA 与新 pass 体系引入了较多新的 IR 形态与测试面。",
+  "test_impact_summary": "当日新增并修改了大量 lit/FileCheck 测试与 pytest 用例，测试策略层面的关键影响如下：(1) DynamicCVPipeline 引入 scope.scope 作为原子计算单元的语义后，大量既有 MLIR 测试的 check 逻辑被改写（如 alloc-to-tensor clone 用例被删除、whileop 用例从 clone 改为 multi-buffer），说明该子系统的测试基线发生了结构性变化，后续任何 scope 打包/解包行为变更都会波及多个测试文件；(2) TLA 引入 @tla.jit 与 hacc.mode 标记后，测试从显式 enable_tla_mode 参数改为装饰器驱动，且新增了 host-only 的 SIMD 前端契约测试（simd_frontend_contract.py），覆盖了 mock builder、绑定一致性等无法离线覆盖的路径，属于新引入的长期看护点；(3) dot_scaled/dot 累加器/TritonToLinalg 的修复均配有精确的 IR 断言与设备数值测试，覆盖较充分；(4) 仍存在测试盲区：AddMultiBufferOuterScope 的外层双缓冲改动被 revert（说明该分支缺少稳定回归）、customOp 的 DataLayout 枚举在后续 commit 中被收窄（前后测试断言互相修改），以及部分 TLA DMA/padding/atomic 用例在 A5 上仍标记 SKIP，设备侧覆盖不完整。建议持续关注 scope.scope 原子语义、TLA 前端契约、以及 customOp 属性接口的回归测试稳定性。",
+  "commits": [
+    {
+      "sha": "408e31592b50e930fc6f01c244f309444005d575",
+      "comment": "回滚 #2731（select outer double-buffer sync flags）。该 commit 撤销了 AddMultiBufferOuterScope.cpp 中引入的 hasSharedSyncLifecycle/DominanceInfo 校验、基于 scf.if 包裹 sync op 的 wrapSyncOpWithScfIf 机制、以及共享 flag 生命周期验证，恢复为使用 arith.select 动态选择 flag ID 并用 fallback 取 extraSets.front()/extraWaits.front()。同时删除 Outer-scope-shared-flag-lifecycle.mlir，并把 Outer-scope-whileop.mlir 从『双缓冲 polling 分支』断言改回『静态 flag + arith.select』。变更意图是撤回一个存在回归风险的优化；潜在风险是被回滚的逻辑本身修复了共享同步生命周期缺失时的静默降级问题，回滚后再次出现『无完整生命周期仍继续双缓冲』的可能性，且 fallback 取 first pair 可能选中错误的 sync op。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "medium-risk",
+        "DynamicCVPipeline",
+        "ssbuffer"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "删除了一份 249 行的 shared-flag-lifecycle MLIR 测试，并把 whileop 测试从 polling 分支断言改回 arith.select 断言，测试基线被回退。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AllocMultiCache/"
+        ]
+      },
+      "message": "Revert \"[ssbuffer](feat) select outer double-buffer sync flags- #2731\"\n\nThis reverts commit f705b5bdeeacc2a7c2ad3f355ee5044b54135747."
+    },
+    {
+      "sha": "d392e01f12c65659f7eba902e825df69d63a9dac",
+      "comment": "[TritonToLinalg] 修复 native scaled dot 缺失 scale 时的处理。原实现对缺失 rhs scale 生成 shape 为 {1}、值为 1 的默认 scale，既不满足 MX 路径的 E8M0 编码（应为 127），shape 也不符合 (N, k/32) 约定。新实现分别对 lhs/rhs 缺失 scale 计算正确的二维 shape（考虑 E2M1 的 K 打包倍增），并用 arith.constant 127 + linalg.fill 物化 E8M0 单位 scale。实现正确，但 lhs 缺失 scale 的场景此前完全没有测试覆盖，新增的 dot_scaled_optional_lhs/rhs.mlir 与设备 pytest 补上了该路径。潜在风险：shape 推导依赖 dstType/dstType 的 rank 假设，对 rank<2 的异常输入未做防御。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "TritonToLinalg",
+        "dot"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 2 份 MLIR 测试（lhs/rhs 缺失 scale 与显式 scale 透传）和 1 份设备 pytest（覆盖 e4m3/e5m2/e2m1 × lhs/rhs/both/neither），恰好补齐此前未覆盖的 lhs 缺失路径。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/",
+          "third_party/ascend/unittest/pytest_ut/test_dot_scaled_optional_scale.py"
+        ]
+      },
+      "message": "[TritonToLinalg](fix) Handle missing scales in native scaled dot (#2276)\n\n* [TritonToLinalg](fix) Materialize native scaled-dot identity scales\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>\n\n* [TritonToLinalg](test) cover optional native scaled-dot scales on device\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>\n\n---------\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>"
+    },
+    {
+      "sha": "9f1551541c8ae8b5decbf540efdfbbd10e1cc965",
+      "comment": "[TritonToLinalg] 修复 dot 累加器精度。原判据 `isa<FloatType>(elemTy) && !elemTy.isF32()` 只在累加器为 f32 时跳过 fp32 提升，因此 f64 累加器也会被 extf 到 f32 造成精度损失。改为 `elemTy.getIntOrFloatBitWidth() < 32`，使 f64 保持原精度、f16/bf16 仍走 fp32 内部累加。改动极小但语义精确。潜在风险：若后续出现 f8 等更窄类型，<32 判据仍会将它们提升到 f32（符合预期），但需确认后端对 f64 matmul 有真实 lowering 支持。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "TritonToLinalg",
+        "dot"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 dot_accumulator_types.mlir，覆盖 f64/f16/bf16/f32/i32 五种累加器，锁定『f64 不出现 extf/truncf、窄浮点仍提升』的核心不变量。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/dot_accumulator_types.mlir"
+        ]
+      },
+      "message": "[TritonToLinalg](fix) Preserve wide dot accumulators (#2273)\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>"
+    },
+    {
+      "sha": "73c790bef30debc67fe43496436c5c371188ed8b",
+      "comment": "[Ascend] 补齐 NPUOptions 缺失的 deprecated_fp8_dot_operand_dtypes 字段。上游 triton 前端（CodeGenerator 处理 tt.dot 时）会读取 options.deprecated_fp8_dot_operand_dtypes 以对废弃的 fp8 dot 操作数类型告警并 upcast 到 fp16，Ascend 的 NPUOptions 没有该字段会导致 AttributeError 或行为缺失。新增空元组默认值。配套测试通过直接调用 source.make_ir 验证：当把 dtype 列入 deprecated 时，tt.dot 的操作数类型被 upcast 到 f16，且触发 UserWarning。实现与上游前端契约对齐，风险低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "backend-compiler",
+        "fp8"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "test_compiler.py 新增 test_fp8_dot_frontend_options 参数化用例，验证 deprecated 选项对 tt.dot 操作数类型与 warning 的影响。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler.py"
+        ]
+      },
+      "message": "[Ascend](fix) Add missing FP8 dot deprecation option (#2267)\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>"
+    },
+    {
+      "sha": "b0e20645a52ce50388b32674a416ef28763dde80",
+      "comment": "[TritonToLinalg] 修复间接访存（indirect memory access）的顺序问题。原实现在 tt.addptr 处插入标量循环，会把间接 load/store 提升到其操作数（value/mask）定义之前或前序 store 之前，破坏语义。改为以 memoryOp（addptr 的唯一 user，即 load/store）为锚点，使用 setInsertionPointAfter(memoryOp) 并把 memoryOp 移入循环体后设置 IndirectLoad 属性。变量 loadOp→memoryOp 的重命名也体现了对 store 的支持。实现思路正确，但依赖『addptr 只有一个 user』的 assert，若上游优化产生多 user 会触发断言失败。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "TritonToLinalg",
+        "BlockPtrAnalysis"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 indirect_memory_access_order.mlir（3 个场景：条件 store value 在 ptr 之后、mask 在 ptr 之后、间接 load 需观察前序 store）与对应设备 pytest，覆盖了 dominace 与 load 顺序两个维度。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/indirect_memory_access_order.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_indirect_memory_access_order.py"
+        ]
+      },
+      "message": "[TritonToLinalg](fix) preserve indirect memory access order (#2172)\n\nPlace scalar loops at the original load or store instead of the addptr.\nHoisting an indirect store can put it before its value or mask definitions,\nwhile hoisting an indirect load can move it before a preceding store.\n\nAnchor insertion after the memory operation because the loop body builder\nmoves that operation before the outer loop is inserted. Add compiler and\nNPU regressions for operand dominance, conditional stores and load order.\n\nSigned-off-by: yangkaixin <yangkaixin1@huawei.com>\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>\nCo-authored-by: yangkaixin <yangkaixin1@huawei.com>"
+    },
+    {
+      "sha": "9cc64299e67d49845a242274d8003c0982c3fc5d",
+      "comment": "[customOp] 从用户接口移除不应暴露的 DataLayout 枚举值（DOTA_ND/DOTB_ND/DOTC_ND、nZ、zN），仅保留 ND 与 Fractal。同时删除 get_data_layout_attr 中对 DOTA_ND/DOTB_ND 特殊处理 transpose=false 的分支。这是接口收敛动作，与后续 90d6ea7（重新完整暴露枚举）方向相反，属于短时间内的接口反复调整。风险在于：如果仍有自定义算子使用被移除的枚举值，会在 Python 层 AttributeError。",
+      "tags": [
+        "refactor",
+        "low-risk",
+        "customOp",
+        "language-extension"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "test_custom.py 中的 cube data_layout 用例把断言从 DOTA_ND/DOTB_ND 改为 data_layout<ND>，需同步更新。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_custom.py"
+        ]
+      },
+      "message": "[customOp](fix) Remove unused Datalayout enum values from user interface (#2886)\n\nRemove datalayout enum values which should not be exposed to users"
+    },
+    {
+      "sha": "08d8084fcf1d8f8104a0d8121a20cd10708d764b",
+      "comment": "[TLA] debugop 增强：device_print 从仅支持 UB 扩展到支持 UB/GM，新增 is_gm 判定与小工具函数 _printable/_reject，错误信息更清晰（明确提示 L1/L0 需先拷贝到 UB/GM）。设备打印的语义约束（只能在 tla.scope 外）保持不变。测试侧移除了 _bad_gm 负例（因为 GM 现在合法），保留 _bad_inside_scope 与 _bad_l1。变更面小，属于 TLA 语言能力的合理扩展。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "tla",
+        "debug"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "device_print.py 测试删除了 GM 负例并更新文档字符串，新增的 GM 打印正例尚无独立正向断言（目前只检查 hivm.hir.debug 计数）。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/debug/device_print.py"
+        ]
+      },
+      "message": "[ascend](feat) TLA: debugop (#2871)"
+    },
+    {
+      "sha": "fac5037623918b65d618134d75e0ddfe3adfd3ee",
+      "comment": "本次最大 commit，为 ssbuffer 引入 customOp 支持。核心是引入 scope.scope 作为『原子计算单元』的抽象：新增 PackMemrefPass 把 hivm.hir.custom 与其局部 buffer 打包成 scope.scope 并打上 core_type，新增 UnpackScopePass 在 ComputeBlockOpt 末尾解包，OpClassifier/PlanCubeBlock/PlanVectorBlock 通过 WalkResult::skip 把 scope 视为不可穿透的原子单元并尊重其预分类的 core_type。同时引入 CustomOpAnalysis（按 pipe 推断 load/store、按 tcore_type 推断 core type）、ScopeOpUtils（packScopeOp/unpackScopeOp）、并重写 MemoryDependenceGraph 的 collectOuterEffects（提取为静态函数并支持递归）。风险较高：scope 的原子语义贯穿 op 分类、block 规划、multi-buffer 分配多个阶段，任何一处遗漏 skip 都会导致内部 op 被错误着色或分配 block id；此外移除了 AllocMultiBufferInnerScope 的 alloc→to_tensor clone 逻辑，改变了原有 buffer 处理策略。",
+      "tags": [
+        "feature",
+        "high-risk",
+        "DynamicCVPipeline",
+        "ssbuffer",
+        "customOp"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 10+ 份 MLIR 测试（pack_memref、unpack_scope、plan_compute_block_scope、plan_cube/vector_block_scope、custom_op_classifier 等）并删除了 2 份原有 MLIR 测试（Outer-scope-shared-flag-lifecycle、Inner-scope-alloc-to-tensor-clone），Inner-scope-whileop.mlir 的断言被整体改写。测试基线发生结构性变化。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/StandardizeOp/",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/PlanComputeBlock/",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow/test_unpack_scope.mlir"
+        ]
+      },
+      "message": "[ssbuffer](feat) Support for customOp"
+    },
+    {
+      "sha": "45d452fb98e8db423e4c1ad3176871d5c006df6a",
+      "comment": "新增 CloneCubeDepInIfPass，在 SplitIfByBlockId 之前把 scf.if 区域内 later CUBE block 依赖的 earlier CUBE block 克隆到其前面，使每个 CUBE block 拥有自己的计算链，从而在后续 if 拆分后保持独立。实现借鉴 CloneOps 的 cloneOpWithMapping/updateCloneMapping/cleanup 规则，并新增 main loop 探测（修复 『detect mainloop in CloneCubeDepInIf』）。该 pass 只在 main loop 内的 if 上工作，跳过 kSkippedKernels。风险：克隆后靠 cleanupSide 的规则 2/3（基于 MemoryDependenceGraph 重建）清理死代码，若依赖图判定不准会残留或误删；同时克隆会增大 IR 体积。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "ComputeBlockOpt",
+        "ssbuffer"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "本次 commit 未新增测试文件；新 pass 的正确性依赖后续 relay_redirect.mlir 及其他 SplitIf 测试间接看护，缺少直接针对 clone 行为的回归用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/SplitIfByBlockId/"
+        ]
+      },
+      "message": "[ssbuffer](feat) clone cube block dependency before splitifbyblockid (#2864)\n\n* [ssbuffer](feat) clone cube block dependency before splitifbyblockid\n\nSigned-off-by: zhuxinguang33 <1074959344@qq.com>\n\n* [ssbuffer](fix) detect mainloop in CloneCubeDepInIf\n\nSigned-off-by: zhuxinguang33 <1074959344@qq.com>\n\n---------\n\nSigned-off-by: zhuxinguang33 <1074959344@qq.com>"
+    },
+    {
+      "sha": "77131840620921a0f4171ec42d5002a46bfba09d",
+      "comment": "重新提交 #2731：为外层双缓冲的 sync op 选择动态 flag。改动包括 (1) 用 DominanceInfo/PostDominanceInfo 校验跨 transfer group 的共享同步生命周期，缺失时置 fallback 而非静默降级；(2) 用 arith.select 在 wait/set 上共享同一动态 flag ID（保留原 parity），替代 wrapSyncOpWithScfIf 的 scf.if 包裹；(3) 仅在真实 drain（extraSyncWaitOp）处插入 output sync wait。该 commit 与 408e315（revert）互为反向，说明该特性在当日经历了一次回退再重提，稳定性存疑。风险：共享生命周期的 dominance 证明依赖 scope.scope 边界，与同期引入的 scope 原子语义存在耦合。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "DynamicCVPipeline",
+        "ssbuffer"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 Outer-scope-shared-flag-lifecycle.mlir（含 shared_v2c/shared_c2v 正例与两个 no_shared_lifecycle 负例），并改写 Outer-scope-whileop.mlir 为动态 flag 断言。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AllocMultiCache/"
+        ]
+      },
+      "message": "[ssbuffer](feat) select outer double-buffer sync flags- #2731"
+    },
+    {
+      "sha": "e76cc20ec1c084b58bd9e9191ceacd5033c4da48",
+      "comment": "TLA 语言扩展的大规模功能提交（59 文件、+7551）。主要包含：(1) 新增 dma.py，提供 12 条显式 DMA 路由（gm↔ub/l1、ub↔l1、l1↔l0/bt/fb、l0c↔gm/ub/l1）及配套 dataclass 参数对象与枚举（PadMode/EvictionPolicy/AtomicKind/UnitFlagMode/Fixpipe 系列）；(2) simd.py 新增 vdiv/vmax/vmin/vmaxs/vexp/vdup/vdups/vdupv/vadds/vaddc/vcmax/vcmin/vsstb 等接口，引入 MODE.ZEROING/MERGING、CMP/POS 枚举与 per-op 元素类型支持表；(3) tla_builder.cc 增加对应 C++ 绑定与 applySimdMode（MERGING 用 +0 向量 + vsel 实现），新增 create_tla_* 系列 DMA/同步绑定；(4) sync.py 改用 PIPE/MODE 枚举并支持运行时 i64 flag ID，新增 sub_block_id；(5) copy.py 改为路由分发器。这是 TLA 编程模型从雏形走向完整的重要一步，但 surface 极大、绑定众多，且存在多处 NotImplementedError（L1→FixBUF、vexp ftz_false、vsstb update）。风险高：Python 前端、C++ 绑定、builder 白名单三处必须严格一致，否则 AttributeError 静默失败（作者已加 simd_frontend_contract.py 静态校验）。",
+      "tags": [
+        "feature",
+        "high-risk",
+        "tla",
+        "language-extension",
+        "simd",
+        "dma"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增大量 tla_ut 用例（simd/ 下 vadd/vdiv/vmax/vmin/vmaxs/vdup/vdups/vdupv/vexp/vsstb/vor/vxor/vsub/vmins/vsstb/add_cmp/elementwise/hardware_spec/simd_tail、dma/ 下 load_store/copy/fixpipe/nd2nz/ctrl、sync/sync_block、cube/gemm_basic_v2、gemm_bias_v2、vector/per_token_amax），并新增 host-only 的 simd_frontend_contract.py；同时 utils 的 check_lowered_ir 增加 buffers=None 可选参数，多个既有测试改为 buffers=None。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/simd/",
+          "third_party/ascend/unittest/tla_ut/dma/",
+          "third_party/ascend/unittest/tla_ut/sync/",
+          "third_party/ascend/unittest/tla_ut/simd_frontend_contract.py",
+          "third_party/ascend/unittest/tla_ut/utils/tla_test_utils.py"
+        ]
+      },
+      "message": "[ascend](feat) add TLA SIMD/Sync/DMA interfaces (#2892)\n\n* [TLA](feat) add explicit DMA params and MMAD unit flags\n\n* [ascend](feat) add TLA SIMD add and compare interfaces\n\n* [ascend](feat) add TLA synchronization interfaces\n\n* [ascend](feat) add SIMD APIs and portable device validation\n\n* [ascend](feat) add six SIMD register ops and cases\n\n* [ascend](refactor) integrate TLA SIMD, sync, DMA, and test fixes\n\n* [ascend](feat) skip hivm.multi_buffer annotation for version-1 buffers\n\nannotate_buffer_versions returns early when versions == 1, so single-version\nbuffers no longer emit an hivm.multi_buffer annotation mark. Make the\nmulti_buffer count check in check_lowered_ir optional (buffers=None) and pass\nbuffers=None in the cube/sync/vector/simd IR cases until their expected counts\nare re-derived for the new emission rule.\n\nAssisted-by: AI\n\n---------\n\nCo-authored-by: chnjz <1242418613@qq.com>\nCo-authored-by: miushuxin <yaoji2@huawei.com>\nCo-authored-by: dinghong <dinghong10@huawei.com>\nCo-authored-by: xiwei <xiwei4@huawei.com>\nCo-authored-by: mqzy <46737749+mqzy@users.noreply.github.com>\nCo-authored-by: liupengcheng2012 <liupengcheng38@huawei.com>"
+    },
+    {
+      "sha": "993ffdb49504383bd44a0c57ae9faa75d6117a04",
+      "comment": "[OpClassifier] 修复 iter_args init 被错误克隆为 VECTOR 的问题。当 scf.for 的 iter_args init 在循环体中被 CUBE matmul 作为 outs 消费、而循环 yield 流出到外部 VECTOR op 时，propagateVectorUpstream 会通过循环 operands 把 VECTOR 反向传播到 init，导致 init 变成 CUBE_AND_VECTOR 并被 Step 7 拆分，VECTOR 克隆绑定到 iter_args 而 body 仍需要 CUBE 原件，原件变死代码。修复方式：BFS 遇到 LoopLikeOpInterface 时，跳过 iter_args init 的 defining op；例外是 VECTOR 产生的 recurrence（yield 值来自真正的 VECTOR 计算 op），此时 init 必须保持 VECTOR 可着色以便 Step 7 拆分。新增 isVectorProducerOp 排除 region container。修复逻辑合理，但例外判定依赖 getLoopCarriedDefOp 与 isTensorArithOrMathOp，需保证两者语义与新引入的 scope.scope 原子语义不冲突。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "PlanComputeBlock",
+        "OpClassifier"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 2 份 MLIR 回归测试：test_iter_args_init_cube_classification.mlir（init 保持 CUBE、不被外部 VECTOR 污染，含混合消费者场景）与 test_iter_args_init_vector_clone_for_cube_ins_reader.mlir（VECTOR recurrence 例外路径）。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/PlanComputeBlock/"
+        ]
+      },
+      "message": "[ssbuffer]fix: OpClassifier wrongly clones iter_args init as VECTOR (#2802)\n\nWhen a scf.for loop has an iter_args init consumed as the `outs` of a CUBE\nlinalg.matmul inside the body, but the loop's yielded value flows into a\nVECTOR arith op outside the loop, propagateVectorUpstream would propagate\nVECTOR onto the init through the loop's operands. The init then became\nCUBE_AND_VECTOR and was split: a VECTOR clone was bound to iter_args while\nthe body still needed the CUBE original — which became dead code.\n\nFix: propagateVectorUpstream now skips iter_args init defining ops when BFS\nreaches a scf.for / scf.while, so an init's classification is driven by its\nbody-side consumers; VECTOR from the loop's external consumers no longer\nleaks onto it.\n\nException: a VECTOR-produced recurrence — the value yielded back comes from\na genuine VECTOR compute op while CUBE users merely read it (e.g. matmul\nins) — must keep its init VECTOR-colorable so Step 7 splits it and binds the\nVECTOR clone to the loop. The recurrence's producer is looked up with the\nexisting CVPipeline::getLoopCarriedDefOp helper; the new private predicate\nisVectorProducerOp excludes region containers, because the default sweep\nmarks them VECTOR even when their body is CUBE."
+    },
+    {
+      "sha": "8ba5ea9b6d57b37aca55dfc9eace4379f9850d8f",
+      "comment": "[SplitIfByBlockId] 重构 yield carrier 规划。原实现让『最后一个 split-if』重新 yield 每一个原始 slot，导致由上游 group 产生的 slot 作为纯 passthrough 穿过它。新实现引入 SlotKind 四分类（Delegated/NativeLast/Relay/External），planYieldCaseB 一次性决定每个 slot 的 carrier group，materialization 用单一 per-group 循环把 source if 的 result uses 重定向到记录的 carrier result；无 carrier 的 slot 视为硬失败而非静默 passthrough。实现思路清晰，用 DominanceInfo 判定 else operand 是否可用（domElse）。风险：所有 slot 都产生于 earlier group 时 last if 退化为 void if，需保证 else region 与 otherCtx 吸收逻辑仍正确；另外 updateCrossValueReplacementGroup 跳过 last group 的理由（External/Relay/NativeLast 三种 hazard）需要在后续 pass 中持续成立。",
+      "tags": [
+        "refactor",
+        "medium-risk",
+        "ComputeBlockOpt",
+        "SplitIfByBlockId"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 relay_redirect.mlir（redirect 形状、全重定向 void last if、非委派 relay 形状），并在 commit message 中声称 52 份 DCV UT 输出字节一致、54 条 RUN 通过。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/SplitIfByBlockId/relay_redirect.mlir"
+        ]
+      },
+      "message": "[ssbuffer](fix) split-if: plan the yield carrier per slot instead of relaying through the last if (#2674)\n\nThe last split-if used to re-yield every original slot, so a slot produced by\nan upstream group travelled through it as a pure passthrough (same condition,\nsame value). planYieldCaseB now classifies every original slot -- Delegated /\nNativeLast / Relay / External -- and derives carrier(s) from that one table, so\na slot is exposed by the group that actually computes it. Materialization is a\nsingle per-group loop that re-points the source if's result uses at the recorded\ncarrier results; a slot without a carrier is a hard failure, never a silent\npass-through.\n\nBehaviour is unchanged where no slot can be redirected: 52 DCV UT files dump\nbyte-identical pass output, 54 RUN-line checks pass, and relay_redirect.mlir\npins the redirect, the fully redirected (void last if) and the non-delegable\nrelay shapes."
+    },
+    {
+      "sha": "90d6ea75b206af86eb6c1493844d9643943fe570",
+      "comment": "[CustomOp] 重新完整暴露 AddressSpace/DataLayout 枚举并支持 CUBE_ONLY customOp 的 per-arg data_layout/address_space 属性。新增 _make_data_layout_attrs 与 _make_address_space_attrs（仅在 op.core == CUBE 时应用），arg 键支持字符串参数名或整数索引；C++ 侧新增 get_data_layout_attr 绑定（DOTA_ND/DOTB_ND 默认 transpose=false）。注意：该 commit 与 9cc6429（移除 DataLayout 枚举值）方向相反，是同日内的接口反复，说明 customOp 属性接口设计尚未定型。风险：address_space 使用 builder.get_target_attribute 而 data_layout 使用专用绑定，两者注入时机均在 arg_attrs 构建阶段，若 op.signature 缺失会导致索引解析失败（代码用 assert False，生产环境会崩溃）。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "customOp",
+        "language-extension"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "test_custom.py 新增两个 CUBE customOp 用例（data_layout 与 address_space 混用名称/索引键），并恢复 DOTA_ND/DOTB_ND 断言。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_custom.py"
+        ]
+      },
+      "message": "[CustomOp](feat) support CUBE_ONLY CustomOp (#2785)\n\nExpose the full AddressSpace/DataLayout enums to the Python frontend\nand support per-argument data_layout/address_space attributes on CUBE\ncustom ops.\n\nSigned-off-by: liwei-link <leewill1120@gmail.com>"
+    },
+    {
+      "sha": "68a9023cec7adcecacb0e80a0781bd50924c3b47",
+      "comment": "[Ascend] npuir 子模块升级 + TLA 前端接入后端流水线。核心改动：(1) 子模块从本地临时分支 bb13ef61 切到 stable 4eb12142，注册并链接 MLIRAVEDialect，把 tla_builder.cc 纳入 TritonAscend 插件；(2) 修复 TLA builder 遮蔽 cann 的 create_scope_op/_ascend_builder 问题——只挂载 TLA 专属方法，把 emplaceBlock 移入 TLA 专属的 get_scope_entry_block；(3) 引入 @tla.jit（TLAJITFunction/TLASTSource），通过复写 ASTSource.make_ir 走 ast_to_ttir 并设置 options.enable_tla_mode，配合 ttir_to_linalg 中的 _infer_tla_kernel_mode 与 linalg_to_bin 的 --enable-tla-mode 标志；(4) dispatch 从构建期 patch 改为运行时 register_with_dispatch。风险较高：子模块跨 162 文件（含 llvm-project）差异，需重建 libtriton 并重新验证 tla_ut；同时 NPUOptions.enable_tla_mode 使用 field(init=False) 排除出 launch 与 cache key，依靠 TLASTSource 运行时 setattr 注入，若离线路径与运行时路径不同步会出现 hacc.mode 缺失。",
+      "tags": [
+        "feature",
+        "chore",
+        "high-risk",
+        "tla",
+        "build",
+        "submodule"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "所有 tla_ut 用例的装饰器从 @triton.jit 改为 @tla.jit，launch 调用去掉了显式 enable_tla_mode=True；conftest.py 的收集与 stage 选择逻辑被修正；tla_test_utils 增加 @tla.jit 绑定修正；flash_attn/gemm_basic/gemm_bias/reshape 等测试逻辑被同步调整（如 flash_attn 减少 flag、reshape 从 NotImplementedError 改为真实编译运行）。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/",
+          "third_party/ascend/unittest/tla_ut/conftest.py",
+          "third_party/ascend/unittest/tla_ut/utils/tla_test_utils.py"
+        ]
+      },
+      "message": "[ascend](chore) update npuir submodule and patch fix code (#2826)\n\n* [build](feat) npuir update\n\n* [ascend](fix): stop TLA builder from shadowing cann scope/custom-op paths\n\nMotivation: ebf950ff5 mounted the TLA builder for every kernel, and its\nsetup_unified_builder re-attached methods already owned by the cann\nextension plus reassigned main_builder._ascend_builder.  That made the\nTLA create_scope_op (which auto-emplaces the region entry block) shadow\nthe cann version, so al.scope handlers ended up with two blocks in the\nscope.scope region ('op expects region #0 to have 0 or 1 blocks'), and\nal.custom, which resolves the builder via\ngetattr(_semantic.builder, '_ascend_builder'), silently swapped the\nunderlying pybind instance for every cann kernel.\n\nDesign: Only TLA-specific methods are attached now; the 8 methods shared\nwith the cann extension (create_scope_op, scope_return,\ncreate_annotation_mark, get_array_attr, is_simt_mode, get_i64_array_attr,\nget_buffer_ty, get_buffer_ty_with_strides) are left to the cann\nsetup_unified_builder, and main_builder._ascend_builder is no longer\nreassigned.  The entry-block emplace moves from create_scope_op into the\nTLA-only get_scope_entry_block, so TLA scopes still get their body while\nnon-TLA scopes keep a single block.  parse_attr stays attached because\nthe cann extension does not mount it on main_builder and TLA mlir_attrs\ndepends on it.\n\nRisks: TLA scopes now rely on get_scope_entry_block for the entry block;\ncovered by the tla_ut IR regression (30 passed).\n\nAssisted-by: AI\n\n* [ascend](feat) refresh npuir submodule and AVE dialect support\n\nMotivation: TLA SIMD codegen emits ave.hir.* ops through tla_builder.cc, so\nthe Ascend plugin must load the HIVMAVE (AVE) dialect and link\nMLIRAVEDialect, and tla_builder.cc must be part of the plugin build. Keep\nthird_party/ascend/AscendNPU-IR on origin/stable 4eb12142 (the latest\n10.28 sync, sync1028/bfaba0ec), which supersedes the local temporary\nbranch commits.\n\nDesign: move the AscendNPU-IR gitlink from bb13ef612 (local\ninit-tla-full-cube-rebase-temp tip) to 4eb12142; register\nmlir::hivmave::AVEDialect in ascend_ir.cc and link MLIRAVEDialect; add\nlanguage/tla/cpp/tla_builder.cc to the TritonAscend plugin and bind\ninit_tla_builder in triton_ascend.cc. The community patch is left\nuntouched: the TLA builder is mounted by tla.compiler.ast_to_ttir itself,\nnot by the patched code_generator.\n\nRisks: moving from the master bugfix line (46914c6ad) to the stable sync\nline (4eb12142) is a 162-file difference including llvm-project; tla_ut\noffline IR must be re-validated against a libtriton rebuilt from the new\nsubmodule.\n\nAssisted-by: AI\n\n* [ascend](feat) add @tla.jit and stamp hacc.mode at TLA IR lowering\n\nMotivation: TLA mode was previously selected by callers passing\nenable_tla_mode explicitly or through a patch on JITFunction.run; that\nruntime machinery is fragile and invisible to the offline ast_to_ttir\nentry. The backend compiler already reads module attributes (hacc.target),\nso TLA mode should travel the same way.\n\nDesign: tla.jit is a plain triton.jit alias, so it needs no per-kernel\nmarker. tla.compiler.lower_ttir stamps hacc.mode = \"tla\" unconditionally on\nevery module it lowers, and since that entry point is only reached by the\nTLA offline flow, the stamp requires no decorator coupling, no monkeypatch\nof the community ast_to_ttir, and no idempotency flag; the offline\nast_to_ttir keeps injecting hacc.target beside it. register_with_dispatch()\nmerges TLA_WITH_DISPATCH into the community WITH_DISPATCH registry from\nsetup_unified_builder, keeping the \"with tla.scope.*\" wiring self-contained.\ntla_ut kernels are decorated with @tla.jit.\n\nRisks: runtime-compiled kernels no longer receive hacc.mode because the\nruntime path does not go through lower_ttir; stamp it beside the runtime\nhacc.target injection once the backend consumes the attribute.\n\nAssisted-by: AI\n\n* [ascend](feat): route @tla.jit kernels through the TLA frontend and stamp kernel mode\n\nMotivation: _infer_tla_kernel_mode ran only on the TLA offline path\n(lower_ttir), so runtime @tla.jit kernels reached bishengir-compile without\nhivm.func_core_type / mix_mode / module_core_type / vf_mode markers and never\ncarried the enable_tla_mode flag for bishengir-compile.\n\nDesign: reintroduce TLASTSource/TLAJITFunction so @tla.jit kernels build TTIR\nthrough the same ast_to_ttir entry as the offline tla_ut flow.\nTLASTSource.make_ir sets the init=False NPUOptions.enable_tla_mode flag (never\na launch argument), which ttir_to_linalg uses to run _infer_tla_kernel_mode\nand which linalg_to_bin forwards to bishengir-compile as\n--enable-tla-mode=true.  Extend _infer_tla_kernel_mode to stamp\nhivm.vf_mode<MIX> on the entry when a SIMT scope is present.  Tests keep the\nFFTS cross-core flags, write O from L0C straight to GM (fixpipe) to drop the\nextra handoff, and use static_range in the softmax/bias row loops.\n\nRisks: non-TLA kernels keep enable_tla_mode=False and skip both the kernel\nmode stamping and the new compiler flag; init=False excludes the field from\nlaunch keywords and the cache key; re-stamping at the ttadapter boundary is\nidempotent.\n\nAssisted-by: AI\n\n* [ascend](fix): tolerate opt without enable_tla_mode in backend paths\n\nMotivation: pytest_ut constructs SimpleNamespace opt objects without the\nenable_tla_mode field, so the direct opt.enable_tla_mode access in\nttir_to_linalg and linalg_to_bin_enable_npu_compile_910_95 raises\nAttributeError on those tests.\n\nDesign: read the flag via getattr(opt, \"enable_tla_mode\", False), keeping\nthe default False for non-TLA kernels while leaving real NPUOptions\nbehavior unchanged.\n\nRisks: None.\n\nAssisted-by: AI\n\n---------\n\nCo-authored-by: cxtverygood123 <chenxiaotian12@huawei.com>\nCo-authored-by: liupengcheng2012 <liupengcheng38@huawei.com>"
+    },
+    {
+      "sha": "f774362987141171f49e626a1975d01308e06dd1",
+      "comment": "CI 基础设施清理：删除所有工作流与 Dockerfile 中对内部 nginx-pypi-cache 集群服务的引用（PIP_INDEX_URL / PIP_TRUSTED_HOST / APTMIRROR / TORCH_INDEX_URL），保留公共的 PIP_EXTRA_INDEX_URL（华为云 Ascend pypi 源）。改动覆盖 build-docker-image.yml（移除 4 个 build-args）、llvm-build.yml（去掉 APT 源 sed 重写并重命名步骤）、almalinux.Dockerfile / wheels.Dockerfile（去掉内部 PIP 源，保留 PIP_TIMEOUT）、以及 documentation/integration-tests-ascend/npuir-build/sync-upstream/wheels 等多个 workflow 的 env。动机是 CI runner 已可通过 cluster squid 代理访问公网源，内部镜像不再需要。风险主要为 CI 环境依赖：需确认各 Dockerfile 与 workflow 在无内网缓存时能从公共源（Huawei Cloud apt/pypi、PyTorch CPU index）正常安装依赖，且不引入下载超时/限流问题；对外部贡献者与 fork 构建反而更友好。不涉及 Ascend 后端代码。",
+      "tags": [
+        "ci",
+        "chore",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅修改 CI 工作流与 Dockerfile 的包源配置，不改变源码、编译流水线或运行时逻辑，也未改变测试执行方式与用例集合；无需新增/更新测试用例。",
+        "suggested_test_areas": []
+      },
+      "message": "ci: remove internal cache-service references (#2795)\n\nCI runners reach public sources through the cluster squid proxy, so the\ninternal nginx-pypi-cache mirror is no longer needed.\n\n- Drop PIP_INDEX_URL / PIP_TRUSTED_HOST pointing at the internal host in\n  all workflows; public PIP_EXTRA_INDEX_URL entries are kept\n- llvm-build.yml: drop the APT source rewriting and rename the step\n- build-docker-image.yml: drop APTMIRROR / PIP_INDEX_URL / PIP_TRUSTED_HOST\n  / TORCH_INDEX_URL build args; docker/Dockerfile already defaults to the\n  public Huawei Cloud apt/pypi mirrors and the public PyTorch CPU index\n- almalinux.Dockerfile / wheels.Dockerfile: drop internal PIP_INDEX_URL /\n  PIP_TRUSTED_HOST, keep PIP_TIMEOUT\n\nSigned-off-by: chenqi49 <479148871@qq.com>"
+    },
+    {
+      "sha": "73cf47a80d99a9e301c7f766d88690e01cdb521a",
+      "message": "[docs](feat) add operator warmup and triton.knobs.ascend docs (#2827)",
+      "comment": "纯文档变更：1) 新增 docs/en/programming_guide/warmup_guide.md 与 docs/zh/debug_guide/warmup_guide.md，介绍 kernel.warmup(*args, grid=...) 的用法——支持 dtype 占位符与真实张量两种调用方式、autotune kernel 的多配置并行编译（返回 FutureKernel 列表需 .result()）、以及 warmup 不做 benchmark/不选优、依赖 TRITON_CACHE_DIR 缓存命中等注意事项；2) 在 environment_variable_and_compiler_options_reference.md（中英）新增 triton.knobs 接口章节，含读写规则（进程内值优先于环境变量优先于默认值、scope()/reset()/copy()/propagate_env）、模块级字段与 ascend/compilation/runtime/cache/autotuning/language/build/redis 各分组字段表，并标注 Ascend 适用性；3) 更新 en/programming_guide/index.md 与 zh/debug_guide/index.md 的目录索引（toctree）。内容对应 Ascend 后端已有实现（warmup、triton.knobs.ascend 分组、do_bench_npu、TRITON_COMPILE_ONLY 等），属于功能说明而非代码引入。潜在风险仅为文档与实现漂移（如 knobs 字段名/默认值与 third_party/ascend/backend 实际定义不一致），需保证后续代码改动同步更新这些表格。",
+      "tags": [
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅为文档新增与目录索引调整，未改动任何代码或测试；warmup 与 triton.knobs 能力已存在，文档描述不引入新的可执行路径，因此不需要新增测试。建议仅在审阅层面核对文档中的字段/默认值与 third_party/ascend/backend 中 knobs 定义的实现是否一致。",
+        "suggested_test_areas": []
+      }
+    }
+  ],
+  "architecture_based_on_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
+  "architecture_generated_at": "2026-08-27T10:29:02.142529+08:00"
+}

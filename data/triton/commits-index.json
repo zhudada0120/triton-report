@@ -1,4 +1,24 @@
 {
+  "0861b90f695e3c866f6f7eadd4be8339378ab017": {
+    "date": "2026-10-31",
+    "msg": "[AMD][Gluon] Add descriptor buffer ops for gfx1250 (#12512)"
+  },
+  "60a21adc7581e78df07f2b3716ed0950c3488a8c": {
+    "date": "2026-10-31",
+    "msg": "[BC-Breaking][Libdevice] Remove fma and fma_rn, redundant with tl.fma (#12558)"
+  },
+  "e9d175a65165179994581a43260c48bf8e66056a": {
+    "date": "2026-10-31",
+    "msg": "[TRITONGPU] Remove unnecessary layout conversions in CGA assignment (#12552)"
+  },
+  "8abae58bc5c04ec245ac75e3abd9a16f067c6b2d": {
+    "date": "2026-10-31",
+    "msg": "[AMD] Use hardware tanh for fast_tanhf on CDNA5, keep tanh exact (#12560)"
+  },
+  "b93ed65354e62bab1b21f9e95baea6789c28dde7": {
+    "date": "2026-10-31",
+    "msg": "[FRONTEND] Normalize negative dim in sort/topk (#12559)"
+  },
   "2bdead3a37e9d4d43cf5124ccb8d145bda3a47b7": {
     "date": "2026-10-30",
     "msg": "[Proton] Isolate ChromeTraceWriter test output files (#12301)"
