@@ -1,185 +1,217 @@
 {
-  "overview": "triton-ascend 是 triton-lang/triton 的 Ascend NPU（华为昇腾）后端实现分支（版本 3.6.0，commit 1c4110f8）。它在保持上游 triton 的 Triton 语言前端（Python DSL + MLIR 编译器栈）不变的前提下，通过实现 triton 的可扩展后端接口（BaseBackend/DriverBase）新增 'npu' 后端，使同一套 Triton kernel 代码能编译并运行在华为 Ascend 910B/910-95/A2/A3 等 NPU 上。其核心思路是复用 triton 的 AST→TTIR 前端与 MLIR 基础设施，但将 TritonGPU IR 之后的 lowering 完全替换为 Ascend 自有的转换链（TTIR → linalg → 毕昇(bisheng) IR → CANN 二进制 npubin），通过 third_party/ascend/patch/*.patch 以打补丁方式在上游源码上叠加适配，并通过 entry_points 机制注册为外部插件后端。",
+  "overview": "triton-ascend 是华为 Ascend NPU 的 Triton 后端实现，作为 triton-lang/triton 的下游分支（vendor backend）存在，版本 3.6.0。它在不修改上游核心语义的前提下，通过 TRITON_PLUGIN_DIRS 外部插件机制 + entry_points 注册，把 Triton 的 Python DSL 与编译器流水线扩展到华为昇腾 NPU（对接 CANN / torch_npu 运行时）。与 CUDA/AMD 后端走 'Triton GPU IR → LLVM' 的路径不同，Ascend 后端采用 'TTIR → Linalg/HIVM → BiShengIR → CANN (bishengir-compile)' 的自有 lowering 链路，把 Triton 高层 IR 降级为 CANN 编译器可消费的 Linalg/HIVM 描述，再由华为 BiShengIR 工具链生成 NPU kernel。它解决的核心问题是：让使用 Triton 编写的 kernel 能在 Ascend 910B/910_93/910_95/950/960 等 NPU 上编译运行，同时通过 costmodel、reuse、ubtuner 等机制针对 NPU 的 Cube/Vector 双核与 UB/L1/HBM 内存层级做性能调优。仓库结构 = 上游 triton 源码（含 nvidia/amd 后端与 Gluon 前端）+ third_party/ascend 的完整后端实现 + third_party/ascend/patch 中维护的上游源码回合 patch。",
   "modules": [
     {
-      "path": "python/triton/language/",
-      "name": "Triton 语言前端",
-      "description": "定义 Triton 编程语言的 Python API 层。core.py 提供 tensor/constexpr/dtype/pointer_type 等类型系统与 OpDescriptor 机制；semantic.py 提供 TritonSemantic（Generic[TensorTy]）承载各算子的语义约定（load/store/dot/arange/reduce 等）；standard.py/math.py/random.py 注册具体算子；extra/ 目录挂载各后端的设备特定语言扩展（cann/cuda/hip 的 libdevice）。实现原理：Triton 采用 '语义与后端分离' 设计——语言函数仅做类型检查/常量折叠，生成 AST 后交给 CodeGenerator 转成 MLIR，真正语义由 IR 定义，因此同一前端可服务多后端。",
-      "key_classes": [
-        "tensor",
-        "constexpr",
-        "dtype",
-        "pointer_type",
-        "block_type",
-        "TritonSemantic",
-        "tensor_descriptor",
-        "semantic"
-      ]
-    },
-    {
-      "path": "python/triton/compiler/",
-      "name": "编译器流水线",
-      "description": "将 AST 编译为后端二进制的流水线框架。compiler.py 定义 ASTSource/IRSource 抽象源、CompiledKernel、compile() 主流程与元数据缓存；code_generator.py 的 CodeGenerator(ast.NodeVisitor) 负责 Python AST → Triton IR（TTIR）。实现原理：compile() 通过 backend.add_stages() 收集按顺序执行的编译阶段字典（key 为扩展名，value 为 (src, metadata)->str|bytes 函数），各阶段通过 metadata 通信，最后阶段输出二进制供 launcher 执行；整体是'前端统一、后端可插拔'的多阶段编译链。",
-      "key_classes": [
-        "ASTSource",
-        "IRSource",
-        "CodeGenerator",
-        "CompiledKernel",
-        "ASTFunction",
-        "ContainsReturnChecker"
-      ]
-    },
-    {
       "path": "python/triton/backends/",
-      "name": "后端抽象与发现机制",
-      "description": "定义后端可插拔契约与发现机制。compiler.py 定义抽象基类 BaseBackend 与 GPUTarget 数据类；driver.py 定义 DriverBase 与 GPUDriver；__init__.py 提供 Backend 数据类与 _find_concrete_subclasses / _discover_backends。实现原理：通过 importlib.metadata entry_points（group='triton.backends'）发现外部插件后端，每个后端暴露 <plugin>.compiler 与 <plugin>.driver 两个模块，各自必须含唯一一个 BaseBackend/DriverBase 的具体子类；支持 TRITON_BACKENDS_IN_TREE=1 快路径仅发现树内后端。",
+      "name": "Backends abstraction",
+      "description": "定义后端抽象层：BaseBackend（编译器后端基类）、DriverBase/GPUDriver（运行时驱动基类）、Benchmarker 协议，以及通过 importlib.metadata entry_points 的后端发现机制 _find_concrete_subclasses / _discover_backends。实现原理：这是一个插件化工厂——每个后端通过 setup.py 注册 'triton.backends.<name>' entry_point，_discover_backends 对每个 entry_point 分别 import '{module}.compiler' 与 '{module}.driver' 并用 _find_concrete_subclasses 在该模块中寻找唯一的非抽象 BaseBackend/DriverBase 子类实例化；make_backend 用 supports_target 选出与 GPUTarget 匹配的唯一后端。这样第三方后端无需改动上游代码即可接入。",
       "key_classes": [
         "BaseBackend",
         "DriverBase",
         "GPUDriver",
-        "GPUTarget",
+        "Benchmarker",
         "Backend",
-        "Language",
-        "Benchmarker"
+        "_find_concrete_subclasses",
+        "_discover_backends"
+      ]
+    },
+    {
+      "path": "python/triton/compiler/",
+      "name": "Compiler pipeline",
+      "description": "编译编排层：compile() 是入口，负责 ASTSource/IRSource 构建、选项解析、缓存管理、stage 流水线执行，最终产出 CompiledKernel。code_generator.py 用 ast.NodeVisitor 把被 @triton.jit 装饰的函数 AST 转成 TTIR（调用 CodeGenerator 生成 MLIR）。实现原理：compile 先解析 target/options，用 get_cache_key 计算 hash 做磁盘缓存，然后调用 backend.add_stages 注册一串有序的 IR 转换函数（每个 stage 输入上一 stage 输出，返回 str/bytes，通过 metadata 字典通信），按 insertion order 顺序执行直至最后一个 stage 返回 bytes 二进制；CompiledKernel 惰性初始化 launcher 与 runtime handle。",
+      "key_classes": [
+        "compile",
+        "make_backend",
+        "ASTSource",
+        "IRSource",
+        "CompiledKernel",
+        "CompileTimer",
+        "AsmDict",
+        "CodeGenerator",
+        "ast_to_ttir"
+      ]
+    },
+    {
+      "path": "python/triton/language/",
+      "name": "Language frontend (Triton DSL)",
+      "description": "Triton 的 Python 语言前端：core.py 定义 tl.* 内建算子（通过 builtin/tensor 装饰器 + _semantic 分派），semantic.py 做类型检查与语义校验，standard.py/math.py 提供复合算子，extra/ 存放后端特有算子（libdevice 等）。实现原理：JIT 编译时每个 tl.* 调用携带 _semantic 回调，CodeGenerator 在 visit_Call 中调用 semantic 函数生成对应 MLIR op；后端通过 get_module_map 把 'triton.language.extra.libdevice' 映射到本后端实现（Ascend 映射到 triton.language.extra.cann.libdevice），实现算子层可替换。",
+      "key_classes": [
+        "tensor",
+        "constexpr",
+        "builtin",
+        "JITFunction",
+        "semantic",
+        "TritonSemantic",
+        "block_type"
       ]
     },
     {
       "path": "python/triton/runtime/",
-      "name": "运行时与 JIT",
-      "description": "负责 kernel 的 JIT 编译、缓存、自动调优与执行。jit.py 定义 JITFunction/JITCallable/KernelInterface 与 @jit 装饰器，实现参数特化、缓存键计算、启动器生成；driver.py 的 _create_driver() 从所有激活后端中选择唯一 DriverBase 实例；autotuner.py 提供 Autotuner 自动调优；cache.py/code_cache.py 管理编译产物磁盘缓存；interpreter.py 提供 CPU 解释执行器 InterpreterBuilder；libentry.py 支持外部函数库。",
+      "name": "Runtime / JIT / driver",
+      "description": "运行时层：jit.py 实现 @triton.jit 装饰器、依赖分析（DependenciesFinder）与编译入口；driver.py 维护全局 driver 单例（DriverConfig.active），通过各后端 DriverBase.is_active() 选出唯一活动驱动；cache.py 做编译产物缓存；interpreter.py 提供 Triton kernel 的 NumPy 解释执行器。实现原理：driver 的选择在 import triton.runtime.driver 时惰性进行，is_active 由后端探测硬件（Ascend 探测 bishengir 编译器是否支持 hiipu64 target）；JIT 把函数源 hash 作为缓存键，命中则直接复用 CompiledKernel。",
       "key_classes": [
         "JITFunction",
         "JITCallable",
-        "KernelInterface",
-        "Autotuner",
+        "driver",
+        "DriverConfig",
+        "get_cache_manager",
         "InterpreterBuilder",
-        "TensorWrapper",
-        "ConstexprFunction"
+        "TensorHandle",
+        "ReduceOps",
+        "ScanOps"
       ]
     },
     {
-      "path": "python/triton/_C/ (python/src/)",
-      "name": "C++ 到 Python 绑定",
-      "description": "pybind11 绑定的 MLIR/Triton C++ 核心，以 triton._C.libtriton 命名空间暴露。ir.cc 定义 TritonOpBuilder（builder）等 IR 构造 API；interpreter.cc/gluon_ir.cc/llvm.cc/passes.cc 等绑定编译器与解释器能力。实现原理：Python 前端通过 _C 绑定直接驱动 MLIR C++ 的 IR builder、pass manager 与 context，避免跨语言往返开销；各后端可在其 .cc 中扩展绑定（如 ascend_ir.cc）。",
-      "key_classes": [
-        "TritonOpBuilder",
-        "module",
-        "context",
-        "pass_manager"
-      ]
-    },
-    {
-      "path": "include/ + lib/ (Dialect/Conversion)",
-      "name": "C++ IR 与编译器核心",
-      "description": "Triton 的 MLIR 方言与转换实现。Dialect/Triton 定义 tt 方言（核心 op/类型/canonicalization）；Dialect/TritonGPU 定义 ttg 方言（BlockedLayout 等 layout 与 TritonGPU 优化 pass）；Conversion/TritonGPUToLLVM 将 TritonGPU IR 降为 LLVM IR，其中 TargetInfoBase 是硬件适配的核心接口；Conversion/TritonToTritonGPU 完成 Triton→TritonGPU 的转换。lib/ 为对应 .cpp 实现，include/ 为公开头文件。",
-      "key_classes": [
-        "TargetInfoBase",
-        "ModuleOp",
-        "TypeConverter"
-      ]
-    },
-    {
-      "path": "third_party/nvidia/",
-      "name": "NVIDIA (CUDA) 后端",
-      "description": "上游 triton 的 CUDA 后端参考实现。backend/compiler.py 的 CUDABackend 将 TTIR 经 TritonGPU→LLVM 降为 PTX→cubin；backend/driver.py 的 CUDADriver 封装 CUDA Runtime API；lib/TritonNVIDIAGPUToLLVM 实现 TargetInfo 及 TMEM/TMA 等 Hopper/Blackwell 特性。实现原理：通过 PTXAsmFormat 生成内联 PTX，经由 ptxas 生成 cubin。triton-ascend 不修改该后端，仅作为共存参照。",
-      "key_classes": [
-        "CUDABackend",
-        "CUDADriver",
-        "NVMMATargetInfo",
-        "PTXAsmFormat"
-      ]
-    },
-    {
-      "path": "third_party/amd/",
-      "name": "AMD (HIP) 后端",
-      "description": "上游 triton 的 AMD GPU 后端。backend/compiler.py 的 HIPBackend 降为 hsaco；lib/TritonAMDGPUToLLVM 实现 AMD 的 TargetInfo、MFMA/WMMA 指令、LDS 优化等。通过 hip 语言扩展与 GCNAsmFormat 生成 GCN 汇编。与 ascend 无耦合，仅作为多后端插件机制的另一个示例。",
-      "key_classes": [
-        "HIPBackend",
-        "HIPDriver",
-        "AMDGPUTargetInfo",
-        "GCNAsmFormat"
-      ]
-    },
-    {
-      "path": "third_party/ascend/",
-      "name": "Ascend NPU 后端",
-      "description": "triton-ascend 的核心新增内容，实现 Ascend NPU 后端。backend/compiler.py 的 AscendBackend 与 backend/driver.py 的 NPUDriver 实现 BaseBackend/DriverBase；backend/backend_register.py 提供 torch_npu/mindspore 双框架策略注册表；lib/ 与 include/ 实现 TritonAscend/TritonStructured 方言及 TritonToLinalg 等十余个 Ascend 专用转换 pass；backend/runtime/ 提供 costmodel/autotuner/ubtuner/dsl_analysis 调优体系；patch/ 维护整体补丁；language/cann 提供 Ascend 专属语言扩展与 libdevice。",
+      "path": "third_party/ascend/backend/",
+      "name": "Ascend backend implementation",
+      "description": "Ascend 后端主体：compiler.py 定义 AscendBackend 与 NPUOptions（覆盖 BaseBackend 的全部抽象方法，实现 TTIR→Linalg→BiShengIR→npubin 的编译 stage）；driver.py 定义 NPUDriver/NPUUtils/NPULauncher（覆盖 DriverBase，通过 torch_npu + CANN 管理 NPU 设备/内存/kernel launch）；backend_register.py 提供 BackendStrategyRegistry 统一处理 torch_npu/mindspore 两个宿主框架的 ABI、dtype、设备/流接口差异；utils.py 提供 bishengir 路径探测、arch 表、编译选项等工具。",
       "key_classes": [
         "AscendBackend",
-        "NPUDriver",
         "NPUOptions",
+        "NPUDriver",
         "NPUUtils",
         "NPULauncher",
         "BackendStrategyRegistry",
-        "AscendNPUIROpBuilder",
-        "AutoTilingTuner",
-        "AscendInterpreterBuilder"
+        "make_ttir",
+        "ttir_to_linalg",
+        "ttir_to_npubin",
+        "linalg_to_bin_enable_npu_compile_910_95",
+        "linalg_to_bin_enable_npu_compile_A2_A3"
       ]
     },
     {
-      "path": "third_party/proton/",
-      "name": "Proton 性能剖析器",
-      "description": "独立于后端的性能分析框架（hook/profile/viewer），通过 Python hooks 与 C++ instrumentation 采集 kernel 执行与内存/指令数据。实现原理：以 scope/state/hook 机制在 Triton 编译与运行路径上埋点，输出 TraceDataIO 数据供 viewer 展示。",
+      "path": "third_party/ascend/lib/",
+      "name": "Ascend lowering passes (C++)",
+      "description": "Ascend 自研的 C++ MLIR pass 集合，实现 Triton→Linalg/HIVM 的完整 lowering。包含：TritonControlFlowOpt（CFG 结构化/控制流优化）、TritonToStructured（memref 结构化转换）、TritonToLinalg（Triton op→linalg 主体转换，含 LoadStoreConverter、TritonOpConverter、DescriptorConverter 等）、TritonToHIVM/TritonToHFusion/TritonToLLVM/TritonToAnnotation/TritonToUnstructure（各 IR 降级/融合）、TritonToGraph（数据流图分析与内存优化）、DynamicCVPipeline（Cube/Vector 双流水线调度）、DiscreteMaskAccessConversion、AutoBlockify、TritonMemoryAccess、LibEntry、Dialect/TritonAscend、Dialect/TritonStructured。实现原理：这些 pass 把上游 Triton IR 逐步降为 CANN 编译器可识别的 Linalg/HIVM，并针对 NPU 的 Cube(矩阵)/Vector(向量) 双核与 UB/L1 内存模型做 tiling、多缓冲、计算/访存解耦等优化。",
       "key_classes": [
-        "proton",
-        "hook",
-        "profile",
-        "viewer",
-        "scope"
+        "TritonToLinalgPass",
+        "TritonOpConverter",
+        "LoadStoreConverter",
+        "DescriptorConverter",
+        "TritonControlFlowOptPass",
+        "CFGStructuring",
+        "TritonToStructuredPass",
+        "TritonToHIVM",
+        "TritonToGraph",
+        "GraphOptimizationPass",
+        "DynamicCVPipeline",
+        "AutoBlockify"
       ]
     },
     {
-      "path": "python/triton/tools/ + python/triton/experimental/",
-      "name": "工具与实验性组件",
-      "description": "tools/ 包含 compile.py/disasm.py/link.py/tensor_descriptor.py 等辅助工具及 triton_to_gluon_translater；experimental/ 包含 gluon 实验性语言（nvidia/amd 后端）。",
+      "path": "third_party/ascend/include/",
+      "name": "Ascend IR / pass headers",
+      "description": "Ascend 的 C++ 头文件：Dialect/TritonAscend（TritonAscendOps.td 定义 annotation、mod、index_put、gather_out_to_ub、indirect_load/store、dot、conv1d/conv2d、sort、flip 等 Ascend 特有 op）、Dialect/TritonStructured（get_structured_state 等结构化状态 op）、以及各个 pass 的 Passes.h/Passes.td 注册表。",
       "key_classes": [
-        "compile",
-        "disasm",
-        "link"
+        "TritonAscendDialect",
+        "TritonAscendOps",
+        "TritonStructuredDialect",
+        "TritonToLinalgPasses",
+        "DynamicCVPipelinePasses"
       ]
     },
     {
-      "path": "test/ + unittest/ + python/test/",
-      "name": "测试体系",
-      "description": "test/ 为 lit 测试（FileCheck 校验 IR 变换，覆盖 Triton/TritonGPU/Conversion 等）；unittest/ 为 C++ gtest 单元测试（Dialect/Analysis/Tools）；python/test/ 为 Python 测试（language/runtime/backend/cuda 等）。",
+      "path": "third_party/ascend/language/",
+      "name": "Ascend language DSL",
+      "description": "Ascend 特有语言层：cann/extension 扩展 tl.* 提供 Ascend 专属算子（copy_from_ub_to_l1、gather_out_to_ub、scatter_ub_to_out、sub_vec_id、sync_block_*、scope、dot、conv1d/conv2d、custom op 等）与 affine_map 绑定；cann/libdevice.py 提供 CANN libdevice 数学函数映射；kernels/ 提供高层 kernel 辅助；tla/（Triton Language for Ascend）是面向显式 UB/L1/L0A/L0B/L0C 内存空间的低层 DSL（simd/cube/dma/sync/scope 等），配合 tla/cpp/tla_builder.cc 的 C++ builder 与 compiler.py 直接生成 HIVM。",
+      "key_classes": [
+        "CORE",
+        "scope",
+        "custom",
+        "ascend_address_space",
+        "dot",
+        "conv2d",
+        "sync_block_all",
+        "TLA builder"
+      ]
+    },
+    {
+      "path": "third_party/ascend/costmodel/",
+      "name": "Ascend costmodel",
+      "description": "Ascend 硬件成本模型与调优框架：configs/*.json 用 hardware_schema.json 描述各代 NPU 的时钟频率、HBM/L2/L1/L0A/L0B 内存层级、带宽/延迟；lib/AscendModel 实现 AscendModelDialect 与 PipelineAnalysis/HIVMAnalysis/RooflineAnalysis/EstimateCycles/PerfReport 等 pass，用于对 kernel 的访存与计算流水做周期估算；backend/runtime 中的 ubtuner.py/autotuner.py/costmodel_runtime.py 结合成本模型做 UB 用量与 tile 尺寸的自动调优。",
+      "key_classes": [
+        "HardwareConfig",
+        "PipelineAnalysis",
+        "HIVMAnalysis",
+        "RooflineAnalysis",
+        "EstimateCycles",
+        "AscendModelDialect"
+      ]
+    },
+    {
+      "path": "third_party/ascend/backend/reuse/",
+      "name": "Ascend JIT reuse framework",
+      "description": "Ascend 特有的编译复用框架（reuse）：通过 analysis/binding/guards/identity/snapshot/rules 等模块对 kernel 编译做跨调用的等价性分析与增量复用，避免相同/相似 kernel 的重复编译，降低编译开销。AscendBackend.get_jit_reuse_handler 在 JIT 编译入口接入该框架。",
+      "key_classes": [
+        "get_handler",
+        "enabled",
+        "exact_request_scope",
+        "guards",
+        "snapshot",
+        "rules"
+      ]
+    },
+    {
+      "path": "third_party/ascend/patch/",
+      "name": "Upstream patch maintenance",
+      "description": "维护对上游 triton 源码的整体式 patch：triton-ascend-3.6.0.patch（release patch，main 构建时应用到 triton 源码，修改 CMakeLists.txt、bin 工具、Triton IR attr/traits、python/src/ir.cc 绑定、compiler/code_generator、language/semantic/math/standard、runtime/autotuner/interpreter/jit 等）与 llvm_patch_*.patch（修改 LLVM 依赖，非 triton 源码）。dev 构建使用 main-dev 分支。",
+      "key_classes": [
+        "triton-ascend-3.6.0.patch",
+        "llvm_patch_f6ded0b.patch"
+      ]
+    },
+    {
+      "path": "python/triton/experimental/gluon/",
+      "name": "Gluon experimental frontend",
+      "description": "上游实验性的 Gluon 编程前端（triton.experimental.gluon），提供 nvidia/amd 子包与 language 层；Ascend 后端不直接使用 Gluon，而是用自有的 tla DSL 实现类似的显式内存空间编程。",
+      "key_classes": [
+        "jit",
+        "constexpr_function",
+        "gluon.language"
+      ]
+    },
+    {
+      "path": "third_party/ascend/AscendNPU-IR/",
+      "name": "AscendNPU-IR (placeholder)",
+      "description": "目录名为 AscendNPU-IR，但本 commit 中该目录为空（其内容实为 third_party/ascend 根下的 lib/include 中 TritonAscend 等 dialect 与 pass）。",
       "key_classes": []
     }
   ],
   "key_abstractions": [
     {
       "name": "BaseBackend",
-      "description": "后端编译器的抽象基类，定义 Triton 编译器后端的可插拔契约。每个后端实现一个具体子类，负责目标支持判定、选项解析、编译阶段注册、方言加载与模块映射。",
+      "description": "编译器后端抽象基类。每个硬件后端提供一个 concrete 子类，负责把 Triton IR 编译成该硬件的可执行二进制。定义 6 个抽象方法：supports_target（目标选择门）、hash（后端唯一标识，参与缓存键）、parse_options（把 options dict 转成后端专属选项对象）、add_stages（注册 IR 转换流水线）、load_dialects（加载额外 MLIR dialect）、get_module_map（算子模块映射）。",
       "location": "python/triton/backends/compiler.py",
-      "inherits_from": "abc.ABC (metaclass=ABCMeta)",
+      "inherits_from": null,
       "key_methods": [
-        "__init__(self, target: GPUTarget)",
         "supports_target(target: GPUTarget) -> bool (staticmethod, abstract)",
-        "hash(self) -> str (abstract)",
-        "parse_options(self, options: dict) -> object (abstract)",
-        "add_stages(self, stages: dict, options: object) -> None (abstract)",
-        "load_dialects(self, context) (abstract)",
-        "get_module_map(self) -> Dict[str, ModuleType] (abstract)",
-        "get_codegen_implementation(self, options) -> dict (非抽象，编译流水线调用)",
-        "get_int_specialization(arg, **kwargs) / get_tensor_specialization(arg, **kwargs) (staticmethod)"
+        "hash() -> str (abstract)",
+        "parse_options(options: dict) -> object (abstract)",
+        "add_stages(stages: dict, options: object) -> None (abstract)",
+        "load_dialects(context) (abstract)",
+        "get_module_map() -> Dict[str, ModuleType] (abstract)",
+        "get_codegen_implementation(options) -> dict (default: None)",
+        "pack_metadata(metadata) -> dict",
+        "use_alignment_specialization(options: dict) -> bool (staticmethod)"
       ],
       "ascend_implementations": [
         "AscendBackend (third_party/ascend/backend/compiler.py)"
       ],
       "relationships": [
-        "被 python/triton/compiler/compiler.py 的 compile() 通过 backend.add_stages/get_codegen_implementation/get_module_map 调用",
-        "被 python/triton/backends/__init__.py 的 _find_concrete_subclasses 通过 issubclass 发现实例化",
-        "AscendBackend 继承它并覆写所有抽象方法，add_stages 签名扩展为 (self, stages, options, language)"
+        "被 python/triton/compiler/compiler.py::make_backend 实例化",
+        "被 CompiledKernel 用于 pack_metadata/get_codegen_implementation",
+        "GPUTarget 是其 target 参数类型"
       ]
     },
     {
       "name": "DriverBase",
-      "description": "后端运行时驱动的抽象基类，定义设备激活探测、类型映射、目标获取、benchmarker 提供等契约。",
+      "description": "运行时驱动抽象基类，封装硬件运行时差异（设备管理、类型映射、benchmark）。is_active 为 classmethod，用于驱动发现阶段探测硬件是否可用。",
       "location": "python/triton/backends/driver.py",
-      "inherits_from": "abc.ABC (metaclass=ABCMeta)",
+      "inherits_from": null,
       "key_methods": [
-        "is_active() -> bool (classmethod, abstract)",
+        "is_active(cls) -> bool (classmethod, abstract)",
         "map_python_to_cpp_type(self, ty: str) -> str (abstract)",
-        "get_current_target(self) -> GPUTarget (abstract)",
+        "get_current_target(self) (abstract)",
         "get_active_torch_device(self) (abstract)",
         "get_benchmarker(self) -> Benchmarker (abstract)"
       ],
@@ -187,347 +219,491 @@
         "NPUDriver (third_party/ascend/backend/driver.py)"
       ],
       "relationships": [
-        "被 python/triton/runtime/driver.py 的 _create_driver() 通过 is_active() 在所有后端中选择唯一激活驱动并实例化",
-        "NPUDriver 继承它，通过 CANN/torch_npu 实现设备管理、流获取、内存分配与 kernel launch"
+        "被 python/triton/runtime/driver.py::_create_driver 通过 is_active() 选择并实例化",
+        "CompiledKernel._init_handles 依赖 driver.active 的 launcher_cls / utils.load_binary / get_current_target"
       ]
     },
     {
       "name": "GPUDriver",
-      "description": "CUDA 专用的 DriverBase 子类，封装 torch.cuda 设备能力与流管理，提供 assemble_tensormap_to_arg 处理 TMA 描述符。仅 NVIDIA 后端使用。",
+      "description": "DriverBase 的 CUDA 特化子类，绑定 torch.cuda 的设备/流接口（get_device_capability、current_stream 等）。Ascend 后端不继承 GPUDriver，而是直接从 DriverBase 派生并用 torch_npu 替代。",
       "location": "python/triton/backends/driver.py",
       "inherits_from": "DriverBase",
       "key_methods": [
-        "__init__(self)（绑定 torch.cuda 的 device/stream 接口）",
-        "assemble_tensormap_to_arg(self, tensormaps_info, args)"
+        "__init__(self) (绑定 torch.cuda 接口)",
+        "assemble_tensormap_to_arg(tensormaps_info, args)"
       ],
       "ascend_implementations": [],
       "relationships": [
-        "NPUDriver 不继承 GPUDriver（直接继承 DriverBase），因 CUDA 专属语义不适用于 NPU"
+        "nvidia 后端的驱动基类；Ascend 绕过它直接继承 DriverBase"
       ]
     },
     {
-      "name": "GPUTarget",
-      "description": "描述编译目标的数据类：后端名(backend)、架构(arch)、warp 大小(warp_size)。作为 BaseBackend.__init__ 参数与 hash 依据。",
-      "location": "python/triton/backends/compiler.py",
-      "inherits_from": "dataclasses.dataclass(frozen=True)",
-      "key_methods": [],
-      "ascend_implementations": [],
-      "relationships": [
-        "AscendBackend 使用 backend='npu'、arch=昇腾架构名（如 910B）、warp_size=0"
-      ]
-    },
-    {
-      "name": "TritonSemantic",
-      "description": "Triton 语言的语义层，泛型类 TritonSemantic(Generic[TensorTy]) 为每个语言算子定义语义约定（参数校验、常量折叠、返回类型推导）。是 monkey-patch 的常见挂载点。",
-      "location": "python/triton/language/semantic.py",
-      "inherits_from": "typing.Generic[TensorTy]",
+      "name": "Benchmarker",
+      "description": "Protocol：定义 benchmark 回调签名，kernel_call 传入，返回 quantiles 对应的耗时序列。",
+      "location": "python/triton/backends/driver.py",
+      "inherits_from": null,
       "key_methods": [
-        "program_id(self, axis: int) -> TensorTy",
-        "arange(self, start: int, end: int, *, ret_ty=None) -> TensorTy",
-        "load(self, ptr, mask, other, boundary_check, cache_modifier, eviction_policy, volatile)",
-        "store(self, ptr, val, mask, boundary_check, cache_modifier, eviction_policy)",
-        "dot(self, lhs, rhs, acc, input_precision, max_num_imprecise_acc, out_dtype)",
-        "dot_scaled(self, lhs, lhs_scale, lhs_format, rhs, ...)"
+        "__call__(self, kernel_call, *, quantiles, **kwargs) -> Sequence[float]"
       ],
       "ascend_implementations": [
-        "monkey-patch 覆写 TritonSemantic.dot（HF32/tf32 回退与 max_num_imprecise_acc 拦截，见 third_party/ascend/backend/__init__.py::_apply_ascend_patch）"
+        "NPUDriver.get_benchmarker 返回 triton.testing.do_bench"
       ],
       "relationships": [
-        "被 CodeGenerator 在语义检查阶段实例化调用；Ascend 通过运行时 monkey-patch 修改 dot 行为"
+        "被 autotuner 用于对候选 config 计时"
+      ]
+    },
+    {
+      "name": "Backend",
+      "description": "不可变 dataclass，把 compiler 类型与 driver 类型打包成一个后端；backends 全局字典由 _discover_backends 填充。",
+      "location": "python/triton/backends/__init__.py",
+      "inherits_from": null,
+      "key_methods": [
+        "Backend(compiler: Type[BaseBackend], driver: Type[DriverBase])"
+      ],
+      "ascend_implementations": [],
+      "relationships": [
+        "backends 字典被 compiler.make_backend 与 runtime.driver._create_driver 消费"
+      ]
+    },
+    {
+      "name": "_find_concrete_subclasses",
+      "description": "在给定模块中查找唯一一个非抽象的 base_class 子类；0 个或 >1 个均抛异常。这是后端插件发现的核心，保证每个 entry_point 模块只暴露一个具体后端。",
+      "location": "python/triton/backends/__init__.py",
+      "inherits_from": null,
+      "key_methods": [
+        "_find_concrete_subclasses(module: ModuleType, base_class: Type[T]) -> Type[T]"
+      ],
+      "ascend_implementations": [],
+      "relationships": [
+        "被 _discover_backends 调用；AscendBackend/NPUDriver 分别在其 compiler.py/driver.py 模块中作为唯一子类被发现"
+      ]
+    },
+    {
+      "name": "ASTSource",
+      "description": "编译源表示之一：包装被 @triton.jit 的函数（fn、signature、constexprs、attrs），make_ir 调用 ast_to_ttir 生成 TTIR module。",
+      "location": "python/triton/compiler/compiler.py",
+      "inherits_from": null,
+      "key_methods": [
+        "hash() -> str",
+        "make_ir(target, options, codegen_fns, module_map, context)",
+        "parse_options() -> dict"
+      ],
+      "ascend_implementations": [],
+      "relationships": [
+        "compile() 的输入；其 hash 用于 override/dump 管理"
+      ]
+    },
+    {
+      "name": "IRSource",
+      "description": "编译源表示之二：从 IR 文件路径解析出 MLIR module（ttir/ttgir/llir/ptx/amdgcn/cubin/hsaco/npubin 等），用于 IR 级别测试与 override。",
+      "location": "python/triton/compiler/compiler.py",
+      "inherits_from": null,
+      "key_methods": [
+        "__init__(self, path, context, backend)",
+        "make_ir(...)",
+        "parse_options() -> dict (从 ttg.num-warps/num-ctas 等 attr 提取)"
+      ],
+      "ascend_implementations": [],
+      "relationships": [
+        "Ascend 通过 _apply_ascend_patch 对 compiler.parse 打补丁以支持 npubin/ttadapter 扩展名"
+      ]
+    },
+    {
+      "name": "CompiledKernel",
+      "description": "编译结果的运行时句柄：惰性加载二进制、初始化 launcher（driver.active.launcher_cls）、检查 shared memory / tmem / threads 上限，并通过 __getitem__(grid) 返回可调用的 runner。",
+      "location": "python/triton/compiler/compiler.py",
+      "inherits_from": null,
+      "key_methods": [
+        "_init_handles(self)",
+        "run (property)",
+        "launch_metadata(grid, stream, *args)",
+        "__getitem__(self, grid)"
+      ],
+      "ascend_implementations": [],
+      "relationships": [
+        "使用 backend.pack_metadata 打包 kernel_name/hash/tensor_kinds",
+        "依赖 driver.active.utils.load_binary 与 launcher_cls"
       ]
     },
     {
       "name": "CodeGenerator",
-      "description": "Python AST → Triton IR（TTIR）的代码生成器，继承 ast.NodeVisitor，逐 AST 节点生成 MLIR 操作，处理控制流、循环、函数定义与算子调用。",
+      "description": "AST→TTIR 代码生成器（ast.NodeVisitor 子类）：遍历 JIT 函数 AST，对每个 tl.* 调用执行 semantic 回调生成 MLIR op，维护作用域/控制流/内存环境。",
       "location": "python/triton/compiler/code_generator.py",
       "inherits_from": "ast.NodeVisitor",
       "key_methods": [
-        "__init__(self, context, prototype, gscope, function_name, ...)",
-        "visit_Call / visit_FunctionDef / visit_For / visit_While / visit_If / visit_Return 等 visit_* 方法"
-      ],
-      "ascend_implementations": [
-        "monkey-patch 覆写 CodeGenerator.__init__（注入 hacc.target 属性，见 third_party/ascend/backend/__init__.py）"
-      ],
-      "relationships": [
-        "由 ast_to_ttir() 实例化，被 ASTSource.make_ir 调用；Ascend 通过运行时 patch 在 __init__ 后设置模块 hacc.target 属性"
-      ]
-    },
-    {
-      "name": "JITFunction",
-      "description": "@jit 装饰器产生的可调用对象，负责参数特化、编译缓存键计算、调度编译与 kernel 启动。",
-      "location": "python/triton/runtime/jit.py",
-      "inherits_from": "JITCallable, KernelInterface[T]",
-      "key_methods": [
-        "run(*args, grid, warmup, **kwargs)",
-        "create_function_from_signature(sig, kparams, backend)",
-        "compute_cache_key(kernel_key_cache, specialization, options)"
+        "visit_Module",
+        "visit_FunctionDef",
+        "visit_Call",
+        "visit_Return",
+        "visit_If",
+        "visit_For",
+        "visit_AnnAssign"
       ],
       "ascend_implementations": [],
       "relationships": [
-        "调用 driver.active / compiler.compile 完成 JIT；由 Ascend 复用，无需覆写"
+        "Ascend 通过 monkey-patch 其 __init__ 注入 hacc.target 模块属性（third_party/ascend/backend/__init__.py::_apply_ascend_patch）"
+      ]
+    },
+    {
+      "name": "AscendBackend",
+      "description": "Ascend NPU 的 BaseBackend 实现。supports_target 仅接受 backend=='npu'；add_stages 注册 ttir/ttadapter/npubin（或纯 SIMT 时 ttir/npubin）三段流水线；parse_options 把选项归一化为 NPUOptions 并注入 arch；get_module_map 把 triton.language.extra.libdevice 映射到 cann libdevice。",
+      "location": "third_party/ascend/backend/compiler.py",
+      "inherits_from": "BaseBackend",
+      "key_methods": [
+        "supports_target(target: GPUTarget) -> bool",
+        "parse_options(opts) -> NPUOptions",
+        "add_stages(self, stages, options, language) -> None",
+        "load_dialects(self, ctx)",
+        "get_module_map(self) -> Dict[str, ModuleType]",
+        "hash(self) -> str (lru_cache)",
+        "pack_metadata(self, metadata) -> dict",
+        "get_codegen_implementation(self, options) -> dict",
+        "get_jit_reuse_handler() / get_exact_request_scope() (staticmethod)"
+      ],
+      "ascend_implementations": [
+        "AscendBackend (自身)"
+      ],
+      "relationships": [
+        "作为 triton.backends.ascend.compiler 模块中唯一 concrete 子类被 _find_concrete_subclasses 发现",
+        "NPUOptions 是 parse_options 的返回类型"
+      ]
+    },
+    {
+      "name": "NPUOptions",
+      "description": "Ascend 后端编译选项 dataclass：承载 num_warps/num_stages/multibuffer、compile_mode(simd/simd_simt_template/simt_only)、enable_graph_optimize、enable_dynamic_cv_pipeline、enable_mixed_cv 等大量后端选项；__post_init__ 注入 target_arch、调用 _apply_ascend_patch、规范化 compile_mode 与 multibuffer_mode；hash() 拼接所有字段 + CANN 版本文件 hash 生成 sha256 参与缓存键。",
+      "location": "third_party/ascend/backend/compiler.py",
+      "inherits_from": null,
+      "key_methods": [
+        "__post_init__(self, arch, rule_mask)",
+        "hash(self) -> str",
+        "arch (property) -> target_arch",
+        "compile_on_register_based (property)"
+      ],
+      "ascend_implementations": [],
+      "relationships": [
+        "被 AscendBackend.parse_options 构造，options.__dict__ 被写入 metadata 供 stage 与 launcher 使用"
+      ]
+    },
+    {
+      "name": "NPUDriver",
+      "description": "Ascend NPU 的 DriverBase 实现：is_active 通过探测 bishengir 编译器是否支持 hiipu64 target 判断可用性；map_python_to_cpp_type 委托 launcher.ty_to_cpp；get_current_target 返回 backend='npu'、warp_size=0 的 GPUTarget；设备/流接口全部走 torch_npu；load_binary 由 NPUUtils 委托 C++ 扩展 npu_utils.so 实现。",
+      "location": "third_party/ascend/backend/driver.py",
+      "inherits_from": "DriverBase",
+      "key_methods": [
+        "is_active(cls) -> bool",
+        "map_python_to_cpp_type(self, ty: str) -> str",
+        "get_current_target(self) -> GPUTarget",
+        "get_current_device(self) / set_current_device(self, device)",
+        "get_current_stream(self, device=None) -> int",
+        "get_active_torch_device(self)",
+        "get_benchmarker(self) -> do_bench",
+        "get_device_interface(self) / get_empty_cache_for_benchmark(self) / clear_cache(self, cache)"
+      ],
+      "ascend_implementations": [
+        "NPUDriver (自身)"
+      ],
+      "relationships": [
+        "launcher_cls 设为 NPULauncher",
+        "与 NPUUtils 单例协作完成二进制加载与核心数查询"
+      ]
+    },
+    {
+      "name": "NPUUtils",
+      "description": "NPU 运行时工具单例：动态编译并缓存 npu_utils.cpp 为 npu_utils.so（基于源码+fingerprint 的 sha256 缓存键），提供 load_binary（load_kernel_binary）、get_arch、get_device_core/get_aicore_num/get_aivector_core_num、_get_npu_device_limit_form_env（NPU_DEVICE_LIMIT 环境变量校验）等能力。",
+      "location": "third_party/ascend/backend/driver.py",
+      "inherits_from": null,
+      "key_methods": [
+        "load_binary(name, kernel, shared, device, mix_mode)",
+        "get_arch()",
+        "get_device_core()",
+        "get_aicore_num() / get_aivector_core_num()",
+        "has_device_limit()"
+      ],
+      "ascend_implementations": [],
+      "relationships": [
+        "被 NPUDriver 与 compiler.py 的 lowering（custom-aic-number/custom-aiv-number）消费"
+      ]
+    },
+    {
+      "name": "NPULauncher",
+      "description": "Ascend kernel 启动器：根据 metadata 构建 launch_spec 与参数类型，通过 get_runtime 创建 C++ launcher（create_launcher），wrap_handle_tensordesc 处理 tensor descriptor 参数，__call__ 执行 kernel（compile_only 模式下跳过）。",
+      "location": "third_party/ascend/backend/driver.py",
+      "inherits_from": null,
+      "key_methods": [
+        "__init__(self, src, metadata)",
+        "__call__(self, *args, **kwargs)",
+        "get_launcher_so_path(self)",
+        "make_launch_spec(metadata, npu_utils)"
+      ],
+      "ascend_implementations": [],
+      "relationships": [
+        "被 CompiledKernel._init_handles 通过 driver.active.launcher_cls 实例化"
+      ]
+    },
+    {
+      "name": "BackendStrategyRegistry",
+      "description": "Ascend 后端策略注册表：以 category/method 两级注册并分派宿主框架相关函数（cxx_abi、type_convert、get_device_interface、get_cc_cmd、get_current_device、get_current_stream 等），支持 torch_npu 与 mindspore 两套宿主实现按需切换。",
+      "location": "third_party/ascend/backend/backend_register.py",
+      "inherits_from": null,
+      "key_methods": [
+        "register(category, method)",
+        "execute_func(category, method, *args, **kwargs)",
+        "list_categories() / list_methods(category)"
+      ],
+      "ascend_implementations": [],
+      "relationships": [
+        "被 driver.py 的 get_device_interface 等通过 get_backend_func 消费"
+      ]
+    },
+    {
+      "name": "AscendReduceOps",
+      "description": "Ascend 解释器专用的 ReduceOps 子类，仅覆写 apply_impl 以支持 argmin/argmax/elementwise_max 在 NumPy 解释执行下的语义，其余归约逻辑继承自 ReduceOps。",
+      "location": "third_party/ascend/backend/ascend_interpreter.py",
+      "inherits_from": "ReduceOps (python/triton/runtime/interpreter.py)",
+      "key_methods": [
+        "apply_impl(self, input_param)"
+      ],
+      "ascend_implementations": [
+        "AscendReduceOps (自身)"
+      ],
+      "relationships": [
+        "扩展 InterpreterBuilder 以在 CPU 上解释执行 Ascend kernel"
       ]
     },
     {
       "name": "TargetInfoBase",
-      "description": "C++ 硬件抽象接口，定义 TritonGPU→LLVM lowering 中与目标架构相关的操作（reduction、shuffle、shared memory、printf、地址空间映射等）的纯虚接口。",
+      "description": "上游 C++ 的 target 抽象基类（TritonGPU→LLVM 阶段），定义 shuffle/ballot/barrier/shared memory 等硬件原语接口。Ascend 后端不使用 TritonGPUToLLVM 路径（走 TritonToLinalg→BiShengIR），因此不实现该类；仅 nvidia/amd 后端提供具体 TargetInfo。",
       "location": "include/triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h",
       "inherits_from": null,
       "key_methods": [
-        "virtual bool supportMaximumMinimum() const = 0",
-        "virtual Value getClusterCTAId(...) const = 0",
-        "virtual Value ballot(...) const = 0",
-        "virtual void barrier(Location, RewriterBase&, ...) = 0",
-        "virtual Value loadDShared/storeDShared(...) = 0",
-        "virtual Value shuffleXor/shuffleUp/shuffleIdx(...) = 0",
-        "virtual Value programId(...) = 0",
-        "virtual bool warpReduce(...) = 0",
-        "virtual std::string getMulhiFuncName(Type) const = 0",
-        "virtual int getSharedAddressSpace() const = 0",
-        "virtual int getAddressSpace(Attribute) const = 0",
-        "virtual bool supportVectorizedAtomics() const = 0",
-        "virtual bool isCuda() const { return false; }"
+        "supportMaximumMinimum()",
+        "ballot(...)",
+        "barrier(...)",
+        "storeDShared(...)/loadDShared(...)",
+        "shuffleXor/shuffleUp/shuffleIdx(...)",
+        "getClusterCTAId(...)"
       ],
       "ascend_implementations": [],
       "relationships": [
-        "NVIDIA(NVMMATargetInfo)、AMD(AMDGPUTargetInfo) 实现；Ascend 不走 TritonGPU→LLVM 路径，改用 TritonToLinalg，故不实现此接口"
+        "属于 TritonGPU→LLVM 代码生成路径，Ascend 后端不经过该路径"
       ]
     },
     {
-      "name": "TritonOpBuilder",
-      "description": "Python 侧 MLIR IR 构造器基类，暴露 getI64ArrayAttr、create 等 IR 构建原语，供语言前端生成 MLIR。",
-      "location": "python/src/ir.cc (pybind11 绑定为 triton._C.libtriton.ir.builder)",
+      "name": "TritonAscendDialect / TritonAscendOps",
+      "description": "Ascend 自研 MLIR dialect：定义 Ascend 特有 op（annotation、mod、index_put、gather_out_to_ub、scatter_ub_to_out、indirect_load/store、stride_load/store、dot、conv1d/conv2d、sort、flip、custom 等），用于在 TTIR 层面表达 Ascend 专属语义后再降级。",
+      "location": "third_party/ascend/include/Dialect/TritonAscend/IR/TritonAscendOps.td",
       "inherits_from": null,
       "key_methods": [
-        "getI64ArrayAttr",
-        "create_* (各类 op 构造)",
-        "get_* (类型/属性构造)"
+        "AnnotationOp",
+        "DotOp",
+        "Conv1dOp/Conv2dOp",
+        "IndirectLoadOp/IndirectStoreOp",
+        "IndexPutOp",
+        "CustomOp"
       ],
       "ascend_implementations": [
-        "AscendNPUIROpBuilder (third_party/ascend/ascend_ir.cc，struct AscendNPUIROpBuilder : public TritonOpBuilder)"
+        "lib/Dialect/TritonAscend/IR/*.cpp"
       ],
       "relationships": [
-        "AscendNPUIROpBuilder 扩展构建 Ascend 特有 op（create_extract_scalar、sort、flip、sync_block 等）"
+        "由 language/cann/extension 的语义回调生成，被 TritonToLinalg/TritonToStructured 消费"
       ]
     },
     {
-      "name": "InterpreterBuilder",
-      "description": "CPU 解释执行器的 IR builder，在无硬件环境下逐 op 解释执行 Triton kernel。",
-      "location": "python/triton/runtime/interpreter.py",
+      "name": "TritonStructuredDialect",
+      "description": "Ascend 结构化状态 dialect：定义 get_structured_state 等 op，用于在 lowering 中承载结构化/控制流状态。",
+      "location": "third_party/ascend/include/Dialect/TritonStructured/IR/",
       "inherits_from": null,
       "key_methods": [
-        "（注册各类 op 的解释执行实现）"
+        "TTS_GetStructuredStateOp"
       ],
       "ascend_implementations": [
-        "AscendInterpreterBuilder (third_party/ascend/backend/ascend_interpreter.py，继承 InterpreterBuilder)，配套 AscendReduceOps/AscendScanOps"
+        "lib/Dialect/TritonStructured/IR/*.cpp"
       ],
       "relationships": [
-        "Ascend 扩展解释器以支持 Ascend 专属语义的 CPU 调试"
-      ]
-    },
-    {
-      "name": "Autotuner",
-      "description": "运行时自动调优器基类，遍历 config 空间基准测试并选择最优配置。",
-      "location": "python/triton/runtime/autotuner.py",
-      "inherits_from": null,
-      "key_methods": [
-        "__init__(fn, configs, key, ...)",
-        "run(...)",
-        "benchmark(...)"
-      ],
-      "ascend_implementations": [
-        "AutoTilingTuner (third_party/ascend/backend/runtime/autotuner.py，继承 Autotuner)，实现 Ascend 特有的 tiling/num_stages/multibuffer 参数展开"
-      ],
-      "relationships": [
-        "Ascend 通过 AutoTilingTuner 扩展 SIMD/SIMT 模式的自动调优策略"
+        "被 TritonToStructured pass 生成与消费"
       ]
     }
   ],
   "implementation_principles": [
     {
-      "module": "后端发现与注册 (python/triton/backends/__init__.py)",
-      "problem": "Triton 需支持多硬件后端（CUDA/AMD/昇腾）共存并动态选择，且第三方后端可独立打包为插件。",
-      "workflow": "setup.py 将第三方后端（TRITON_PLUGIN_DIRS 指定的外部插件）安装/符号链接为 triton.backends.<name> 包，并通过 entry_points(group='triton.backends') 暴露 '<name> = triton.backends.<name>'；_discover_backends() 遍历 entry_points，为每个后端 import '.compiler' 与 '.driver' 模块，再用 _find_concrete_subclasses 找到唯一的具体 BaseBackend/DriverBase 子类实例化。",
-      "interactions": "setup.py 的 BackendInstaller.copy_externals() 读取 third_party/ascend/backend/name.conf（内容 'ascend'）确定后端名；triton.backends.ascend 与 triton.backends.nvidia/amd 共存；runtime.driver._create_driver() 用 is_active() 判定当前环境唯一激活后端。",
-      "platform_differences": "nvidia/amd 为树内后端（copy()，随主包安装），ascend 为外部插件（copy_externals()，经 TRITON_PLUGIN_DIRS 发现），需 setup_ascend.py 单独构建 wheel 并重算 entry_points。"
+      "module": "python/triton/backends/ + setup.py",
+      "problem": "如何让第三方硬件后端在不改动上游核心代码的前提下接入 Triton 的编译与运行时。",
+      "workflow": "setup.py 的 BackendInstaller.copy_externals 读取 TRITON_PLUGIN_DIRS 环境变量（指向 third_party/ascend），从该目录 backend/name.conf 读取后端名 'ascend'，并在 get_entry_points 注册 'triton.backends.ascend = triton.backends.ascend'；运行时 _discover_backends 遍历 triton.backends entry_points，分别 import '{module}.compiler' 与 '{module}.driver'，用 _find_concrete_subclasses 在每个模块中定位唯一具体子类并实例化为 Backend 对象。",
+      "interactions": "与 python/triton/compiler/compiler.py::make_backend（用 supports_target 选出后端）和 python/triton/runtime/driver.py::_create_driver（用 is_active 选出驱动）协作。",
+      "platform_differences": "nvidia/amd 是 in-tree 后端（BackendInstaller.copy），ascend 是外部插件（copy_externals + 符号链接安装到 python/triton/backends/ascend）。"
     },
     {
-      "module": "编译流水线 (python/triton/compiler/compiler.py)",
-      "problem": "将同一 AST 编译为不同后端二进制，且允许 IR 级 override、缓存与增量编译。",
-      "workflow": "compile() 先按 src.hash() 查磁盘缓存（命中直接返回 CompiledKernel）；否则 backend.parse_options() 解析选项 → backend.add_stages(stages, options, language) 收集顺序阶段 → src.make_ir() 生成 TTIR → 依序执行 stages 中每个 (ext, compile_ir) 函数（前段输出 str，末段输出 bytes）→ 元数据写回缓存。IRSource 支持从 .ttir/.ttgir/.ptx 等中间文件续编译。",
-      "interactions": "依赖 backend.get_codegen_implementation() 提供后端特定 codegen 函数（如 min_dot_size）、backend.get_module_map() 提供算子模块映射、backend.load_dialects() 加载方言。",
-      "platform_differences": "CUDA/AMD 阶段为 ttir→ttgir→llir→ptx/amdgcn→cubin/hsaco；Ascend 阶段为 ttir→ttadapter(linalg)→mlirbc→bcmlir(bisheng)→npubin（纯 SIMT 模式则 ttir→npubin 直通）。"
+      "module": "python/triton/compiler/compiler.py (compile)",
+      "problem": "统一编排从源（AST 或 IR 文件）到可执行二进制的编译，并复用磁盘缓存。",
+      "workflow": "compile 确定 target（默认 driver.active.get_current_target()），make_backend 选出后端，解析 options 后计算 cache key/hash；命中缓存直接返回 CompiledKernel，否则构造 ASTSource/IRSource，调用 backend.add_stages 注册 stage 字典，按 insertion order 顺序执行（每个 stage 接收上一个输出与 metadata），最后一个 stage 返回 bytes 作为二进制；编译产物与 metadata 写入 cache manager。",
+      "interactions": "依赖 backend.load_dialects / get_codegen_implementation / get_module_map；通过 get_cache_manager/get_dump_manager/get_override_manager 管理缓存、dump 与 override。",
+      "platform_differences": "二进制扩展名由 backend.binary_ext 决定（Ascend 为 npubin，CUDA 为 cubin，AMD 为 hsaco）；stage 名称与内容由各后端 add_stages 自行定义。"
     },
     {
-      "module": "Ascend 编译 lowering 链 (third_party/ascend/backend/compiler.py)",
-      "problem": "Ascend NPU 无 CUDA 式 SASS/PTX，需将 Triton IR 适配到 CANN/毕昇工具链。",
-      "workflow": "make_ttir 生成 TTIR 后应用 add_graph_optimize；ttir_to_linalg 依序调用 Ascend 专用 pass：triton_control_flow_opt → triton_to_structure → discrete_mask_access_conversion → triton_to_annotation → triton_to_unstructure → triton_to_hivm → triton_to_hfusion → triton_to_llvm → bubble_up_operation → triton_to_structure → triton_to_linalg → merge_concat_load_buffer → dynamic_cv_pipeline(可选) → normalize_debug_line_locations，产出 Linalg IR；linalg_to_bc_by_triton_mlir_opt 将 Linalg 编译为字节码；bc_to_linalg_by_bishengir_opt 经毕昇 IR opt 转回 MLIR 文本；最后 linalg_to_bin_enable_npu_compile_910_95 或 _A2_A3 调 CANN npucompiler 生成 npubin 二进制。",
-      "interactions": "全程通过 ascend.passes.ttir.* 绑定（third_party/ascend/triton_ascend.cc::init_triton_ascend_passes_ttir）调用 C++ pass；编译模式（simt/simd）与 target_arch（910B/910-95/A2/A3）决定分支；metadata 通过 pack_metadata 收敛出 kernel_name/hash/tensor_kinds 供 launcher。",
-      "platform_differences": "910-95 走 enable_npu_compile_910_95 分支（支持动态 CV pipeline），A2/A3 走另一分支；SIMT-only 模式跳过 Linalg 直接生成 npubin；相比 CUDA 后端多出 bisheng IR 字节码往返与 CANN 算子库对接。"
+      "module": "third_party/ascend/backend/compiler.py (Ascend lowering)",
+      "problem": "把 Triton 高层 IR 降级为 CANN 编译器（bishengir-compile）可消费的输入并生成 NPU kernel，同时支持 A2/A3 与 910_95/950/960 两代编译管线。",
+      "workflow": "add_stages 注册三段：make_ttir（inliner/combine/canonicalize/cse/licm/loop_unroll 等标准 TTIR 优化 + 可选 graph_optimize）；ttir_to_linalg（调用 triton-opt 执行 ascend pass 流水线：triton_control_flow_opt→triton_to_structure→discrete_mask_access_conversion→triton_to_annotation→triton_to_unstructure→triton_to_hivm→triton_to_hfusion→triton_to_llvm→bubble_up_operation→triton_to_structure→triton_to_linalg，可选 dynamic_cv_pipeline/merge_concat_load_buffer，输出 ttadapter linalg 文本，并从中正则解析 kernel_name/mix_mode/tensor_kinds 等 metadata）；npubin（linalg_to_bin_enable_npu_compile_910_95 或 _A2_A3，把 linalg 文本写入临时文件后用 bishengir-compile 命令行编译成 kernel.o/kernel_reloc.o，返回二进制）。纯 SIMT 模式（compile_mode=simt_only，仅 950/960）则跳过 linalg，直接 ttir_to_npubin。",
+      "interactions": "通过 triton._C.libtriton.ascend（C++ 绑定）调用 ascend.passes；通过 _get_npucompiler_path 定位 bishengir 编译器；metadata 在 stage 间传递并由 driver 的 launcher 消费。",
+      "platform_differences": "与 CUDA 的 TritonGPU→LLVM 路径完全分离；用正则从 linalg 文本提取 mix_mode/parallel_mode/tensor_kinds，用 --target=Ascend950/Ascend910B 等切换 arch，用 compile_on_910_95 区分寄存器基（A5/A6）与 A2/A3 管线。"
     },
     {
-      "module": "NPUDriver 与 CANN 运行时映射 (third_party/ascend/backend/driver.py)",
-      "problem": "将 triton 的 DriverBase 抽象映射到昇腾 CANN/torch_npu 运行时。",
-      "workflow": "is_active() 检测 bisheng 编译器是否支持 hiipu64 目标；get_current_target() 返回 GPUTarget('npu', arch, warp_size=0)；设备/流操作经 backend_register.py 的策略注册表选择 torch_npu 或 mindspore 实现（get_current_device/set_current_device/get_current_stream）；make_npu_launcher_stub 生成 C++ launcher 源码并缓存编译为 .so，通过 NPULauncher 调用 CANN 的 aclrtLaunchKernel；workspace 与 sync_block_lock 内存通过 npu_utils.cpp 的 triton_allocate_workspace 分配。",
-      "interactions": "backend_register.py 的 BackendStrategyRegistry 将框架相关代码（内存分配、流获取、异步启动、编译参数）以字符串模板形式生成 C++ 启动器源码，实现 torch_npu/mindspore 双框架支持；launcher 由 utils.py 的 _build_npu_ext 编译。",
-      "platform_differences": "对比 CUDA 的 GPUDriver 直接用 torch.cuda，NPU 需经 torch_npu 扩展与 dlopen 的 CANN 符号，且 kernel name 长度受 CANN 限制（≤49 字符，pack_metadata 截断）。"
+      "module": "third_party/ascend/backend/driver.py (runtime/launcher)",
+      "problem": "在 NPU 上管理设备、加载 kernel 二进制并启动执行，屏蔽 torch_npu 与 mindspore 宿主差异。",
+      "workflow": "NPUDriver.is_active 探测 bishengir 编译器；CompiledKernel._init_handles 用 NPUUtils.load_binary 通过 C++ 扩展 npu_utils.so 的 load_kernel_binary 把 npubin 加载为可执行对象，NPULauncher 用 launch_spec + 参数类型构造 C++ launcher，__call__ 时传入 grid/stream/function 执行。",
+      "interactions": "与 launcher_src/（launcher_abi/launcher_runtime/launcher_cann 等 C++ 启动代码）协作；backend_register 的 strategy registry 提供 get_current_stream/get_current_device 等宿主框架分派。",
+      "platform_differences": "与 CUDA 的 cuLaunchKernel 不同，NPU 走 CANN 的 kernel 加载与 block/stream 提交；NPU 有 Cube/Vector 双核（mix_mode 区分 aiv/mix/pure-simt），warp_size=0 表示无 CUDA 式 warp 概念。"
     },
     {
-      "module": "Ascend 自动调优与 costmodel (third_party/ascend/backend/runtime/)",
-      "problem": "Ascend 架构（cube/vector 双计算单元、统一缓存 UB）需专门的 tiling 与内存布局调优。",
-      "workflow": "AutoTilingTuner 在 Autotuner 基础上按 SIMD/SIMT 模式展开 num_warps/num_stages/multibuffer 候选；dsl_analysis 对 kernel 做轴语义/调用图/依赖分析以定位可调参数；costmodel/ 的 AscendModel（HardwareConfig.h + ascend_910b.json 等硬件配置）做编译期代价估算；ubtuner 针对 UB 缓存做调优；tile_generator/vector_axes 生成 tiling 与向量轴配置。",
-      "interactions": "costmodel 通过 costmodel_runtime.py 与编译器 Contract 测试联动；调优结果经 metadata 传入编译阶段影响 linalg_to_bin 的 UB 配置。",
-      "platform_differences": "CUDA 后端主要依赖 tl.autotune 简单遍历；Ascend 引入 cube/vector 角色标注、UB 预算（graph_ub_budget_bytes_for_arch）与 dsl 级分析，是 Ascend 特有体系。"
+      "module": "third_party/ascend/costmodel/",
+      "problem": "在没有真实硬件的离线场景下估算 kernel 性能并指导 tile/UB 调优。",
+      "workflow": "configs/*.json 描述各代 NPU 内存层级与频率；AscendModel pass 把 Triton IR 转成 AscendModelDialect，做 PipelineAnalysis（流水调度）、HIVMAnalysis、RooflineAnalysis、EstimateCycles 等周期估算；backend/runtime 的 ubtuner/autotuner 用这些估算在编译期搜索 UB 用量与 tile 配置（UB_TO_NPU_OPTION_MAP 映射到 bishengir 编译选项）。",
+      "interactions": "与 compiler.py 的 try_compile_with_config 协作，在编译失败（UB 溢出）时反馈错误信息驱动搜索。",
+      "platform_differences": "CUDA 后端用运行时 autotuner 实测，Ascend 引入离线 costmodel 减少上板编译次数。"
     },
     {
-      "module": "上游代码回合与补丁维护 (third_party/ascend/patch/ + setup_ascend.py)",
-      "problem": "triton-ascend 需在跟随上游 triton 演进的同时保留 Ascend 适配，且避免 fork 漂移。",
-      "workflow": "无 main2main 自动同步，采用人工 cherry-pick 上游 commit；当冲突较大时，将 Ascend 侧改动以整体补丁 triton-ascend-<version>.patch 形式维护；setup_ascend.py::_apply_triton_ascend_patch() 在构建时应用 release patch（dev 分支另应用 triton-ascend-dev-*.patch），llvm_patch_*.patch 仅用于替换 LLVM 依赖。",
-      "interactions": "setup_ascend.py 与 setup.py 共享 BackendInstaller 机制，通过 TRITON_WHEEL_NAME=triton_ascend 区分构建；init_code.py 复用 patch 定位逻辑。",
-      "platform_differences": "该补丁机制为 triton-ascend 特有；上游 triton 仓库无 third_party/ascend/patch 目录。"
+      "module": "third_party/ascend/backend/__init__.py (_apply_ascend_patch)",
+      "problem": "在不修改上游源码的前提下注入 Ascend 必需的上游行为扩展。",
+      "workflow": "运行时 monkey-patch 三处：CodeGenerator.__init__（在模块初始化后注入 hacc.target 属性）、compiler.parse（支持 npubin/ttadapter 扩展名用于 ir_override）、TritonSemantic.dot（tf32→hf32 降级、忽略 max_num_imprecise_acc），并安装 dtype guard。NPUOptions.__post_init__ 会调用 _apply_ascend_patch。",
+      "interactions": "与 third_party/ascend/patch（构建期源码级 patch）形成互补：patch 改源码，_apply_ascend_patch 改运行时行为。",
+      "platform_differences": "这是 Ascend 特有的运行时补丁机制，其他后端不需要。"
+    },
+    {
+      "module": "third_party/ascend/patch/",
+      "problem": "如何把对上游 triton 源码的必要修改以可维护的方式回合/跟踪。",
+      "workflow": "triton-ascend-3.6.0.patch 是整体式 release patch，构建时（safe_compile.cmake / CMakeLists.txt 引用）应用到上游源码，修改 CMakeLists.txt、bin 工具、Triton IR 定义、python 绑定 ir.cc、compiler 前端、language 语义与 runtime；llvm_patch_*.patch 修改 LLVM 依赖而非 triton 源码；dev 构建在 main-dev 分支另行维护 dev patch。",
+      "interactions": "上游代码回合为人工 cherry-pick，无 main2main 自动同步。",
+      "platform_differences": "这是下游 fork 的工程实践，上游 triton 仓库无此目录。"
     }
   ],
-  "module_dependencies": "python/triton/language/（前端语义）→ 依赖 python/triton/_C/（IR 绑定）与 python/triton/compiler/code_generator.py（AST→TTIR）。python/triton/compiler/ 依赖 python/triton/backends/（BaseBackend 发现与阶段注册）、python/triton/runtime/（cache/autotuner/driver）。python/triton/runtime/jit.py 依赖 driver.py 的 _create_driver() 与 compiler.compile()。python/triton/backends/__init__.py 通过 entry_points 发现 third_party/{nvidia,amd,ascend}/backend。third_party/ascend/backend/compiler.py 依赖 third_party/ascend/lib/（C++ pass，经 triton_ascend.cc 绑定为 ascend.passes.ttir）与 third_party/ascend/backend/utils.py（工具/工具链路径）。third_party/ascend/backend/driver.py 依赖 backend_register.py（框架策略）与 npu_utils.cpp（CANN 内存/启动）。include/ + lib/ 的 C++ 核心被 python/src/ 绑定后暴露给 Python；third_party/nvidia、third_party/amd 各依赖 include/ 的 TritonGPUToLLVM/TargetInfoBase.h。third_party/ascend/costmodel 依赖 ascend 后端 runtime 的 autotuner。整体依赖方向：Python 前端 → 后端抽象 → 具体后端 → C++ pass/绑定 → 硬件运行时。",
+  "module_dependencies": "python/triton/backends（抽象）← third_party/ascend/backend（实现）：AscendBackend 继承 BaseBackend、NPUDriver 继承 DriverBase，通过 setup.py 的 entry_points 注册为 triton.backends.ascend。python/triton/compiler/compiler.py 依赖 backends.backends（make_backend）与 runtime.driver（driver.active）编排编译，调用 AscendBackend.add_stages 得到 ttir/ttadapter/npubin 流水线；code_generator.py 生成 TTIR 并依赖 language/semantic 的算子语义（Ascend 经 get_module_map 把 libdevice 映射到 cann libdevice）。python/triton/runtime/ 依赖 backends（driver 选择）与 compiler（CompiledKernel）。编译期 C++ 部分：triton._C.libtriton.ascend 绑定 third_party/ascend/lib 下的 TritonAscend/TritonStructured dialect 与 TritonControlFlowOpt/TritonToStructured/TritonToLinalg/TritonToHIVM/TritonToGraph/DynamicCVPipeline 等 pass（由 ascend_ir.cc/triton_ascend.cc 注册）。运行时依赖 third_party/ascend/backend/launcher_src（C++ launcher）与 npu_utils.so。costmodel 独立成库（AscendModel dialect/pass），供 backend/runtime 的 ubtuner/autotuner 离线调优。patch 目录在构建期修改上游源码。语言层：third_party/ascend/language（cann/tla）通过 setup.py 符号链接安装到 triton.language.extra.cann 与 triton.language.extra.tla。",
   "hardware_abstraction": {
-    "description": "Triton 通过两层实现硬件解耦：Python 层的 BaseBackend/DriverBase 定义后端编译与运行时契约，由 entry_points 机制动态发现；C++ 层 TargetInfoBase 定义 TritonGPU→LLVM 的目标相关操作接口。平台无关层（语言前端、Triton/TritonGPU 方言、编译流水线框架、JIT/缓存）对多后端复用，平台特定层（后端 compiler/driver、TargetInfo 实现、成本模型、方言扩展）由各厂商实现。",
+    "description": "Triton 通过 GPUTarget（backend/arch/warp_size）抽象目标硬件，通过 BaseBackend（编译）+ DriverBase（运行时）两条正交接口抽象后端能力；硬件相关的 IR 类型与 pass 放在各 backend 的 lib 目录。平台无关层只依赖这两条接口，不感知具体硬件指令集或运行 API。",
     "platform_independent": [
-      "python/triton/language/（core/semantic/standard/math/random）",
-      "python/triton/compiler/（compiler.py/code_generator.py）",
-      "python/triton/backends/（BaseBackend/DriverBase/GPUTarget 契约）",
-      "python/triton/runtime/（jit/cache/autotuner/driver 框架）",
-      "include/triton/Dialect/Triton、Dialect/TritonGPU（tt/ttg 方言）",
-      "include/triton/Conversion/TritonToTritonGPU",
-      "lib/Dialect/Triton/Transforms、lib/Dialect/TritonGPU/Transforms（通用优化 pass）",
-      "python/triton/_C/ 绑定与 python/src/（TritonOpBuilder 等）",
-      "third_party/proton（跨后端 profiler）"
+      "python/triton/backends/compiler.py (BaseBackend, GPUTarget)",
+      "python/triton/backends/driver.py (DriverBase, Benchmarker)",
+      "python/triton/backends/__init__.py (_discover_backends, _find_concrete_subclasses)",
+      "python/triton/compiler/compiler.py (compile, make_backend, ASTSource/IRSource, CompiledKernel)",
+      "python/triton/compiler/code_generator.py (CodeGenerator)",
+      "python/triton/runtime/jit.py (JITFunction), driver.py (DriverConfig), cache.py, autotuner.py, interpreter.py",
+      "python/triton/language/core.py / semantic.py / standard.py / math.py",
+      "include/triton/Dialect/Triton/ + lib/Dialect/Triton/ (平台无关的 Triton IR)",
+      "python/src/*.cc (Python 绑定), python/triton/_C/"
     ],
     "platform_specific": [
-      "third_party/nvidia/（CUDABackend/CUDADriver、lib/TritonNVIDIAGPUToLLVM、PTXAsmFormat）",
-      "third_party/amd/（HIPBackend/HIPDriver、lib/TritonAMDGPUToLLVM、GCNAsmFormat）",
-      "third_party/ascend/（AscendBackend/NPUDriver、lib/ 的 TritonToLinalg 等 pass、TritonAscend/TritonStructured 方言、costmodel、language/cann）",
-      "include/triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h 的 NV/AMD 实现",
-      "python/triton/backends/driver.py 的 GPUDriver（CUDA 专属）",
-      "python/triton/experimental/gluon/{nvidia,amd}"
+      "third_party/ascend/** (AscendBackend/NPUDriver/launcher/语言层/lib passes/costmodel/reuse)",
+      "third_party/nvidia/** (CUDA 后端: cublas, NVGPU, PTXAsmFormat, TMA)",
+      "third_party/amd/** (ROCm 后端: hip, TritonAMDGPU, GCNAsmFormat, MFMA/WMMA)",
+      "include/triton/Dialect/TritonGPU/ + lib/Dialect/TritonGPU/ (GPU 布局 IR，仅 nvidia/amd 路径使用)",
+      "include/triton/Dialect/TritonNvidiaGPU/ + lib/Dialect/TritonNvidiaGPU/ (NVIDIA 专属)",
+      "third_party/proton/** (profiler)"
     ]
   },
   "interface_surface": {
-    "description": "以下是第三方后端（尤其 triton-ascend）继承/复写/扩展的核心可扩展接口。前五者为 Python 抽象基类，是后端插件的硬契约；TritonSemantic/CodeGenerator/compiler.parse 通过运行时 monkey-patch 扩展；TritonOpBuilder/InterpreterBuilder 为 C++/Python IR 构造器扩展点；TargetInfoBase 是 C++ 层硬件抽象（Ascend 不使用）。",
+    "description": "Ascend 后端需要继承/复写的核心接口全部来自 python/triton/backends（BaseBackend、DriverBase、Benchmarker）以及运行时扩展点（InterpreterBuilder/ReduceOps）。C++ 层的 TritonGPUToLLVM/TargetInfoBase 等 target 抽象不被 Ascend 使用。Ascend 还通过 monkey-patch 复写 CodeGenerator.__init__、compiler.parse、TritonSemantic.dot 等上游函数。",
     "inheritable_interfaces": [
       {
         "interface": "BaseBackend",
         "location": "python/triton/backends/compiler.py",
-        "ascend_impl": "AscendBackend (third_party/ascend/backend/compiler.py:1285)",
+        "ascend_impl": "AscendBackend (third_party/ascend/backend/compiler.py)",
         "key_methods": [
           "supports_target(target: GPUTarget) -> bool",
+          "hash() -> str",
           "parse_options(options: dict) -> object",
           "add_stages(stages: dict, options: object) -> None",
           "load_dialects(context)",
-          "hash() -> str",
           "get_module_map() -> Dict[str, ModuleType]",
-          "get_codegen_implementation(options)"
+          "get_codegen_implementation(options) -> dict",
+          "pack_metadata(metadata) -> dict",
+          "use_alignment_specialization(options: dict) -> bool"
         ],
-        "impact_rule": "抽象方法签名变更会破坏所有后端（含 AscendBackend）实例化与 compile() 调用；Ascend 已将 add_stages 签名扩展为 (self, stages, options, language)，若上游新增/删除抽象方法或修改 GPUTarget 字段，AscendBackend 必须同步；supports_target 返回 backend=='npu'，若判定逻辑变化会影响后端选择。"
+        "impact_rule": "make_backend 用 supports_target 做唯一后端选择——若其语义变化（如不再支持 backend=='npu'）会导致 Ascend 后端无法被选中而编译失败。add_stages 是编译流水线契约：stage 名称与顺序决定编译产物，Ascend 实现签名额外接收 language 参数（上游调用点 backend.add_stages(stages, options, src.language)），基类抽象方法签名若变更（增删参数）必须同步 AscendBackend.add_stages。hash/parse_options 参与缓存键，行为变化会改变缓存命中与选项校验。"
       },
       {
         "interface": "DriverBase",
         "location": "python/triton/backends/driver.py",
-        "ascend_impl": "NPUDriver (third_party/ascend/backend/driver.py:211)",
+        "ascend_impl": "NPUDriver (third_party/ascend/backend/driver.py)",
         "key_methods": [
-          "is_active() -> bool (classmethod)",
+          "is_active(cls) -> bool",
           "map_python_to_cpp_type(ty: str) -> str",
           "get_current_target() -> GPUTarget",
           "get_active_torch_device()",
           "get_benchmarker() -> Benchmarker"
         ],
-        "impact_rule": "抽象方法增删或签名变更会破坏 NPUDriver 与 runtime.driver._create_driver() 的选择逻辑；is_active() 返回 False 会导致 Ascend 后端无法被激活；NPUDriver 额外实现 get_current_device/set_current_device/get_current_stream/get_device_interface，若上游将这些方法提升为抽象方法需确保 NPU 实现存在。"
+        "impact_rule": "_create_driver 通过 is_active() 选出唯一驱动——若 Ascend 的探测逻辑（bishengir 是否支持 hiipu64）失效会导致驱动选择失败或误选。get_current_target 返回的 GPUTarget 被 compile() 用于 make_backend 选后端，arch/warp_size 字段变化会改变编译目标与缓存键。map_python_to_cpp_type 决定 launcher 参数类型，签名/映射变化会破坏 ABI。"
       },
       {
-        "interface": "GPUDriver",
+        "interface": "GPUDriver (DriverBase 的 CUDA 特化)",
         "location": "python/triton/backends/driver.py",
-        "ascend_impl": "（不使用，NPUDriver 直接继承 DriverBase）",
+        "ascend_impl": null,
         "key_methods": [
-          "__init__(self)",
-          "assemble_tensormap_to_arg(self, tensormaps_info, args)"
+          "__init__(self) (绑定 torch.cuda)",
+          "assemble_tensormap_to_arg(tensormaps_info, args)"
         ],
-        "impact_rule": "纯 CUDA 专属，triton-ascend 不继承；其变更不影响 Ascend，但若上游将 GPUDriver 逻辑下沉到 DriverBase，需评估对 NPUDriver 的影响。"
+        "impact_rule": "Ascend 不继承 GPUDriver，直接从 DriverBase 派生并用 torch_npu 替代 CUDA 设备/流接口。若上游把 GPUDriver 中的能力下沉到 DriverBase 抽象方法，Ascend 必须提供对应实现。"
       },
       {
-        "interface": "TritonSemantic",
-        "location": "python/triton/language/semantic.py",
-        "ascend_impl": "monkey-patch 覆写 dot (third_party/ascend/backend/__init__.py::_apply_ascend_patch)",
+        "interface": "Benchmarker (Protocol)",
+        "location": "python/triton/backends/driver.py",
+        "ascend_impl": "NPUDriver.get_benchmarker 返回 triton.testing.do_bench",
         "key_methods": [
-          "dot(self, lhs, rhs, acc, input_precision, max_num_imprecise_acc, out_dtype)",
-          "load(self, ptr, mask, other, boundary_check, cache_modifier, eviction_policy, volatile)",
-          "store(self, ptr, val, mask, boundary_check, cache_modifier, eviction_policy)"
+          "__call__(kernel_call, *, quantiles, **kwargs) -> Sequence[float]"
         ],
-        "impact_rule": "若上游修改 TritonSemantic.dot 的签名或默认值（如新增/重命名参数），Ascend 的 _patched_dot 必须同步签名，否则 monkey-patch 后调用会 TypeError；tf32→hf32 转换与 max_num_imprecise_acc=None 强制逻辑依赖上游 dot 实现细节。"
+        "impact_rule": "autotuner 依赖该协议计时；签名或语义变化会影响 Ascend 上所有 autotune 流程的计时准确性。"
       },
       {
-        "interface": "CodeGenerator",
-        "location": "python/triton/compiler/code_generator.py",
-        "ascend_impl": "monkey-patch 覆写 __init__ 注入 hacc.target (third_party/ascend/backend/__init__.py::_apply_ascend_patch)",
-        "key_methods": [
-          "__init__(self, context, prototype, gscope, function_name, ...)",
-          "visit_Call/visit_FunctionDef/visit_For/visit_While/visit_If"
-        ],
-        "impact_rule": "若上游修改 CodeGenerator.__init__ 参数或 module.set_attr 时机，Ascend 的 _patched_cg_init 需适配；hacc.target 属性注入依赖 self.builder.options.arch 与 ascend_ir.ascendnpu_ir_builder 可用。"
-      },
-      {
-        "interface": "compiler.parse (模块级函数)",
-        "location": "python/triton/compiler/compiler.py",
-        "ascend_impl": "monkey-patch 覆写 parse (third_party/ascend/backend/__init__.py::_apply_ascend_patch)",
-        "key_methods": [
-          "parse(full_name, ext, context)"
-        ],
-        "impact_rule": "patch 扩展支持 ttir/ttgir/npubin/mlirbc 等扩展名分支；若上游修改 parse 的扩展名集合或返回类型约定，Ascend 的 _patched_parse 需同步，否则 ir_override/TRITON_KERNEL_OVERRIDE 功能失效。"
-      },
-      {
-        "interface": "TritonOpBuilder",
-        "location": "python/src/ir.cc (绑定为 triton._C.libtriton.ir.builder)",
-        "ascend_impl": "AscendNPUIROpBuilder (third_party/ascend/ascend_ir.cc:54, struct AscendNPUIROpBuilder : public TritonOpBuilder)",
-        "key_methods": [
-          "getI64ArrayAttr(array)",
-          "get_buffer_ty(shape, elementType, memorySpace)",
-          "get_buffer_ty_with_strides(shape, elementType, strides, memorySpace)",
-          "create_extract_scalar / sort / flip / sync_block 等 Ascend 扩展构造"
-        ],
-        "impact_rule": "TritonOpBuilder 构造器签名或基类接口变更会影响 AscendNPUIROpBuilder 的继承与 ascendnpu_ir_builder 绑定；Ascend 扩展的 op 构造不依赖上游 TritonOpBuilder 内部实现，但依赖其提供的基础 builder/getI64ArrayAttr 等。"
-      },
-      {
-        "interface": "InterpreterBuilder",
+        "interface": "ReduceOps (interpreter)",
         "location": "python/triton/runtime/interpreter.py",
-        "ascend_impl": "AscendInterpreterBuilder (third_party/ascend/backend/ascend_interpreter.py:178)，配套 AscendReduceOps/AscendScanOps",
+        "ascend_impl": "AscendReduceOps (third_party/ascend/backend/ascend_interpreter.py)",
         "key_methods": [
-          "（op 解释执行注册方法）"
+          "apply_impl(self, input_param)",
+          "sum / min_max / generic_reduce (继承自 ReduceOps)"
         ],
-        "impact_rule": "若上游解释器的 op 注册协议或 ReduceOps/ScanOps 基类接口变更，Ascend 的 AscendReduceOps/AscendScanOps 需同步，否则 CPU 解释执行 Ascend kernel 会失败。"
+        "impact_rule": "Ascend 仅覆写 apply_impl 以支持 argmin/argmax/elementwise_max 的 NumPy 语义；上游 ReduceOps 方法签名或归约接口变化会影响解释执行正确性。"
       },
       {
-        "interface": "TargetInfoBase (C++ 硬件抽象)",
-        "location": "include/triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h",
-        "ascend_impl": "（不使用——Ascend 走 TritonToLinalg 而非 TritonGPU→LLVM）",
+        "interface": "CodeGenerator.__init__ (monkey-patch)",
+        "location": "python/triton/compiler/code_generator.py",
+        "ascend_impl": "_apply_ascend_patch 中的 _patched_cg_init",
         "key_methods": [
-          "ballot / barrier / loadDShared / storeDShared / shuffleXor / shuffleUp / shuffleIdx / programId / warpReduce / getSharedAddressSpace / getAddressSpace 等纯虚方法"
+          "__init__(self, *args, **kwargs) (打补丁后注入 hacc.target 模块属性)"
         ],
-        "impact_rule": "该接口为 NV/AMD 后端所用；Ascend 不实现，故其纯虚方法增删不影响 Ascend 编译链，但若上游将 TargetInfo 抽象下沉到 TritonGPU 方言通用层，需评估对 Ascend 的 TritonToLinalg 路径的影响。"
+        "impact_rule": "Ascend 通过运行时替换 __init__ 注入 hacc.target；上游 CodeGenerator.__init__ 签名或模块初始化顺序变化会导致补丁失效或 hacc.target 缺失，进而编译失败。"
+      },
+      {
+        "interface": "compiler.parse (monkey-patch)",
+        "location": "python/triton/compiler/compiler.py",
+        "ascend_impl": "_apply_ascend_patch 中的 _patched_parse",
+        "key_methods": [
+          "parse(full_name, ext, context) (打补丁后支持 npubin/ttadapter 扩展名)"
+        ],
+        "impact_rule": "用于 TRITON_KERNEL_OVERRIDE / ir_override；上游 parse 新增/变更支持的扩展名时，Ascend 补丁需同步，否则 override 功能失效。"
+      },
+      {
+        "interface": "TritonSemantic.dot (monkey-patch)",
+        "location": "python/triton/language/semantic.py",
+        "ascend_impl": "_apply_ascend_patch 中的 _patched_dot",
+        "key_methods": [
+          "dot(self, lhs, rhs, acc, input_precision, max_num_imprecise_acc, out_dtype)"
+        ],
+        "impact_rule": "Ascend 将 tf32 降级为 hf32 并忽略 max_num_imprecise_acc；上游 dot 签名（新增 out_dtype 等参数）或精度语义变化需同步补丁，否则精度行为错误。"
       }
     ],
     "not_used_by_ascend": [
-      "python/triton/backends/driver.py::GPUDriver（CUDA 专属）",
-      "third_party/nvidia/（CUDABackend/CUDADriver、lib/TritonNVIDIAGPUToLLVM、PTXAsmFormat）",
-      "third_party/amd/（HIPBackend/HIPDriver、lib/TritonAMDGPUToLLVM、GCNAsmFormat）",
-      "include/triton/Conversion/TritonGPUToLLVM/ 与 lib/Conversion/TritonGPUToLLVM/（TritonGPU→LLVM lowering，Ascend 用 TritonToLinalg 替代）",
-      "include/triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h（Ascend 无 TargetInfo 实现）",
-      "lib/Dialect/TritonNvidiaGPU/、lib/Dialect/TritonAMDGPU/（NV/AMD 专属方言与 pass）",
-      "python/triton/experimental/gluon/{nvidia,amd}（实验性 Gluon 语言）",
-      "python/triton/language/extra/libdevice.py（CUDA libdevice，Ascend 用 third_party/ascend/language/cann/libdevice.py）",
-      "python/triton/language/extra/{cuda,hip}（CUDA/HIP 语言扩展）",
-      "python/test/unit/cuda/（CUDA 专属测试）",
-      "bin/triton-llvm-opt.cpp、bin/triton-reduce.cpp 等 CUDA/通用 bin 工具（Ascend 用 bin/triton-mlir-opt.cpp）"
+      "third_party/nvidia/**（CUDA 后端：cublas_instance、NVGPU/NVWS dialect、PTXAsmFormat、TMA/TMem、TritonNVIDIAGPUToLLVM）",
+      "third_party/amd/**（ROCm 后端：hip、TritonAMDGPU、GCNAsmFormat、MFMA/WMMA、TritonAMDGPUTransforms）",
+      "include/triton/Conversion/TritonGPUToLLVM/ + lib/Conversion/TritonGPUToLLVM/（GPU→LLVM 代码生成，含 TargetInfoBase）",
+      "lib/Dialect/TritonGPU/ + lib/Dialect/TritonNvidiaGPU/（GPU 布局与 NVIDIA 专属 dialect/pass）",
+      "lib/Conversion/TritonToTritonGPU/（Triton→TritonGPU 转换，Ascend 改走 TritonToLinalg）",
+      "python/triton/experimental/gluon/nvidia、python/triton/experimental/gluon/amd",
+      "python/triton/tools/（含 ragged_tma、tensor_descriptor 等 CUDA 专属工具）",
+      "python/triton/language/extra/libdevice.py（上游 libdevice，Ascend 用 extra.cann.libdevice 替代）",
+      "third_party/proton/**（profiler，可选）",
+      "test/、unittest/（上游 CUDA/AMD 测试与 TritonGPU/LLVMIR 测试）"
     ]
   },
   "test_structure": {
-    "path": "test/ (lit) + unittest/ (gtest) + python/test/ + third_party/ascend/unittest/",
-    "description": "测试分四层：test/ 为 MLIR FileCheck lit 测试（覆盖 Dialect/Conversion/Pass 的 IR 变换，按 Triton/TritonGPU/Conversion/LLVMIR 等组织）；unittest/ 为 C++ gtest（Analysis/Dialect/Tools 单元测试）；python/test/ 为 Python 测试（language/runtime/backend/unit/cuda 等，含 test_backend.py 验证后端发现）；third_party/ascend/unittest/ 为 Ascend 专属测试（pytest_ut/ 数百个算子端到端测试、DynamicCVPipeline_ut/、autotune_ut/、costmodel_ut/、ubtuner_ut/、device_ut/、custom_op/、Conversion/）。Ascend 测试通过 pytest 运行（conftest.py + lit.cfg.py），覆盖算子语义、动态 CV pipeline、自动调优、成本模型与设备功能。"
+    "path": "third_party/ascend/unittest/ 与 python/test/",
+    "description": "Ascend 后端测试集中在 third_party/ascend/unittest/：pytest_ut/（大量算子级端到端 pytest 用例，如 test_add/test_dot/test_matmul/test_load/test_reduce/test_topk/test_tla 等）、DynamicCVPipeline_ut/（mlir_diff 驱动的 Cube/Vector 双流水线 MLIR 差分测试）、autotune_ut/、costmodel_ut/、tla_ut/、ubtuner_ut/、reuse_ut/、custom_op/、device_ut/、affine_map/、conftest.py + lit.cfg.py（lit 测试配置）。上游通用测试在 python/test/（backend/gluon/kernel_comparison/regression/unit 等，其中 unit/cuda 为 CUDA 专属）。整体用 pytest 驱动，Ascend 端到端测试需 CANN + torch_npu 环境，lit 用于 MLIR 变换验证。"
   },
   "knowledge_base": {
     "patch_catalog": {
@@ -535,15 +711,15 @@
         {
           "name": "triton-ascend-3.6.0.patch",
           "version": "3.6.0",
-          "purpose": "release 版本整体补丁，main 分支构建时应用到上游 triton 源码（由 setup_ascend.py::_apply_triton_ascend_patch 应用），承载 Ascend 后端相对上游的全部源码改动（含 third_party/ascend 之外对 python/include/lib 的适配修改）。",
-          "size_bytes": 56237,
-          "total_added": 547,
-          "total_removed": 65,
+          "purpose": "main 分支构建时实际应用到上游 triton 源码的 release patch。修改构建文件（CMakeLists.txt、bin/CMakeLists.txt）、bin 工具（RegisterTritonDialects.h、triton-opt.cpp）、Triton IR 定义（include/triton/Dialect/Triton/IR/TritonAttrDefs.td、lib/Dialect/Triton/IR/Traits.cpp）、Python 绑定（python/src/ir.cc）、编译器前端（python/triton/_utils.py、compiler/code_generator.py、compiler/compiler.py、compiler/errors.py）、语言层（language/math.py、language/semantic.py、language/standard.py）与运行时（runtime/autotuner.py、runtime/interpreter.py、runtime/jit.py），用于让 Ascend 后端与上游源码协同工作。",
+          "size_bytes": 67650,
+          "total_added": 655,
+          "total_removed": 98,
           "target_files": [
             {
               "path": "CMakeLists.txt",
               "added": 55,
-              "removed": 0
+              "removed": 5
             },
             {
               "path": "bin/CMakeLists.txt",
@@ -587,8 +763,8 @@
             },
             {
               "path": "python/triton/compiler/compiler.py",
-              "added": 28,
-              "removed": 3
+              "added": 82,
+              "removed": 13
             },
             {
               "path": "python/triton/compiler/errors.py",
@@ -602,7 +778,7 @@
             },
             {
               "path": "python/triton/language/semantic.py",
-              "added": 89,
+              "added": 84,
               "removed": 18
             },
             {
@@ -611,19 +787,24 @@
               "removed": 2
             },
             {
+              "path": "python/triton/runtime/autotuner.py",
+              "added": 23,
+              "removed": 11
+            },
+            {
               "path": "python/triton/runtime/interpreter.py",
               "added": 54,
               "removed": 8
             },
             {
               "path": "python/triton/runtime/jit.py",
-              "added": 22,
-              "removed": 6
+              "added": 58,
+              "removed": 13
             }
           ]
         }
       ],
-      "note": "llvm_patch_f6ded0b.patch 仅替换 LLVM 依赖而非 triton 源码；triton-ascend-dev-3.6.0.patch 仅在 dev 构建（main-dev 分支）应用。本分析基于 main 分支，故二者均不计入 release patch 清单。size_bytes/total_added/total_removed/target_files 由确定性 diffstat 解析自动填充，此处未手工估算。"
+      "note": "llvm_patch_f6ded0b.patch 修改的是 LLVM 依赖而非 triton 源码，且 triton-ascend-dev-*.patch 仅用于 dev 构建（main-dev 分支），二者按规则均未包含在本 main 分支 patch_catalog 中。size_bytes / total_added / total_removed / target_files 字段将由确定性 diffstat 解析自动填充。"
     },
     "development_workflows": {
       "triton": [
@@ -658,7 +839,7 @@
         {
           "topic": "Ascend 后端开发",
           "steps": [
-            "在 third_party/ascend/backend/ 中实现 AscendBackend（compiler.py）、AscendDriver（driver.py，即 NPUDriver）",
+            "在 third_party/ascend/backend/ 中实现 AscendBackend（compiler.py）、AscendDriver（driver.py）",
             "通过 third_party/ascend/backend/backend_register.py 完成注册",
             "NPU 相关 lowering/优化在 third_party/ascend/lib/、third_party/ascend/language/ 中",
             "添加测试：third_party/ascend/unittest/ 或 unittest/"
@@ -716,8 +897,8 @@
     }
   },
   "repo": "triton-lang/triton-ascend",
-  "commit_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
-  "generated_at": "2026-08-27T10:29:02.142529+08:00",
+  "commit_sha": "408e31592b50e930fc6f01c244f309444005d575",
+  "generated_at": "2026-11-01T20:11:07.549514+08:00",
   "architecture_history": [
     {
       "commit_sha": "a4aecc3292d8bdf7ae80165f113a27ea1e89803a",
@@ -726,6 +907,10 @@
     {
       "commit_sha": "1c4110f8feefd1bd165ac44f40ad36e3a94d6ca0",
       "generated_at": "2026-08-27T10:26:46.196879+08:00"
+    },
+    {
+      "commit_sha": "408e31592b50e930fc6f01c244f309444005d575",
+      "generated_at": "2026-11-01T20:10:07.338031+08:00"
     }
   ],
   "cross_project_relationship": {
@@ -733,196 +918,218 @@
       "python/triton/backends/compiler.py::BaseBackend": "third_party/ascend/backend/compiler.py::AscendBackend",
       "python/triton/backends/driver.py::DriverBase": "third_party/ascend/backend/driver.py::NPUDriver",
       "python/triton/backends/driver.py::GPUDriver": null,
-      "python/triton/backends/compiler.py::GPUTarget": "复用（无覆写，AscendBackend.__init__ 接收同一 GPUTarget）",
+      "python/triton/backends/driver.py::Benchmarker": "third_party/ascend/backend/driver.py::NPUDriver.get_benchmarker (返回 triton.testing.do_bench)",
+      "python/triton/backends/__init__.py::Backend": null,
+      "python/triton/backends/__init__.py::_find_concrete_subclasses": null,
+      "python/triton/backends/__init__.py::_discover_backends": "third_party/ascend/backend/backend_register.py::BackendStrategyRegistry (经 entry_points group='triton.backends' 注册)",
       "include/triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h::TargetInfoBase": null,
-      "python/triton/language/semantic.py::TritonSemantic": "third_party/ascend/backend/__init__.py::_apply_ascend_patch（monkey-patch 覆写 TritonSemantic.dot）",
-      "python/triton/compiler/code_generator.py::CodeGenerator": "third_party/ascend/backend/__init__.py::_apply_ascend_patch（monkey-patch 覆写 CodeGenerator.__init__ 注入 hacc.target）",
-      "python/triton/compiler/compiler.py::parse": "third_party/ascend/backend/__init__.py::_apply_ascend_patch（monkey-patch 覆写 parse 扩展 ttir/ttgir/npubin/mlirbc）",
-      "python/triton/compiler/compiler.py::ASTSource": "复用（无覆写，Ascend 走上游 Triton ASTSource）",
-      "python/triton/runtime/jit.py::JITFunction": "复用（无覆写）",
-      "python/triton/runtime/jit.py::JITCallable": "复用（无覆写）",
-      "python/src/ir.cc::TritonOpBuilder": "third_party/ascend/ascend_ir.cc::AscendNPUIROpBuilder（struct AscendNPUIROpBuilder : public TritonOpBuilder）",
-      "python/triton/runtime/interpreter.py::InterpreterBuilder": "third_party/ascend/backend/ascend_interpreter.py::AscendInterpreterBuilder",
-      "python/triton/runtime/autotuner.py::Autotuner": "third_party/ascend/backend/runtime/autotuner.py::AutoTilingTuner"
+      "python/triton/language/semantic.py::TritonSemantic": "third_party/ascend/backend/ascend_patch (monkey-patch _patched_dot, 非继承)",
+      "python/triton/compiler/code_generator.py::CodeGenerator": "third_party/ascend/backend/ascend_patch (monkey-patch _patched_cg_init 注入 hacc.target)",
+      "python/triton/compiler/compiler.py::ASTSource": null,
+      "python/triton/compiler/compiler.py::IRSource": null,
+      "python/triton/compiler/compiler.py::CompiledKernel": "third_party/ascend/backend/driver.py::NPULauncher (复用 CompiledKernel, 由 NPULauncher 完成 launch)",
+      "python/triton/compiler/compiler.py::compile": "third_party/ascend/backend/compiler.py::AscendBackend.add_stages 注入的编译 stage",
+      "python/triton/compiler/compiler.py::make_backend": "third_party/ascend/backend/compiler.py::AscendBackend.supports_target 参与唯一后端选择",
+      "python/triton/runtime/jit.py::JITFunction": null,
+      "python/triton/runtime/jit.py::JITCallable": null,
+      "python/triton/runtime/cache.py::CacheManager": null,
+      "python/triton/runtime/cache.py::FileCacheManager": null,
+      "python/triton/runtime/interpreter.py::ReduceOps": "third_party/ascend/backend/ascend_interpreter.py::AscendReduceOps",
+      "python/triton/runtime/interpreter.py::InterpreterBuilder": "third_party/ascend/backend/ascend_interpreter.py (Ascend 扩展)",
+      "lib/Tools/LinearLayout.cpp::LinearLayout": null,
+      "python/triton/backends/compiler.py::GPUTarget": "third_party/ascend/backend/driver.py::NPUDriver.get_current_target 返回的 GPUTarget (backend='npu')",
+      "python/triton/language/extra/libdevice.py": "third_party/ascend/language/cann/libdevice.py (经 AscendBackend.get_module_map 替换)"
     },
     "ascend_only_components": [
-      "third_party/ascend/backend/backend_register.py::BackendStrategyRegistry（torch_npu/mindspore 双框架策略注册表）",
-      "third_party/ascend/backend/compiler.py::NPUOptions",
-      "third_party/ascend/backend/driver.py::NPUUtils / NPULauncher",
-      "third_party/ascend/lib/ + include/ 的 TritonAscend 方言",
-      "third_party/ascend/lib/ + include/ 的 TritonStructured 方言",
-      "third_party/ascend/lib/Conversion/TritonToLinalg 及十余个 Ascend 专用转换 pass（TTIR → linalg → 毕昇 bisheng IR → CANN npubin 对接层）",
-      "third_party/ascend/backend/runtime/（costmodel / autotuner / ubtuner / dsl_analysis 调优体系）",
-      "third_party/ascend/language/cann（Ascend 专属语言扩展与 CANN libdevice）",
-      "third_party/ascend/backend/ascend_interpreter.py::AscendReduceOps / AscendScanOps",
-      "third_party/ascend/patch/*.patch（整体适配补丁体系）",
-      "CANN 二进制 npubin 生成与毕昇（bisheng）IR 对接层"
+      "third_party/ascend/backend/compiler.py::NPUOptions (无 triton 基类, 仅由 AscendBackend.parse_options 实例化)",
+      "third_party/ascend/backend/driver.py::NPUUtils (bishengir 路径探测/arch 表/CANN 运行时封装)",
+      "third_party/ascend/backend/driver.py::NPULauncher (launch spec 与 launcher so 加载)",
+      "third_party/ascend/backend/backend_register.py::BackendStrategyRegistry (torch_npu/mindspore 双宿主 ABI 抽象)",
+      "third_party/ascend/backend/reuse/ 整个 JIT 复用框架 (get_handler/guards/snapshot/rules/exact_request_scope)",
+      "third_party/ascend/include/Dialect/TritonAscend/ 与 lib/Dialect/TritonAscend/ (TritonAscendDialect/TritonAscendOps: annotation/mod/dot/conv1d/conv2d/indirect_load 等)",
+      "third_party/ascend/include/Dialect/TritonStructured/ 与 lib/Dialect/TritonStructured/ (TritonStructuredDialect/TTS_GetStructuredStateOp)",
+      "third_party/ascend/lib/ 全部 C++ pass (TritonToLinalgPass/TritonControlFlowOptPass/TritonToStructuredPass/TritonToHIVM/TritonToGraph/DynamicCVPipeline/AutoBlockify 等)",
+      "third_party/ascend/costmodel/ (AscendModelDialect/HardwareConfig/PipelineAnalysis/HIVMAnalysis/RooflineAnalysis/EstimateCycles/ubtuner/autotuner)",
+      "third_party/ascend/language/cann/ 扩展与 tla/ 低层 DSL (CORE/scope/custom/dot/conv2d/sync_block_*/tla_builder.cc)",
+      "third_party/ascend/patch/ (上游源码 patch 维护: triton-ascend-<版本>.patch)",
+      "third_party/ascend/AscendNPU-IR/ (占位目录, 内容实为 TritonAscend dialect/pass)"
     ],
     "impact_judgment_rules": {
       "definitely_affected_paths": [
         {
           "path": "python/triton/backends/compiler.py",
-          "reason": "BaseBackend 抽象方法（supports_target/hash/parse_options/add_stages/load_dialects/get_module_map）签名增删或 GPUTarget 字段变更会直接破坏 AscendBackend 的实例化与 compile() 调用；add_stages 阶段键/顺序与阶段回调 (src, metadata) 约定是 Ascend 多阶段编译链的核心。"
+          "reason": "BaseBackend 的抽象方法(新增/删除/重命名/改签名)会导致 AscendBackend 无法实例化或被 _find_concrete_subclasses 判为抽象;supports_target/add_stages/hash/parse_options 直接决定 Ascend 编译流水线与后端选择"
         },
         {
           "path": "python/triton/backends/driver.py",
-          "reason": "DriverBase 抽象方法（is_active/map_python_to_cpp_type/get_current_target/get_active_torch_device/get_benchmarker）增删或签名变更会破坏 NPUDriver 与 _create_driver 的选择逻辑；is_active 语义变化会直接导致 Ascend 后端无法激活。"
+          "reason": "DriverBase 抽象方法签名变更会导致 NPUDriver 无法实例化;get_current_target 返回的 GPUTarget 结构、map_python_to_cpp_type 类型映射决定 launch ABI"
         },
         {
           "path": "python/triton/backends/__init__.py",
-          "reason": "后端发现机制（_discover_backends/_find_concrete_subclasses、entry_points group='triton.backends'、TRITON_BACKENDS_IN_TREE 快路径）是外部插件后端的唯一接入入口，逻辑变更会破坏 Ascend 的注册与发现。"
-        },
-        {
-          "path": "python/triton/language/semantic.py",
-          "reason": "TritonSemantic.dot 被 _patched_dot monkey-patch 覆写，dot 签名/默认值变化会使 patch 调用 TypeError；tf32→hf32 与 max_num_imprecise_acc=None 拦截逻辑依赖上游 dot 实现细节。"
+          "reason": "entry_points group 名、.compiler/.driver 子模块约定、_find_concrete_subclasses 反射逻辑是 Ascend 后端被发现/加载的最底层契约"
         },
         {
           "path": "python/triton/compiler/code_generator.py",
-          "reason": "CodeGenerator.__init__ 被 _patched_cg_init monkey-patch 注入 hacc.target，__init__ 参数或 module.set_attr 时机变更会导致 patch 失效；该 patch 依赖 self.builder.options.arch 与 ascendnpu_ir_builder 可用。"
+          "reason": "Ascend 通过 monkey-patch 替换 CodeGenerator.__init__ 注入 hacc.target;签名或模块初始化顺序变化会使补丁失效"
         },
         {
           "path": "python/triton/compiler/compiler.py",
-          "reason": "模块级 parse 被 _patched_parse 覆写扩展 ttir/ttgir/npubin/mlirbc 分支；同时 ASTSource/compile() 主流程与 add_stages 阶段循环被 Ascend 直接复用，扩展名集合/返回类型约定变更会使 ir_override 与 TRITON_KERNEL_OVERRIDE 失效。"
+          "reason": "Ascend 通过 monkey-patch 复写 compiler.parse 以支持 npubin/ttadapter 扩展名;parse 接口变更会破坏 TRITON_KERNEL_OVERRIDE/ir_override"
         },
         {
-          "path": "python/src/ir.cc",
-          "reason": "TritonOpBuilder 构造器签名或基础 builder 接口（getI64ArrayAttr 等）变更会影响 AscendNPUIROpBuilder 的继承与 ascendnpu_ir_builder 绑定，导致 Ascend 扩展 op 构造失败。"
+          "path": "python/triton/language/semantic.py",
+          "reason": "Ascend 通过 monkey-patch 复写 TritonSemantic.dot(tf32→hf32);dot 签名/精度语义变更需同步补丁"
         },
         {
           "path": "python/triton/runtime/interpreter.py",
-          "reason": "InterpreterBuilder 的 op 解释执行注册协议及 ReduceOps/ScanOps 基类接口变更需 AscendInterpreterBuilder/AscendReduceOps/AscendScanOps 同步，否则 CPU 解释执行 Ascend kernel 失败。"
+          "reason": "AscendReduceOps 继承 ReduceOps 并覆写 apply_impl;ReduceOps 方法签名/归约接口变化影响解释执行正确性"
         },
         {
-          "path": "python/triton/runtime/autotuner.py",
-          "reason": "AutoTilingTuner 继承 Autotuner，Autotuner 的 __init__/run/benchmark 签名或调优协议变更会影响 Ascend 的 tiling/num_stages/multibuffer 参数展开。"
+          "path": "python/src/ir.cc",
+          "reason": "triton-ascend 的 release patch 直接修改了 ir.cc 绑定;上游对该文件的变更会与 patch 冲突"
         },
         {
-          "path": "python/triton/runtime/jit.py",
-          "reason": "JITFunction/JITCallable 被 Ascend 直接复用，特化键、缓存键计算与参数绑定格式变更会影响 Ascend kernel 的编译缓存与启动器生成。"
-        },
-        {
-          "path": "include/triton/Dialect/Triton/",
-          "reason": "tt 方言 op/类型/属性定义是 TTIR 的唯一来源，Ascend 复用 AST→TTIR 前端并从此处开始 TritonToLinalg 转换，任何 op 定义/verifier/属性变更都会改变 Ascend lowering 的输入。"
-        },
-        {
-          "path": "lib/Dialect/Triton/",
-          "reason": "tt 方言 builder/verifier/canonicalization 与 transforms（loop unroll/combine/CSE/LICM）变更影响 TTIR 语义，进而影响 Ascend 的 TritonToLinalg 转换链。"
+          "path": "python/src/specialize.cc",
+          "reason": "参数特化 native 实现被 Ascend 复用(经 native_specialize_impl 与 AscendBackend 协同),接口变更破坏参数特化"
         }
       ],
       "potentially_affected_paths": [
         {
-          "path": "python/triton/language/",
-          "reason": "前端类型系统（tensor/dtype/pointer_type/constexpr）与算子语义（类型检查/常量折叠）行为变更会影响所有后端生成的 AST/TTIR；仅在涉及 Ascend 实际使用的算子或改变 IR 输出形态时才会传导到 Ascend。"
-        },
-        {
           "path": "python/triton/compiler/",
-          "reason": "编译流水线框架（CompiledKernel、元数据缓存、stage 间通信、make_ir 契约）变更可能影响 Ascend 的多阶段编译，但若 Ascend 通过 add_stages 自提供大部分阶段则影响有限。"
+          "reason": "compile() 的 stage 字典 key('ttir'/'ttgir'/'llir')顺序、缓存 key 计算、CompiledKernel 资源校验逻辑变化会影响 Ascend 的编译/缓存,但仅当触及 stage 契约或缓存格式时"
         },
         {
-          "path": "python/triton/runtime/driver.py",
-          "reason": "_create_driver 全局驱动选择、DriverConfig 与缓存逻辑变更可能影响 NPUDriver 的激活与设备选择，视与 Ascend 驱动的耦合程度而定。"
+          "path": "python/triton/language/core.py",
+          "reason": "tl.* 内建算子的语义/类型提升规则变化会影响 Ascend 前端编译结果,仅在语义行为(而非纯新增无关算子)变化时"
+        },
+        {
+          "path": "python/triton/language/standard.py",
+          "reason": "被 release patch 修改;标准库算子行为变化影响 Ascend 前端,仅在 patch 覆盖的算子或语义变化时"
+        },
+        {
+          "path": "python/triton/language/math.py",
+          "reason": "被 release patch 修改;数学函数映射变化影响 Ascend,仅在 patch 覆盖的函数或映射契约变化时"
+        },
+        {
+          "path": "python/triton/runtime/jit.py",
+          "reason": "被 release patch 修改;JITFunction.run 的缓存 key 计算、参数特化、preload 反序列化变化会影响 Ascend 编译命中,仅在签名/特化逻辑变化时"
         },
         {
           "path": "python/triton/runtime/cache.py",
-          "reason": "编译产物磁盘缓存与 code_cache 键格式变更可能影响 Ascend kernel 的缓存命中，但属于通用路径影响。"
+          "reason": "get_cache_key 与磁盘缓存存储格式变化影响 Ascend 缓存命中/失效,属跨后端影响"
         },
         {
-          "path": "include/triton/Dialect/TritonGPU/",
-          "reason": "Ascend 不走 TTGIR（用 TritonToLinalg 替代），但若复用共享 MLIR 基础设施/类型或 Python 前端间接引用 ttg 类型，相关变更可能间接影响 Ascend。"
+          "path": "python/triton/runtime/autotuner.py",
+          "reason": "被 release patch 修改;@autotune 计时/配置选择逻辑变化影响 Ascend 调优,仅在 autotune 接口变化时"
         },
         {
-          "path": "lib/Dialect/TritonGPU/",
-          "reason": "TritonGPU 优化 pass 与 layout 一般不影响 Ascend，但共享的 MLIR 类型定义或 Analysis 基础设施变更可能间接传导。"
+          "path": "include/triton/Dialect/Triton/",
+          "reason": "TTIR op 定义/attr/traits 被 release patch 修改;上游 op 定义变更会影响 Ascend 的 TritonToLinalg 输入,仅在 Ascend 消费的 op 发生变化时"
         },
         {
-          "path": "include/triton/Analysis/",
-          "reason": "别名/分配/AxisInfo/Membar 等分析若被 Ascend 的 pass 复用则变更会传导，否则无影响。"
+          "path": "lib/Dialect/Triton/",
+          "reason": "TTIR 方言 verifier/canonicalize 变化影响 Ascend 前端生成的 IR 校验,仅在 Ascend 依赖的 op 上"
         },
         {
-          "path": "lib/Analysis/",
-          "reason": "同上，静态分析实现变更仅在 Ascend 复用对应分析时影响。"
+          "path": "lib/Tools/LinearLayout.cpp",
+          "reason": "LinearLayout 是共享布局代数,被所有后端复用;但 Ascend 走 Linalg/HIVM 而非 TritonGPU 布局路径,仅当 python/src/linear_layout.cc 绑定接口变化时影响"
         },
         {
-          "path": "python/src/passes.cc",
-          "reason": "pass manager 绑定接口变更可能影响 Ascend 通过 _C 驱动自定义 pass 的方式。"
-        },
-        {
-          "path": "bin/triton-opt",
-          "reason": "triton-opt 是方言通用工具，Ascend 若依赖其加载自定义方言/pass 则变更可能影响其 lit 测试与调试流程。"
-        },
-        {
-          "path": "python/triton/experimental/gluon/",
-          "reason": "Gluon 编译到 TTGIR，Ascend 默认不使用；但若上游将 Gluon 能力下沉并改变 ASTSource/JITFunction 基类行为，则可能间接传导到 Ascend。"
+          "path": "python/triton/language/extra/libdevice.py",
+          "reason": "AscendBackend.get_module_map 将 libdevice 映射到 cann 实现;上游 libdevice 结构/注册方式变化可能影响模块映射,仅在模块名约定变化时"
         }
       ],
       "never_affected_paths": [
         {
           "path": "third_party/nvidia/",
-          "reason": "CUDA 后端（CUDABackend/CudaDriver/CudaLauncher/PTX 生成/TritonNvidiaGPU）纯 NVIDIA 专属，Ascend 不修改也不依赖，仅作为共存参照。"
+          "reason": "纯 NVIDIA 专属(CUDABackend/CudaDriver/TritonNVIDIAGPUToLLVM/NVGPU/TMA/WGMMA/tcgen05),Ascend 不使用"
         },
         {
           "path": "third_party/amd/",
-          "reason": "AMD/HIP 后端（HIPBackend/HIPDriver/GCN 生成/TritonAMDGPU）纯 ROCm 专属，与 Ascend 无耦合。"
+          "reason": "纯 AMD 专属(AMDGPUBackend/HIPDriver/TritonAMDGPU/MFMA/WMMA),Ascend 不使用"
         },
         {
           "path": "third_party/f2reduce/",
-          "reason": "独立 f2reduce 工具，Ascend 不使用。"
+          "reason": "Ascend 未引用"
         },
         {
           "path": "third_party/proton/",
-          "reason": "性能剖析框架独立于后端，除非 Ascend 显式启用否则无影响。"
+          "reason": "可选 profiler,Ascend 不参与其编译/运行路径"
         },
         {
-          "path": "python/triton/language/extra/cuda/",
-          "reason": "CUDA 专属 libdevice 与语言扩展，Ascend 使用 third_party/ascend/language/cann/libdevice.py。"
-        },
-        {
-          "path": "python/triton/language/extra/libdevice.py",
-          "reason": "NVIDIA libdevice 路径映射由后端 get_module_map 驱动，Ascend 用 CANN libdevice 替代。"
+          "path": "include/triton/Dialect/TritonNvidiaGPU/",
+          "reason": "NVIDIA 专属 dialect,Ascend 不使用"
         },
         {
           "path": "lib/Dialect/TritonNvidiaGPU/",
-          "reason": "NVIDIA 专属方言（TMA/tensor memory/mbarrier/warp specialization），Ascend 不加载。"
+          "reason": "NVIDIA 专属 dialect 实现,Ascend 不使用"
         },
         {
-          "path": "lib/Dialect/TritonAMDGPU/",
-          "reason": "AMD 专属方言，Ascend 不加载。"
+          "path": "lib/Dialect/TritonGPU/",
+          "reason": "GPU 布局 dialect,Ascend 改走 TritonToLinalg 而非 TritonGPU 路径"
+        },
+        {
+          "path": "lib/Conversion/TritonToTritonGPU/",
+          "reason": "TTIR→TritonGPU 布局注入,Ascend 用 TritonToLinalg 替代"
         },
         {
           "path": "lib/Conversion/TritonGPUToLLVM/",
-          "reason": "TritonGPU→LLVM lowering 仅 NVIDIA/AMD 使用，Ascend 用 TritonToLinalg 替代，此路径完全跳过。"
+          "reason": "GPU→LLVM 代码生成(含 TargetInfoBase),Ascend 不使用该路径"
         },
         {
-          "path": "include/triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h",
-          "reason": "TargetInfoBase 是 NV/AMD TargetInfo 的硬件抽象，Ascend 无实现也不调用，纯虚方法增删不影响 Ascend 编译链。"
+          "path": "include/triton/Conversion/TritonGPUToLLVM/",
+          "reason": "TargetInfoBase 等 target 抽象不被 Ascend 使用"
+        },
+        {
+          "path": "lib/Target/LLVMIR/LLVMIRNVPTXTargetInfo.cpp",
+          "reason": "NVPTX target info,Ascend 不使用 LLVMIR 路径"
+        },
+        {
+          "path": "lib/Target/LLVMIR/LLVMIRNVPTXVectorizer.cpp",
+          "reason": "NVPTX 向量化,Ascend 不使用"
+        },
+        {
+          "path": "python/triton/language/extra/cuda/",
+          "reason": "CUDA libdevice 后端专属实现,Ascend 用 extra.cann.libdevice 替代"
+        },
+        {
+          "path": "python/triton/language/extra/hip/",
+          "reason": "HIP libdevice 后端专属实现,Ascend 用 extra.cann.libdevice 替代"
         },
         {
           "path": "python/triton/experimental/gluon/nvidia/",
-          "reason": "Gluon NVIDIA 后端专属实现。"
+          "reason": "Gluon 的 NVIDIA 后端适配,Ascend 用自有 tla DSL 替代"
         },
         {
           "path": "python/triton/experimental/gluon/amd/",
-          "reason": "Gluon AMD 后端专属实现。"
+          "reason": "Gluon 的 AMD 后端适配,Ascend 用自有 tla DSL 替代"
         },
         {
-          "path": "python/test/unit/cuda/",
-          "reason": "CUDA 专属测试，不影响 Ascend 构建与运行。"
+          "path": "python/triton/tools/",
+          "reason": "CUDA 专属工具(ragged_tma/tensor_descriptor 等),Ascend 不使用"
         },
         {
-          "path": "tutorials/",
-          "reason": "NVIDIA 导向示例，不参与后端编译。"
+          "path": "bin/triton-llvm-opt.cpp",
+          "reason": "命令行工具,不参与 Ascend 编译/运行(注:release patch 会维护其编译,但不影响 Ascend 功能)"
         },
         {
-          "path": "python/tutorials/",
-          "reason": "NVIDIA 导向示例，不参与后端编译。"
+          "path": "bin/triton-reduce.cpp",
+          "reason": "命令行工具,不参与 Ascend 编译/运行(注:release patch 会维护其编译,但不影响 Ascend 功能)"
         }
       ]
     },
     "patch_impact_map": {
-      "python/triton/language/semantic.py::TritonSemantic.dot": "third_party/ascend/backend/__init__.py::_apply_ascend_patch（运行时 monkey-patch 覆写 dot，tf32/hf32 回退与 max_num_imprecise_acc 拦截）",
-      "python/triton/compiler/code_generator.py::CodeGenerator.__init__": "third_party/ascend/backend/__init__.py::_apply_ascend_patch（运行时 monkey-patch 覆写 __init__ 注入 hacc.target）",
-      "python/triton/compiler/compiler.py::parse": "third_party/ascend/backend/__init__.py::_apply_ascend_patch（运行时 monkey-patch 覆写 parse 扩展 ttir/ttgir/npubin/mlirbc 分支）",
-      "构建入口/third_party/ascend 子目录注册与 entry_points 集成": "third_party/ascend/patch/triton-ascend-<version>.patch（main 分支构建实际应用的 release patch）"
+      "CMakeLists.txt": "third_party/ascend/patch/triton-ascend-3.6.0.patch",
+      "bin/ (命令行工具构建)": "third_party/ascend/patch/triton-ascend-3.6.0.patch",
+      "include/triton/Dialect/Triton/IR/ (attr/traits)": "third_party/ascend/patch/triton-ascend-3.6.0.patch",
+      "python/src/ir.cc": "third_party/ascend/patch/triton-ascend-3.6.0.patch",
+      "python/triton/compiler/code_generator.py": "third_party/ascend/patch/triton-ascend-3.6.0.patch",
+      "python/triton/language/semantic.py": "third_party/ascend/patch/triton-ascend-3.6.0.patch",
+      "python/triton/language/math.py": "third_party/ascend/patch/triton-ascend-3.6.0.patch",
+      "python/triton/language/standard.py": "third_party/ascend/patch/triton-ascend-3.6.0.patch",
+      "python/triton/runtime/autotuner.py": "third_party/ascend/patch/triton-ascend-3.6.0.patch",
+      "python/triton/runtime/interpreter.py": "third_party/ascend/patch/triton-ascend-3.6.0.patch",
+      "python/triton/runtime/jit.py": "third_party/ascend/patch/triton-ascend-3.6.0.patch"
     }
   }
 }
