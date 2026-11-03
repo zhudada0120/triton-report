@@ -1,0 +1,225 @@
+{
+  "date": "2026-11-03",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-11-04T06:40:16.596711+08:00",
+  "daily_summary": "当日变更集中在 4 个方向：(1) 前端语义收紧——tl.dot 累加器 dtype 与结果 dtype 不匹配时提前报错，避免远端编译错误；(2) TritonGPU 布局校验——非 AMD 目标上的 generic_linear 编码被 verifier 拒绝，防止 NVIDIA 后端误用不支持布局；(3) AMD 后端密集修复与优化——指针规范化指数级遍历、InstCombine 向量元素深度、TDM mbarrier 到达计数、warp-pipeline 依赖分析、PartitionedSharedLayout 的 async copy 支持、gfx1250 async 算子的 scope/CachePolicy 贯通，以及 Python 头文件包含顺序修正和 matmul 教程 fp8 支持；(4) triton_kernels 中 AMD MoE 小 slice 的 block_m 调整。整体以 bugfix 与性能优化为主，前端与 GPU 通用 IR 变更会影响所有下游后端。",
+  "ascend_impact_summary": "当日仅 1 个 commit 实质影响 triton-ascend：semantic.py 中 TritonSemantic.dot 新增累加器 dtype 校验，该文件被 Ascend 的 release patch 直接修改且被 _apply_ascend_patch monkey-patch 覆写 dot（tf32→hf32），新增检查会改变 Ascend 前端的 dot 报错行为，需要验证 patch 与新增断言是否冲突。generic_linear 校验位于 lib/Dialect/TritonGPU，Ascend 不走 TritonGPU 路径，不受影响。其余 AMD 专属 commit（CanonicalizePointers、InstCombine 深度、TDM mbarrier、PartitionedSharedLayout、gfx1250 scope/CachePolicy、HIP 头文件顺序、matmul 教程 fp8、MoE block_m）全部属于 third_party/amd、python/tutorials、python/triton_kernels 的 AMD 路径，Ascend 不使用，无影响。",
+  "commits": [
+    {
+      "sha": "3412130d638105963a34c3e8c622a98f843625ae",
+      "comment": "在 TritonSemantic.dot 中新增一条断言：当传入 acc 时，要求 acc.type.element_ty 与 ret_ty.element_ty（由操作数推导出的结果 dtype）一致，并置于既有 out_dtype 检查之前。原检查在只传 acc 时 out_dtype 默认等于 acc.dtype，因此恒成立、形同虚设；新检查真正拦截 int8 操作数 + fp32 累加器、bf16/fp32 + fp16 累加器等误用，在编译早期给出可操作的错误提示（建议匹配累加器或 acc += tl.dot(a,b).to(acc.dtype)）。改动仅 3 行，但语义上收紧了一个用户可见的契约：过去“能编译（以意外错误失败或侥幸通过）”的 kernel 现在会在前端被拒。测试通过 run_parser + stub target 运行，无需 GPU，覆盖 int8/bf16/fp32/fp64 四种操作数。风险在于依赖旧有宽松行为的代码（尤其是跨后端迁移的 kernel）会开始报错，属于有意为之的行为变更。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "low-risk",
+        "language-frontend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "python/triton/language/semantic.py 属“必然影响”路径：triton-ascend 的 release patch（triton-ascend-3.6.0.patch）直接修改该文件，且 third_party/ascend/backend/__init__.py 的 _apply_ascend_patch 对 TritonSemantic.dot 做 monkey-patch（tf32→hf32、忽略 max_num_imprecise_acc）。本次在 acc 分支新增 `acc.type.element_ty == ret_ty.element_ty` 断言，若 Ascend 的 _patched_dot 未调用原 dot 或自行复制了该段逻辑，需确认 patch 合并后新断言仍生效且不与 hf32 降级逻辑冲突；对 Ascend 用户而言，使用不匹配累加器（如 int8 算子配 fp32 acc）的 kernel 将从“远端 CANN 编译错误”提前变为前端 CompilationError。",
+        "testing": "需验证 Ascend 环境下 tl.dot 的正常路径（fp16/bf16→fp32 累加、int8→int32 累加）不受影响，以及不匹配场景报错信息正确；同时确认 patch 打上游 3.6.0 源码后该文件的 hunk 上下文仍可应用（本次改动位置在 dot 的 acc 处理分支，紧邻 patch 覆写的 dot 方法区域，存在 patch 冲突风险）。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_dot.py",
+          "third_party/ascend/patch/triton-ascend-3.6.0.patch（semantic.py hunk 上下文校验）"
+        ]
+      },
+      "message": "[FRONTEND] Reject tl.dot accumulators whose dtype differs from the dot result (#12442)\n\n`tl.dot(a, b, acc)` accepts an accumulator whose dtype differs from the\ndot's result dtype, and the mismatch only surfaces later as an unrelated\ncompiler error. For example, int8 operands with an fp32 accumulator,\nwhich is easy to write when porting a float kernel:\n\n```python\nacc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)\nacc = tl.dot(a_int8, b_int8, acc)\n```\n\nThe frontend types the result as int32, but `create_dot` builds the IR\nop with the accumulator's f32 type. Compilation then fails far from the\ncause: `arith.sitofp` on an f32 tensor, \"Loop-carried variable ...\nre-assigned\", or \"error encountered during parsing\", depending on how\nthe result is used.\n\nThe existing `acc.type.element_ty == out_dtype` check does not catch\nthis, because `out_dtype` defaults to the accumulator's dtype when only\n`acc` is passed. The comparison then holds by construction. The same gap\naffects bf16/fp32 operands with an fp16 accumulator and fp64 operands\nwith a non-fp64 accumulator.\n\nThis PR checks the accumulator against the result dtype that the\noperands produce. The check runs before the `out_dtype` check, so the\nerror suggests a fix that works: a matching accumulator, or `acc +=\ntl.dot(a, b).to(acc.dtype)`. With only the `out_dtype` check, the\nmessage would suggest passing an `out_dtype` that the operand types\nignore. For example:\n\n```\nexpected accumulator dtype int32 for int8 operands, got fp32; use a int32 accumulator, or accumulate with acc += tl.dot(a, b).to(acc.dtype)\n```\n\n`acc += tl.dot(a, b)` without an accumulator argument is not affected.\n\n`test_dot_acc_dtype_mismatch` in `test_frontend.py` covers int8, bf16,\nfp32 and fp64 operands with a mismatched accumulator, with and without\nan explicit `out_dtype`. It also covers the remaining `out_dtype`\nmessage. It runs the parser against the stub target, so it needs no GPU.\nSix of its seven cases fail without the fix; the seventh covers the\nexisting `out_dtype` message.\n\nTested on an RTX 3060 Ti (sm_86): `test_frontend.py` passes, and\n`test_core.py -k dot` shows no failures (777 passed, 1901 skipped). An\nearlier revision of the check also passed `test_core.py -k dot` on the\nIntel XPU backend (Arc B580). Hopper and Blackwell paths were not tested\nlocally.\n\nFound while working on intel/intel-xpu-backend-for-triton#8381.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/language/semantic.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "a972119e92a27b445cd160017ea461e56148590c",
+      "comment": "在 TritonGPU 的 TritonGPUVerifyTensorLayoutInterface 中增加目标校验：当 layout 为 generic_linear 编码时，读取父 ModuleOp 的 ttg.target 属性，若目标不以 \"hip:\" 开头则报错（提示 Distributed layouts 在非 AMD 目标上应为 permutation matrices）。原因是 Gluon 在 DistributedLinearLayout 非置换时会生成 generic linear encoding，该编码此前在 NVIDIA 上能通过 verifier 但在 lowering convert_layout/ldmatrix 时触发断言失败。此改动把错误前移到前端验证阶段，错误定位更清晰。测试侧同步把 Gluon 的 generic-linear 相关用例改为只在 AMD 运行（test_lowerings.py 增加 requires_generic_linear skipif），并把 test_convert_layout_overlapping_identity_dims 从 NVIDIA 迁到 AMD（lane bases 补齐 broadcast lane 以兼容 64-thread wavefront），同时删除 test/TritonNvidiaGPU/assign_cga_layouts.mlir 中的 generic encoding 用例。风险点：该 verifier 是 TTGIR 通用校验，对任何非 hip 目标（含未来第三方后端）都生效；未设置 ttg.target 的模块保持放行，属保守设计。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "tritongpu-ir",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 lib/Dialect/TritonGPU/IR/Dialect.cpp 的 tensor layout verifier，属 TritonGPU 布局路径；Ascend 后端走 TTIR→Linalg/HIVM（TritonToLinalg），不生成也不校验 generic_linear 编码，不使用 TritonGPU 布局。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[GPU] Reject generic linear encodings on non-AMD targets (#12572)\n\nFixes #12566.\n\nGeneric linear encodings (`#ttg.generic_linear`) were added for AMD.\nGluon creates one whenever a `DistributedLinearLayout` is not a\npermutation layout, such as the warp basis 17 = 16 ^ 1 from the issue.\nOn NVIDIA these layouts pass verification but are not fully supported by\nthe backend, and the reported case trips an assertion while lowering\n`convert_layout` with ldmatrix.\n\nFollowing the review discussion, this rejects generic linear encodings\nin the tensor layout verifier when the module targets anything other\nthan AMD. Gluon sets the target before building the module, so the error\npoints at the kernel instead of failing in the backend. AMD targets and\nmodules without a target are unchanged.\n\n### Tests\n\n- `test/TritonGPU/invalid.mlir`: a generic encoding in a `cuda:90`\nmodule is rejected, both directly and wrapped in a slice layout.\n- `python/test/gluon/test_frontend.py`: the layout from the issue is\nrejected on non-AMD targets and still accepted on AMD.\n- `python/test/gluon/test_lowerings.py`: the generic-linear tests now\nrun on AMD only. `test_convert_layout_overlapping_identity_dims` moves\nfrom NVIDIA to AMD, with the lane bases padded by broadcast lanes so it\nalso runs with 64-thread wavefronts.\n- `test/TritonNvidiaGPU/assign_cga_layouts.mlir`: removed the\ngeneric-encoding case, since that IR is no longer valid on NVIDIA.\n\n**Validation performed:**\n\n- lit: 306 passed, 2 unsupported.\n- `LinearLayoutTest` and `TestSwizzling` pass.\n- On sm_120: Gluon `test_frontend.py` 608 passed, `test_lowerings.py`\n5,909 passed.\n- The issue reproducer now reports that distributed layouts on non-AMD\ntargets should be permutation matrices, instead of hitting the\nassertion.\n- No AMD GPU was available locally. The updated\n`test_convert_layout_overlapping_identity_dims` kernel compiles to hsaco\nfor gfx90a, gfx942, gfx950, gfx1200 and gfx1250; runtime results on AMD\nare left to CI.\n\n### New contributor declaration\n\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following these\n[rules](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n- [x] I have added tests.\n  - `/test` for `lit` tests\n  - `/python/test` for end-to-end tests\n- [ ] This PR does not need a test because `FILL THIS IN`.\n- [ ] I have not added any `lit` tests.\n- [x] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section.\n\n---------\n\nCo-authored-by: losewayy <losewayy@users.noreply.github.com>"
+    },
+    {
+      "sha": "a94dac3739e83f1a4a0c70146e5ed4906447decc",
+      "comment": "修复 AMD CanonicalizePointers pass 中 getForwardSliceImpl 的指数级遍历：shared-body 的 if/elif 链会让同一批指针 use 通过嵌套 scf.if 被重复访问，路径数随分支数指数增长（32 个 tensor 即 30s 超时）。方案是引入 llvm::SmallPtrSet<OpOperand*> visitedUses 并在递归入口插入去重，选择以 OpOperand 而非 Operation 为键，因为循环/分支不同操作数会导向不同 block argument，其 use 都需要访问。visitedUses 在 runOnOperation 中跨所有函数参数共享。测试新增 test_if_elif_shared_pointer_body，参数化 32 与 100 个 tensor 并开启 amd.use_buffer_ops。改动小、逻辑清晰，去重后 forwardSlice 的拓扑顺序语义不变（注释已说明）。潜在风险极低，仅在极端情况下若同一 OpOperand 的第二次访问本应产生不同副作用才会改变行为，但该递归本意就是收集 op 集合，去重是安全且必要的。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "low-risk",
+        "amd-backend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更全部位于 third_party/amd/lib/TritonAMDGPUTransforms/CanonicalizePointers.cpp 与 AMD 专属测试，Ascend 不使用 AMD pointer canonicalization。",
+        "testing": "无影响。新增的 python/test/unit/language/test_core.py 用例以 is_hip() skipif 限定，Ascend 环境会跳过。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Fix exponential traversal in pointer canonicalization (#12601)\n\nShared-body foreach kernels select input/output pointers through an\n`if`/`elif` chain, then execute a common load/store body. The selected\npointers merge through nested `scf.if` operations before reaching the\nshared body. AMD pointer canonicalization repeatedly traverses these\nmerged paths without tracking visited uses, causing compilation time to\ngrow exponentially.\n\nFor example, adding one to each of 32 tensors produces this structure,\nthis pattern times out after 30 seconds:\n \n```python\n  pid = program_id(0)\n  blocks_per_tensor = ceil_div(n_elements, BLOCK)\n \n  if pid < blocks_per_tensor:\n      in_ptr, out_ptr = inputs[0], outputs[0]\n      local_pid = pid\n  elif pid < 2 * blocks_per_tensor:\n      in_ptr, out_ptr = inputs[1], outputs[1]\n      local_pid = pid - blocks_per_tensor\n  # ... branches selecting tensors 2 through 30 ...\n  else:\n      in_ptr, out_ptr = inputs[31], outputs[31]\n      local_pid = pid - 31 * blocks_per_tensor\n \n  # Shared body: the computation appears only once.\n  offsets = local_pid * BLOCK + arange(0, BLOCK)\n  mask = offsets < n_elements\n  value = load(in_ptr + offsets, mask)\n  store(out_ptr + offsets, value + 1, mask)\n```\n\nThis change adding a visited set to `getForwardSliceImpl` in AMD\nCanonicalizePointers, shared across all pointer arguments, and mark each\nuse before recursing. This ensures each pointer use is expanded once."
+    },
+    {
+      "sha": "e1a224a95476d3b04947e6c051a9ef9c12acba50",
+      "comment": "在 AMD 后端 get_llvm_flags 中无条件追加 -instcombine-simplify-vector-elts-depth=32（原默认 10），使 InstCombine 能走完整条 extractelement/insertelement 链并折叠为单条 shufflevector，避免宽操作数残留为 N 条 insertelement。改动放在 flags 列表最前面，因此 gfx90a/gfx942/gfx950/gfx1250 所有架构都会带上；仍可通过 llvm_cl_opts 覆盖。测试同步更新 test_knobs.py 的期望 flags。风险：更深的递归可能增加编译时间或暴露 InstCombine 在深层链上的其他优化，但 32 是有界值且作者声称“不超过需要”。",
+      "tags": [
+        "performance",
+        "low-risk",
+        "amd-backend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/amd/backend/compiler.py 的 get_llvm_flags 与 AMD 专属 knobs 测试，属 AMD LLVM codegen 路径，Ascend 不走 LLVM/InstCombine。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Widen InstCombine's SimplifyDemandedVectorElts walk depth (#12579)\n\nInstCombine folds an extractelement/insertelement chain into a single\nshufflevector only when SimplifyDemandedVectorElts can walk the whole\nchain. Its depth limit defaults to 10, so a wide operand assembled\nelement by element survives as N insertelement instructions instead of\nbeing folded.\n\nSet it to 32 in the AMD backend, which covers the chain without deepening\nthe recursion further than needed. kernels can still override it through\nllvm_cl_opts."
+    },
+    {
+      "sha": "4b61eda79b69a1f28db9e98bc0b0428e1b2d6a92",
+      "comment": "tutorial 03-matrix-multiplication.py 新增 is_hip_cdna4_above()（backend=='hip' 且 arch 为 gfx950/gfx1250），并把 FP8 校正/benchmark 的启用条件从 is_cuda() 扩展为 is_cuda() or is_hip_cdna4_above()。属教学示例门控条件放宽，无运行时/编译器行为改动。风险极低，仅在无 fp8 支持的 ROCm 硬件上仍被正确跳过。",
+      "tags": [
+        "docs",
+        "low-risk",
+        "tutorial"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。仅修改 python/tutorials 下的示例脚本，Ascend 不使用。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Support fp8 in matmul tutorial (#8304)"
+    },
+    {
+      "sha": "2422d6a0fff5d27bbd79d4c6d2f9b7bfd04beb18",
+      "comment": "调整 third_party/amd/backend/driver.c 的头文件包含顺序：把 <Python.h>（前置 PY_SSIZE_T_CLEAN）移到 HIP 与系统头文件之前，__HIP_PLATFORM_AMD__ 仍保持在 HIP 头之前。修复 Python 3.14 + Fedora 下 _POSIX_C_SOURCE 重定义告警，遵循 CPython 文档的包含顺序要求。纯构建健康性修复，无功能行为变化。",
+      "tags": [
+        "chore",
+        "low-risk",
+        "amd-backend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。third_party/amd/backend/driver.c 为 AMD 专属 C 源码，Ascend 使用自己的 launcher_src/npu_utils.cpp。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Fix Python header include order in HIP utilities (#12595)\n\nThe AMD HIP helper includes HIP headers before `Python.h`. This lets\nsystem headers select feature macros before Python's configuration is\nprocessed.\n\nWhen compiling `hip_utils` with Python 3.14 on Fedora, this ordering\nproduced a `_POSIX_C_SOURCE` redefinition warning.\n\nMove `Python.h` before the HIP and system headers, following [Python's\ndocumented include-order\nrequirement](https://docs.python.org/3.14/extending/extending.html#a-simple-example).\nKeep `__HIP_PLATFORM_AMD__` before the HIP headers and\n`PY_SSIZE_T_CLEAN` before `Python.h`."
+    },
+    {
+      "sha": "1fad2df0604c85ae9dba1387c08408c2452f8cc2",
+      "comment": "修复 gfx1250 TDM mbarrier 到达计数语义：此前布局上空闲的 warp 会省略 arrive 导致 wait 卡死，而 gather/scatter 拆成多条指令会重复 arrive 导致 phase 提前完成。改动核心是在 TDMUtility.cpp 中，对带 barrier 的场景让所有 warp 都恰好 arrive 一次——空闲 warp 不再用 pred=0 的 NULL descriptor，而是保留用户 pred 并把 tile_dim0 清零、workgroup mask 清空构造 NOP descriptor；gather/scatter 只在最后一条 chunk 携带 barrier，前面的 chunk 不带，靠 wave 内顺序完成保证覆盖。新增 setTDMBarrier / predicateTDMViaTileDim0 辅助函数并重构描述符填充。Op 定义补充了语义说明。测试在 test_convert… 中新增 warp_used_hint_barrier 与 multichunk gather 的 FileCheck，并在 test_gluon_cdna5.py 里用 num_warps 初始化 barrier、以“缺失 arrive 会挂起、多余 arrive 会读到脏数据”的方式验证；CI 中对已知 emulator 问题加了 skip。改动涉及底层 TDM 指令编码位操作，风险集中在 gfx1250/CDNA5，对 910B/910_93 等其他 arch 无影响，但需 CDNA5 实机/emulator 验证。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "amd-backend",
+        "tdm"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更为 third_party/amd 下的 TritonAMDGPUOp 定义、TDMUtility、LoadStoreOpToLLVM 与 AMD 测试/CI，属 AMD TDM（gfx1250）专属路径，Ascend 不使用该方言与 lowering。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][gfx1250] Fix TDM mbarrier arrival accounting (#12522)\n\nTDM barrier completion should not depend on how the compiler distributes\na logical operation across warps or splits it into hardware\ninstructions. Otherwise, callers must account for lowering details when\nchoosing the barrier’s arrival count.\n\nCurrently, warps that do not move data can omit their barrier arrivals,\nleaving a wait blocked. Those warps may also have outstanding work from\nearlier TDM operations that the barrier must cover. Conversely,\ngather/scatter operations split into multiple instructions can\ncontribute too many arrivals, allowing a barrier phase to complete\nbefore all the expected work has finished.\n\nThis change ensures that an enabled barrier-bearing TDM operation\ncontributes one arrival per warp, including warps with no data to\ntransfer. This keeps arrival counts predictable and lets a barrier on a\nlater TDM operation cover earlier TDM work without exposing the\ncompiler’s partitioning decisions to callers."
+    },
+    {
+      "sha": "13815585b36280e125dec1f26a22296a1bbecdda",
+      "comment": "在 python/triton_kernels/matmul_details/opt_flags.py 的 make_default_opt_flags_amd 中，新增分支 slice_size <= 8 时 block_m=16，插在 RDNA 分支之后、通用 max(32, min(pow2(slice), 64)) 之前，避免小 batch MoE slice 因 block_m=32 大量填充。仅调整 AMD 启发式，MI350X 上 gpt-oss MoE 有 1.03–1.17x 收益。风险低，但注意分支顺序：slice_size<=8 判断放在 RDNA3/4 且 m>=512（block_m=64）之后，若小 slice 同时 m>=512 仍走 64，与描述“预期 slice 大小 ≤8 行”略有出入，属可接受的启发式取舍。",
+      "tags": [
+        "performance",
+        "low-risk",
+        "triton-kernels",
+        "amd-backend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。仅修改 triton_kernels 中 AMD 专属的 opt_flags 启发式函数 make_default_opt_flags_amd，Ascend 不使用该函数。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][Kernels] Use block_m=16 for small MoE slices for CDNA4 (#9533)\n\nSmall-batch MoE matmuls on AMD always used block_m=32, so slices of\nonly a few rows padded most of each tile. Use block_m=16 when the\nexpected slice size is at most 8 rows and keep the existing heuristic\nabove that.\n\nOn MI350X, gpt-oss MoE layers (bf16 x mxfp4, hidden size 2880,\ntop-4), the time for fc1 plus fc2 compared with main:\n\n```\n  rows/slice  scale layout     gpt-oss-20b    gpt-oss-120b\n  <= 8        CDNA4 preshuffle 1.09-1.17x     1.09-1.12x\n  <= 8        strided          1.03-1.06x     1.05-1.06x\n  9-15        both             unchanged      n/a\n```"
+    },
+    {
+      "sha": "26e06a270c64a57aae924a8810827317ded44b38",
+      "comment": "AMD warp-pipeline 依赖分析改用共享的 BufferIndexAnalysis：此前同一多缓冲分配的不同 slot 被视为可能别名，导致多余 LDS barrier。buildBlockInfoFromBlock 新增可选 BufferIndexAnalysis* 参数，通过新增的 resolveMemDescIndex 穿越 memdesc view trait 与单 block scf.execute_region 的 yield 恢复 slot 索引表达式，同时保留原始访问的 bufferIndexExpr（保留物理 footprint 与 subview 限制），RAW/WAR/WAW 检查与跨迭代保守处理均保留。另在 cluster 边界 wrapExistingBarrier 中，若已有 barrier 是 AsyncWaitOp（gpu 或 amdgpu），在 scheduling fences 内显式插入 ttg.barrier local，防止 Membar 把 group wait 的 rendezvous 推迟到下一 stage。测试新增 ring_distinct_slots_loop/same_slot_loop/flat/WAR/WAW 以及 pipeline_wait_rendezvous 的 FileCheck，并新增一条 --convert-scf-to-cf + --triton-amdgpu-membar 的 SYNC 检查线。风险中等：改变了 barrier 插入位置与依赖分析的精度，若 resolveMemDescIndex 漏识别某个 producer 会退化为 unknown（保守，安全），但显式插入 local barrier 的新逻辑若与既有多余 barrier 消除交互，可能带来少量性能回退或遗漏 fence，需在 CDNA 系列上回归。",
+      "tags": [
+        "performance",
+        "bugfix",
+        "medium-risk",
+        "amd-backend",
+        "warp-pipeline"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅涉及 third_party/amd/lib/TritonAMDGPUToLLVM/ConvertWarpPipeline.cpp 与 test/TritonGPU/amd/ 下的 lit 测试，属 AMD warp-specialization 路径；Ascend 不使用 warp pipeline。涉及的 BufferIndexAnalysis（lib/Analysis）为通用分析但本次仅被 AMD 侧消费。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Use buffer-index analysis for warp-pipeline dependencies (#12594)\n\nWarp-pipeline dependency analysis currently treats accesses to different\nslots of the same multi-buffered allocation as potentially aliasing,\nintroducing unnecessary LDS barriers.\n\nUse the shared BufferIndexAnalysis when collecting loop and flat\npipeline effects. Recover indexed descriptors through descriptor views\nand stage yields while preserving the original access footprint. Keep\nRAW, WAR, and WAW checks enabled, and retain conservative handling\nacross loop iterations and pipeline boundaries.\n\nAlso insert a local barrier immediately after each group wait at a WP\ncluster boundary, inside the scheduling fences. This keeps the\nasync-wait rendezvous at the location WP expects and prevents membar\nfrom deferring it into the next stage."
+    },
+    {
+      "sha": "f54dadcc59d35219d38d14888a7b5cac1d6e14c7",
+      "comment": "为 CDNA5 的 async_copy.global_to_shared / shared_to_global 增加 PartitionedSharedLayout 支持：DirectToLdsLoadConversionBase 放弃手写 PaddedSharedEncodingAttr 分支，改用 triton::gpu::toLinearLayoutIgnoringPadding(sharedTy)，从而统一处理 padded 与 partitioned 编码；lowerLdSt 的共享内存基址参数从单个 Value 改为 SmallVector<Value> 以支持多 smem base；AsyncCopyLocalToGlobalOpConversion 与 canLoadDirectToLDS 改用 isPaddedEncoding/getPaddedEncoding/getMinInterval 泛化判断，使 partitioned 包裹 padded 时仍按 minInterval 限制向量宽度。新增 lit 用例覆盖 padded/受限向量/global_to_local 三个方向，以及 32 组 pytest 参数化（partition_dim、partitions、groups、padded、dtype、size、方向）。风险中等：lowerLdSt 签名变化影响 AMD 内部所有 direct-to-LDS 调用点（本次已同步），且 toLinearLayoutIgnoringPadding 在 partitioned 编码上的语义需与 lowering 保持一致。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "amd-backend",
+        "shared-layout"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更全部位于 third_party/amd/lib/TritonAMDGPUToLLVM（LoadStoreOpToLLVM.cpp、Utility.cpp）与 AMD 测试；PartitionedSharedLayout 是 TritonGPU shared encoding，Ascend 不走 TritonGPU/LLVM 路径。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Support Partitioned Shared Layout for AsyncCopy on CDNA5 (#12547)\n\nThis PR supports partitioned shared layout for\n`async_copy.global_to_shared` and `async_copy.shared_to_global` on CDNA5\nby\n- using more generic method to get linear layout from encoding\n- supporting multiple smem bases\n\nThis PR also adds lit and unit tests."
+    },
+    {
+      "sha": "8d3a38928275221ec3c932092a03a89d41d3f0c2",
+      "comment": "把 gfx1250 buffer ops 已有的 scope 与 CachePolicy 贯通到其它 cdna5 Gluon API：async_copy.global_to_shared 增加 cache_policy（无 scope，因 ttg.async_copy_global_to_local 本身无 scope），async_copy.shared_to_global 增加 scope 与 cache_policy，tdm.async_load/async_load_fused/async_store/async_gather/async_scatter 增加 scope 与 cache_policy（gather/scatter 以前恒传 0 缓存位）。新参数均为 keyword-only；旧 cache_modifier 隐式携带自己的 scope，故与两者互斥，并在 _policy_and_scope 中 _check 报错，同时 _warn_cache_modifier_deprecated 发 DeprecationWarning。IR 侧 AsyncCopyLocalToGlobalOp 新增 scope，TDM 各 op 新增 cachePolicy(#amdg.cache_policy_gfx12) 与 scope；Dialect.cpp 新增 verifyTDMAccessPolicy 复用 buffer ops 的 verifyBufferAccessPolicy（last_use 仅 load、不得与 sys scope 共存），并覆盖 gather(load)/scatter(store) 语义。Lowering 统一走 getTDMCtrlBits/getBufferLoadStoreCtrlBits 编码 aux bits，TDMUtility 的 emitTDMGatherScatter 新增 auxBits 参数。gluon_ir.cc 新增 getScopeAttr/getGfx12CachePolicy 辅助并更新各 builder。测试覆盖 FileCheck（前端与 lowering）、invalid.mlir 的 4 条错误场景，以及实机断言 PTX 中 th:/scope: 的 12 组参数化。改动跨 Python 前端、C++ 绑定、Op 定义、verifier 与 lowering，范围较广但限于 AMD gfx1250/CDNA5 专属 op；风险中等：keyword-only 与 deprecation 警告会改变现有 cdna5 Gluon 用户的调用约定（位置参数 cache_modifier 仍兼容），verifier 收紧后如有用户同时传 cache 与 scope 会开始报错。",
+      "tags": [
+        "feature",
+        "refactor",
+        "medium-risk",
+        "amd-backend",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更覆盖 third_party/amd 的 TritonAMDGPUOps.td、Dialect.cpp、TDMUtility、LoadStoreOpToLLVM，python/src/gluon_ir.cc 中仅 AMD TDM/async_copy 的 builder，以及 python/triton/experimental/gluon/language/amd/cdna5 与 python/test/gluon；Ascend 不使用 Gluon（改用自有 tla DSL），也不使用 cdna5 方言与 gfx12 CachePolicy。python/src/gluon_ir.cc 虽在 python/src 下，但本次改动均为 AMD 专属 op 的绑定扩展，不影响 Ascend 消费的 ir 绑定。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][Gluon] Thread scope and CachePolicy through gfx1250 async ops (#12564)\n\nExtend the gfx1250 `scope` and `CachePolicy` added for buffer ops to the\nother cdna5 Gluon APIs whose instructions take a gfx12 cache policy (TH\nin bits 0-2, SCOPE in bits 3-4):\n\n- `async_copy.global_to_shared`: `cache_policy`. Like cdna4, there is no\n`scope`, as `ttg.async_copy_global_to_local` has none.\n- `async_copy.shared_to_global`: `scope` and `cache_policy`.\n- `tdm.async_load`, `async_load_fused`, `async_store`, `async_gather`\nand `async_scatter`: `scope` and `cache_policy`. Gather and scatter\npreviously always passed zero cache bits.\n\nThe new arguments are keyword-only. A legacy `cache_modifier` implies\nits own scope, so it can't be combined with either.\n\nIn IR, `amdg.async_copy_local_to_global` gains `scope`, and the TDM ops\ngain `cachePolicy` (`#amdg.cache_policy_gfx12`) and `scope`. Lowerings\nreuse the buffer ops' encoding, and verifiers apply the buffer ops'\nchecks: last_use only on loads and not with the sys scope."
+    }
+  ],
+  "architecture_based_on_sha": "0861b90f695e3c866f6f7eadd4be8339378ab017",
+  "architecture_generated_at": "2026-11-01T20:11:07.548246+08:00"
+}

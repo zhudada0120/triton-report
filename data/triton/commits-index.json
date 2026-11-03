@@ -1,4 +1,48 @@
 {
+  "3412130d638105963a34c3e8c622a98f843625ae": {
+    "date": "2026-11-03",
+    "msg": "[FRONTEND] Reject tl.dot accumulators whose dtype differs from the dot result (#12442)"
+  },
+  "a972119e92a27b445cd160017ea461e56148590c": {
+    "date": "2026-11-03",
+    "msg": "[GPU] Reject generic linear encodings on non-AMD targets (#12572)"
+  },
+  "a94dac3739e83f1a4a0c70146e5ed4906447decc": {
+    "date": "2026-11-03",
+    "msg": "[AMD] Fix exponential traversal in pointer canonicalization (#12601)"
+  },
+  "e1a224a95476d3b04947e6c051a9ef9c12acba50": {
+    "date": "2026-11-03",
+    "msg": "[AMD] Widen InstCombine's SimplifyDemandedVectorElts walk depth (#12579)"
+  },
+  "4b61eda79b69a1f28db9e98bc0b0428e1b2d6a92": {
+    "date": "2026-11-03",
+    "msg": "[AMD] Support fp8 in matmul tutorial (#8304)"
+  },
+  "2422d6a0fff5d27bbd79d4c6d2f9b7bfd04beb18": {
+    "date": "2026-11-03",
+    "msg": "[AMD] Fix Python header include order in HIP utilities (#12595)"
+  },
+  "1fad2df0604c85ae9dba1387c08408c2452f8cc2": {
+    "date": "2026-11-03",
+    "msg": "[AMD][gfx1250] Fix TDM mbarrier arrival accounting (#12522)"
+  },
+  "13815585b36280e125dec1f26a22296a1bbecdda": {
+    "date": "2026-11-03",
+    "msg": "[AMD][Kernels] Use block_m=16 for small MoE slices for CDNA4 (#9533)"
+  },
+  "26e06a270c64a57aae924a8810827317ded44b38": {
+    "date": "2026-11-03",
+    "msg": "[AMD] Use buffer-index analysis for warp-pipeline dependencies (#12594)"
+  },
+  "f54dadcc59d35219d38d14888a7b5cac1d6e14c7": {
+    "date": "2026-11-03",
+    "msg": "[AMD] Support Partitioned Shared Layout for AsyncCopy on CDNA5 (#12547)"
+  },
+  "8d3a38928275221ec3c932092a03a89d41d3f0c2": {
+    "date": "2026-11-03",
+    "msg": "[AMD][Gluon] Thread scope and CachePolicy through gfx1250 async ops (#12564)"
+  },
   "bbe38e5742621fa0e46435133f79a6aff2ffaf7d": {
     "date": "2026-11-02",
     "msg": "[AMD] Fix batched WMMA scale layout (#10733)"

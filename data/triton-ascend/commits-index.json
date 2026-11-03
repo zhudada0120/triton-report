@@ -1,4 +1,8 @@
 {
+  "a81c089dcef0d347b7d87d4649908c8bc23593e1": {
+    "date": "2026-11-03",
+    "msg": "[sync](chore) Sync main from branch main-dev (#2944)"
+  },
   "49a3e73a913afade511bdee13d96e86456e4b0ca": {
     "date": "2026-11-02",
     "msg": "[build](fix) remove triton requirement in editable_wheel (#2842)"

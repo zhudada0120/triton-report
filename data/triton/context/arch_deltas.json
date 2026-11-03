@@ -1,5 +1,18 @@
 {
   "baseline_sha": "0861b90f695e3c866f6f7eadd4be8339378ab017",
   "baseline_generated_at": "2026-11-01T20:05:48.722243+08:00",
-  "deltas": {}
+  "deltas": {
+    "3412130d638105963a34c3e8c622a98f843625ae": {
+      "date": "2026-11-03",
+      "affected_modules": [
+        "python/triton/language/semantic.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/language/semantic.py"
+      ],
+      "interface_changes": "在 TritonSemantic.dot 中新增一条断言：当传入 acc 时，要求 acc.type.element_ty 与 ret_ty.element_ty（由操作数推导出的结果 dtype）一致，并置于既有 out_dtype 检查之前。原检查在只传 acc 时 out_dtype 默认等于 acc.dtype，因此恒成立、形同虚设；新检查真正拦截 int8 操作数 + fp32 累加器、bf16/fp32 + fp16 累加器等误用，在编译早期给出可操作的错误提示（建议匹配累加器或 acc += tl.dot(a,b).to(acc.dtype)）。改动仅 3 行，但语义上收紧了一个用户可见的契约：过去“能编译（以意外错误失败或侥幸通过）”的 kernel 现在会在前端被拒。测试通过 run_parser + stub target 运行，无需 GPU，覆盖 int8/bf16/fp32/fp64 四种操作数。风险在于依赖旧有宽松行为的代码（尤其是跨后端迁移的 kernel）会开始报错，属于有意为之的行为变更。",
+      "change_summary": "[FRONTEND] Reject tl.dot accumulators whose dtype differs from the dot result (#12442)",
+      "ascend_impact": false
+    }
+  }
 }
