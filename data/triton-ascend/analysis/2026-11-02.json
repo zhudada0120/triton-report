@@ -1,0 +1,220 @@
+{
+  "date": "2026-11-02",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-11-03T08:11:17.375602+08:00",
+  "daily_summary": "当日变更集中在构建与打包健壮性（去除 editable_wheel 下的 triton 硬依赖、放宽 requirements 版本约束、去掉 torch-npu pin）、编译器后端稳定性（callback 库 dlclose 修复 VMA 泄漏、异步编译失败 future 的 traceback 清理修复 NPU OOM、debug 编译选项清理、npu_compiler_identity 正则修复）、以及若干 C++ lowering pass 的功能/正确性修复：TritonToLinalg 支持 noinline/kernel 函数调用与多返回值、TritonToStructured 吸收隐式 permute（原 TritonToLinalg 逻辑下移并新增 compileOn91095 选项）、TritonToGraph 引入 L0A/L0B/L0C cube 缓冲预算并据此约束 DotRowCoalescing、ssbuffer 的 flag id 从 0 开始分配、DynamicCVPipeline 控制流条件构建的确定性排序与输出 IR 稳定化、以及 CloneCubeDepInIf 缺失头文件导致的编译错误修复。整体方向是提升大模型长跑场景下的稳定性与编译确定性，并为 cube 资源约束增加显式模型。",
+  "test_impact_summary": "当日多数变更都直接触及需要测试看护的契约面：noinline kernel 调用 lowering、隐式 permute 的 pass 归属迁移、L0 cube 预算对 DotRowCoalescing factor 的约束、flag id 从 0 起分配、输出 IR 的确定性排序，均已有新增或更新的 lit/pytest 用例配套，但 L0 预算的端到端收益与边界（例如 factor 被 L0 预算压到 1 时的行为、L0 未知时按 legacy 放开）主要靠编译器 layout-memory 契约单测与规则单测覆盖，缺少端到端上板对比；callback 库 dlclose 通过 5 个 mock 单测钉住了清理契约，属于纯单元测试、无需真实 NPU，但未覆盖 910_95 与 A2_A3 两条路径的差异。此外 Kernel 函数调用、DynamicCVPipeline 输出稳定性涉及大量真实 kernel 组合，建议补充长跑/多 kernel 压力回归以防回归。",
+  "commits": [
+    {
+      "sha": "49a3e73a913afade511bdee13d96e86456e4b0ca",
+      "comment": "在 setup_patch.py 的 _get_install_requirements 中对 triton==3.6.0 做条件化：当 sys.argv 包含 editable_wheel / dist_info 时不声明 triton 依赖。原因是 Ascend 后端以外部插件形式安装到 triton 源码树内，editable 安装时再拉 triton 会产生自依赖/解析冲突。改动小且局部，但依赖 sys.argv 字符串匹配较脆弱（若构建前端改变命令拼写则失效），且非 editable 安装仍会 pin triton==3.6.0，需与 requirements/打包流程保持一致。",
+      "tags": [
+        "bugfix",
+        "chore",
+        "low-risk",
+        "build"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯打包元数据条件分支，无运行时语义；现有测试不覆盖 pip 安装路径，且改动不引入新的可测行为。",
+        "suggested_test_areas": [
+          "third_party/ascend/build/setup_patch.py"
+        ]
+      },
+      "message": "[build](fix) remove triton requirement in editable_wheel (#2842)\n\nCo-authored-by: insanecoder <zzhaoam@gmail.com>"
+    },
+    {
+      "sha": "0e3148b04f001e9800dfd768b13287b9a7b920ec",
+      "message_sha_note": "build fix",
+      "comment": "为 CloneCubeDepInIf.cpp 增补 ComputeBlockOpt/Common.h 头文件，修复 walkMainLoop 未声明导致的编译失败。属于构建期头文件依赖遗漏的补齐，无逻辑变化，风险极低；但说明该文件此前在部分构建配置下未被编译到，建议关注 CMake 目标是否完整覆盖该源文件。",
+      "tags": [
+        "bugfix",
+        "build",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅补 include，不改变任何 pass 行为，编译通过即验证。",
+        "suggested_test_areas": [
+          "third_party/ascend/lib/DynamicCVPipeline/ComputeBlockOpt"
+        ]
+      },
+      "message": "[build](fix) fix build with walkMainLoop undeclared (#2908)"
+    },
+    {
+      "sha": "2e699ddc48e182d7c80756c83d49e52c0fc0b4da",
+      "comment": "ssbuffer flag id 分配从 1 起始改为 0 起始：FlagIdManager 的 currentMaxId 初值改为 INVALID_FLAG_ID（首个分配为 0），FlagIdReuseManager 的 compact renumber 起点改为 0，并将 MULTI_MAX_FLAG_ID 从 7 降到 6 以维持 multi-buffer 场景下 0..13 的总量约束（15 保留给 pipe sync）。语义上正确利用了 0..14 共 15 个可用 id，single-buffer 场景可不复用即容纳 15 次传输，减少 flag 复用带来的跨方向冲突风险。风险点：MULTI_MAX_FLAG_ID 收紧到 6 会改变多 buffer 场景下的可用 flag 上限，若某 kernel 恰好需要 7 个同向 flag 会改为复用，需确认不引入新的跨方向 flag 冲突；测试已同步改期望值并新增 flag_id_from_zero.mlir，覆盖到位。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "DynamicCVPipeline",
+        "ssbuffer"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "flag 编号是 lit 测试中精确断言的输出，必须同步更新期望值；已新增 flag_id_from_zero.mlir 并修改 flag_reuse_cross_direction / flag_reuse_over_limit / test_scalar_v2c_external_input 的期望。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow/*.mlir"
+        ]
+      },
+      "message": "[ssbuffer](fix) allocate cross-core flag ids starting from 0 (#2804)\n\nFlag ids 0..14 are usable (15 is reserved), but FlagIdManager and the flag-reuse renumbering both started from 1, so flag 0 was never used.\n\n- Start FlagIdManager and the reuse renumbering from 0.\n\n- Lower MULTI_MAX_FLAG_ID from 7 to 6 so multi-buffering still fits within 0..13.\n\n- Update the lit tests and add flag_id_from_zero.mlir: in single-buffer mode 15 transfers now fit without reuse."
+    },
+    {
+      "sha": "74bab415080fadb1fe3a6ac8517e7b9d876fc307",
+      "comment": "TritonToLinalg 新增对 kernel 内函数调用（tt.call）的 lowering 支持：新增 TritonFuncOpSignaturePattern（只转换参数、保留 tensor 返回类型）、TritonCallOpPattern（tt.call → func::CallOp 并透传 program-info 参数）、以及 inlinePrivateCallees（在 memory 转换边界前把私有 callee 定点内联，并显式警告 noinline 不被支持）。同时扩展动态合法判定（tensor 结果允许保持 tensor）、保留 func 可见性、仅 public 且带 global_kernel 属性的函数添加 workspace 参数。实现考虑了先前失败的场景（finishMemoryConversion 的验证 pipeline 遇到 func.call→tt.func 会失败），将内联提前到 memory 阶段之后，思路合理。风险在于：把 noinline 语义降级为内联（仅告警）可能改变用户对 device 函数复用的预期；多块 callee 内联后依赖后续 scf 结构化，若后续 pass 处理不当可能产生性能或正确性偏差；私有单函数测试模块的私有 kernel 保留逻辑较微妙。测试补充充分（141 行 lit + 643 行 pytest，覆盖多返回值、tensor 返回、多块、early-return、嵌套 noinline、2D/3D tile）。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "TritonToLinalg",
+        "lowering"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增编译能力必须有测试看护；已新增 kernel_function_call.mlir 与 test_kernel_function_call.py，另外 test_launcher_runtime.py 因直接提交绕过框架队列产生顺序依赖而增加 synchronize/barrier。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/kernel_function_call.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_kernel_function_call.py",
+          "third_party/ascend/unittest/pytest_ut/test_launcher_runtime.py"
+        ]
+      },
+      "message": "[TritonToLinalg](feat) Support noinline func (#2793)\n\n* [TritonToLinalg](feat) Support multi return kernel call lowering in another kernel\n\n(cherry picked from commit ca944087a09600329ea3c3d5b6ae3d52bce62f49)\n\n# Conflicts:\n#\tthird_party/ascend/lib/TritonToLinalg/TritonToLinalgPass.cpp\n\n* [TritonToLinalg](fix) inline private callees before memory-conversion verification\n\nStaged lowering inserts a verified cleanup pipeline in\nfinishMemoryConversion, which runs before convertTTFunc. A lowered\nfunc.call may only reference a func.func, but the private callees are\nstill tt.func at that point, so the pipeline rejected the transient\nfunc.call -> tt.func pair and the pass failed with \"failed to clean up\nafter memory conversion\".\n\nInline private callees right after the memory stage, before that\ncleanup, and iterate the inlining to a fixed point so calls introduced\nby cloning a nested noinline callee are inlined as well.\n\n* [launch](fix) drain the framework queue before direct launcher submission\n\nThe ABI tests seed their output buffers through the framework dispatch queue\nand then reach the launcher directly, so on Ascend 950 a delayed sentinel\nwrite could land after the kernel and overwrite its result, turning the\nassertion into -1 depending on machine load and test order.\n\nSynchronize in _run/_c_launch before submitting, keep the queued-submission\ntests unordered via barrier=False, and flush the sentinel at the two direct\nmodule.launch call sites.\n\n---------\n\nCo-authored-by: TecJesh <qdvm5gl@163.com>"
+    },
+    {
+      "sha": "528d57ea3735bbba72c632586917e5c68a69f9e8",
+      "comment": "将 implicit permute 从 TritonToLinalg pass 重构迁入 TritonToStructured：删除 lib/TritonToLinalg/ImplicitPermute.cpp（636 行），在 TritonToStructured 下重建精简版（259 行），MemOpTransformer 的 permute 相关能力（createNewAddPtr/TensorPtr/AdvancePtr/getBoundaryCheck/materializeImplicitPermute 等）合并进 MemOpConverter，并新增 compileOn91095 选项（沿用 910_95 SIMT 无 dot 时跳过 load permute 的历史行为）。同时在 python 后端 compiler.py 两处 add_triton_to_structure 调用补传 compile_on_910_95，C++ 绑定签名新增可选参数。重构动机应是让 permute 分析与 structured 的内存/指针分析同处一个 pass，减少跨 pass 语义依赖。风险：pass 归属变化会改变编译流水线的 IR 观测点，任何依赖“triton-to-linalg 阶段才做 permute”的下游假设都会失效；测试从 triton-to-linalg 改为同时跑 triton-to-structured 才保持覆盖，需确认单独跑 triton-to-linalg 的既有管线不再覆盖此场景。",
+      "tags": [
+        "refactor",
+        "medium-risk",
+        "TritonToStructured",
+        "TritonToLinalg",
+        "lowering"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "pass 迁移必须调整 lit RUN 行以在新 pass 上触发；test_implicit_permute.mlir 已改为同时启用 --triton-to-structured=compile-on-910-95=true，test_load_strided.py 注释更新，但需确认无遗漏的只跑 triton-to-linalg 的用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/test_implicit_permute.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_load_strided.py",
+          "third_party/ascend/lib/TritonToStructured"
+        ]
+      },
+      "message": "[Pass](feat) refactor implicit permute pass to structured (#2889)\n\n* [Pass](feat) refactor implicit permute pass to structured\n\n* remove test cases"
+    },
+    {
+      "sha": "c51c2ce3b7de70432192e8d0994ba69c7486dce6",
+      "comment": "为 TritonToGraph 的图优化资源模型引入 L0A/L0B/L0C cube 缓冲预算：utils.py 新增 l0_size_in_kbytes_for_arch（950/A5 为 64/64/256 KiB，910/A3 族为 64/64/128 KiB，未知 target 返回 0 保持检查关闭）；ResourceSnapshot 增加 l0 容量与安全百分比，提供 hasL0Budgets/getSafeL0xBudget；新增独立查询 exceedsCubeBudgets（逐 dot 站点取 lhs/rhs/acc/result 的静态字节最大值与安全预算比较，不可分析则 fail-closed 返回 true）；DotRowCoalescing 用 L0A/L0C 预算约束 factor（lhs 与 acc 随 factor 线性增长，rhs 共享）；Python 侧 _graph_optimize_kwargs 注入容量与 80% 安全系数，pybind 与 Passes.td 增加对应选项并做取值范围校验。设计上把“资源裁决”从 cost 评估中剥离为独立 bool 查询，符合描述的重构意图。风险：L0 预算约束会压制 DotRowCoalescing 的 factor，可能带来性能回退；未知 arch 返回 0 静默关闭检查，容易在新增芯片上被忽略；l0 容量表硬编码在 Python 与 C++ HardwareConfig 两处，存在漂移风险。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "TritonToGraph",
+        "performance"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增选项改变了 graph-optimize 的调用参数与候选筛选路径；test_compiler_layout_memory_contract.py 已同步 stub 与期望 kwargs，但缺少针对 exceedsCubeBudgets 与 factor 被 L0 压制的专门单测。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "third_party/ascend/lib/TritonToGraph",
+          "third_party/ascend/backend/utils.py"
+        ]
+      },
+      "message": "[TritonToGraph](feat) enforce L0A/L0B/L0C cube buffer budgets in grap (#2841)\n\n* [TritonToGraph](feat) enforce L0A/L0B/L0C cube buffer budgets in graph optimization resource model\n\n* [TritonToGraph](refactor) expose exceedsCubeBudgets as standalone rule-facing cube query\n\nReplace the model-internal cube estimate/adjudication path with a single\nbool query: estimatePeakCubeBytes/CubeByteEstimate are removed and\nexceedsCubeBudgets(Operation*, const ResourceSnapshot&) now reports\nwhether the dot tiles under the queried root exceed the safe L0A/L0B/L0C\nbudgets. evaluateCandidateCost and ResourceCostAnalysis::evaluate are\nrestored to upstream behavior (no L0 adjudication, no auto-fill); the\nDotRowCoalescing factor constraints and the snapshot L0 budget accessors\nthey rely on are kept unchanged."
+    },
+    {
+      "sha": "7178fc5c4c74c64cbd367cc3f454306eac679655",
+      "comment": "UT 修复三处：移除两条 bishengir 编译命令中的 --bishengir-print-ir-after=hivm-graph-sync-solver（debug 模式下该选项可能导致编译失败或输出不稳定）；_npu_compiler_identity 的 linux-vdso 正则放宽以兼容不同 ldd 输出格式；test_elementwise_round 的参考实现在 float32 下计算再转回原 dtype，避免 half 精度下的舍入偏差。均为测试/工具侧修正，风险低；但 debug 选项删除意味着失去 hivm-graph-sync-solver 阶段的 IR 转储能力，排查问题时会少一个观测点。",
+      "tags": [
+        "bugfix",
+        "test",
+        "low-risk",
+        "compiler"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "本身即测试与编译辅助代码的修复；elementwise_round 期望值语义调整后需确认覆盖 half/bfloat16 等精度用例仍通过。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_elementwise_round.py",
+          "third_party/ascend/backend/utils.py"
+        ]
+      },
+      "message": "[ut](fix) fix ut (#2878)"
+    },
+    {
+      "sha": "2b466b7aadf5d9cdd3b4208e9cfbf7e1a9123a09",
+      "comment": "把 linalg_to_bin 两个分支里读取 metadata callback 的重复代码抽为 __load_metadata_by_callback，并用 try/finally + _ctypes.dlclose 释放 CDLL 句柄，解决长跑 JIT 场景每编译一个 kernel 泄漏若干 VMA、最终耗尽 vm.max_map_count 使 dlopen 失败并表现为误导性 MLIRCompilationError 的问题。dlclose 失败或无 dlclose 时只 warn 不失败，且先清空 _handle 防止误用，处理得当。风险极低：仅影响 library 生命周期，metadata 值在关闭前已拷贝；唯一需要注意的是若未来 callback 返回非标量（指针/引用）则不能提前卸载，当前约定为 int64 常量可接受。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "compiler",
+        "memory"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "卸载契约对现有测试不可见（删掉 dlclose 也能全绿），已新增 5 个 mock 单测钉住：读取顺序、异常时仍关闭一次、符号全不解析仍关闭、缺失 dlclose 与 dlclose 失败均只告警。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler.py"
+        ]
+      },
+      "message": "[compiler](fix) dlclose kernel callback library after reading metadata (#2816)\n\n* fix(ascend): unload kernel callback library after reading metadata\n\nctypes.CDLL never calls dlclose, so the callback library opened to\nevaluate the kernel metadata callbacks stays mapped for the lifetime of\nthe process. Every JIT compilation therefore leaks a handful of VMAs.\n\nA long running vLLM worker that compiles ~1200 kernels a day exhausts\nthe default vm.max_map_count of 65530 after a few days, after which\nevery dlopen fails with:\n\n    OSError: /tmp/tmpXXXXXXXX/libkernel.so: failed to map segment from shared object\n\nsurfacing as a misleading MLIRCompilationError from\n[ConvertLinalgRToBinary], which points at the compiler rather than at\nthe loader.\n\nWrap the metadata reads in try/finally and dlclose the handle, in both\nlinalg_to_bin_enable_npu_compile_910_95 and\nlinalg_to_bin_enable_npu_compile_A2_A3. The callbacks return plain\nint64 values that are copied into metadata before the library is\nreleased, so nothing refers to it afterwards.\n\nMeasured on an Ascend 910B3 by compiling the same kernel with a varying\nconstexpr against an empty cache: 7.00 VMAs leaked per compilation\nbefore this change (210 over 30 compilations), 0.02 after (1 over 60).\nKernel results and the metadata read through the callbacks are\nunchanged.\n\n* Make the callback library unload best-effort\n\nUnloading is an optimisation, so a platform whose _ctypes has no dlclose,\nor a dlclose that fails, must not turn a compilation that already\nsucceeded into an error. Warn instead, and clear the handle so the closed\nlibrary cannot be reused by accident.\n\n* Cover the callback library unload with mocked tests\n\nThe unload contract is invisible to the existing tests: dropping the\ndlclose call, or moving it out of the finally block, would keep every\nkernel compiling and every assertion passing. Only the VMA count in a\nlong running process would notice, and measuring that in CI is slow and\nflaky.\n\nPin the contract with five mocked tests instead. A fake lib replaces\nctypes.CDLL and a fake _ctypes records the handles it is asked to close,\nso nothing is dlopen'ed and no NPU is needed:\n\n- every callback value reaches metadata before the handle is closed, and\n  the handle closed is the one dlopen reported;\n- a raising callback still closes the handle exactly once and does not\n  have its error swallowed by the cleanup;\n- a kernel whose symbols do not resolve still releases the library;\n- a platform without dlclose, and a dlclose that fails, both warn and\n  leave the metadata that was already read intact.\n\nThe distinct per-symbol values also pin the symbol-to-metadata-key\nmapping, which the two call sites previously duplicated by hand.\n\n---------\n\nCo-authored-by: foyou <luminatispadafora@gmail.com>"
+    },
+    {
+      "sha": "1b71dfec1025abe18457b8c30f29465279a08e18",
+      "comment": "AsyncCompileMode 在 AutoTilingTuner 中改为 with ... as mode 并在 finally 中主动清理：遍历 raw_futures 与 future_kernels 中的 exception，断开 __traceback__/__context__/__cause__ 以释放大 tensor 参数引用，然后 clear 两个容器。针对的是失败 future 持有异常→异常 traceback 持有栈帧→栈帧持有大 tensor 导致 NPU 显存无法回收的 OOM。修复方向正确，是典型的“异常引用成环导致显存泄漏”问题。风险：依赖 mode 对象的内部字段名 raw_futures/future_kernels 以及 future 的 _future/future/_exception 私有属性，属于私有实现耦合，上游变更会静默失效；locals() 取 mode 的写法较脆弱。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "autotune",
+        "memory"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "该泄漏只在多次编译失败后累积显存时可见，现有测试难以直接断言；建议补充针对失败 future 清理与显存回收的回归用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/autotune_ut",
+          "third_party/ascend/backend/runtime/autotuner.py"
+        ]
+      },
+      "message": "[autotune](fix) fix NPU OOM caused by leaked failed futures with large tensor tracebacks in AsyncCompileMode (#2807)"
+    },
+    {
+      "sha": "118bd0924ebbbb3772fa33b60f3ac287de360467",
+      "comment": "修复 DynamicCVPipeline 输出 IR 不确定的问题：depsByGroup 是 DenseMap，遍历顺序不稳定，改为先排序 group id 再按序构建 producer/consumer 列表；intraCoreBuffers 由 DenseMap 遍历改为按 module 内 op walk 顺序编号；buildIdxToVarMap 用排序后的 groupIndices 遍历；四类 input/output values 统一 sort；usedVarsSet 从 DenseSet 改为 SetVector 以保序；collectFlowOptIfOpPairs 的 startNodes 改为按 module 顺序 walk 生成；consumerToVar 从 DenseMap 改为有序 SmallVector。整体是消除哈希容器遍历带来的非确定性，使编译产物可复现。风险中等：SetVector 语义为“保序去重”，若原 DenseSet 使用处依赖无序（如做集合差）需逐一确认；op walk 编号改变了 group 编号的派生方式，与既有 MLIR 断言/下游 pass 的索引假设需对齐。已新增两个 lit 用例覆盖 earliest-start 与 intra-core 顺序。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "DynamicCVPipeline",
+        "determinism"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "输出 IR 的顺序性/确定性需要 lit 精确断言看护；已新增 flow-opt-earliest-start.mlir 与 intra-core-condition-order.mlir，但既有 DynamicCVPipeline 用例可能因编号变化需要重新校验。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AddControlFlowCondition/*.mlir",
+          "third_party/ascend/lib/DynamicCVPipeline"
+        ]
+      },
+      "message": "[ssbuffer](fix) Fix the issue where the output ir is not fixed. (#2510)\n\nCo-authored-by: sxm <sunxianmiao@h-partners.com>"
+    },
+    {
+      "sha": "a075f2f33b615ade0fa5e70cbf83a4d864f674ea",
+      "comment": "放宽依赖兼容性：requirements.txt 去掉 torch-npu==2.7.1.post8、numpy==1.26.4、protobuf==3.20 与 pyelftools 下限；setup_patch.py 的 install_requires 去掉 attrs/numpy/scipy/decorator/psutil/pytest/pytest-xdist 的精确 pin，仅保留名称（scipy 分支 pin 也合并）；requirements_dev.txt 以 numpy/scipy 替换 pybind11。torch-npu 的移除理由充分（需与 CANN 线和 torch 精确配对，由 Dockerfile 的 TORCH_NPU_VERSION 统一管理）。风险：完全放开版本会放大不同环境的兼容性差异（尤其 numpy 2.x、scipy 1.13→新版、pyelftools 行为变化），protobuf 去掉 pin 也可能与其他组件冲突；建议在 CI 中显式固定一套验证矩阵。",
+      "tags": [
+        "build",
+        "chore",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯依赖声明变更，不改变代码逻辑；但需在 CI/镜像中验证放宽后的版本组合（numpy 2.x、新 scipy）仍能跑通现有 pytest/lit。",
+        "suggested_test_areas": [
+          "requirements.txt",
+          "requirements_dev.txt",
+          "third_party/ascend/build/setup_patch.py"
+        ]
+      },
+      "message": "[build](fix) Improved compatibility of dependencies (#2647)\n\n* Improved compatibility of dependencies and Python runtime environment\n\n* build: drop the torch-npu pin from requirements.txt\n\ntorch-npu is not declared in the wheel metadata, so this line only reached\nthe image build and developers running pip install -r. It also cannot be\nrelaxed the way the other packages in this PR were: every torch-npu release\nis built for one CANN line (CANN 8.5.0 -> 2.7.1.post8, CANN 9.1.0 ->\n2.10.0.post4) and pins torch exactly (torch-npu 2.7.1 requires torch==2.7.1,\n2.10.0.post4 requires torch==2.10.0). Neither the CANN pairing nor the torch\npairing can be expressed as a pip version range.\n\ndocker/Dockerfile already owns this decision through ARG TORCH_NPU_VERSION,\nso keeping the pin here installed torch-npu twice in the image and let it\ndrift from the build arg. Remove it instead of widening it.\n\n* Remove version restrictions on numpy, scipy, pybind11, pyelftools"
+    }
+  ],
+  "architecture_based_on_sha": "408e31592b50e930fc6f01c244f309444005d575",
+  "architecture_generated_at": "2026-11-01T20:11:07.549514+08:00"
+}

@@ -1,0 +1,82 @@
+{
+  "date": "2026-11-02",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-11-03T08:10:48.996784+08:00",
+  "daily_summary": "当日共有 4 个 commit，全部为小范围 bugfix/test 补强：AMD 后端修复了 batched WMMA scaled dot 的 scale layout 计算错误（kSize 取错维度导致无效广播），并新增 Gluon 前端测试；TritonGPU 的 OptimizeThreadRegions 将 cluster barrier 的引入限制到 kernel 函数，避免在 noinline device function 中生成非法 ttng.cluster_barrier；AMD Gluon 为 RDNA4 新增 descriptor-based buffer ops 并补齐 gfx12 SCOPE 编码（WGP/CU 模式差异）；Proton viewer 修复 --print-sorted 误删最高 util 帧的问题。整体以 AMD/Gluon 后端与工具链修复为主，不影响通用编译流水线契约。",
+  "ascend_impact_summary": "当日 4 个 commit 均不触及 triton-ascend 的接口面：1) LinearLayoutConversions.cpp 位于 lib/Dialect/TritonGPU/（Ascend 走 TritonToLinalg 而非 TritonGPU 布局路径）；2) OptimizeThreadRegions.cpp 同为 TritonGPU Transforms 但产出 ttng.cluster_barrier，属 GPU 布局/nvidia 路径；3) RDNA4 buffer ops 属 third_party/amd 及 Gluon AMD 语言层（Ascend 用自有 tla DSL 替代）；4) Proton viewer 为可选 profiler，Ascend 不参与。因此对 triton-ascend 无功能与测试影响。",
+  "commits": [
+    {
+      "sha": "bbe38e5742621fa0e46435133f79a6aff2ffaf7d",
+      "comment": "AMD 后端修复 chooseScaledWmmaScaleLayout 中 kSize 的维度估计错误：原实现固定取 dotOperandShape[1]，在有 batch（rank=3）时取到的不是 K 维，导致生成的 scale 布局寄存器基出现多余的零维广播。改为 dotOperandShape[rank - 1] 后，rank=3 时正确取 K 维度，产出紧凑的 linear layout。同时新增 gluon 前端测试 test_amd_wmma_scaled_batched，通过 IR 文本断言验证 scale layout 与 tt.dot_scaled 的 tensor shape 不再出现广播。改动局限在 AMD WMMA 的 scale 布局计算，属 AMD 专属代码路径，逻辑本身正确且低风险；测试为字符串断言，对 IR 打印格式较敏感，若上游打印格式变化可能导致测试脆弱。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "AMD-backend",
+        "TritonGPU-layout"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Dialect/TritonGPU/IR/LinearLayoutConversions.cpp 的 AMD WMMA scale layout 选择逻辑，属 TritonGPU 布局路径下的 AMD 专属分支；triton-ascend 不使用 TritonGPU 布局路径（走 TritonToLinalg/HIVM），也不涉及 AMD 后端。",
+        "testing": "无影响。新增测试位于 python/test/gluon/test_frontend.py 且仅针对 HIP_TARGET_CDNA5，Ascend 测试集中在 third_party/ascend/unittest。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Fix batched WMMA scale layout (#10733)\n\nThis PR fixes computation of WMMA scales if batch is present.\n\nBefore this change, because of wrong kDim size estimation, we produced\nunnecessary broadcasting: `#linear = #ttg.linear<{register = [[0, 0, 1],\n[0, 0, 2], [0, 0, 0], [0, 0, 0], [2, 0, 0]], lane = ... }>`\n\nNew layout:\n`#linear = #ttg.linear<{register = [[0, 0, 1], [0, 0, 2], [2, 0, 0]],\nlane = ...}>`\n\n---------\n\nCo-authored-by: Alexander Efimov <efimov.alexander@gmail.com>"
+    },
+    {
+      "sha": "fbbb964e3e1d0d379fa25ae1bc9d1eb3bb4ea97d",
+      "comment": "修复 OptimizeThreadRegions 的 canIntroduceClusterBarrier：原逻辑在非 kernel 的 device function 中，若 lookupNumWarps(func) 等于 module 的 ttg.total-num-warps 就允许插入 cluster barrier，结果在 num_ctas>1 且 noinline device function 执行 atomic 时生成 ttng.cluster_barrier，被 ClusterBarrierOp::verify 拒绝（该 op 仅允许出现在 kernel entry function）。改为直接返回 isKernel(func)，语义更严格且与 verifier 一致。新增 lit 测试覆盖 device function 内 atomic 不产生 cluster barrier 的用例。风险极低，但理论上可能让部分此前“侥幸可用”的 device function 场景不再获得屏障优化，属正确性优先的收缩。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "TritonGPU-transforms"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Dialect/TritonGPU/Transforms/OptimizeThreadRegions.cpp，作用于 TritonGPU 路径的 cluster barrier 插入，产出 ttng.cluster_barrier（NVIDIA 多 CTA 语义）；triton-ascend 不经过 TritonGPU transforms，也不使用 cluster barrier。",
+        "testing": "无影响。新增测试为 test/Conversion/atomic_ldst.mlir 的 lit 用例，属上游 GPU 路径测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TritonGPU] Restrict canIntroduceClusterBarrier to kernel functions (#12565) (#12568)\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run pre-commit run --from-ref origin/main --to-ref HEAD.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - /test for lit tests\n    - /unittest for C++ tests\n    - /python/test for end-to-end tests\n  - [ ] This PR does not need a test because FILL THIS IN.\n\n- Select one of the following.\n  - [ ] I have not added any lit tests.\n- [x] The lit tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)\n\n## Summary\n\nFixes #12565\n\ncanIntroduceClusterBarrier in\nlib/Dialect/TritonGPU/Transforms/OptimizeThreadRegions.cpp previously\nallowed cluster barriers inside non-kernel device functions whenever\nlookupNumWarps(func) equaled ttg.total-num-warps. When a noinline device\nfunction performed an atomic operation with num_ctas > 1,\nOptimizeThreadRegions emitted ttng.cluster_barrier inside the device\nfunction, which ClusterBarrierOp::verify rejects because\nttng.cluster_barrier is only legal inside a kernel entry function.\nRestrict canIntroduceClusterBarrier to isKernel(func).\n\nSigned-off-by: 1fanwang <1fannnw@gmail.com>"
+    },
+    {
+      "sha": "a380b0f498f3340c5ac87b9450c31e31f634cefe",
+      "comment": "为 RDNA4 在 Gluon AMD 语言层暴露 descriptor-based buffer ops（ttgl.amd.rdna4.buffer 的 make_buffer_descriptor/load/store），复用 CDNA5 的 gfx12 CachePolicy，并复用 CDNA3 的 make_buffer_descriptor（因其 4 字节分段边界检查语义与 gfx1201 实测一致）。lowering 侧把 getBufferLoadStoreCtrlBits 中 CDNA5 分支扩展为 isGfx12：新增 SCOPE_SE（1<<3），RDNA4 在默认 WGP 模式下 cta scope 映射到 SCOPE_SE（workgroup 可能跨 WGP 的两个 CU、各自 L0 缓存），CU 模式下仍用默认 SCOPE_CU；gpu/sys 分别映射 SCOPE_DEV/SCOPE_SYS。测试改为三组 RUN 行分别覆盖 gfx1250、gfx1201 cu-mode、gfx1201 WGP，并更新文档。实现清晰、注释完备；SCOPE 编码依赖 targetInfo.isCuMode()，若 WGP/CU 模式判定变化会影响正确性，需保持测试覆盖。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "AMD-backend",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更集中在 python/triton/experimental/gluon/language/amd/rdna4/（Gluon AMD 语言层）、third_party/amd/lib/TritonAMDGPUToLLVM/Utility.cpp（AMD 专属 lowering）与 docs；triton-ascend 不使用 Gluon AMD 适配（用自有 tla DSL），也不使用 TritonAMDGPUToLLVM。",
+        "testing": "无影响。测试为 test/Conversion/amd/buffer_ops_gfx12_policy.mlir 与文档，Ascend 不参与。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][Gluon] Add descriptor buffer ops for RDNA4 (#12571)\n\nExpose the descriptor-based buffer ops on RDNA4 as\n`ttgl.amd.rdna4.buffer` (`make_buffer_descriptor`, `load` and `store`)\nwith the gfx12 `CachePolicy` shared with CDNA5.\n\n- Lower `scope` on RDNA4 with the gfx12 SCOPE field, which was rejected\nbefore. As in LLVM's memory model, cta is SCOPE_SE in the default WGP\nmode, where a workgroup can span both CUs of a WGP and their separate L0\ncaches, and SCOPE_CU in CU mode. gpu and sys are SCOPE_DEV and\nSCOPE_SYS, as on CDNA5.\n- Bounds, as measured on gfx1201: an access is checked in 4-byte pieces,\nor as a whole if narrower, and a piece is in bounds if it ends within\nnum_records. This matches CDNA3 rather than gfx1250, so RDNA4 reuses the\nCDNA3 `make_buffer_descriptor` and its documentation."
+    },
+    {
+      "sha": "19a5c66d023edacb12c0a64a4fb39c8e549bcd4b",
+      "comment": "修复 proton-viewer 的 --print-sorted：原实现用 for row in range(1, len(sorted_df)) 跳过首行，假设 ROOT 排在最前；但使用 -m util 时 ROOT 的 util 为 NaN 而排在最后，导致 util 最高的帧被丢弃、ROOT 反而被打印。改为显式 drop(index=gf.graph.roots) 后再遍历全部行。新增 test_print_sorted_exclusive_metric 验证按 util 排序输出 [foo0, foo1, foo2]。改动仅涉及 profiler 查看器的展示逻辑，无编译/运行时契约变化，风险极低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "proton",
+        "profiler"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/proton/，属可选 profiler 工具，triton-ascend 不参与其编译/运行路径。",
+        "testing": "无影响。新增测试为 third_party/proton/test/test_viewer.py。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[PROTON] Don't drop the top frame in proton-viewer --print-sorted (#12573)\n\nprint_tree skipped the first row of the sorted frame assuming it was\nROOT. That only holds when ROOT has the largest value; with `-m util`\nROOT is NaN and sorts last, so the frame with the highest util was\ndropped and ROOT was printed in its place. Drop the root nodes\nexplicitly instead.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `third_party/proton/test/test_viewer.py`\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests."
+    }
+  ],
+  "architecture_based_on_sha": "0861b90f695e3c866f6f7eadd4be8339378ab017",
+  "architecture_generated_at": "2026-11-01T20:11:07.548246+08:00"
+}

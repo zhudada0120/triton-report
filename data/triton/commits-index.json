@@ -1,4 +1,20 @@
 {
+  "bbe38e5742621fa0e46435133f79a6aff2ffaf7d": {
+    "date": "2026-11-02",
+    "msg": "[AMD] Fix batched WMMA scale layout (#10733)"
+  },
+  "fbbb964e3e1d0d379fa25ae1bc9d1eb3bb4ea97d": {
+    "date": "2026-11-02",
+    "msg": "[TritonGPU] Restrict canIntroduceClusterBarrier to kernel functions (#12565) (#12568)"
+  },
+  "a380b0f498f3340c5ac87b9450c31e31f634cefe": {
+    "date": "2026-11-02",
+    "msg": "[AMD][Gluon] Add descriptor buffer ops for RDNA4 (#12571)"
+  },
+  "19a5c66d023edacb12c0a64a4fb39c8e549bcd4b": {
+    "date": "2026-11-02",
+    "msg": "[PROTON] Don't drop the top frame in proton-viewer --print-sorted (#12573)"
+  },
   "0861b90f695e3c866f6f7eadd4be8339378ab017": {
     "date": "2026-10-31",
     "msg": "[AMD][Gluon] Add descriptor buffer ops for gfx1250 (#12512)"

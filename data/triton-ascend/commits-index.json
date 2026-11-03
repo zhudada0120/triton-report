@@ -1,4 +1,48 @@
 {
+  "49a3e73a913afade511bdee13d96e86456e4b0ca": {
+    "date": "2026-11-02",
+    "msg": "[build](fix) remove triton requirement in editable_wheel (#2842)"
+  },
+  "0e3148b04f001e9800dfd768b13287b9a7b920ec": {
+    "date": "2026-11-02",
+    "msg": "[build](fix) fix build with walkMainLoop undeclared (#2908)"
+  },
+  "2e699ddc48e182d7c80756c83d49e52c0fc0b4da": {
+    "date": "2026-11-02",
+    "msg": "[ssbuffer](fix) allocate cross-core flag ids starting from 0 (#2804)"
+  },
+  "74bab415080fadb1fe3a6ac8517e7b9d876fc307": {
+    "date": "2026-11-02",
+    "msg": "[TritonToLinalg](feat) Support noinline func (#2793)"
+  },
+  "528d57ea3735bbba72c632586917e5c68a69f9e8": {
+    "date": "2026-11-02",
+    "msg": "[Pass](feat) refactor implicit permute pass to structured (#2889)"
+  },
+  "c51c2ce3b7de70432192e8d0994ba69c7486dce6": {
+    "date": "2026-11-02",
+    "msg": "[TritonToGraph](feat) enforce L0A/L0B/L0C cube buffer budgets in grap (#2841)"
+  },
+  "7178fc5c4c74c64cbd367cc3f454306eac679655": {
+    "date": "2026-11-02",
+    "msg": "[ut](fix) fix ut (#2878)"
+  },
+  "2b466b7aadf5d9cdd3b4208e9cfbf7e1a9123a09": {
+    "date": "2026-11-02",
+    "msg": "[compiler](fix) dlclose kernel callback library after reading metadata (#2816)"
+  },
+  "1b71dfec1025abe18457b8c30f29465279a08e18": {
+    "date": "2026-11-02",
+    "msg": "[autotune](fix) fix NPU OOM caused by leaked failed futures with large tensor tracebacks in AsyncCompileMode (#2807)"
+  },
+  "118bd0924ebbbb3772fa33b60f3ac287de360467": {
+    "date": "2026-11-02",
+    "msg": "[ssbuffer](fix) Fix the issue where the output ir is not fixed. (#2510)"
+  },
+  "a075f2f33b615ade0fa5e70cbf83a4d864f674ea": {
+    "date": "2026-11-02",
+    "msg": "[build](fix) Improved compatibility of dependencies (#2647)"
+  },
   "408e31592b50e930fc6f01c244f309444005d575": {
     "date": "2026-10-31",
     "msg": "Revert \"[ssbuffer](feat) select outer double-buffer sync flags- #2731\""
