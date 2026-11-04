@@ -1,4 +1,44 @@
 {
+  "1887644bdea84fde07825813158782fa526871fd": {
+    "date": "2026-11-04",
+    "msg": "[AMD] Preserve dominance when preparing if combining (#11346)"
+  },
+  "7674d91805ee29ddd7997a18dcb47afb35092625": {
+    "date": "2026-11-04",
+    "msg": "[AMD] Avoid PyTorch imports during backend discovery (#11666)"
+  },
+  "89b84d9b56d31a288984d671730e87ebb6af1f70": {
+    "date": "2026-11-04",
+    "msg": "[AMD] Read use_buffer_ops once at import time (#11399)"
+  },
+  "867957ed204083a428aab626cad43e2d9e79a2b0": {
+    "date": "2026-11-04",
+    "msg": "[AMD] Guard chained-dot pingpong against scaled dots (#11208)"
+  },
+  "51f4f818afc18f5f32634070536da97e217487c8": {
+    "date": "2026-11-04",
+    "msg": "[AMD][gfx1250] Enable LDS prefetch for scaled dot (#12524)"
+  },
+  "1d195c1387d84fa8aeec0c0b61a27531145659b6": {
+    "date": "2026-11-04",
+    "msg": "[BUILD] Keep deprecated-declarations warnings non-fatal for GCC (#12609)"
+  },
+  "90e50ecd9cb42ad0706b789a2161db16ceb3bfcd": {
+    "date": "2026-11-04",
+    "msg": "[triton_kernels] Account for decoded NVFP4 buffers on Blackwell (#12613)"
+  },
+  "f7f4df5229ff01043ab1c5f4893365ef817a6365": {
+    "date": "2026-11-04",
+    "msg": "Respect CTA order when building blocked layout (#12612)"
+  },
+  "e5398af4141c111c914f814a1e75facf89710aab": {
+    "date": "2026-11-04",
+    "msg": "[Interpreter] Restore language patches after nested calls (#12586)"
+  },
+  "125b196cfefe9a3ed0be0a450dbf140db1941906": {
+    "date": "2026-11-04",
+    "msg": "[AMD] Bypass the epilogue relayout for FMA (#11704)"
+  },
   "3412130d638105963a34c3e8c622a98f843625ae": {
     "date": "2026-11-03",
     "msg": "[FRONTEND] Reject tl.dot accumulators whose dtype differs from the dot result (#12442)"

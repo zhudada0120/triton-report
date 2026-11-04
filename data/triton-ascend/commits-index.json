@@ -1,4 +1,8 @@
 {
+  "b3c899b8de4a1061d93f710262ef46e61e4ab4a0": {
+    "date": "2026-11-04",
+    "msg": "[Docs](fix) standardize msDebug naming and add English guide (#2921)"
+  },
   "a81c089dcef0d347b7d87d4649908c8bc23593e1": {
     "date": "2026-11-03",
     "msg": "[sync](chore) Sync main from branch main-dev (#2944)"

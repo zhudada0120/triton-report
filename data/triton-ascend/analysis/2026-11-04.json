@@ -1,0 +1,32 @@
+{
+  "date": "2026-11-04",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-11-05T06:57:52.071055+08:00",
+  "daily_summary": "当日仅有一个提交，属于纯文档变更：统一 msDebug 工具名称的大小写规范（msdebug→msDebug），修正中英文调试指南中的措辞、链接（由旧的 mindstudio 830 固定链接改为 latest msOT 路径）与索引，并新增一篇完整的英文版《Triton msDebug User Guide》（约 900 行），使 msDebug 使用指南在 docs/en 下与中文版对齐；同时在 codespell 白名单中加入 'msDebug' 以避免 CI 拼写检查误报。该提交不触碰任何编译流水线、运行时、语言层或 pass 代码，对 Triton-Ascend 的编译/执行语义零影响。",
+  "test_impact_summary": "当日变更全部为文档与 CI 拼写白名单，不涉及任何可执行代码路径（backend/compiler.py、driver.py、lib passes、language、reuse、costmodel 均未改动），因此不需要新增或更新功能测试。唯一需要关注的是 docs CI 的拼写检查（codespell）与文档构建/链接有效性：新增的 'msDebug' 白名单条目与英文文档中的大量外链、代码块需确保 docs 构建流程通过。现有 third_party/ascend/unittest 与 python/test 测试用例完全不受影响，无需回归。",
+  "commits": [
+    {
+      "sha": "b3c899b8de4a1061d93f710262ef46e61e4ab4a0",
+      "comment": "纯文档类变更（docs）。主要做了三件事：(1) 在 docs/en/debug_guide/ 下新增 triton_msdebug_user_guide.md 英文版用户指南，并在 index.md 的概览列表与 toctree 中登记，使英文调试文档体系与中文对齐；(2) 对中文 triton_msdebug_user_guide.md 与 index.md 做名称规范化（msdebug / MindStudio Debugger → msDebug）与措辞、链接修订，把原先指向 mindstudio 830 的旧固定 URL 更新为 latest/msOT 路径；(3) 在 .github/docs-ci/codespell.whitelist.json 中加入 'msDebug'，避免拼写检查对品牌名的误报。实现方式为纯文本编辑，无代码改动。潜在风险很低：一是文档内大量外链为外部站点，若路径失效只能靠人工/链接检查发现；二是英文与中文文档后续需要同步维护，存在内容漂移的维护成本；三是不涉及 AscendBackend/NPUDriver/launcher/reuse/costmodel 等任何运行时或编译器模块，不影响编译缓存键、stage 流水线或 patch 应用。",
+      "tags": [
+        "docs",
+        "low-risk",
+        "debug_guide"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "变更仅涉及 docs/en、docs/zh 下的 Markdown 文档与 .github/docs-ci 的 codespell 白名单，未修改任何 Python/C++ 源码、编译流水线或测试用例，现有测试无需调整；唯一可验证点是 docs CI 的拼写检查与文档构建能否通过。",
+        "suggested_test_areas": [
+          ".github/docs-ci/codespell.whitelist.json",
+          "docs/en/debug_guide/index.md",
+          "docs/en/debug_guide/triton_msdebug_user_guide.md",
+          "docs/zh/debug_guide/index.md",
+          "docs/zh/debug_guide/triton_msdebug_user_guide.md"
+        ]
+      },
+      "message": "[Docs](fix) standardize msDebug naming and add English guide (#2921)"
+    }
+  ],
+  "architecture_based_on_sha": "408e31592b50e930fc6f01c244f309444005d575",
+  "architecture_generated_at": "2026-11-01T20:11:07.549514+08:00"
+}

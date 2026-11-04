@@ -1,0 +1,194 @@
+{
+  "date": "2026-11-04",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-11-05T06:57:45.798124+08:00",
+  "daily_summary": "当日变更集中在 AMD 后端与一个跨后端布局修复：AMD 侧修复了 PrepareIfCombining 在嵌套区域捕获值时的支配性缺陷、让 HIP 后端发现不再依赖 PyTorch、将 use_buffer_ops knob 改为导入时读取一次、为 chained-dot pingpong 增加 scaled dot 保护、为 gfx1250 的 scaled dot 启用 LDS prefetch、为 FMA 场景放开 epilogue relayout bypass；同时修复了 TritonGPU blocked layout 构造忽略 CTA order 的 bug、修复了解释器嵌套调用后语言补丁未恢复的问题，并调整了 triton_kernels 在 Blackwell 上 FP8×NVFP4 的显存预算。整体以 AMD 性能/正确性修复为主，附带一个通用布局 bugfix 和一个解释器 bugfix。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 基本无影响。绝大多数改动位于 third_party/amd（属于 Ascend 绝不使用的平台专属路径）与 triton_kernels（Ascend 不使用的 kernel 库）。唯一的通用变更 f7f4df5 修改了 include/triton/Dialect/TritonGPU/IR/TritonGPUAttrDefs.td 中 blocked layout 的 CTA order 构造逻辑，属于 TritonGPU 布局路径，Ascend 后端不走 TritonGPU 而走 TritonToLinalg，且 Ascend 未消费该 attr 构造辅助函数，因此不构成功能性影响。e5398af 修改了 python/triton/runtime/interpreter.py，该文件命中 Ascend 的 patch 影响映射（AscendReduceOps 继承 ReduceOps），但本次改动仅触及 InterpretedFunction.__call__ 的补丁恢复逻辑，未改动 ReduceOps 类及其 apply_impl 契约，因此对 AscendReduceOps 无影响。",
+  "commits": [
+    {
+      "sha": "1887644bdea84fde07825813158782fa526871fd",
+      "comment": "AMD 专属 pass PrepareIfCombining 的正确性修复。原先在判断某个纯操作能否被移到 scf.if 之前时，只检查了该操作的直接操作数（op->getOperands），遗漏了嵌套 region（如 scf.for）内部捕获的值，导致可能把一个依赖 scf.if 结果的操作提前移出而破坏支配性。修复引入 mlir/Transforms/RegionUtils.h 的 visitUsedValuesDefinedAbove，遍历 op 所有 region 中被定义在上方的值，若其 defOp 既不在 opsBetween 中也不 properlyDominates(currentIf)，则放弃移动。实现方式正确且保守（失败即不优化），风险低。同时新增了 region_capture_between_ifs 回归测试，覆盖第一个 if 结果被中间 for 捕获的场景。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Preserve dominance when preparing if combining (#11346)\n\n`PrepareIfCombining` checked only direct operands before moving pure operations\nacross an `scf.if`. This missed values captured inside nested regions and could\nmove an `scf.for` before the `scf.if` defining one of its captured values.\n\nCheck nested-region captures before moving the operation and add a pass-level\nregression test.\n\nFixes #11327."
+    },
+    {
+      "sha": "7674d91805ee29ddd7997a18dcb47afb35092625",
+      "comment": "修改 HIPDriver.is_active() 的实现：不再通过 import torch 加 torch.cuda.is_available() 判断，而是直接用 ctypes 加载 libhip，调用 hipGetDeviceCount 并检查返回码与设备数。异常捕获范围从仅 ImportError 扩展到 RuntimeError/OSError/AttributeError/subprocess.CalledProcessError，保证在 HIP 动态库缺失或加载失败时安全返回 False，与 NVIDIA 原生的无 torch 发现方式对齐。同时更新了 test_no_torch_dispatch.py：修正了原本逻辑错误的 skip 条件（原为 not is_cuda() and capability>=9，应为 not is_cuda() or capability<9），并新增 forbid-torch 子进程测试验证只激活 amd 后端且不导入 torch。这属于 AMD 平台专属 driver 的改动，NVIDIA 分支的测试改动也是纯测试修正。",
+      "tags": [
+        "refactor",
+        "test",
+        "low-risk",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Avoid PyTorch imports during backend discovery (#11666)\n\nDetermine AMD backend availability directly through the HIP runtime,\nmatching NVIDIA's native discovery approach. Return true only when\n`hipGetDeviceCount` succeeds with visible devices; return false on\nlookup/loading failures or runtime errors, without importing PyTorch.\n\n---------\n\nCo-authored-by: Joey Yu <234057141+lyu-oai@users.noreply.github.com>\nCo-authored-by: Lei Zhang <antiagainst@gmail.com>"
+    },
+    {
+      "sha": "89b84d9b56d31a288984d671730e87ebb6af1f70",
+      "comment": "性能相关的 knob 读取优化。python/triton/knobs.py 中 amd_knobs.use_buffer_ops 的类型从 env_bool 改为 bool，并在类定义时就调用 .get() 求值一次（与 TRITON_DEBUG 在 #7767 中的处理方式一致），同时在 refresh_knobs() 中增加重新读取。原因是 HIPBackend.get_tensor_specialization 对每个 tensor 参数都会读取该 knob，而 env_base.__get__ 每次都会 fall through 到 getenv_bool，形成 N 次环境变量查找。测试侧相应调整：test_knobs.py 改用 buffer_ops_analyze_small_tensor_range 作为 env 来源的验证对象、新增 test_use_buffer_ops_is_read_once 验证只读一次、并把 test_env_updated 切到 use_buffer_atomics；test_within_2gb 在修改环境变量后显式调用 refresh_knobs()。注意 knob 语义变化：显式赋值仍优先，但环境变量改动后需 refresh 才生效，这是一个对 AMD 用户可见的行为微调，不过仅限 AMD 专属 knob。",
+      "tags": [
+        "performance",
+        "refactor",
+        "low-risk",
+        "amd",
+        "knobs"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Read use_buffer_ops once at import time (#11399)\n\n`HIPBackend.get_tensor_specialization` runs once per tensor argument of\nevery launch and reads `knobs.amd.use_buffer_ops`. Since the knob is\nnever assigned explicitly, `env_base.__get__` falls through to\n`getenv_bool` each time, so a kernel with N tensor arguments performs N\nenvironment lookups per launch for a value that cannot change between\nthem.\n\nThis gives `use_buffer_ops` the same treatment `TRITON_DEBUG` got in\n#7767: resolve it at import time, re-read it in `refresh_knobs()`.\n\n---------\n\nCo-authored-by: irreg <irreg@users.noreply.github.com>"
+    },
+    {
+      "sha": "867957ed204083a428aab626cad43e2d9e79a2b0",
+      "comment": "AMD BlockPingpong 的断言崩溃修复。numOfDotLikeOps 统计同时包含 tt.dot 与 tt.dot_scaled，但 transformChainedDotSchedule 只处理普通 tt.dot，因此一个循环里有两个 scaled dot 时会走到 assertion。修复在进入 two-dot transform 前增加 dotOps.size() == 2 这一前提条件，保证只有两个常规 dot 才进入变换。改动只有一行、语义清晰，属于最小侵入式的防护性修复。测试在 amd-block-pingpong-chained-dots.mlir 中新增了含两个 dot_scaled 的循环，验证 pass 不再触发断言（CHECK 保持结构不被重写）。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Guard chained-dot pingpong against scaled dots (#11208)\n\nBlockPingpong counts both tt.dot and tt.dot_scaled operations, but its\ntwo-dot transform only handles tt.dot. A loop containing two scaled dots\ntherefore hits an assertion.\n\nRequire two regular dots before entering the transform."
+    },
+    {
+      "sha": "51f4f818afc18f5f32634070536da97e217487c8",
+      "comment": "AMD gfx1250 上为 tt.dot_scaled 启用 LDS prefetch 的性能改动。原来 initSchedule 中 ldsPrefetch 条件带有 !hasScaledDot 的保守限制，tdmReorder 则专门用于 scaled dot；此次将 scaled dot 纳入 LDS prefetch 路径（ldsPrefetch = hasTDMLoad && numStages >= 3 && !waitAtTail），并把 tdmReorder 条件改为 && !ldsPrefetch 以避免两套调度互相覆盖（num_stages<3 时仍走 reorder）。同时更新注释说明 scale operands 跟随其 local_load 落入的 stage。测试在 amd-pipeline-tdm.mlir 中新增 num_stages=3 下 LDS_PREFETCH 检查（验证 A/B 及两个 scale 的 local_load 都被提升为 iter_args），并给 test_mxfp_gemm_tdm.py 增加 --num_stages knob。改动直接影响 AMD Pipeliner 调度，是性能关键路径，但限定在 AMD 专属编译后端且受 waitAtTail/numStages 条件保护，风险可控。",
+      "tags": [
+        "performance",
+        "medium-risk",
+        "amd",
+        "pipeliner"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][gfx1250] Enable LDS prefetch for scaled dot (#12524)\n\n- Enable LDS prefetch for scaled dot\n- Add --num_stages knob to test_mxfp_gemm_tdm.py"
+    },
+    {
+      "sha": "1d195c1387d84fa8aeec0c0b61a27531145659b6",
+      "message": "[BUILD] Keep deprecated-declarations warnings non-fatal for GCC (#12609)\n\n#12545 removed `-Wno-error=deprecated-declarations` after migrating\nTriton's own code away from the deprecated attribute-dictionary\nbuilders. The `Ops.cpp.inc` files generated by mlir-tblgen still call\nthose overloads from within other deprecated overloads, for example:\n\n```\nOps.cpp.inc: In static member function 'static mlir::triton::nvws::ArefGetEnterOp mlir::triton::nvws::ArefGetEnterOp::create(...)':\nOps.cpp.inc:1137:16: error: 'static mlir::triton::nvws::ArefGetEnterOp mlir::triton::nvws::ArefGetEnterOp::create(mlir::OpBuilder&, mlir::Location, mlir::TypeRange, mlir::ValueRange, llvm::ArrayRef<mlir::NamedAttribute>)' is deprecated: use the overload taking Properties and discardableAttributes instead [-Werror=deprecated-declarations]\n```\n\nClang does not diagnose such calls, so the CI build\n(`TRITON_BUILD_WITH_CLANG_LLD`) stays clean. GCC does, and a default GCC\nbuild of main now fails in the generated `Ops.cpp.inc` of TritonIR,\nTritonGPUIR, TritonInstrumentIR, TritonNvidiaGPUIR, NVWSIR and ProtonIR.\n\nThis restores the flag for GCC only, so clang builds keep the stricter\nsetting from #12545.\n\nTested with GCC 13.3 (the Ubuntu 24.04 default), building with `pip\ninstall -e .` without `TRITON_BUILD_WITH_CLANG_LLD`:\n- x86_64: main (a94dac373) fails in the six `Ops.cpp.o` targets above;\nwith this change on a972119e9 the full build succeeds and the\ndiagnostics in the generated code remain as warnings.\n- aarch64: main (a972119e9) fails the same way (five of the targets fail\nbefore the build stops); with this change all six compile. (Linking\n`triton-opt` there with GNU ld then hits an unrelated `R_AARCH64_CALL26`\nrelocation overflow, which `-fuse-ld=gold` avoids.)\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [ ] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n- [x] This PR does not need a test because it only changes build flags;\nCI builds with clang, so the GCC build was checked by hand as described\nabove.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)\n\nSigned-off-by: 0z5a <dezhen.lu@student.uni-tuebingen.de>",
+      "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 triton-ascend。",
+      "tags": [
+        "chore"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "90e50ecd9cb42ad0706b789a2161db16ceb3bfcd",
+      "comment": "triton_kernels 中 Blackwell（SM10x）上 dense FP8 × NVFP4 matmul 的共享内存预算修正。两处改动：(1) opt_flags_nvidia.py 新增 is_fp8_nvfp4 判定，并在 compute_num_stages 中当走 NVFP4 upcast fallback 时扣除解码后的 BF16 tile（block_k*block_n*2）以及非常驻 kernel 的 conversion scratch，同时避免对 native FP4 padding 重复计费，并给非常驻 pipeline 补回 num_stages-1 的原始输入缓冲；(2) opt_flags.py 在常驻且小 grid（grid_size_tma < n_sms）且为 fp8×nvfp4 时把 block_n 收窄到 128，避免并行度不足。这是启发式调优逻辑，仅影响 triton_kernels 的默认 autotune 配置选择，不触及编译器与运行时接口；commit 描述中列出了 GB300 上的实测数据支撑。改动属于性能/资源正确性，局限在 NVIDIA 路径。",
+      "tags": [
+        "performance",
+        "bugfix",
+        "low-risk",
+        "triton_kernels",
+        "nvidia"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[triton_kernels] Account for decoded NVFP4 buffers on Blackwell (#12613)\n\n## Summary\n\nDense FP8 × NVFP4 matmul can exceed Blackwell's shared-memory limit\nbecause the heuristic misses the decoded BF16 weight tile and\nregular-kernel conversion scratch, while charging native FP4 padding\nthat this fallback does not use. With random inputs at M=2048, K=1024,\nN=8192, the persistent and regular paths request 236,840 and 266,256\nbytes respectively, above the 232,448-byte limit.\n\nThe corrected budget selects configurations that fit. For small dense\ngrids with fewer blocks than multiprocessors, use a narrower tile to\navoid losing throughput to insufficient parallelism.\n\n### Desired features\n\n- Account for the decoded BF16 tile and regular-kernel conversion\nscratch and pipeline buffers.\n- Select resource-fitting defaults for dense FP8 × NVFP4 matmul across\nstrided, contiguous, and swizzled scale layouts.\n- Select a narrower tile for underfilled dense grids while honoring\nexplicit tuning constraints.\n\n## Validation\n\nHardware: NVIDIA GB300 (SM103), 232,448 bytes of opt-in shared memory\nper block. Compiler: Triton 3.9.0+git.941849d2e5.\n\nWarmed CUDA-graph matmul latency using random inputs, BF16 output, and\nbitwise invariance, compared with `block_n=128, num_stages=2` on the\nsame GPU:\n\n| M | K | N | Constrained baseline | New default |\n| --- | --- | --- | --- | --- |\n| 32 | 4096 | 16384 | 54.96 µs | 53.03 µs |\n| 2048 | 4096 | 8192 | 359.75 µs | 304.21 µs |\n| 4096 | 8192 | 16384 | 2711.89 µs | 2057.72 µs |\n\nThese timings use the persistent path. The regular path also fits after\nthe accounting correction. Timings are kernel-level measurements, not\nend-to-end application results.\n\n## Lines Changed\n\n| Type | Added | Removed | Net |\n| --- | ---: | ---: | ---: |\n| Tests | 0 | 0 | 0 |\n| Core Logic | 24 | 1 | 23 |\n| AutoGenerated | 0 | 0 | 0 |\n| Total | 24 | 1 | 23 |\n\n## Reviewers Guide\n\n-\n`python/triton_kernels/triton_kernels/matmul_details/opt_flags_details/opt_flags_nvidia.py`:\ncorrected resource accounting.\n- `python/triton_kernels/triton_kernels/matmul_details/opt_flags.py`:\nsmall-grid tile selection.\n\nNo files are primarily movements."
+    },
+    {
+      "sha": "f7f4df5229ff01043ab1c5f4893365ef817a6365",
+      "comment": "TritonGPU blocked layout 构造的通用 bugfix。TritonGPUAttrDefs.td 中 get() 的分支在把剩余 CTA 数分配给某一维时用了 CTAsPerCGA[rank - 1]，忽略了用户传入的 CTAOrder，导致生成的 CGA layout 与请求的 CTA 顺序不一致（issue #12606）。修复为 CTAsPerCGA[CTAOrder.back()]，即把剩余 CTA 数分配到 CTA order 的最后一维（最外层维度），这是二维/多维 CGA 语义下正确的“wrap at CTA level”位置。单测 DialectTest.cpp 增加了 rank-1、CTAOrder=[[1],[0]] 的用例覆盖该路径。该文件是 TritonGPU 布局的基础构造函数，被所有走 TTGIR 布局的 pass 复用，理论影响面较广，但修复方向严格正确且仅改变此前错误的行为，风险可接受。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "tritongpu",
+        "layout"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 TritonGPU 布局 attr 的构造辅助函数（BlockedEncodingAttr::get 的 CGA 分支），Ascend 后端走 TritonToLinalg/HIVM 路径而非 TritonGPU 布局注入与转换，不调用该构造辅助，也不消费 CGA layout 语义。",
+        "testing": "无影响。unittest/Dialect/TritonGPU/DialectTest.cpp 为上游 C++ 单测，Ascend 不复用。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Respect CTA order when building blocked layout (#12612)\n\nFixes #12606"
+    },
+    {
+      "sha": "e5398af4141c111c914f814a1e75facf89710aab",
+      "comment": "解释器嵌套调用的状态泄漏修复。InterpretedFunction.__call__ 原先先执行 _patch_lang(self.fn) 再执行 rewrite()，且 rewrite() 位于 try 之外，因此嵌套的 interpreted helper 若 patch 了外层 kernel 未 patch 的 triton.language.core 函数，返回（或抛异常）后补丁不会被恢复，导致 kernel 之外仍能调用这些语言算子。修复把 rewrite() 移入 try 并新增 finally: scope.restore()，使每层调用各自恢复自己的补丁作用域，异常路径（包括 rewrite 失败）也会恢复。测试 test_nested_helper_restores_language 参数化 fail=False/True，验证成功的 helper、抛异常的 helper、以及 kernel 结束后 tl.core.full 恢复原状且外部调用报 _semantic 错误。改动只触及 InterpretedFunction 的调用框架，不改变 ReduceOps/InterpreterBuilder 等扩展点契约。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "interpreter"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。python/triton/runtime/interpreter.py 虽在 Ascend 的 patch 影响映射内，但影响点是 AscendReduceOps 继承的 ReduceOps 类及其 apply_impl；本次改动仅调整 InterpretedFunction.__call__ 中 _patch_lang 作用域的恢复时机，未修改 ReduceOps 类、reduce 接口或 InterpreterBuilder 契约，AscendReduceOps 的行为不受影响。",
+        "testing": "无影响。新增用例位于 python/test/unit/runtime/test_interpreter.py，Ascend 侧解释器测试不涉及嵌套 helper 的补丁恢复断言。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Interpreter] Restore language patches after nested calls (#12586)\n\nA nested interpreted helper can patch `triton.language.core` functions\nthat the outer kernel did not patch. Those changes currently survive the\nlaunch, leaving language operations callable outside a kernel.\n\nRestore the helper's patch scope on return or failure, including\nfailures during rewriting. The outer kernel retains its own patches\nuntil its launch finishes.\n\nFixes #12583.\n\nValidation:\n- Both new regression cases fail on unchanged main because `core.full`\nremains patched.\n- All 69 interpreter tests pass with the fix. The new cases cover a\nsuccessful helper, a helper that raises, continued language operations\nin the outer kernel, and rejection of language operations outside the\nkernel.\n- `PYTHONPATH=python python -m pytest\npython/test/unit/runtime/test_interpreter.py -s --tb=short`\n- `pre-commit run --from-ref origin/main --to-ref HEAD` passes.\n- Tested on CPU with Python 3.13, checkout Python sources and the Triton\n3.9.0 wheel's native extension. No GPU tests were run.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n- [x] I have written a PR description following the [commit message\nguidelines](https://cbea.ms/git-commit/#why-not-how).\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n- [x] I have added tests in `/python/test`.\n- [x] I have not added any `lit` tests.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/runtime/interpreter.py"
+        ],
+        "recommend_refresh": true
+      }
+    },
+    {
+      "sha": "125b196cfefe9a3ed0be0a450dbf140db1941906",
+      "comment": "AMD OptimizeEpilogue 的收益性判断泛化。BypassEpilogueSMEM 原先仅在 convert_layout 的源为 MMA 布局（MFMA/WMMA）时才绕过 relayout，FMA 场景被静默跳过，导致 FMA kernel 仍承担昂贵的 LDS 往返。新增 isProfitableBypassSource 用四个条件做收益性判断：元素每线程数不超过目标布局（避免 replication 带来更多 store）、最快变化维一致、源布局 lane 沿该维连续（保证合并访问）、源连续长度不小于目标连续长度（按 128bit store 宽度封顶，避免因 f16 的 8 vs 16 而误判）。MMA 源保持无条件绕过。实现方式是把启发式集中到一个静态函数，逻辑清晰、条件保守（任一不满足即回退到原 relayout）。测试新增 8 个 MLIR 用例覆盖 equal/wider/narrower contig、order mismatch、lanes 不连续、store 宽度封顶、tensor 比 tile 窄、slice replication、linear 转置等场景，覆盖度较好。仅影响 AMD 专属 pass。",
+      "tags": [
+        "performance",
+        "low-risk",
+        "amd",
+        "epilogue"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Bypass the epilogue relayout for FMA (#11704)\n\n`BypassEpilogueSMEM` only rewrites a store when the `convert_layout`\nfeeding it is MMA (MFMA/WMMA), so FMA is silently skipped. That means\nthat the expensive relayout stays, with its LDS round trip, which hurts\nperformance. This PR replaces that bail-out with a profitability check,\nso the relayout can also be bypassed on FMA kernels when it is\nprofitable. With this PR, we measured ~10% speedup on several FMA\nkernels.\n\nTwo layouts are involved in the decision:\n1. The *candidate* layout is the `convert_layout` source (the one the\nstore would pivot to if the relayout is dropped, **srcType in the\ncode**)\n2. The *current* layout is the coalesced one the store uses today\n(**dstType** in the code)\n\nThe heuristic for when the relayout is profitable for FMA is simple: MMA\nsources keep being bypassed unconditionally. For any other distributed\nlayout (DistributedEncodingTrait: blocked, slice, linear, …), the checks\nbelow are computed on the linear layout. The bypass is applied only if\nall of the following hold:\n1. **No extra replication**: the candidate holds no more elements per\nthread than the current layout. A replicated source, e.g. the slice\nlayout of a reduction, would need more store instructions.\n2. **Same fastest-varying dimension**: otherwise the two contiguous runs\nare not comparable.\n3. **Coalesced:** consecutive lanes of the candidate layout run along\nthat dimension; otherwise the store would not be coalesced.\n4. **No more stores:** the candidate's contiguous run per thread is not\nshorter than the current one. Both are capped at the 128-bit store\nwidth, since neither can store more than that at once.\n\nIf any of those do not hold, it would be harmful for performance, so\nit's better to actually apply the relayout. If all of them hold, then\nskipping is considered to be profitable.\n\nThis PR also adds several testcases to exercise those situations."
+    }
+  ],
+  "architecture_based_on_sha": "0861b90f695e3c866f6f7eadd4be8339378ab017",
+  "architecture_generated_at": "2026-11-01T20:11:07.548246+08:00"
+}
