@@ -1,0 +1,320 @@
+{
+  "date": "2026-11-05",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-11-06T07:00:55.000901+08:00",
+  "daily_summary": "当日变更围绕 TLA（Triton Language for Ascend）前端与 Ascend 编译/运行时链路的补强：新增 TLA 专用 lowering 流水线（TLAToLinalgPass）与 TLA 标量 dtype/向量算子（vshl/vshr/vpack/vlrelu/vprelu/where/truncmod/assume），并补充 DSA 稀疏 MLA prefill 复合 kernel 测试；编译侧修正 MergeConcatLoadBuffer 仅限 A5、修正 TLA/doc 约束、优化 bishengir --help 探测缓存与 workspace 64 位计数、修复 make_range slice 与 volatile 间接 load 语义、支持带指针的 noinline 调用内联；运行时侧把共享库（npu_utils.so、launcher runtime）从 TRITON_CACHE_DIR 迁到后端包内 bin/ 目录，避免 PyTorch Inductor 重定向缓存目录导致产物失效；此外新增 TritonMemoryAccess 的公共指针分析框架（PtrAnalysis/CommonPtrRules/ControlFlowPtrRules）及其大量单元测试，并更新 bisheng-version、A6 SIMT libdevice bc、A3 libdevice 适配。",
+  "test_impact_summary": "当日变更显著扩大了测试面：TLA 语言层新增大量算子、dtype 与 where/assume/truncmod 等原语，均配有 tla_ut 三阶段（ir/compile/run）用例与前端契约测试；TLA 专用 lowering 与 noinline 调用、range slice、volatile 间接 load 均新增 lit/MLIR 差分与 pytest 端到端用例；launcher 缓存根目录迁移、workspace 64 位计数、MergeConcatLoadBuffer A5 限制均有针对性的 pytest_ut 用例（含对 launcher 源码文本的契约断言）。新增 PtrAnalysis 框架配套 11 个 C++ gtest 文件，属独立静态分析模块，不影响既有编译流水线但需纳入 CI 构建。由于缓存目录语义发生变更（共享产物不再位于 TRITON_CACHE_DIR），原有依赖缓存路径的测试需同步调整；此外 TLA lowering 报告了 3 个已知失败（memref layout 断言与 i1 load 类型），设备精度尚未验证，建议持续看护。",
+  "commits": [
+    {
+      "sha": "ae07d3d13917a53300bb74127604242f7bf02f2e",
+      "comment": "纯文档修正：把 dot op 的 input_precision 说明从 tf32/tf32x3/ieee 改为 hf32/ieee，默认值改为 hf32。这与架构中 _apply_ascend_patch 将 TritonSemantic.dot 的 tf32 降级为 hf32（忽略 max_num_imprecise_acc）的实现一致，文档之前与实际行为脱节。风险极低，仅影响 _ascend_constraints.py 生成的 API 文档。",
+      "tags": [
+        "docs",
+        "low-risk",
+        "language"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅文档字符串更新，无代码行为变化，不影响任何测试。",
+        "suggested_test_areas": []
+      },
+      "message": "[docs](op) Modify triton dot op docs constraints (#2966)"
+    },
+    {
+      "sha": "982111c78441a42bb0ae2a0a213767d54eac2005",
+      "comment": "运行时共享库存储目录重构：新增 utils.bin_cache_manager，将 npu_utils.so 与 __triton_launcher_runtime 从 TRITON_CACHE_DIR 迁到后端包内固定 bin/ 目录。原因是 PyTorch Inductor 会在每个测试用例前后把 TRITON_CACHE_DIR 重定向到临时根目录，导致已构建产物（以及 runtime 中烘焙的 helper 绝对路径）失效/被遗弃。实现上用 FileCacheManager.__new__ 构造避免触发 knobs/env 读取；get_runtime 在 npu_utils_path 不存在时重新解析重建；custom/remote cache manager 仅作用于 per-kernel 产物。潜在风险：改变了缓存布局（旧路径产物不再复用），bin_cache_manager 通过 __new__ 绕过构造器属较脆弱的内部依赖，若上游 FileCacheManager 属性/初始化逻辑变化需同步；并行构建的 flock 协调仍依赖 lock_path 正确设置。测试改动较完整，更新了原有断言为稳定 bin/ 路径并新增 helper 删除后重建用例。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "runtime",
+        "launcher"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "缓存根目录语义变化，原 test_launcher_plan.py 中关于 runtime 随 TRITON_CACHE_DIR 重定位重建的断言全部失效，已改为验证 bin/ 稳定性；新增 helper 删除后 get_runtime 重建用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_launcher_plan.py",
+          "third_party/ascend/unittest/pytest_ut/test_backend_npu_utils_build_flags.py",
+          "third_party/ascend/backend/utils.py",
+          "third_party/ascend/backend/driver.py"
+        ]
+      },
+      "message": "[launch](fix)  Optimize the storage directory for shared libraries (#2945)"
+    },
+    {
+      "sha": "d9c64d36502a148a4b4498d309daa617eb377ae7",
+      "comment": "为 TLA 引入专用 lowering：新增 C++ TLAToLinalgPass（createTLAToLinalgPass），把显式 TLA IR（tt.func + tt.addptr/ptr_to_int/get_program_id/load 等）转换为带 hivm/affine memref ABI 的 func.func 入口，复用 LoadStoreConverter::LoadConverter 处理临时 GM 标量 load，并采用 addIllegalOp 精确列出需转换 op 而非整体拒绝 Triton dialect。Python 侧 AscendBackend.add_stages 在 enable_tla_mode 时走 make_tla_ttir + tla_to_ttadapter 独立流水线，且 enable_tla_mode 改由 source 的 _frontend_kind（TLASTSource.parse_options）在 cache hash 前决定，而非 kernel 启动关键字。lower_ttir 签名精简、剥离 inliner 到 add_ttir_pipeline（由 make_tla_ttir 与离线 utils 调用）。潜在风险：TLA 分支跳过 make_ttir 的标准优化，ttir stage 行为分叉；check_ttadapter 改为白名单式检查，若遗漏 op 可能放过未转换语义；commit message 已注明 3 个 host/IR 测试失败（两个 memref-layout 断言和一个原始 i1 load 类型不匹配），设备精度未验证。",
+      "tags": [
+        "feature",
+        "high-risk",
+        "compiler",
+        "tla",
+        "language"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 TLA 编译流水线与 pass，需新增 pointer_offset/scalar_load/pointer_abi 等用例覆盖 ABI 转换、标量 load、i1 指针；同时 lower_offline 需先跑 add_ttir_pipeline，测试工具已同步修改。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/dma/pointer_offset.py",
+          "third_party/ascend/unittest/tla_ut/dma/scalar_load.py",
+          "third_party/ascend/unittest/tla_ut/scope/pointer_abi.py",
+          "third_party/ascend/unittest/tla_ut/utils/tla_test_utils.py",
+          "third_party/ascend/lib/TritonToLinalg/TLAToLinalgPass.cpp"
+        ]
+      },
+      "message": "Add dedicated TLA lowering with generic load conversion (#2950)\n\nSelect the TLA compilation pipeline before cache hashing and adapt explicit\nTLA IR to the runtime kernel ABI through TLAToLinalgPass.\n\nCheck legality for converted operations and pointer types without rejecting\nthe entire Triton dialect. Register the complete generic LoadConverter for\ntemporary GM tl.load support alongside TLA pointer and ABI conversion.\n\nRebuild and install the wheel. A5 scalar-load and DSA object compilation\npass. Focused host/IR tests: 11 passed, 3 failed, 5 skipped. The failures\ncover two memref-layout assertions and a raw i1 load type mismatch;\ndevice accuracy remains unverified.\n\nCo-authored-by: lbqg <songyaofei2@huawei.com>"
+    },
+    {
+      "sha": "ac2466c8e7348aaa5e4893397c55e56cebd07ede",
+      "comment": "新增 TLA 稀疏 MLA prefill（DSA）复合 kernel 测试：kernels/dsa 下含 dsa_kernel.py（三槽 L1 流水、滚动 gather、online softmax、MMAD 拆分 512 维 latent + 64 维 RoPE）、test_dsa.py（5 类分布 × 2 seed × 4 head 的精度检查与 profiling 计时）与 kernels/utils.py（懒加载、设备快照、profiler 封装、结果落盘）。同时给 mmad.py 增加 transpose_b 分段累加（K=512 + K=64 共享 L0C）用例与 frontend contract。conftest.py 改为仅在 xdist 插件存在时取 worker_id，并限定 kernels/ 只收集 test_*.py。潜在风险：该 kernel 依赖 A5 1:2 Cube/Vector 比例、Ascend950 专用，非目标环境会抛错；README 也说明精简后未重新上卡复测、pytest 计时口径与原表不同。属测试资产，不改变编译流水线。",
+      "tags": [
+        "test",
+        "feature",
+        "low-risk",
+        "tla",
+        "attention"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增复合 kernel 测试目录与共享工具，需在 tla_ut 收集规则下正确识别；mmad 新增 transpose-accumulate 参数化用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/kernels/dsa/test_dsa.py",
+          "third_party/ascend/unittest/tla_ut/kernels/utils.py",
+          "third_party/ascend/unittest/tla_ut/cube/mmad.py",
+          "third_party/ascend/unittest/tla_ut/conftest.py"
+        ]
+      },
+      "message": "[ascend](feat) Add TLA sparse MLA prefill ut (#2961)\n\n* [ascend](feat) add TLA DSA prefill tests\n\nAdd the sparse MLA prefill kernel with pytest accuracy checks,\nprofiling, shared kernel utilities, and documented performance results.\nSupport all four head counts through the public TLA MMAD interface.\n\n* [ascend](test) cover split-reduction MMAD accumulation\n\nAdd independent transpose-accumulation cases to the existing MMAD suite.\nCheck K=512/64 products sharing L0C, initialization flags, and FP32 references.\nKeep ordinary MMAD tests free of special-case dispatch.\n\n* [ascend](refactor) simplify DSA gather pipeline\n\nReplace the DSA kernel with the simplified implementation. Merge repeated\ngather stages with compile-time unrolling and remove the single-iteration\nprologue loop while preserving buffer and event ordering.\n\nAll four head counts produce equivalent normalized ttadapter IR. The\nsimplified kernel has not been retimed on device.\n\n---------\n\nCo-authored-by: liupengcheng2012 <liupengcheng38@huawei.com>"
+    },
+    {
+      "sha": "01df8fc3ec3f6e999b6fbaf45aa1bd9d198bdc96",
+      "comment": "修复 MergeConcatLoadBuffer 的启用条件：原逻辑用 compile_on_910_95（寄存器基编译标志）判断，导致 A6（910_9691 等）也会被启用，而该 pass 依赖两个 disjoint memref.copy 的合并，在 A6 codegen 下会丢一半 tile。改为用 _is_a5_target_arch(metadata.get(\"target\").arch) 严格限定 A5，并兼容 metadata 缺少 target 的情况。潜在风险：arch 为 None（离线 IR 测试/无 target 元数据）时关闭该优化，属保守行为；A6 上失去该合并优化属预期。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "compiler",
+        "codegen"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增参数化用例覆盖 A5/A6/910B/None 四种 arch 与 compile_on_910_95 组合，验证 merge_concat_load_buffer 仅在 A5 调用一次。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "third_party/ascend/backend/compiler.py"
+        ]
+      },
+      "message": "[compiler](fix) restrict MergeConcatLoadBuffer to A5 (#2964)\n\n* [compiler](fix) 将 mergeconcat load buffer 限制为 A5 设备\n\n* [compiler](fix) 严格限制 MergeConcatLoadBuffer 到 A5\n\n* [compiler](fix) 使用英文说明 A5 限制\n\n* [compiler](fix) 兼容缺少 target 的编译元数据"
+    },
+    {
+      "sha": "cfdf3d8e65e03ce8e95b0cf5e2bbb05164232578",
+      "comment": "二进制资产更新：third_party/ascend/backend/lib/libdevice.9201.bc（A6 SIMT libdevice bitcode）被替换，无源码 diff。属依赖/预编译产物同步，需确保构建时该 bc 与当前 LLVM/编译器版本兼容。",
+      "tags": [
+        "chore",
+        "medium-risk",
+        "compiler"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "预编译 bitcode 替换，无代码变更；是否影响运行需依赖既有 SIMT 相关用例回归验证。",
+        "suggested_test_areas": [
+          "third_party/ascend/backend/lib/libdevice.9201.bc"
+        ]
+      },
+      "message": "update A6 SIMT bc (#2972)\n\nCo-authored-by: lijiarong <lijiarong17@huawei.com>"
+    },
+    {
+      "sha": "67c091904befa4ec8cda82deb28e8a39b940bf11",
+      "comment": "更新 bisheng-version.txt 依赖：从 pr_4374 预发布包切换到 ascendnpu-ir_2.0.0 正式发布包，并更新对应 aarch64/x86_64 sha256。属构建依赖变更，会影响所有后续编译（bishengir-compile 行为/选项探测可能变化），需关注 _check_bishengir_api_change / _check_bishengir_is_regbased 等 --help 探测结果是否随之改变。",
+      "tags": [
+        "chore",
+        "medium-risk",
+        "ci",
+        "compiler"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅依赖版本文件与哈希更新，无测试代码变更；但依赖升级可能改变编译行为，需依赖既有全量回归覆盖。",
+        "suggested_test_areas": [
+          "cmake/bisheng-version.txt"
+        ]
+      },
+      "message": "Update bisheng-version.txt (#2970)"
+    },
+    {
+      "sha": "12a75c74eb659b815289382aa4b2d06b297a75fb",
+      "comment": "编译器优化：1) NPUUtils 新增 get_device_limit() 一次性返回 (has_limit, aic, aiv)，替代 has_device_limit()+get_aicore_num()+get_aivector_core_num() 的三次调用/重复环境解析，并把 NPU_DEVICE_LIMIT 正则提升为模块级 _NPU_DEVICE_LIMIT_REGEX；2) utils.py 把三次独立的 bishengir-compile --help 子进程探测（api change/reg-based/save-ir）合并为带 lru_cache 的 _get_bishengir_compile_help，消除每 kernel 编译三次 fork 的开销。潜在风险：lru_cache 以路径为键，若同一进程内编译器路径内容变化而路径不变则缓存陈旧；get_device_limit 异常路径返回 (False, None, None)，调用方需容忍 None。",
+      "tags": [
+        "performance",
+        "refactor",
+        "medium-risk",
+        "compiler",
+        "runtime"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "接口从 has_device_limit 改为 get_device_limit，原有测试中 FakeNPUUtils 与 exec 出的 NPUUtils 命名空间需同步（已更新 namespace 注入 _NPU_DEVICE_LIMIT_REGEX 与返回三元组）。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "third_party/ascend/backend/driver.py",
+          "third_party/ascend/backend/utils.py"
+        ]
+      },
+      "message": "[compiler](fix) compiler optimization (#2643)\n\nSigned-off-by: LH-123L <liuhuan261@huawei.com>"
+    },
+    {
+      "sha": "2402327427aeab14bd3e83280a36b0760b2d7dcb",
+      "comment": "TritonToGraph 新增“合并 batch 轴与短轴”能力：新增 IAT64（IAT 但 Y 除以 64）launcher 标志与 program_grid 支持序列 ((1,64,False,False))，launcher_args.h 扩展 flags 掩码到 4095 并校验 IAT64 必须搭配独立 IAT 且不与 PTSM 组合；IndependentAxisTensorizeRule 新增 GuardedBatch 与 IntegerRowReduction 两种 tensorize 形态，含整除因式分解（divsi 转移位+偏置）、自动溢出 assert 的 lane mask 化、guarded full-input fast path（scf.if 快慢分支）、整数行归约的资源与别名合法性检查。潜在风险较高：涉及 codegen 语义变更与新的 launch ABI 标志，错误可能只在特定 shape（rows 63/64/65）或动态 divisor 下暴露；IAT64 与 PTSM/裸 IAT 组合已被校验拒绝。",
+      "tags": [
+        "feature",
+        "high-risk",
+        "compiler",
+        "launcher",
+        "graph-optimize"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 graph-optimize-guarded-merge / integer-row-reduction MLIR lit 用例、整数行 grid 协议与安全性的 pytest 用例，并扩展 launcher plan/runtime 参数化以覆盖 IAT64 组合与非法组合拒绝。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToGraph/graph-optimize-guarded-merge.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToGraph/graph-optimize-integer-row-reduction.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_integer_row_grid_contract.py",
+          "third_party/ascend/unittest/pytest_ut/test_integer_row_safety.py",
+          "third_party/ascend/unittest/pytest_ut/test_launcher_plan.py",
+          "third_party/ascend/unittest/pytest_ut/test_launcher_runtime.py"
+        ]
+      },
+      "message": "[TritonToGraph](feat) merge batch and short axis (#2942)\n\nCo-authored-by: cat_food <yanghaoyang2@huawei.com>"
+    },
+    {
+      "sha": "9fda729520c92fa2e12dbc0e8058ed70ee89ab96",
+      "comment": "新增独立的共享指针分析框架 TritonMemoryAccess：PtrAnalysis<Rules> 模板会话（缓存 + 绑定 + 活跃集防递归）、PtrAnalysisInfo（OffsetInfo/AxisInfo/SubAxisInfo/PtrInfo/BlockPtrInfo）、CommonPtrRules（具体数值规则，覆盖 arith/shape/insert/select/bitcast/addptr/block ptr）、ControlFlowPtrRules（符号化 Recipe 表达式，规划期不建 IR）、PtrInfoUtils（偏移算术、reshape/slice/broadcast、常量范围证明）、IntegerUtils（整数宽度/常量折叠/cast）。设计上明确“规划只记录、材料化在消费方”，与旧 legacy analysis 的 no-overflow 假设保持一致。commit 声明 113 个 CPU 单测通过、未上卡验证。潜在风险：纯新增库，但 CMake 新增 TritonPtrAnalysis 目标并挂到 lib/CMakeLists 覆盖构建；测试 CMake 链接 TritonGPU/NvidiaGPUTransforms，需确认 Ascend 构建环境下这些目标可见。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "compiler",
+        "analysis"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 11 个 C++ gtest 文件（PtrAnalysis/Address/Bitcast/Shape/Integer/OpCoverage/BlockPtr/Lifecycle/Extension/ControlFlowTest）与 TestPublicPtrAnalysis 目标，需在 Analysis CMake 中注册并被 CI 构建执行。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Analysis/CMakeLists.txt",
+          "third_party/ascend/unittest/Analysis/PtrAnalysisTest.cpp",
+          "third_party/ascend/unittest/Analysis/PtrAnalysisControlFlowTest.cpp",
+          "third_party/ascend/lib/TritonMemoryAccess/CMakeLists.txt"
+        ]
+      },
+      "message": "feat(ascend): add standalone shared pointer analysis (#2692)\n\nProvide one PtrAnalysis<Rules>::analyze(Value) session for shared pointer\nexpressions, with Common rules for original axes and sub-axes and separate\nCFO symbolic rules. Keep production consumer migrations in follow-up PRs.\n\nUse PtrInfo for integer offsets and ordinary/block pointers. Support\nsignless integers up to 64 bits and use 64-bit index arithmetic at this\nstage. Preserve exact source-width integer SSA and accumulate each addptr\nincrement after signed extension into a complete i64 pointer offset.\nDescriptor origins, strides and block coordinates use index. As in the\nlegacy analyses, decomposition assumes source address arithmetic does not\noverflow.\n\nKeep generic result construction separate from operation analysis. Uniform\nresults retain their scalar origins; splat analysis reuses source bindings\nat every shape. Derive shapes from result types, use static sub-axis lengths,\nand create helper arithmetic only when subsequent computation needs it.\n\nShare shape, axis and coordinate combinations. Preserve signed range\norigins, clamp/select invariance and exact signed division with negative or\nproven dynamic origins. Pointer tensor bitcasts preserve byte addresses\nthrough equal widths and exact element-unit conversion across supported\nwidths; widening with insufficient divisibility proof remains unavailable.\n\nKeep concrete parsers in cpp files, stable-IR caches and explicit boundary\nbindings. Group helpers separately from rule entry points and operation\nparsers, with matching declaration and definition order. CFO planning\nrecords symbolic expressions without creating IR.\n\nValidation: rebuilt all six public implementation and eleven test files;\n113 CPU unit tests pass with no failures or skips using clang 15 / LLVM 22.\nApplicable pre-commit checks pass for all 28 files in the commit.\nNo device or performance run.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>"
+    },
+    {
+      "sha": "99f6bf0e2b42f4ed8f8aa0ae5efce8355f965023",
+      "comment": "TLA 前端能力扩展：1) re-export Triton 标量 dtype（bfloat16/float16/float32/int*/uint*）供 tla.buffer_type/vector_type 直接使用；2) 新增 SIMD 算子 vshl/vshr/vshls（仅 i8/i16/i32 与 u8/u16/u32）、vpack（b16→b8、b32→b16）、vlrelu/vprelu（f16/f32），C++ builder 绑定对应 AVE op；3) 新增 tla.where（标量走 tl.where，向量走 vsel，禁止 scalar/vector 混用）、tla.truncmod（srem/urem，拒绝混合符号与零除数）、tla.assume（llvm.intr.assume 提示）；4) 重构 MODE.MERGING 语义——accumulate/predicate 族（vand/vmuls/vmula/vmadd/vaxpy/vln）改为合并“算子首个向量操作数”（累加类即 acc，符合 CANN dst-preserving），vcvt 因无同类型操作数显式拒绝 MERGING。潜在风险：MERGING 语义变更属行为变更，依赖旧“合并 +0”语义的调用方输出会变化（相关 vand/vaxpy/vln/vmula/vmuls 测试的 ref 已同步修正）；vshls 编译期标量需限 int16 范围；vcvt mask 粒度改为跟随源寄存器（f16 源 128 lane、f32 源 64 lane）。",
+      "tags": [
+        "feature",
+        "high-risk",
+        "language",
+        "tla",
+        "simd"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 dtype/vshift/vshift_narrow/vpack/vrelu_ext/vcvt_mask/pat_mask 等三阶段用例与大量 simd_frontend_contract 契约断言；MERGING 语义变化使 vand/vaxpy/vln/vmuls/vmula_vmadd 的参考值需修正为保留首操作数。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/dtype/dtype_api.py",
+          "third_party/ascend/unittest/tla_ut/dtype/dtype_kernel.py",
+          "third_party/ascend/unittest/tla_ut/simd/vshift.py",
+          "third_party/ascend/unittest/tla_ut/simd/vshift_narrow.py",
+          "third_party/ascend/unittest/tla_ut/simd/vpack.py",
+          "third_party/ascend/unittest/tla_ut/simd/vrelu_ext.py",
+          "third_party/ascend/unittest/tla_ut/simd/vcvt_mask.py",
+          "third_party/ascend/unittest/tla_ut/simd/pat_mask.py",
+          "third_party/ascend/unittest/tla_ut/simd_frontend_contract.py",
+          "third_party/ascend/unittest/tla_ut/vector/vector_type.py"
+        ]
+      },
+      "message": "[Ascend](feat) add TLA scalar dtypes and host buffer arguments (#2910)\n\n* [ascend](feat) export TLA scalar dtypes\n\nLet kernels declare TLA buffer and vector element types with the ``tla``\nnamespace instead of mixing it with ``triton.language``:\n\n  bfloat16 dtype float16 float32 int8 int16 int32 int64\n  uint8 uint16 uint32 uint64\n\nThe exports are the Triton dtype objects themselves, so ``buffer_type``,\n``vector_type`` and casts keep working unchanged, and ``tla.dtype`` still\ntakes canonical Triton names such as ``tla.dtype(\"fp32\")``.\n\nTests: tla_ut/dtype covers the exports (host-only) and uses every dtype\ninside kernels for buffer and vector element types.\n\nSigned-off-by: miushuxin <yaoji2@huawei.com>\n\n* [ascend](docs) document TLA scalar dtypes\n\nDocument the scalar dtype re-exports and their mapping to Triton dtype names in the tla namespace module docstring.\n\nSigned-off-by: miushuxin <yaoji2@huawei.com>\n\n* [ascend](feat) add TLA SIMD pack, shift and relu ops\n\nSigned-off-by: xiwei <xiwei4@huawei.com>\n\n* [ascend](docs) document TLA SIMD extra ops and fix tail test\n\nSigned-off-by: xiwei <xiwei4@huawei.com>\n\n* [tla](feat) add scalar and SIMD where selection\n\nSigned-off-by: dinghong <dinghong10@huawei.com>\n\n* [tla](feat) add scalar truncmod\n\nSigned-off-by: dinghong <dinghong10@huawei.com>\n\n* [tla](feat) add scalar assume compiler hint\n\nSigned-off-by: dinghong <dinghong10@huawei.com>\n\n* [tla](style) format frontend contract and scalar IR tests\n\nSigned-off-by: dinghong <dinghong10@huawei.com>\n\n* [ascend](fix) give TLA SIMD MODE.MERGING a real merge source\n\nRe-trigger CI after the flaky a3 py3.11 launcher workspace test failure.\n\nSigned-off-by: wzy1214 <wzy1214@users.noreply.github.com>\n\n---------\n\nSigned-off-by: miushuxin <yaoji2@huawei.com>\nSigned-off-by: xiwei <xiwei4@huawei.com>\nSigned-off-by: dinghong <dinghong10@huawei.com>\nSigned-off-by: wzy1214 <wzy1214@users.noreply.github.com>\nCo-authored-by: miushuxin <yaoji2@huawei.com>\nCo-authored-by: xiwei <xiwei4@huawei.com>\nCo-authored-by: dinghong <dinghong10@huawei.com>\nCo-authored-by: wzy1214 <wzy1214@users.noreply.github.com>"
+    },
+    {
+      "sha": "d53f57fa3219ad3b2c47bf0e416955f2d62944b6",
+      "comment": "两处 lowering 语义修复：1) BubbleUpOperation 中 tensor.extract_slice 对 tt.make_range 的冒泡原先错误地用 parentOp 的 result 类型与“offsets 作 splat”替换，丢失 make_range 的 start 与 slice 的 stride/extent；改为基于 slice 结果类型构造 base=offset+start 的 splat 加 make_range(size)*stride，size==1 退化为 splat，动态 extent 或 size 非正/超 i32 上限则放弃冒泡保留原 slice；2) UnstructureConversionPass 间接 load 快路径原先仅用 requiresVolatileIndirectLoad 推断 volatile，丢失用户显式 isVolatile，改为 op.getIsVolatile() || 推断值。潜在风险：range slice 冒泡产生新的 make_range + muli/addi，若 sml 后端对非 2 的幂 extent 支持不足可能新失败；volatile 透传会阻止某些 CSE/合并优化。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "compiler",
+        "lowering"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 make_range_slice.mlir 与 volatile_indirect_load.mlir lit 用例，以及 pytest_ut 中 range slice 端到端与间接 load volatile 透传的用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToUnstructure/make_range_slice.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToUnstructure/volatile_indirect_load.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_range_slice_and_volatile.py"
+        ]
+      },
+      "message": "[Ascend](fix) Preserve range slices and volatile loads (#2771)\n\n* [Ascend](fix) Bound A5 indirect load address buffers\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>\n\n* [Ascend](test) Limit indirect FP8 matmul to supported formats\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>\n\n* [Ascend](fix) Keep slice and volatile semantics fixes\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>\n\n* [Ascend](test) Cover range slices and volatile loads end to end\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>\n\n---------\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>"
+    },
+    {
+      "sha": "99f59e29ae3cc93cb6e52e6e8b806cf94540d8b1",
+      "comment": "Launcher workspace 32 位溢出修复：LaunchGrid.logicalBlocks 由 uint32 提升为 uint64（workspace = workspace_size * logicalBlocks 全程 64 位），physicalBlocks 保持 uint32 并仅对真正下发的 block_dim 做溢出校验；GRID_WARNING 打印格式改 %llu。解决了 AUTO_MAP 已把物理块数压到核数、但逻辑块总数超 2^32 时仍抛 overflow_error 的问题。潜在风险：LaunchGrid 结构体字段类型变化属 ABI 变更，需确认 launcher_abi.h 的 spec ABI 未直接暴露该结构（其仅在 host 侧共享运行时内部使用）；workspace 分配可能因逻辑块数巨大而申请巨量内存，需上层保证 workspace_size 合理。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "launcher",
+        "runtime"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 test_launcher_workspace_overflow.py，用 Python 建模 prepareGrid 并以正则断言 launcher_args.h/launcher_runtime.cpp 中 logicalBlocks 为 64 位、physicalBlocks 为 32 位、workspace 基于 logicalBlocks。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_launcher_workspace_overflow.py",
+          "third_party/ascend/backend/launcher_src/launcher_args.h",
+          "third_party/ascend/backend/launcher_src/launcher_runtime.cpp"
+        ]
+      },
+      "message": "[Launcher](fix) size workspace by 64-bit program count (#2875)\n\n* [Launcher](fix) workspace 按 64 位逻辑块数计算，不再受 block_dim 限制\n\nissue #2797 报告 workspace 申请时按 32 位乘法导致溢出。main-dev 的 launcher 已重构为 C++ 共享运行时，但 prepareGrid 仍把逻辑块总数压进 uint32_t，超过上限即抛 overflow_error，即使 AUTO_MAP 已把实际下发块数压到物理核数。\n\n改为拆分两个语义：logicalBlocks 提升为 uint64_t，workspace = workspace_size * logicalBlocks 全程 64 位；physicalBlocks 保持 uint32_t，只对真正下发给 CANN 的 block_dim 做 32 位校验。同时把 GRID_WARNING 打印格式改为 %llu。\n\n新增 launcher_workspace_probe.cpp 与 test_workspace_overflow_2797.py：issue 原始 shape (256,64,1) 下 workspace == 2^32 且不截断；AUTO_MAP 下 logical=2^32、physical=40、workspace 按 64 位计算；未开 AUTO_MAP 时仍明确报错。\n\n* [Launcher](fix) 按 clang-format/yapf 规范化新增测试文件格式\n\nCI pre-commit 的 clang-format(v19.1.6) 与 yapf(0.43.0) 要求调整 launcher_workspace_probe.cpp 的注释折行与三元表达式排版，以及 test_workspace_overflow_2797.py 的参数列表折行。改动仅为格式，无逻辑变化。\n\n* test(launcher) 按仓库规范调整 workspace 测试的命名与位置\n\n1. 测试文件改名为 test_launcher_workspace_overflow.py，与 test_launcher_empty_signature.py、test_launcher_export_api.py 保持一致；\n\n2. 独立 C++ probe 从 pytest_ut 移到 unittest/launcher_ut/，避免把 C++ 用例混在 python 用例目录；\n\n3. 去掉文件头与注释里的 issue 编号信息。\n\n* Update bisheng-version.txt\n\n* Revert \"Update bisheng-version.txt\"\n\n本 PR 只处理 #2797 的 workspace 32 位溢出，bisheng 依赖包版本的变更不属于该修复范围，\n因此回退 1024410fd，保持依赖版本与本 PR 起点一致。\n\nThis reverts commit 1024410fdf75a3099579ee17b698abfaab626d2a.\n\n* test(launcher) 用纯 Python 覆盖 workspace 逻辑块数溢出\n\n按检视意见去掉 C++ 探针：用例改为在 Python 侧建模 prepareGrid 的\n块数计算，并直接断言 launcher_args.h / launcher_runtime.cpp 中\nlogicalBlocks 为 64 位、physicalBlocks 为 32 位、workspace 计价\n取自 logicalBlocks，不再依赖宿主机 C++ 编译器。\n\n* test(launcher) 修正 workspace 总量参考值\n\n262144 = 2^18，logical 为 2^32 时总量是 2^50，此前误写成 2^42，\na5-2 py3.12 用例因此失败。\n\n---------\n\nCo-authored-by: LH-123L <liuhuan261@huawei.com>"
+    },
+    {
+      "sha": "96732af5a570f1ba2a95b0102d1159d6488b1999",
+      "comment": "支持带指针的 noinline 调用：Ascend 无 device 侧调用约定，私有 noinline callee 必须在 lowering 前内联。两处缺陷——OffsetAnalysis 对未建模的标量指针（如 noinline tt.call 返回值）生成空 PtrOffsetInfo 导致后续 splat/addptr 读 base 段错误；内联只在内存转换之后运行，BlockPtrAnalysis 拒绝 tt.call。修复：TritonToLinalgPass 新增 carriesPointerType 与 inlinePointerCarryingCallees，在内存 stage 之前仅内联携带指针的 call，scalar-only tt.call 保留至内存后；内联时为 callee 新增的 program-info 参数从外层函数借用；OffsetAnalysis 对未建模标量指针 recordOpaqueScalarPointer 作为零位移 base。潜在风险：内联时机拆分增加了 pass 顺序敏感性；借用外层 program-info 参数依赖 prepareMemoryConversion 的参数追加顺序。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "compiler",
+        "lowering"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "把 test_kernel_function_call.py 中所有 noinline 用例迁移到新 test_noinline.py，并新增上游社区 noinline 用例（tensor descriptor 入参/返回值、动态 if 内调用、tensor 实参拒绝等），形成单一 noinline 守卫文件。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_noinline.py",
+          "third_party/ascend/unittest/pytest_ut/test_kernel_function_call.py",
+          "third_party/ascend/lib/TritonToLinalg/TritonToLinalgPass.cpp",
+          "third_party/ascend/lib/TritonToUnstructure/OffsetAnalysis.cpp"
+        ]
+      },
+      "message": "[TritonToLinalg](fix) support noinline for community testcase (#2933)\n\n* [TritonToLinalg](fix) support noinline calls that carry pointers\n\nAscend has no device-side calling convention, so a private noinline callee\nmust be inlined before lowering. Two gaps made the upstream\ntest_tensor_descriptor_return_value case fail:\n\n- TritonToUnstructure dropped scalar pointers whose producer the offset\n  analysis does not model (e.g. one extracted from a noinline tt.call\n  result), leaving an empty PtrOffsetInfo that later segfaulted when a\n  splat/addptr user read the base.\n- Inlining ran only after memory conversion, so BlockPtrAnalysis rejected\n  the tt.call as an unsupported scalar pointer producer.\n\nInline calls that pass or return pointers before the memory stage (keeping\nthe scalar-only calls where their ABI is already settled), register an\nunknown scalar pointer as an opaque base with zero displacement, and borrow\nthe program-info arguments the callee signature gained from the enclosing\nfunction. Also add the ported community noinline cases as\npytest_ut/test_community_noinline.py.\n\n* test: consolidate all noinline cases into test_noinline.py\n\nMove the noinline cases out of test_kernel_function_call.py and rename\ntest_community_noinline.py to test_noinline.py, so a single file guards\nnoinline support. Also apply yapf/clang-format to satisfy pre-commit."
+    },
+    {
+      "sha": "61815fcefcc12220c23f81e885907bcbcb8eae13",
+      "comment": "libdevice A3 算子适配：把大量原仅 _is_a5_target 支持的函数（scalbn/mul24/sad/ffs/saturatef/exp10/add_*/sub_*/mul_*/div_*/rcp_*/sqrt_*/fma_*/fast_*/float_as_int/int_as_float/float2int_*/int2float_*/float2ll_*/ll2float_*/cbrt/llrint/llround/float2half_rn/half2float/max/min/nan 等）扩展为 A5 或 A3 均支持；mul24/sad/ffs/max/min 从 core.extern_elementwise 切到 _libdevice_elementwise 并补 workspace 表；_extern_elementwise 支持 workspace 为 dict（按 dispatch 符号选择，未命中则不包 workspace）。潜在风险：A3 上这些算子的真实硬件支持由 bishengir/libdevice 决定，若符号缺失会在 link/codegen 阶段失败；workspace 元组中 rows/dtype/sized 数值若与实际 libdevice 实现不符会影响 SIMD 分块。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "language",
+        "libdevice"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "A3 新增支持的 libdevice 算子缺乏专门的按 arch 参数化回归用例，建议补充 A3 环境下这些算子的数值与 SIMD 路径测试；workspace dict 分支需覆盖命中/未命中两种符号。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/ (libdevice 算子相关)",
+          "third_party/ascend/language/cann/libdevice.py"
+        ]
+      },
+      "message": "Readapt libdevice A3 Operators (#2931)\n\nCo-authored-by: lijiarong <lijiarong17@huawei.com>"
+    }
+  ],
+  "architecture_based_on_sha": "408e31592b50e930fc6f01c244f309444005d575",
+  "architecture_generated_at": "2026-11-01T20:11:07.549514+08:00"
+}

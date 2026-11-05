@@ -1,0 +1,166 @@
+{
+  "date": "2026-11-05",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-11-06T06:58:46.087750+08:00",
+  "daily_summary": "当日变更集中于 NVIDIA/AMD 两大 GPU 后端的深度优化与清理：AMD ConSan 新增 async-copy mbarrier arrive 的并发追踪；通用 scan lowering 全面改造为基于 LinearLayout 的实现（支持 distributed/sliced/MMA/dot-operand 布局），并抽取通用 convertLayoutViaSharedMemory 供 reduce 复用；NVIDIA 侧打磨 Gluon block-scaled matmul 示例、为 TMA/tcgen05 增加 FP6 共享内存打包支持、升级 ptxas 到 13.5.37，并大规模将 inline PTX 迁移到 LLVM/NVVM 操作（含 FoldTruePredicate trait、原子操作、FP8/BF16 转换、packed arith 等），属 BC breaking 变更。整体是典型的性能与可维护性演进，范围基本局限在 GPU 专属 lowering 与测试。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 基本无实质影响：5 个 commit 全部集中在 NVIDIA/AMD 平台特定代码（third_party/nvidia、third_party/amd、NVIDIA/AMD 专属方言与 lowering、ConSan、Gluon NVIDIA 示例），以及仅影响 NVIDIA 代码生成的 scan/reduce lowering 与 LinearLayout 内部实现。其中 commit f8cddb9（TritonInstrument ConSan）与 bf11e3c（scan lowering）触及上游通用 include/lib 目录，但 Ascend 不走 TritonGPU→LLVM 与 ConSan 插桩路径；Commit 909d441 在 TargetInfoBase.h 新增虚函数 supportNativeBF16AtomicAdd 带有默认实现，理论上不破坏 AscendTargetInfo 编译，但 Ascend 不使用该路径。总体无需为 triton-ascend 新增或更新测试。",
+  "commits": [
+    {
+      "sha": "f8cddb947b471d6902a39f62d0894d1e552e5e75",
+      "comment": "为 AMD ConSan（并发 sanitizer）新增 amdg.async_copy_mbarrier_arrive 的追踪支持。核心改动包括：在 AuxDataMap::ThreadLayout 中新增 asyncCopyMbarrierArriveThreadOffset 线程类，在 ConSanTargetHooks 新增 usesAsyncCopyMbarrierArriveThread 钩子（默认 false，AMD 覆写为识别 AsyncCopyMbarrierArriveOp），并在 getThreadLayout/getThreadPeersMask 中分配与合并该 peer 线程；populateAndPassToWarpSpecialize 中的 hasAsyncCopyMbarriers 判定从直接 walk AsyncCopyMbarrierArriveOp 改为基于 getMemEffectsOpInfo 返回的 BarrierTrackingMode::AsyncCopies，更通用。AMD hooks 为该 op 返回 AsyncCopies 追踪模式与每分区线程数。设计合理：使用独立 peer 类避免了与 TDM barrier 共享导致跨 barrier 的错误 complete。风险点在于 ThreadLayout 线程总数上限（64）与 peer mask 语义变化，只影响 ConSan 插桩路径，且测试覆盖较充分（lit + gfx1250 runtime）。",
+      "tags": [
+        "feature",
+        "test",
+        "low-risk",
+        "concurrency-sanitizer",
+        "amd-backend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][ConSan] Support async-copy mbarrier arrive (#12320)\n\nInstrument `amdg.async_copy_mbarrier_arrive` using the existing\nasync-copy barrier tracking. A wait on the corresponding barrier phase\ncompletes the arrive and publishes the covered async loads. The\n`async_copy_mbarrier_arrive` does not track async stores.\n\nUse a separate `AsyncCopyMbarrierArrive` peer class for these arrivals.\nSharing the TDM peer class would let a wait on a TDM barrier complete\nasync-copy arrivals pending on other barriers. The class is allocated\nonly when a target hook opts in; NVIDIA's cp.async arrive stays on the\nTMA class.\n\nAdd lit and gfx1250 runtime coverage and check that NVIDIA arrivals\nretain their existing peer class."
+    },
+    {
+      "sha": "8ca1b5a650d5274cc6a268d1f7183ebd4c9d835d",
+      "message": "[triton-ext] Version libtriton's exported symbols as TRITON\n\nWith TRITON_EXT_ENABLED=ON, libtriton exports all its symbols, including\nits statically linked LLVM and MLIR, so extensions can link against\nthem. These exports are unversioned. If another LLVM is loaded into the\nprocess with RTLD_GLOBAL, the two copies bind to each other's symbols.\nROCm torch preloads ROCm's libLLVM.so, which leads to these failures:\n\n- `import torch; import triton` segfaults because libtriton binds to\n  ROCm's LLVM.\n- Loading an extension before torch aborts with \"LLVM ERROR: Option\n  'default' already exists!\" because ROCm's LLVM binds to libtriton.\n\nOn Linux, TRITON_EXT_ENABLED builds now link libtriton with the version\nscript `TRITON { global: *; };`. The set of exported symbols stays the\nsame, but each one is now sym@@TRITON. References from libtriton and its\nextensions therefore no longer match another library's sym@LLVM_<N>,\nand the reverse holds too. Upstream libLLVM.so uses the same mechanism.\n\nBuilds without TRITON_EXT_ENABLED and macOS/Windows builds are\nunchanged. Existing extensions still load, but they need a rebuild to\npick up the versioned references.",
+      "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 triton-ascend。",
+      "tags": [
+        "chore"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "bf11e3c21d3ea597bd71fed285c8a87e7ac28f20",
+      "comment": "将 scan lowering 从基于 BlockedEncodingAttr 的受限实现泛化为基于 LinearLayout 的实现，支持 distributed/sliced/MMA/dot-operand 布局，并保证跨 warp 的部分线程前缀边界携带所有权正确。改动拆分 ScanLoweringHelper 为三阶段（thread-local、warp-local、warp 间交换），重构出 buildPermutedLayout/BuildIntraWarpTotalsLayout 等布局构造；同时把 ReduceOpHelper::getScratchConfig 提升为通用的 getLayoutConversionScratchConfig 并抽出 convertLayoutViaSharedMemory（含 storePred 支持选择性 producer lane），供 reduce 与 scan 共享。ScanOpConversion 完全重写，支持 reverse 与更复杂布局，去掉 BlockedEncoding 限制。这是核心 IR lowering 层的重大重构，性能数据表明整体与 main 持平或略优。风险：影响所有走 TritonGPUToLLVM 的后端（NVIDIA/AMD），对 scan 语义边界（反向、多类型 tuple、混合位宽）要求较高，测试覆盖充分（大量 lit + Gluon 测试）。",
+      "tags": [
+        "refactor",
+        "performance",
+        "medium-risk",
+        "scan",
+        "triton-gpu-ir",
+        "layout"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Analysis/Utility.cpp、lib/Conversion/TritonGPUToLLVM 及 include/triton/Analysis/Utility.h，属 TritonGPU→LLVM 路径；Ascend 走 TritonToLinalg/HIVM 链路，不使用 ScanLoweringHelper/ReduceOpHelper 与 convertLayoutViaSharedMemory。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Generalize scan lowering to linear layouts (#12184)\n\nThis PR generalizes scan lowering to linear layouts, including\ndistributed, sliced, MMA, and dot-operand layouts. It preserves\nboundary-carry ownership when partial thread prefixes cross warps.\n\n[GB200 performance\ncomparison](https://gist.github.com/Jokeren/0d53b72e5833026dd27bd2b7751e97f8#file-scan_performance-md)\n— main `e5398af414`, before tuning `31e2076072`, PR head `17666b6b0b`.\nLatency in µs; positive changes mean slower.\n\n| Suite | Cases | Main pairs | Before tuning/Main | PR head/Main | PR\nhead/Before tuning |\n|---|---:|---:|---:|---:|---:|\n| Previous performance suite | 62 | 62 | +0.22% | -0.31% | -0.53% |\n| Distributed-layout suite | 78 | 4 | -2.48% | -2.48% | -14.75% |\n| Standalone repros | 5 | 5 | +2.38% | +0.56% | -1.78% |\n\n| Case | Shape | Axis | Reverse | Operation | Dtype | Main µs | Before\ntuning µs | PR head µs | PR head/Main | PR head/Before tuning |\n|---|---|---:|:---:|---|---|---:|---:|---:|---:|---:|\n| r53 | 256 | 0 | | tuple_count | int32 | 2.033 | 2.139 | 2.107 | +3.63%\n| -1.49% |\n| r59 | 256 | 0 | | tuple_count | int32 | 2.019 | 2.081 | 2.081 | +3.04%\n| +0.00% |\n| r49 | 64 | 0 | | tuple_count | int32 | 1.776 | 1.822 | 1.822 | +2.56%\n| +0.00% |\n| r18 | 4096 | 0 | | add | int32 | 4.506 | 4.607 | 4.607 | +2.24% |\n+0.00% |\n| r40 | 128 | 0 | | packed16 | int32 | 1.819 | 1.868 | 1.841 | +1.21% |\n-1.48% |\n| r51 | 128 | 0 | | tuple_count | int32 | 1.906 | 1.973 | 1.928 | +1.17%\n| -2.30% |\n| r48 | 64 | 0 | yes | tuple_sum | float32 | 1.871 | 1.889 | 1.889 |\n+0.98% | +0.00% |\n| r33 | 512 | 0 | | packed24 | int32 | 2.119 | 2.094 | 2.140 | +0.97% |\n+2.19% |\n| r43 | 128 | 0 | | masked16 | int32 | 1.811 | 1.846 | 1.828 | +0.92% |\n-0.98% |\n| r46 | 256 | 0 | | masked16 | int32 | 1.895 | 1.938 | 1.911 | +0.86% |\n-1.39% |\n| r39 | 64 | 0 | | packed16 | int32 | 1.756 | 1.790 | 1.770 | +0.76% |\n-1.11% |\n| r32 | 256 | 0 | | packed24 | int32 | 1.991 | 1.953 | 2.005 | +0.74% |\n+2.67% |\n| r55 | 64 | 0 | | tuple_count | int32 | 1.799 | 1.812 | 1.812 | +0.72%\n| +0.00% |\n| r47 | 512 | 0 | | masked16 | int32 | 2.051 | 2.096 | 2.066 | +0.71% |\n-1.42% |\n| r45 | 64 | 0 | | masked16 | int32 | 1.762 | 1.793 | 1.774 | +0.69% |\n-1.02% |\n| r61 | 128 | 0 | | affine64 | int64 | 1.837 | 1.883 | 1.848 | +0.60% |\n-1.90% |\n| r05 | 16 | 0 | | add | int32 | 1.726 | 1.736 | 1.736 | +0.58% | +0.00%\n|\n| r52 | 256 | 0 | yes | tuple_sum | float32 | 2.146 | 2.180 | 2.156 |\n+0.48% | -1.08% |\n| r02 | 16 | 0 | | add | int32 | 3.860 | 3.875 | 3.875 | +0.40% | +0.00%\n|\n| r62 | 1024 | 0 | | affine64 | int64 | 2.820 | 2.856 | 2.831 | +0.37% |\n-0.88% |\n| r50 | 128 | 0 | yes | tuple_sum | float32 | 2.025 | 2.041 | 2.031 |\n+0.28% | -0.51% |\n| r19 | 512 | 0 | | add | int32 | 2.046 | 2.072 | 2.052 | +0.27% |\n-0.98% |\n| r08 | 16 | 0 | | add | int32 | 2.281 | 2.287 | 2.287 | +0.26% | +0.00%\n|\n| r26 | 128 | 0 | | max | float32 | 1.763 | 1.807 | 1.767 | +0.25% |\n-2.22% |\n| r27 | 1024 | 0 | | max | int32 | 2.159 | 2.183 | 2.163 | +0.18% |\n-0.91% |\n| r57 | 128 | 0 | | tuple_count | int32 | 1.906 | 1.950 | 1.908 | +0.09%\n| -2.14% |\n| r42 | 256 | 0 | | packed16 | int32 | 1.942 | 1.978 | 1.942 | +0.05% |\n-1.78% |\n| r01 | 16×32 | 1 | | add | int32 | 3.941 | 3.941 | 3.941 | +0.00% |\n+0.00% |\n| r04 | 16×32 | 1 | | add | int32 | 1.946 | 1.946 | 1.946 | +0.00% |\n+0.00% |\n| r07 | 16×32 | 1 | | add | int32 | 2.533 | 2.538 | 2.533 | +0.00% |\n-0.18% |\n| r10 | 16×32 | 1 | | add | int32 | 1.901 | 1.942 | 1.901 | +0.00% |\n-2.11% |\n| r25 | 16×8 | 1 | | max | float32 | 1.700 | 1.700 | 1.700 | +0.00% |\n+0.00% |\n| r37 | 32 | 0 | | packed16 | int32 | 1.718 | 1.718 | 1.718 | +0.00% |\n+0.00% |\n| r20 | 1×2 | 1 | | max | float32 | 1.548 | 1.548 | 1.548 | +0.00% |\n+0.00% |\n| r23 | 64×8 | 1 | | max | float32 | 1.853 | 1.920 | 1.853 | +0.00% |\n-3.46% |\n| r38 | 32 | 0 | | packed16 | int32 | 1.716 | 1.716 | 1.716 | +0.00% |\n+0.00% |\n| r44 | 32 | 0 | | masked16 | int32 | 1.710 | 1.710 | 1.710 | +0.00% |\n+0.00% |\n| r03 | 16×32×4 | 2 | | add | int32 | 4.361 | 4.361 | 4.361 | +0.00% |\n+0.00% |\n| r06 | 16×32×4 | 2 | | add | int32 | 2.428 | 2.428 | 2.428 | +0.00% |\n+0.00% |\n| r09 | 16×32×4 | 2 | | add | int32 | 3.198 | 3.198 | 3.198 | +0.00% |\n+0.00% |\n| r12 | 16×32×4 | 2 | | add | int32 | 2.340 | 2.340 | 2.340 | +0.00% |\n+0.00% |\n| r21 | 1×4 | 1 | | max | float32 | 1.587 | 1.587 | 1.587 | +0.00% |\n+0.00% |\n| r24 | 32×8 | 1 | | max | float32 | 1.777 | 1.802 | 1.777 | +0.00% |\n-1.38% |\n| r11 | 16 | 0 | | add | int32 | 1.696 | 1.693 | 1.693 | -0.16% | +0.00%\n|\n| r41 | 64 | 0 | | packed16 | int32 | 1.783 | 1.779 | 1.779 | -0.21% |\n+0.00% |\n| r58 | 256 | 0 | yes | tuple_sum | float32 | 2.115 | 2.109 | 2.109 |\n-0.27% | +0.00% |\n| r22 | 8 | 0 | | max | float32 | 1.588 | 1.583 | 1.583 | -0.34% |\n+0.00% |\n| r28 | 2048 | 0 | | max | int32 | 2.555 | 2.546 | 2.546 | -0.35% |\n+0.00% |\n| r29 | 1024 | 0 | yes | min | int32 | 2.165 | 2.192 | 2.156 | -0.43% |\n-1.66% |\n| r15 | 4096 | 0 | | add | int32 | 3.971 | 3.992 | 3.952 | -0.49% |\n-1.01% |\n| r56 | 128 | 0 | yes | tuple_sum | float32 | 1.969 | 1.986 | 1.959 |\n-0.51% | -1.35% |\n| r16 | 1024 | 0 | | add | int32 | 2.272 | 2.285 | 2.254 | -0.78% |\n-1.36% |\n| r17 | 2048 | 0 | | add | int32 | 3.049 | 3.021 | 3.021 | -0.93% |\n+0.00% |\n| r35 | 32×256 | 1 | | packed16 | int32 | 6.450 | 6.388 | 6.388 | -0.97%\n| +0.00% |\n| r60 | 1024 | 0 | | affine64 | int64 | 2.920 | 2.874 | 2.874 | -1.54% |\n+0.00% |\n| r54 | 64 | 0 | yes | tuple_sum | float32 | 1.893 | 1.860 | 1.860 |\n-1.73% | +0.00% |\n| r30 | 2048 | 0 | yes | min | int32 | 2.642 | 2.575 | 2.575 | -2.54% |\n+0.00% |\n| r14 | 2048 | 0 | | add | int32 | 5.500 | 5.352 | 5.352 | -2.69% |\n+0.00% |\n| r13 | 2048 | 0 | | add | int32 | 5.498 | 5.346 | 5.346 | -2.76% |\n+0.00% |\n| r31 | 512 | 0 | | packed24 | int32 | 2.230 | 2.188 | 2.162 | -3.05% |\n-1.21% |\n| r34 | 4×2048 | 1 | | packed16 | int32 | 6.659 | 6.302 | 6.302 | -5.36%\n| +0.00% |\n| r36 | 128×64 | 1 | | packed16 | int32 | 6.699 | 5.572 | 5.572 |\n-16.81% | +0.00% |"
+    },
+    {
+      "sha": "d1c9c09998f6eadcf8430be73b23b49a088a9689",
+      "comment": "清理 Gluon block-scaled matmul 示例（python/examples/gluon/04-2cta-block-scale-matmul.py）：移除 autotuning 框架与 cuBLAS 对比，改为显式 launch 选项，直接按最终 block shape 构造 TMA descriptors（make_descriptors 替代 dummy descriptor + hook 模式），保留最优配置与 scheduler 启发式。测试改为对最优配置在两种 scheduler、小/奇数 shape、Blackwell 与 Rubin double buffer 上做正确性验证，并简化 benchmark 为对 1CTA vs 2CTA 的 K sweep。纯示例与文档性质，减少约 320 行代码。风险极低，不触及编译器核心。",
+      "tags": [
+        "refactor",
+        "docs",
+        "low-risk",
+        "gluon",
+        "nvidia-backend",
+        "example"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。该文件为 python/examples/gluon 的 NVIDIA 专属示例，使用 Gluon NVIDIA 后端与 TMA/tcgen05 API，Ascend 不使用 Gluon。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Clean up the Gluon block-scaled matmul example (#12627)\n\nThis cleanup paves the way for planned Rubin optimizations while keeping\nthe example focused and readable. Remove autotuning and the cuBLAS\ncomparison, make launch options explicit, and construct TMA descriptors\ndirectly. Preserve the best configs and scheduler heuristic. Test best\nconfigs with both schedulers over small and odd shapes, including Rubin\ndouble buffering. Benchmark 1CTA versus 2CTA on a small K sweep with MN\nshapes suited to each architecture."
+    },
+    {
+      "sha": "d86c8b2f0064bd936afc6b5ea66dca4c0e760f4b",
+      "comment": "为 Gluon 的 TMA 与 tcgen05 增加 FP6 shared tile 支持（首个三家列之一）。核心改动：把 NVMMASharedEncodingAttr 的 fp4Padded 布尔位泛化为 NVMmaPadding 枚举（None/Fp4/B6x16P32/B6P2x16），保留 fp4Padded 兼容构造器；新增 isPaddedFp4/isPaddedFp6/isPackedFp6 判定；TCGen5MMAOp 增加可选 a_type/b_type ScaleDotElemType 属性以指定数值格式（如 e2m3/e3m2），新增 getAElementType/getBElementType；为 packed FP6 增加多项 verifier（禁止 reshape/local_load/store/gather/register byte lane 访问，要求 128 值 box、i8 存储、子视图对齐 16 值原子边界）；toLinearLayoutIgnoringPadding 支持 FP6 无逐元素线性布局的物理偏移语义；Gluon NNVMASharedLayout 增加 padding 字段与 mangle/hash 更新；tma.make_tensor_descriptor 与 host-side TensorDescriptor 增加 FP6 box 校验。同时牵连 NVGPU/AMD/特殊 lowering 多处 getFp4Padded→isPaddedFp4 替换。变更面广（29 文件）但全部限定在 NVIDIA GPU 路径与 Gluon，风险中等，需与新硬件 SM100/SM103 验证配套。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "nvidia-backend",
+        "triton-gpu-ir",
+        "gluon",
+        "fp6",
+        "tma",
+        "tcgen05"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更涉及 NVMMASharedEncodingAttr/TritonNvidiaGPU 方言/TCGen5MMAOp/Gluon NVMMASharedLayout 等 NVIDIA 专属 IR 与语言层，Ascend 不使用 TritonGPU/TritonNvidiaGPU 布局与 tcgen05。python/src/ir.cc 中 getTensorDescMetadata 的 fp4_padded 字段虽被改动，但仅为内部实现字段名适配，对 Ascend 的 tensor descriptor ABI 无行为语义变化。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA][Gluon] Support FP6 shared tiles for TMA and tcgen05 (#12548)\n\nFirst in a stack of three PRs. #12541 builds on this to add the\nconversion and compacting TMA store for regular Triton kernels.\n\nGluon's `NVMMASharedLayout` describes physical packing. Use\n`padding=\"b6x16_p32\"` for a TMA load or MMA operand. Each 16-byte atom\ncontains 12 packed bytes followed by four padding bytes. Use\n`padding=\"b6p2x16\"` for a TMA store. Each byte holds a code in its low\nsix bits. TMA compacts 128 of these lanes into 96 bytes in global\nmemory. [PTX FP6\npacking](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#tensor-dimension-size-format-sub-bytes-padding-align-b6-p2-16).\n\nSpecify the numerical formats on the MMA operation, for example\n`tcgen05_mma(a, b, acc, a_type=\"e2m3\", b_type=\"e3m2\")`. Plain and scaled\nMMA can use different formats for two operands with the same packing. A\ngeneric per-element linear-layout query fails for the packed load\nformat. TMA, MMA and allocation analysis use physical offsets at\nwhole-atom boundaries.\n\nThis PR uses 128-value boxes with host- or device-built tensor maps.\nCoordinates count logical FP6 values and outer strides count bytes.\nDraft #12614 adds the SM103-specific 64-value host store.\n\nBuilt independently on GB300. All 18 focused GPU cases and four MLIR\ntest files passed, including mixed E2M3/E3M2 MMA, transposed operands,\nand existing FP4 coverage.\n\n---------\n\nCo-authored-by: copilot-swe-agent[bot] <198982749+Copilot@users.noreply.github.com>",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/src/ir.cc"
+        ],
+        "recommend_refresh": true
+      }
+    },
+    {
+      "sha": "86d324799bd97dd0cb382c3bb919accd29184103",
+      "comment": "将 NVIDIA 工具链 ptxas 从 13.4.59 升级到 13.5.37（CUDA 13.5 发布版）。仅修改 cmake/nvidia-toolchain-version.json 单个文件，作者已核对下载 URL、SHA-256 与内嵌版本号，GPU 验证交由 CI。纯构建配置变更，风险低但对 NVIDIA 后端代码生成有潜在行为差异（结合后续 909d441 中针对 ptxas 13.4.59 的 miscompile 规避可看出工具链版本敏感）。",
+      "tags": [
+        "chore",
+        "ci",
+        "low-risk",
+        "nvidia-backend",
+        "build"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。仅修改 NVIDIA 工具链版本 JSON，Ascend 使用 CANN bishengir 编译器，不涉及 ptxas。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Update ptxas to 13.5.37 (#12626)\n\nUpdate ptxas from 13.4.59 to 13.5.37, released with CUDA 13.5.\n\nVerified Triton's Linux x86-64 and SBSA download URLs against NVIDIA's\nrelease manifest, downloaded both archives, and checked their SHA-256\nhashes and embedded PTXAS versions. GPU validation will run in CI."
+    },
+    {
+      "sha": "909d4412bde18bd03081cc4ec9c274452cd1dc34",
+      "comment": "BC breaking：将大量内联 PTX 替换为 LLVM/NVVM 操作与 intrinsic，同时删除旧 SM75 MMA lowering。主要改动：(1) math.sqrt→llvm.sqrt(afn)、math.rsqrt→NVVM rsqrt；(2) FP16/BF16/FP32 packed add/sub/mul 与 FP16/BF16 FMA 走 LLVM 向量操作，min/max 走 llvm.minimumnum/maximumnum（保留 FP32 packed FMA 在 PTX 以避免寄存器溢出）；(3) FP8 转换改用 NVVM convert ops + LLVM 算术，SM89 需 PTX 8.1，SM100f/110f/120f 上 packed BF16↔FP8 需 PTX 9.1/9.2；(4) 部分 i1→FP16/BF16、s8→BF16、BF16→FP32 cast 走 LLVM；(5) 未谓词化的默认 cache 全局 load/store 走 LLVM load/store（标量 load 保留 PTX 规避 ptxas 误编译）；(6) 原子 RMW/CAS 走 LLVM，保留 half add 的 PTX 以避免 16 位 CAS 加宽误触相邻存储；(7) async copy 走 NVVM cp.async，128 位 shared store 需 PTX 9.2，动态 mask 保留 PTX ignore-source 谓词；(8) 新增 FoldTruePredicate OpTrait 在全项目（Triton/TritonGPU/TritonInstrument/TritonNvidiaGPU/AMD/NVGPU）折叠全 true mask/pred；(9) TargetInfoBase 新增虚函数 supportNativeBF16AtomicAdd 默认 false，NVIDIA 覆写为 SM90+ true；(10) 移除 Turing MMAv2 PTX 路径。改动面极广（47 文件），是显著的代码生成重构，需要大量 lit 与 PTX 验证，风险中高但也大幅提升可维护性。",
+      "tags": [
+        "refactor",
+        "performance",
+        "high-risk",
+        "nvidia-backend",
+        "codegen",
+        "atomic",
+        "fp8",
+        "bc-breaking"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "有限影响但需关注两点：1) include/triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h 新增虚函数 supportNativeBF16AtomicAdd() 并带默认实现（返回 false），AscendTargetInfo 无需强制实现即可编译；Ascend 不走 TritonGPUToLLVM 路径，故无功能性影响。2) include/triton/Dialect/Triton/IR/Traits.h 新增 FoldTruePredicate trait，并在 TritonOps.td 的 LoadOp/StoreOp/AtomicLoadOp/AtomicStoreOp/AtomicRMWOp/HistogramOp 等 TTIR op 上启用。该 trait 在 canonicalize 时移除全 true 的 mask/pred 操作数；Ascend 走 TritonToLinalg 消费 TTIR，masked load/store 折叠为无 mask 形式本身语义等价，但若有 Ascend 侧 pass 依赖 mask 操作数存在（例如依赖 mask 做布局/谓词推断），可能受影响；canonicalize 的 op 形态变化需在 Ascend 的 lit 测试中确认。python/src/ir.cc 虽有修改但仅 1 行 fp4_padded 字段改名，不触及 Ascend patch 冲突点。",
+        "testing": "需关注 TTIR canonicalize 行为变化：LoadOp/StoreOp canonicalize 方法重写（从 OpRewritePattern 改为 hasCanonicalizeMethod），新增 FoldTruePredicate 折叠。建议在 triton-ascend 已有的 TTIR 相关 lit 测试或 test_ttir 路径检查全 true mask 折叠后 Ascend lowering 是否仍正常，验证 masked load/store 的语义等价路径（尤其是 mask 折叠为 absent 后 other 操作数处理）。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/ 中 masked load/store 相关算子用例",
+          "third_party/ascend/unittest/ 中依赖 TTIR canonicalize 的 lit/pytest（如 test_load/test_store 变体）",
+          "TritonToLinalg 相关 MLIR lit 差分测试"
+        ]
+      },
+      "message": "[BC Breaking][NVIDIA] Lower more operations through LLVM and NVVM (#12212)\n\nReplace inline PTX with LLVM/NVVM operations and intrinsics where they\npreserve semantics and generate equivalent or better SASS:\n\n- **Square roots:** `math.sqrt` → `llvm.sqrt` with `afn`; `math.rsqrt` →\nNVVM `rsqrt`.\n- **Packed arithmetic:** FP16/BF16/FP32 add, subtract, and multiply,\nplus FP16/BF16 FMA → LLVM vector operations; FP16/BF16 min/max →\n`llvm.minimumnum` / `llvm.maximumnum`. Keep packed FP32 FMA in PTX to\navoid register spills from instruction sinking.\n- **FP8 conversions** use NVVM conversion ops and LLVM arithmetic. SM89\nneeds PTX 8.1 for native FP8 conversions. On targets with SM100f,\nSM110f, or SM120f features, packed BF16-to-FP8 starts at PTX 9.1 and\nFP8-to-BF16 at PTX 9.2. The FP8-to-BF16 fallback through native FP16\nuses the rounded conversion from #12237.\n- **Integer and BF16 casts:** selected `i1` → FP16/BF16, signed `i8` →\nBF16, and BF16 → FP32 paths → LLVM selects, casts, and bit operations.\n- **Global memory:** unpredicated default-cache tensor loads/stores →\nLLVM `load` / `store`. Keep scalar loads in PTX to avoid a ptxas\nFP8-reduction miscompile.\n- **Atomics** use LLVM for eligible unpredicated scalar RMWs and shared\nwrapping increments. Fold all-true source masks while preserving thread\nelection. Use native PTX for supported 16-bit floating adds to preserve\naccess width, and diagnose unsupported subword shared scatter\noperations.\n- **Compare-and-swap:** unpredicated 32-/64-bit CAS and instrumentation\nlock acquisition → LLVM `cmpxchg`.\n- **Async memory** uses NVVM for eligible global-to-shared copies and\nnaturally aligned, unpredicated 32- and 64-bit shared stores. PTX 9.2\nalso supports 128-bit shared stores. Dynamic copy masks retain the PTX\nignore-source predicate.\n\nPreserve predication, rounding, memory ordering, and synchronization\nscopes. Retain PTX fallbacks for unsupported or regressing forms.\n\nRemove the legacy SM75 MMA lowering in a separate preceding commit.\nTriton [documents NVIDIA support starting at compute capability\n8.0](https://github.com/triton-lang/triton/blob/8627ec5be64b6d5767edf313668de2e145a2718b/README.md#compatibility),\nand [Gluon’s `mma_v2` requires the Ampere `[2, 0]`\nlayout](https://github.com/triton-lang/triton/blob/8627ec5be64b6d5767edf313668de2e145a2718b/python/triton/experimental/gluon/language/nvidia/ampere/__init__.py#L117).\nThe old SM75 `[2, 1]` path was still reachable when explicitly targeted;\nthis removes that unsupported functionality.\n\n<!-- codex-thread: 01a121e0-c722-7fc1-92e4-089cb1d2f63d -->",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    }
+  ],
+  "architecture_based_on_sha": "0861b90f695e3c866f6f7eadd4be8339378ab017",
+  "architecture_generated_at": "2026-11-01T20:11:07.548246+08:00"
+}

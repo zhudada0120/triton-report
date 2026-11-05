@@ -13,6 +13,18 @@
       "interface_changes": "在 TritonSemantic.dot 中新增一条断言：当传入 acc 时，要求 acc.type.element_ty 与 ret_ty.element_ty（由操作数推导出的结果 dtype）一致，并置于既有 out_dtype 检查之前。原检查在只传 acc 时 out_dtype 默认等于 acc.dtype，因此恒成立、形同虚设；新检查真正拦截 int8 操作数 + fp32 累加器、bf16/fp32 + fp16 累加器等误用，在编译早期给出可操作的错误提示（建议匹配累加器或 acc += tl.dot(a,b).to(acc.dtype)）。改动仅 3 行，但语义上收紧了一个用户可见的契约：过去“能编译（以意外错误失败或侥幸通过）”的 kernel 现在会在前端被拒。测试通过 run_parser + stub target 运行，无需 GPU，覆盖 int8/bf16/fp32/fp64 四种操作数。风险在于依赖旧有宽松行为的代码（尤其是跨后端迁移的 kernel）会开始报错，属于有意为之的行为变更。",
       "change_summary": "[FRONTEND] Reject tl.dot accumulators whose dtype differs from the dot result (#12442)",
       "ascend_impact": false
+    },
+    "909d4412bde18bd03081cc4ec9c274452cd1dc34": {
+      "date": "2026-11-05",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "BC breaking：将大量内联 PTX 替换为 LLVM/NVVM 操作与 intrinsic，同时删除旧 SM75 MMA lowering。主要改动：(1) math.sqrt→llvm.sqrt(afn)、math.rsqrt→NVVM rsqrt；(2) FP16/BF16/FP32 packed add/sub/mul 与 FP16/BF16 FMA 走 LLVM 向量操作，min/max 走 llvm.minimumnum/maximumnum（保留 FP32 packed FMA 在 PTX 以避免寄存器溢出）；(3) FP8 转换改用 NVVM convert ops + LLVM 算术，SM89 需 PTX 8.1，SM100f/110f/120f 上 packed BF16↔FP8 需 PTX 9.1/9.2；(4) 部分 i1→FP16/BF16、s8→BF16、BF16→FP32 cast 走 LLVM；(5) 未谓词化的默认 cache 全局 load/store 走 LLVM load/store（标量 load 保留 PTX 规避 ptxas 误编译）",
+      "change_summary": "[BC Breaking][NVIDIA] Lower more operations through LLVM and NVVM (#12212)",
+      "ascend_impact": false
     }
   }
 }

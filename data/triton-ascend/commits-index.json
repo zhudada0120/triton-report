@@ -1,4 +1,64 @@
 {
+  "ae07d3d13917a53300bb74127604242f7bf02f2e": {
+    "date": "2026-11-05",
+    "msg": "[docs](op) Modify triton dot op docs constraints (#2966)"
+  },
+  "982111c78441a42bb0ae2a0a213767d54eac2005": {
+    "date": "2026-11-05",
+    "msg": "[launch](fix)  Optimize the storage directory for shared libraries (#2945)"
+  },
+  "d9c64d36502a148a4b4498d309daa617eb377ae7": {
+    "date": "2026-11-05",
+    "msg": "Add dedicated TLA lowering with generic load conversion (#2950)"
+  },
+  "ac2466c8e7348aaa5e4893397c55e56cebd07ede": {
+    "date": "2026-11-05",
+    "msg": "[ascend](feat) Add TLA sparse MLA prefill ut (#2961)"
+  },
+  "01df8fc3ec3f6e999b6fbaf45aa1bd9d198bdc96": {
+    "date": "2026-11-05",
+    "msg": "[compiler](fix) restrict MergeConcatLoadBuffer to A5 (#2964)"
+  },
+  "cfdf3d8e65e03ce8e95b0cf5e2bbb05164232578": {
+    "date": "2026-11-05",
+    "msg": "update A6 SIMT bc (#2972)"
+  },
+  "67c091904befa4ec8cda82deb28e8a39b940bf11": {
+    "date": "2026-11-05",
+    "msg": "Update bisheng-version.txt (#2970)"
+  },
+  "12a75c74eb659b815289382aa4b2d06b297a75fb": {
+    "date": "2026-11-05",
+    "msg": "[compiler](fix) compiler optimization (#2643)"
+  },
+  "2402327427aeab14bd3e83280a36b0760b2d7dcb": {
+    "date": "2026-11-05",
+    "msg": "[TritonToGraph](feat) merge batch and short axis (#2942)"
+  },
+  "9fda729520c92fa2e12dbc0e8058ed70ee89ab96": {
+    "date": "2026-11-05",
+    "msg": "feat(ascend): add standalone shared pointer analysis (#2692)"
+  },
+  "99f6bf0e2b42f4ed8f8aa0ae5efce8355f965023": {
+    "date": "2026-11-05",
+    "msg": "[Ascend](feat) add TLA scalar dtypes and host buffer arguments (#2910)"
+  },
+  "d53f57fa3219ad3b2c47bf0e416955f2d62944b6": {
+    "date": "2026-11-05",
+    "msg": "[Ascend](fix) Preserve range slices and volatile loads (#2771)"
+  },
+  "99f59e29ae3cc93cb6e52e6e8b806cf94540d8b1": {
+    "date": "2026-11-05",
+    "msg": "[Launcher](fix) size workspace by 64-bit program count (#2875)"
+  },
+  "96732af5a570f1ba2a95b0102d1159d6488b1999": {
+    "date": "2026-11-05",
+    "msg": "[TritonToLinalg](fix) support noinline for community testcase (#2933)"
+  },
+  "61815fcefcc12220c23f81e885907bcbcb8eae13": {
+    "date": "2026-11-05",
+    "msg": "Readapt libdevice A3 Operators (#2931)"
+  },
   "b3c899b8de4a1061d93f710262ef46e61e4ab4a0": {
     "date": "2026-11-04",
     "msg": "[Docs](fix) standardize msDebug naming and add English guide (#2921)"

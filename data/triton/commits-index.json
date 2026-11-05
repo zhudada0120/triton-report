@@ -1,4 +1,32 @@
 {
+  "f8cddb947b471d6902a39f62d0894d1e552e5e75": {
+    "date": "2026-11-05",
+    "msg": "[AMD][ConSan] Support async-copy mbarrier arrive (#12320)"
+  },
+  "8ca1b5a650d5274cc6a268d1f7183ebd4c9d835d": {
+    "date": "2026-11-05",
+    "msg": "[triton-ext] Version libtriton's exported symbols as TRITON"
+  },
+  "bf11e3c21d3ea597bd71fed285c8a87e7ac28f20": {
+    "date": "2026-11-05",
+    "msg": "[BACKEND] Generalize scan lowering to linear layouts (#12184)"
+  },
+  "d1c9c09998f6eadcf8430be73b23b49a088a9689": {
+    "date": "2026-11-05",
+    "msg": "Clean up the Gluon block-scaled matmul example (#12627)"
+  },
+  "d86c8b2f0064bd936afc6b5ea66dca4c0e760f4b": {
+    "date": "2026-11-05",
+    "msg": "[NVIDIA][Gluon] Support FP6 shared tiles for TMA and tcgen05 (#12548)"
+  },
+  "86d324799bd97dd0cb382c3bb919accd29184103": {
+    "date": "2026-11-05",
+    "msg": "[NVIDIA] Update ptxas to 13.5.37 (#12626)"
+  },
+  "909d4412bde18bd03081cc4ec9c274452cd1dc34": {
+    "date": "2026-11-05",
+    "msg": "[BC Breaking][NVIDIA] Lower more operations through LLVM and NVVM (#12212)"
+  },
   "1887644bdea84fde07825813158782fa526871fd": {
     "date": "2026-11-04",
     "msg": "[AMD] Preserve dominance when preparing if combining (#11346)"
