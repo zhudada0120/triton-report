@@ -1,8 +1,8 @@
 {
-  "content_hash": "07d6de1439535974",
+  "content_hash": "b0802f2214265b61",
   "analysis": {
-    "interface_summary": "定义 356 个函数",
+    "interface_summary": "定义 362 个函数",
     "key_interfaces": []
   },
-  "cached_at": "2026-11-06T06:58:46.503452+08:00"
+  "cached_at": "2026-11-07T06:31:02.680616+08:00"
 }

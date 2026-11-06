@@ -1,0 +1,167 @@
+{
+  "date": "2026-11-06",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-11-07T06:34:23.417076+08:00",
+  "daily_summary": "当日变更集中在 Ascend 后端的 DynamicCVPipeline（ssbuffer）同步复用重构、Proton profiling 在 Ascend NPU 上的完整接入（MSPTI + intra-kernel instrumentation）、TLA 语言层补齐 sqrt 算子，以及 CI 工作流调整（移除黄蓝流水线、新增 wheel/npuir 手动上传发布）。另有 launcher 锁初始化流序化修复、A3 目标 libdevice 算子扩展和一处 outline reuse 黑名单小修。整体是性能调优基础设施（同步复用、profiling）与发布/测试工程能力并进的一天。",
+  "test_impact_summary": "当日多个 commit 直接改动编译流水线语义与运行时 ABI：ssbuffer 同步复用重构新增了 loop depth/region 分析与 flag 复用规则，并附带 3 个新 MLIR 回归测试；Proton 接入改动了 launcher ABI（profile_scratch 参数）、compiler stage patch 钩子与 C++ pass 注册，新增大量 proton_ut 用例；A3 libdevice 与 tla.sqrt 属于新算子路径，需要覆盖新目标/新算子的端到端用例；launcher_cann 改为异步 memcpy 并新增锁模板缓存，影响启动路径正确性。现有测试在 commit 内部已同步更新/新增，但 ssbuffer 的 flag 复用边界条件、Proton 在无硬件环境下的 hookless 路径、以及 A3 目标上的 libdevice 算子数值正确性仍需重点看护；CI 侧改动不引入运行时测试点，但影响夜间构建与集成测试的包安装格式。",
+  "commits": [
+    {
+      "sha": "8f0ade66580245e30ad97093526a4018e4e18fc7",
+      "comment": "在 isOutlineReuseBlacklistKernel 的黑名单中新增 chunk_kda_bwd_kernel_intra 与 flex_attention_kernel 两个 kernel。该函数决定 SSBUFFER（DynamicCVPipeline SplitDataflow）是否跳过 start/end sync 复用分析，属于对特定 kernel 的保守回退，防止复用逻辑在这两个 kernel 上产生错误同步。改动极小、风险低，但黑名单是硬编码字符串匹配，kernel 改名或新变体出现时会静默失去保护。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "DynamicCVPipeline",
+        "ssbuffer"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅向已有黑名单追加条目，属于保守回退开关，不影响接口与其他路径，现有 MLIR 回归可覆盖黑名单分支行为。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow"
+        ]
+      },
+      "message": "[ssbuffer](fix) fix outlinereuse"
+    },
+    {
+      "sha": "cc4de30b891a7b452a7f25ed6e6dcd94ce7cf738",
+      "comment": "SSBUFFER 同步复用的大重构。核心变化：(1) 用 kill kLoopId 改为 kLoopDepthAttr/kLoopRegionAttr，在 AddBlockIdForControlOps 中通过 setOpLoopDepth 标记循环深度；(2) 新增 SyncAnalysis.{h,cpp}，把 sortDependencies 从 InterCoreTransferAndSync 移到 DataDependencyAnalysis，并新增 analyzeDepLoopInfo/analyzeSyncReuse，按 loop depth + loop region 分组，选取依赖数最多的 region 作为 master，其余 region 轮转复用其 flag id，复用依赖标记 reuseStartEnd=true；(3) 把 getBlockStartEnd 的四元组替换为 TransferSyncInsertPoint 结构体，贯穿 createTransferAllocs/insertVectorToCubeTransfer/insertCubeToVectorTransfer/insertInterCoreSync/insertMemDepSync；(4) 删除 analyzeLoopInclusion/moveStartEndSync 与旧 sortDependencies，改为 findLoopRange 计算 loopStartBound/loopEndBound；(5) AddMultiBufferOuterScope 增加共享 sync 生命周期校验（DominanceInfo/PostDominanceInfo），单 buffer 模式跳过校验，校验失败返回 rc=1；(6) 移除 collectExtraSync 的 fallback 兜底与在 loop 内 receiver wait 上重复插入 drain 的行为；(7) FlagIdManager 每次 acquireId/checkCurrentId 重新扫描已有 flag，避免 ID 冲突。意图是减少 SSBUFFER 中冗余的 sync flag 数量、提升双 buffer 复用效率，同时以保守失败代替静默降级。风险点：loops 嵌套与 if/else 分支场景下复用正确性依赖 dominate/post-dominate 证明，transfer group 缺失 lifecycle 时直接 fail 整个 pass；另外 transferIndex 与 dep.flagId 的绑定顺序依赖 sortDependencies 的稳定性，若 region 分组选主策略不当可能生成不必要同步。作者已同步补充 3 个 MLIR 测试（shared flag lifecycle、if-else reuse、parallel reuse）并调整 test_fill_init.mlir。",
+      "tags": [
+        "feature",
+        "performance",
+        "high-risk",
+        "DynamicCVPipeline",
+        "ssbuffer"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "重构了依赖排序、loop 深度分析、flag 复用与 transfer 插入点数据结构，属于编译语义变更，必须依赖新 MLIR 回归验证 flag 复用正确性与失败回退路径；本次提交已新增 Outer-scope-shared-flag-lifecycle.mlir、test_if_else_reuse.mlir、test_parallel_reuse.mlir 并修改 test_fill_init.mlir，但循环嵌套/多 region 交互的边界仍需补充。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AllocMultiCache",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut"
+        ]
+      },
+      "message": "[ssbuffer](feat) outline start end sync and reuse (#3000)\n\n* [ssbuffer](feat) outline start end sync and reuse\n\n* [ssbuffer](fix) preserve shared outer-buffer sync lifecycles\n\nValidate an enclosing lifecycle owned by a sibling transfer group before\nrotating a shared flag. Report SSBUFFER rc=1 when coverage cannot be proven,\nwhile preserving explicitly requested single-buffer mode. Never insert a\ndrain at an in-loop receiver wait, and match extra sync by its original flag.\n\nKeep synchronization and buffer selection in their existing if/else form.\nCover shared V-to-C and C-to-V flags, missing lifecycles, and non-enclosing\nseeds. Use valid F32-to-F16 fixpipe conversion and current to_tensor syntax\nin the regression test.\n\nSigned-off-by: 1801ZDL <1241272204@qq.com>\n\n* [ssbuffer](fix) fix analyzeDepLoopInfo & looprange\n\n---------\n\nSigned-off-by: 1801ZDL <1241272204@qq.com>\nCo-authored-by: wodelt <1241272204@qq.com>"
+    },
+    {
+      "sha": "79430e1fab235ba5bc6dbfd7e1bd09c14145e1f8",
+      "comment": "在 cann/libdevice.py 中把原本仅针对 A5/A6 目标的 __hmf_* 硬件函数路径扩展到 A3 目标（_is_a3_target），涉及 reciprocal/log1p/relu/isinf/ldexp/finitef/isnan/mulhi/div_rz/sqrt_rn/fast_dividef/fast_expf/sinh/cosh/acosh/asinh/atanh/expm1/nextafter/hypot/erf/lgamma/log10/copysign/abs/div_rn/exp/exp2/fma/log/log2/rsqrt/sqrt 等大量数学函数；同时把 mulhi/sinh/cosh/acosh/asinh/atanh/nextafter/hypot/erf/lgamma/copysign/rsqrt 从裸 extern_elementwise 改为 _libdevice_elementwise 并显式传 workspace（量、类型、whetherTrue）。意图是为 A3（Ascend910_9382）目标启用与 A5/A6 一致的硬件数学指令。风险点：A3 硬件是否真正支持所有 __hmf_* 符号需验证；workspace 元组参数若与目标硬件约束不符会导致编译失败或精度异常；mulhi 的 workspace=(6, int32, True) 等具体数值依赖硬件指令实现细节。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "libdevice",
+        "A3"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 A3 目标上的大量数学函数硬件路径，需要针对 A3 硬件验证各 __hmf_* 符号可用性与数值正确性；现有测试若只在 A5/A6 上跑不会暴露 A3 路径问题。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut（libdevice 算子数值测试）",
+          "third_party/ascend/unittest/pytest_ut/math 相关用例"
+        ]
+      },
+      "message": "Reapply A3 Operators (#2974)\n\nCo-authored-by: lijiarong <lijiarong17@huawei.com>"
+    },
+    {
+      "sha": "8526625337df546cb531b48c2275f67fb57ed2a7",
+      "comment": "launcher 锁初始化修复：把 cann_memcpy（同步）替换为 cann_memcpy_async 并传入 stream，新增 initializeLocks 用进程级静态 std::map 缓存 pinned host 模板（key 为 ordered/unordered locks、participants、lock_init_value），避免每次 launch 都构造 vector 并同步 memcpy；unordered_locks 与非零 lock_init_value 走模板 memcpy，否则走 memset_async。缓存永久保留是因为 queued copies 与 captured graphs 可能比首次 launch plan 生命周期更长。风险点：静态模板进程内永不释放（微量泄漏但设计上有意为之）；缓存 key 未包含 device/stream，若不同 device 的 lock 布局不同则存在问题（但 layout 由 spec 决定，应一致）；并发首次初始化由 mutex 保护。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "medium-risk",
+        "launcher"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "launcher 锁初始化从同步改异步并引入缓存，需验证 unordered_locks、lock_init_value 各种组合在 stream 顺序下的正确性，以及重复 launch 时模板复用不产生脏状态。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_launcher_plan.py",
+          "third_party/ascend/unittest/pytest_ut/test_launcher_export_api.py",
+          "third_party/ascend/unittest/device_ut"
+        ]
+      },
+      "message": "[Launcher](fix) Initialize lock workspaces in stream order (#2959)"
+    },
+    {
+      "sha": "b4a04b793774db9ced7a095ac6e7e573d991e66f",
+      "comment": "为 TLA 语言层新增 sqrt 算子：支持 f32 标量（Python float / constexpr / 运行期 tensor）走 tl.sqrt，以及 f16/f32 SIMD vector 走 S.vsqrt；显式拒绝 block tensor、整数、bf16/f64 等非法输入以避免隐式转换。同步在 tla/__init__.py 导出，并在 simd_frontend_contract.py 补充 _get_float_ty/get_fp64/create_sqrt 的 builder 契约与完整单测（导出、标量 IR、vector 类型保持、非法输入拒绝），vector_type.py 增加标量与 vector 的 IR 生成验证。实现清晰、类型检查严格，属于纯新增能力，风险低。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "tla",
+        "language"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 tla.sqrt 公共 API，已同步补充 simd_frontend_contract 与 vector_type 测试；后续若扩展 dtype 支持需在此测试基础上增补。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/simd_frontend_contract.py",
+          "third_party/ascend/unittest/tla_ut/vector/vector_type.py"
+        ]
+      },
+      "message": "[tla](feat) add scalar and SIMD sqrt (#2976)\n\n(cherry picked from commit b43100f05bdd6abdad0ed377c1353b6da9754463)\n\nCo-authored-by: dinghong <dinghong10@huawei.com>"
+    },
+    {
+      "sha": "16a6da0f4e87b1e9551103709e90f1c538339e54",
+      "comment": "Proton profiling 在 Ascend NPU 上的完整接入，规模最大的一次变更：(1) compiler.py 增加 AscendBackend.instrumentation 钩子，在 make_ttir/ttir_to_linalg stage 调用 patch，并从 ttadapter linalg 文本正则提取 profile_scratch_size/profile_num_units 等 metadata；NPUOptions 增加 profile_scratch_size；pack_metadata 透出 profile 字段。(2) driver.py：NPULauncher 按 profile_scratch_size 分配 profile scratch 并在 exit hook 前同步 torch_npu 队列；npu_utils.cpp 新增 get_vector_clock_rate/get_hbm_clock_rate（dlopen libascend_hal.so/libdrvdsmi_host.so，失败 warn 返回 0）。(3) launcher ABI 扩展：TritonNpuLaunchSpecV1 增加 profile_scratch_size，LaunchRequestV1 增加 profile_scratch，ArgLayout 新增 profile slot，launcher.py wrap_handle_tensordesc 支持 profile_scratch 参数。(4) 新增 Ascend 专有 C++ pass 目录 ProtonToHIVM（AssignAscendProtonScopeIds + LowerAscendProtonToHIVM，38 行核心 Pass 把 proton.record 降为 HIVM CustomOp __builtin_proton_circular_store，并注入 header/footer 时间戳与 metadata），CMake 通过 TRITON_BUILD_PROTON 门控。(5) proton_patch.patch 以 opt-in patch 形式把 CANN/MSPTI 后端、AscendRuntime、MsptiProfiler、AscendInstrumentation 等改动注入 third_party/proton，setup_patch.py 提供幂等 apply/reverse 与冲突检查。(6) 新增大量 proton_ut 测试（smoke、instrumentation、backend、lifecycle）。设计上沿用上游 proton 的 hook/patch 机制，Ascend 走非 ttgir 的 ttir→linalg 路径。主要风险：patch 与上游 proton 版本强耦合（git 区间 2a00c6052..be46d818e），上游升级会冲突；profile scratch 分配/释放依赖 torch_npu 与 _profile_allocator，stream 顺序与队列 drain 的时序正确性需硬件验证；新增 ABI 字段为向后兼容的尾插，但旧 launcher_export 路径已同步置 nullptr。",
+      "tags": [
+        "feature",
+        "high-risk",
+        "proton",
+        "profiling",
+        "launcher",
+        "compiler"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "跨 compiler/driver/launcher/C++ pass 的完整功能接入，已新增 proton_ut 系列测试与 ProtonToHIVM 三个 lit 用例，并更新 test_launcher_export_api.py/test_launcher_plan.py/test_knob.py/test_backend_npu_utils_build_flags.py 以适配新 ABI 与 -ldl；仍需关注无硬件环境的构建门控（REQUIRES: proton）、patch 幂等性和 A5/A3 不同 SoC 的 time shift 行为。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/proton_ut",
+          "third_party/ascend/unittest/Conversion/General/ProtonToHIVM",
+          "third_party/ascend/unittest/pytest_ut/test_launcher_plan.py",
+          "third_party/ascend/unittest/pytest_ut/test_launcher_export_api.py",
+          "third_party/ascend/unittest/pytest_ut/test_knob.py"
+        ]
+      },
+      "message": "[Proton](feat) Support MSPTI profiling and intra-kernel instrumentation (#2963)\n\n* [Proton](feat) support Ascend kernel profiling with MSPTI\n\n* [Proton](feat) report Ascend device information\n\n* [Proton](feat) complete Ascend MSPTI lifecycle and viewer\n\n* [Proton](fix) support MSPTI profiling without Triton hook\n\n* [Proton](style) fix MSPTI formatting\n\n* [Proton](fix) support state without Triton hook\n\n* [Proton](fix) use MSPTI activity kernel names\n\n* [Proton](feat): support hookless MSPTI and Ascend-only builds\n\n* [proton](feat) enable Ascend NPU scope tracing\n\nAdd explicit instrumentation profiling on Ascend NPU with stable scope IDs,\nHIVM lowering, vector-kernel profile buffers, launcher argument packing, and\nAscend metadata parsing. Keep profiling inactive without proton.start().\n\nSelect the A3 cycle adjustment through aclrtGetSocName(); Ascend910_9382 uses\nzero-cycle time shift. Preserve the GPU metadata fallback and guard the Ascend\npass bindings behind the Proton build flag. Require backend=\"instrumentation\"\nwithout assigning profiling semantics to the \"npu\" device identifier.\n\nPort the complete Proton changes from PR #2171 onto main-dev. Keep main-dev's\nAscendNPU-IR gitlink unchanged and include compiler regressions plus A3\nprofiling-off/on tests. Historical A3 validation passed; main-dev hardware\nexecution is left to the target branch validation workflow.\n\nCo-authored-by: Junshan Tan <3069573702@qq.com>\nCo-authored-by: Jihang Li <Jihang.Li@outlook.com>\nCo-authored-by: Yuqiang He <heyq1314@gmail.com>\nSigned-off-by: Wu Zikang <1209766236@qq.com>\nSigned-off-by: LantSky <48196600+LantSky@users.noreply.github.com>\n\n* fix: relocate Ascend Proton build setup and pin IR\n\n* fix: drain NPU submission queue before Proton collection\n\nWait for framework submissions before the instrumented launch-exit hook reads its profile buffer. Keep the uninstrumented launch path unchanged. Verified on A3 using the historical LLVM19 f7 compiler and compatible device bitcode: off/on acceptance passes, 128 complete events, zero negative durations, paired raw records, and identical disabled-scope IR and device binary. Launcher contracts: 295 passed.\n\n* style: format Proton launcher integration\n\n* test: align compile-only mock with profile scratch argument\n\n* [Proton](test) cover integrated backends and record A5 validation\n\n* [Proton](docs) finalize wheel validation results\n\n* [Proton](fix) isolate Ascend policies from upstream defaults\n\n* [Proton](refactor) inline backend options in Proton CMakeLists\n\n* [Proton](test) move Ascend coverage out of upstream tests\n\n* [Proton](refactor) reuse Ascend driver device information\n\n* [Proton](refactor) keep device information assembly in CannApi\n\n* [Proton](build) apply Ascend Proton changes as an opt-in patch\n\n* [Proton](build) simplify Proton patch application\n\nMove the unchanged Proton delta to third_party/ascend/patch/proton_patch.patch and inline its build-time application in setup_patch.py. Remove the standalone CLI and manifest while retaining idempotent application, safe reversal, and conflict checks. The delta remains 2a00c6052..be46d818e under third_party/proton.\n\n* [Proton](fix) detect device clock query support dynamically\n\n* [Proton](build) remove patch-specific Git attributes\n\n* [Proton](build) use default patch whitespace checks\n\n* [Proton](fix) avoid redundant IR serialization for profile metadata\n\n---------\n\nSigned-off-by: Wu Zikang <1209766236@qq.com>\nSigned-off-by: LantSky <48196600+LantSky@users.noreply.github.com>\nCo-authored-by: Wu Zikang <1209766236@qq.com>\nCo-authored-by: Junshan Tan <3069573702@qq.com>\nCo-authored-by: Jihang Li <Jihang.Li@outlook.com>\nCo-authored-by: Yuqiang He <heyq1314@gmail.com>\nCo-authored-by: LantSky <48196600+LantSky@users.noreply.github.com>"
+    },
+    {
+      "sha": "11ba86544312919b2e948b26915161cbbc770b35",
+      "message_ignored": false,
+      "comment": "删除 .github/workflows/Ascend950-ci.yml，移除面向 feature/simd-simt-compile-mode 分支的 Ascend950 CI（wheel 构建 + OBS 上传 + 黄蓝协作流水线触发）。属于 CI 清理，与仓库运行的编译/运行时逻辑无交集；注意该工作流仅针对特定 feature 分支，删除后该分支失去 950 自动化看护，若有后续合入需确认由其他工作流接管。",
+      "tags": [
+        "ci",
+        "low-risk",
+        "chore"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅删除 CI 工作流文件，不涉及测试代码或源码逻辑，不引入需要看护的测试点。",
+        "suggested_test_areas": []
+      },
+      "message": "Remove the yellow-blue collaborative pipeline (#3021)"
+    },
+    {
+      "sha": "15dba660b072ea22a23b9fa43e44a1e0396829db",
+      "comment": "CI 发布能力增强：(1) 新增 upload-wheels.yml，支持手动上传预构建 wheel 到 OBS，含 URL 校验、zip 魔术字节检查、版本重写（auto 模式去掉时间戳、支持显式版本，保留时间戳/权限/压缩方式并重生成 RECORD）、逐文件 obsutil cp 与 index.html 重建；(2) npuir-build.yml 新增 publish-npuir-run 手动发布 job（tar.gz 打包 payload 上传 cann/，支持 npuir_run_id 复发布历史产物、overwrite 保护），并将 EPEL 固定到华为云镜像、增加重试与 rpm -q 校验；(3) integration-tests-ascend.yml 的 Bisheng 安装支持 .tar.gz payload 格式并在安装后校验 bishengir-compile 存在。属于发布/集成工程改进，脚本工程质量较高（安全校验、幂等保护），但 wheel 版本重写脚本为内联 Python，逻辑较多，需在实际上传时验证 RECORD 与权限位保持。",
+      "tags": [
+        "ci",
+        "chore",
+        "medium-risk",
+        "release"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "CI 工作流变更不涉及仓库源码或单测代码；但其产出的 tar.gz 包格式被 integration-tests 消费，发布后需通过夜间/手动集成测试端到端验证安装路径。",
+        "suggested_test_areas": [
+          ".github/workflows/integration-tests-ascend.yml",
+          "cmake/bisheng-version.txt"
+        ]
+      },
+      "message": "[CI](feat) add manual wheel upload and npuir payload OBS publish (#2868)\n\n* Add a manual upload workflow for wheel packages\n\nAdds upload-wheels.yml: a workflow_dispatch task that takes a list of\nprebuilt wheel URLs (space/newline separated), downloads and validates\nthem, uploads each to the OBS nightly pypi directory with obsutil, and\nregenerates index.html. Tested on the fork (URL splitting and per-file\nobsutil cp fixes included).\n\nCo-Authored-By: Claude Code <noreply@anthropic.com>\n\n* Publish npuir payload to OBS as tarball on dispatch\n\nAdds a publish-npuir-run job to npuir-build.yml, gated on\nworkflow_dispatch so the nightly schedule keeps producing GitHub\nartifacts only and can never overwrite official releases:\n\n- No input: build as usual, then publish the fresh payload.\n- npuir_run_id given: skip the build and publish that earlier\n  successful run's artifacts instead.\n\nThe payload (bin/, lib/, npuir-sha.txt) is packed into a plain tar.gz\nand uploaded with obsutil to obs://triton-ascend-artifacts/cann/, named\nascendnpu-ir_<ver>_linux-<arch>[-<tag>].tar.gz after the official .run\nreleases' filename scheme. An existing object is never replaced unless\noverwrite_existing is set.\n\nCo-Authored-By: Claude Code <noreply@anthropic.com>\n\n* Pin EPEL to the Huawei Cloud mirror in the npuir toolchain step\n\nThe runners' egress proxy serves stale EPEL metalink metadata and the\noverseas mirrors 404 on the hashed repodata files, so 'yum install\nccache' intermittently fails (seen on the aarch64 build). Add a\ndedicated epel-hwcloud repo pointing at mirrors.huaweicloud.com,\ndisable the metalink-based epel repo for the install, retry up to\nthree times, and verify the packages with rpm -q afterwards.\n\nCo-Authored-By: Claude Code <noreply@anthropic.com>\n\n* Add npuir tarball upload from prebuilt wheels\n\nAdd an opt-in Upload-Npuir job to the wheel upload workflow: it\ndownloads the same wheel_urls, extracts the AscendNPU-IR (bishengir)\npayload bundled in each triton_ascend wheel, and publishes one\nascendnpu-ir_<version>_linux-<arch>[-<tag>].tar.gz tarball per\narchitecture to obs://triton-ascend-artifacts/cann/. The naming,\narchive layout and overwrite guard follow npuir-build.yml's\npublish-npuir-run job.\n\nControlled by four new dispatch inputs: upload_npuir (default false),\nnpuir_version (default 2.0.0), npuir_tag (default empty) and\nnpuir_overwrite (default false).\n\nCo-Authored-By: Claude Code <noreply@anthropic.com>\n\n* Support tar.gz Bisheng packages in integration tests\n\nThe Bisheng compiler install step now accepts two package formats,\nselected by the file extension of the entry pinned in\ncmake/bisheng-version.txt: the official .run self-extracting\ninstaller, and plain .tar.gz payload tarballs with bin/, lib/ and\nmanifest.xml at the archive root, as published by npuir-build.yml and\nupload-wheels.yml into the cann/ directory. Fail early with a clear\nmessage when bishengir-compile is missing after install.\n\nCo-Authored-By: Claude Code <noreply@anthropic.com>\n\n* Add wheel version rewrite and latest/ refresh to the upload workflow\n\nSync upload-wheels.yml with the full version running on the fork:\n\n- new_version input (default \"auto\"): rewrite wheel versions before\n  uploading. \"auto\" keeps the build date but drops the time\n  (3.6.0+dev20261027220530 -> 3.6.0+dev20261027); an explicit version\n  applies to every wheel; \"\" uploads the wheels unmodified. The repack\n  carries each entry's timestamp, unix mode bits and compression method\n  over from the source wheel, so executables (triton-opt, *.so) keep\n  +x through the rewrite, and regenerates RECORD accordingly.\n- update_latest input: mirror this upload's wheels into the latest/\n  subfolder, prune stale objects there and regenerate its index.html.\n\nCo-Authored-By: Claude Code <noreply@anthropic.com>\n\n* Remove the update_latest input and latest/ mirror\n\nThe latest/ subfolder mirror is no longer needed; drop the\nupdate_latest dispatch input, the UPDATE_LATEST env wiring and the\nupload/prune/index-regeneration block from the upload step. The main\ndirectory upload and its index.html regeneration are unchanged.\n\nCo-Authored-By: Claude Code <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Code <noreply@anthropic.com>"
+    }
+  ],
+  "architecture_based_on_sha": "408e31592b50e930fc6f01c244f309444005d575",
+  "architecture_generated_at": "2026-11-01T20:11:07.549514+08:00"
+}

@@ -1,5 +1,5 @@
 {
-  "content_hash": "c8349182ccf58094",
+  "content_hash": "83c8915653804c22",
   "analysis": {
     "interface_summary": "定义 2 个类；定义 30 个函数",
     "key_interfaces": [
@@ -15,5 +15,5 @@
       "CUDABackend.parse_options"
     ]
   },
-  "cached_at": "2026-10-27T06:00:08.472257+08:00"
+  "cached_at": "2026-11-07T06:32:59.809585+08:00"
 }

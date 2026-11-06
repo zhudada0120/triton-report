@@ -1,0 +1,314 @@
+{
+  "date": "2026-11-06",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-11-07T06:29:26.313779+08:00",
+  "daily_summary": "当日变更以 NVIDIA/AMD 后端代码生成优化与 Blackwell (SM100/SM103) 新特性支持为主：AMD 为 WMMAv3 增加 FP16 累加 WMMA 指令；NVIDIA 为 SM103 增加 64 值 FP6 TMA store、常规 Triton 的 FP6 转换与压缩 TMA store、CLC 坐标范围标注、布尔归约降级为 vote、E5M2 RTZ prmt 打包、TMEM 零基址优化、tmem 多缓冲条件收紧；GPU 通用侧优化共享直方图清零向量化、elected-thread 作用域冗余谓词消除（含原子位运算浮点按位支持）、Gluon make_range 比较折叠；AMD warp-specialize 单 warp 跳过 barrier；ConSan 启动屏障前状态初始化修正。整体方向是降低 SASS 指令数、提升运行时性能，并扩展 FP6/FP8 在最新 GPU 上的能力。",
+  "ascend_impact_summary": "当日大多数 commit 为 third_party/nvidia / third_party/amd 的平台专属代码，对 triton-ascend 无影响。但有两个 commit 触及 Ascend 复用/补丁的上游接口：6d93d0e7 修改了 python/triton/language/semantic.py 的 atomic_and/atomic_or/atomic_xor 实现（新增 _atomic_bitwise），属于必然影响路径（semantic.py 被 release patch 修改且 Ascend 依赖其语义）；27ee20c5 修改了 include/triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h 中 shuffleUp 的纯虚函数签名，该抽象虽在 Ascend 的参考架构中标注为不使用（Ascend 走 TritonToLinalg 路径），但属于 C++ 头文件变更、若 Ascend 仓库编译包含相关文件需关注；此外 7452346c 与 3a960ee8 修改 python/src/ir.cc 与 python/src/specialize.cc，这两个文件均被 release patch 直接修改，上游变更会与 patch 冲突，需同步 patch。其余 commit（ac80e167、d02c6a59、8045cd1e、4f8de245、03bc8f1a、fd91c147、f254bd63、13b7237e、547e5806）均为平台专属或 GPU 通用 LLVM 降级路径，对 Ascend 无影响。",
+  "commits": [
+    {
+      "sha": "79b4a25bfcc9325eb03b067d4d163225dadea872",
+      "comment": "[AMD] 为 WMMAv3 新增 FP16 累加指令支持。在 AccelerateAMDMatmul.cpp 的 chooseWmmaInstruction 中为 wmmaVersion==3 增加 f16/fp8/bf8 组合候选，在 WmmaGroup.cpp 中注册 f16-accumulate 的 wmma_f16_16x16x32_f16 及 9 个 fp8/bf8 变体（含 k=64/128 双模式），使新指令能被实际选中；同时更新 lit 测试与 python 测试（test_amd_codegen、test_gluon_cdna5）覆盖 compile 和 runtime。属于 AMD 专属 WMMA 选择逻辑，纯平台特定实现。",
+      "tags": [
+        "feature",
+        "performance",
+        "third-party/amd",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Add FP16-accumulate WMMA support for WMMAv3 (#12177)\n\nAdds the following WMMA instructions that accumulate on f16 to WMMAv3:\n- wmma_f16_16x16x32_f16\n- wmma_f16_16x16x128_fp8_fp8\n- wmma_f16_16x16x64_fp8_fp8\n- wmma_f16_16x16x128_fp8_bf8\n- wmma_f16_16x16x64_fp8_bf8\n- wmma_f16_16x16x128_bf8_fp8 \n- wmma_f16_16x16x64_bf8_fp8\n- wmma_f16_16x16x128_bf8_bf8\n- wmma_f16_16x16x64_bf8_bf8\n\nAdd f16-accumulator entries so that new instructions are actually\nselected."
+    },
+    {
+      "sha": "3a960ee854ec60101aee5f6e4bf3d3b8d7ae20a8",
+      "comment": "[NVIDIA] 为 SM103 增加 64 值 FP6 TMA store 主机 maps 支持。Ops.cpp verifier 放宽 FP6 TMA 校验接受 64 值（要求匹配的 unswizzled [M,64] store）；driver.c 手工编码 CUDA tensor map 绕过 cuTensorMapEncodeTiled 的 128 值限制（含 SM103 设备校验与字段检查）；driver.py 用 elem_type==TMA_B4X16_P64 替代 fp4_padded 判断；LoadStoreOpToLLVM 在非 SM103 上对 64 值 FP6 store 报错；python/src/ir.cc 删除 fp4_padded 元数据字段并对 B6x16P32 padding 的 64 值 host map 抛错。属于 NVIDIA 专属 TMA/FP6 路径。",
+      "tags": [
+        "feature",
+        "third-party/nvidia",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Build host maps for 64-value FP6 TMA stores on SM103 (#12614)\n\nOn GB300 (SM103), Triton and Gluon can use a host tensor descriptor with\nan unswizzled 2D box of `[M, 64]` to store FP6. Each row contains 64\nbyte lanes in `b6p2x16` shared memory. TMA compacts them to 48 bytes in\nglobal memory. The same descriptor is passed by value to every CTA.\n\nThe CUDA driver encoder requires an inner box of 128 FP6 values. SM103\nalso accepts 64 for stores. The tiled host encoder recognizes that case\nfrom the CUDA element type and physical box width and fills the\ndescriptor directly. Its opaque field encoding was determined on GB300.\n[SM103 store restrictions in PTX ISA\n9.2](https://docs.nvidia.com/cuda/archive/13.2.0/parallel-thread-execution/index.html#data-movement-and-conversion-instructions-tensor-copy-restrictions)\n· [CUDA tensor-map\nencoder](https://docs.nvidia.com/cuda/cuda-driver-api/cuda-driver-api/group__CUDA__TENSOR__MEMORY.html)\n\nThe compiler checks that each narrow host descriptor is used directly by\ntiled TMA stores. The NVIDIA store lowering checks the target, and the\nlauncher checks the device and the fields it encodes. A hardware box can\ncover 1 through 256 rows.\n\nTests compare E2M3 and E3M2 stores with a software packer, including row\npitches of 48 and 112 bytes, column offsets of 0 and 64 values, guard\nbytes, and two CTAs sharing a descriptor. Negative tests cover an SM100\nstore, an SM103 load, and a descriptor passed through a non-inlined\ncall.\n\n---------\n\nCo-authored-by: lezcano <lezcano-93@hotmail.com>",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/src/ir.cc"
+        ],
+        "recommend_refresh": true
+      }
+    },
+    {
+      "sha": "ac80e167a4affa239c03321b0306093d2251efbd",
+      "comment": "[GPU] 共享直方图连续 bin 清零改为向量存储。HistogramOpToLLVM.cpp 中把每线程连续分配 binsPerThread 个 bin，用 min(4, binsPerThread) 宽度的向量 storeShared 一次清 4 个计数器，仅当 numBins < numThreads 时保留取模；lit 测试增加 vector<4xi32> 检查。走通用 TritonGPUToLLVM 的 HistogramOpToLLVM 路径，但该路径为 GPU 专属代码生成，Ascend 不使用。",
+      "tags": [
+        "performance",
+        "lib/Conversion/TritonGPUToLLVM",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[GPU] Clear consecutive shared histogram bins with vector stores (#12640)\n\nGive each thread consecutive counters to zero in aligned histogram\nscratch before the CTA barrier.\n\nOn GB300, clearing 2,048 bins went from 16 `STS` to four `STS.128`\ninstructions. Median kernel time went from 1.967 to 1.941 µs (1.5% lower\npaired runtime on that GPU, 1.5–2.3% across three boxes)."
+    },
+    {
+      "sha": "d02c6a5911d5cb5cafa67738e0a225f2e80dcc0d",
+      "comment": "[NVIDIA] 将 CLC query 的坐标范围暴露给 LLVM。BarrierOpToLLVM.cpp 的 CLCGetProgramIdOpConversion 改用 LLVM::createLLVMIntrinsicCallOp 直接调 nvvm.clusterlaunchcontrol.query_cancel.get_first_ctaid.{x,y,z} intrinsic，并挂 llvm.range 属性（X: [0, 2^31-1], Y/Z: [0, 65535]），使 LLVM 能简化后续有符号除法与 tile index 计算；测试更新为检查 intrinsic 调用与 range 属性。NVIDIA 专属 CLC lowering。",
+      "tags": [
+        "performance",
+        "third-party/nvidia",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Expose CLC coordinate ranges to LLVM (#12639)\n\nAttach CUDA grid bounds to the raw X/Y/Z coordinates of a successful CLC\nquery. LLVM can simplify signed cluster division and tile-index\narithmetic.\n\nOn GB300, `LEA.HI + SHF.R.S32.HI` became one `SHF.R.U32.HI`. A two-CTA\nFP16 matmul (4096×4096×256) went from 21.784 to 21.482 µs (1.36% lower\npaired runtime)."
+    },
+    {
+      "sha": "8045cd1e01d8af8987b83f6693efa17c64d477bc",
+      "comment": "[NVIDIA] 全 warp 布尔归约降级为 vote 指令。TargetInfo.cpp 的 warpReduce 中，当值为 i1 且 reduceLaneIdMask==31 时，AND/UMIN 用 NVVM::VoteSyncKind::all、OR/UMAX 用 any 直接生成 VoteSyncOp，输入输出保持在谓词寄存器；lit 测试覆盖 any/all 归约。NVIDIA TargetInfo 专属优化，但注意这是 TargetInfoBase::warpReduce 接口的实现变更（非签名变更），仅影响 NV 后端。",
+      "tags": [
+        "performance",
+        "third-party/nvidia",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Lower full-warp boolean reductions to votes (#12635)\n\nUse NVVM warp votes for full-warp i1 AND/OR and unsigned min/max. The\ninput and result stay in predicate registers.\n\nOn GB300, `SEL + REDUX.OR + IMAD.U32 + LOP3.LUT` became `VOTE.ANY`. AND\nuses `VOTE.ALL`. A chain of 64 OR reductions went from 4.887 to 3.593 µs\n(26% less time)."
+    },
+    {
+      "sha": "4f8de2455bdc86cefab5a2e1061b8a0bdaea1bf8",
+      "comment": "[NVIDIA] 用 NVVM prmt 打包 E5M2 RTZ 结果。ElementwiseOpToLLVM.cpp 将 convertF16ToE5M2RtzPtx 中内联 asm 的 and.b32+prmt 替换为 LLVM::NVIDIA::permute（0x7531 选择高字节），删除冗余掩码，减少两条 LOP3.LUT；测试更新为检查 nvvm.prmt 并移除 and.b32 检查、将 FP8 RTNE 测试扩展到 512 元素以验证宽 store。NVIDIA 专属 fp_to_fp 降级优化。",
+      "tags": [
+        "performance",
+        "third-party/nvidia",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Pack E5M2 RTZ results with NVVM byte permutation (#12637)\n\nSelect the high byte of each FP16 RTZ result with NVVM `prmt`. The\nprevious masks only cleared discarded bits.\n\nGB300 SASS per four values went from two `F2FP.F16.F32.PACK_AB.RZ`, two\n`LOP3.LUT` and one `PRMT` to the same conversions and `PRMT`. A chain of\n96 dependent conversions went from 12.644 to 10.219 µs (19% less time)."
+    },
+    {
+      "sha": "03bc8f1a37e46835d2646a0e04e5c988d8304f9f",
+      "comment": "[Gluon] 折叠 tt.make_range 的均匀比较。TritonOps.td 给 MakeRangeOp 增加 hasCanonicalizer；Ops.cpp 新增 canonicalization 模式，用 ConstantIntRanges/intrange::evaluatePred 判断与常量比较在整段 range 上是否恒定并折叠为常量；Gluon Canonicalize.cpp 启用该 pattern；Utility.cpp 的 packLLVector 对 <32bit 窄元素按 32bit 分组构造并 ShuffleVector 合并；测试覆盖 canonicalize 与 packing 结果。注意该 pattern 注册在共享的 MakeRangeOp（TTIR）canonicalizer 上，Ascend 的前端也会生成 tt.make_range 并可能受益，但 Ascend 编译流水线走自行 pass，且 Ascend 的 canonicalize 是否启用该 pattern 取决于其 pass 配置；文件命中“可能影响”路径（lib/Dialect/Triton/）。",
+      "tags": [
+        "performance",
+        "lib/Dialect/Triton",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "MakeRangeOp 的 canonicalization pattern 注册在 TTIR MakeRangeOp 上（lib/Dialect/Triton/IR/Ops.cpp + TritonOps.td），Ascend 的 TritonToLinalg 输入为 TTIR，若 Ascend pass 流水线调用 canonicalize 或 MLIR canonicalizer，则 tt.make_range 与常量的比较可能被折叠为常量，改变 Ascend 前端生成的 mask 形态；Gluon Canonicalize.cpp 的变更仅作用于 Gluon 方言，Ascend 不使用。",
+        "testing": "Ascend 端到端 kernel 中依赖 make_range 生成的 mask 的用例（如 load/store mask、边界处理）可能因 IR 折叠产生不同结果或触发不同路径。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut（涉及 tl.arange + 比较生成 mask 的用例）",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut（MLIR 差分测试）"
+        ]
+      },
+      "message": "[Gluon] Fold uniform comparisons of tt.make_range (#12636)\n\nFold a comparison against a constant when every element in the range\nagrees. This removes a full-tile mask before memory-width selection\nwhile preserving the partial tail.\n\nIn a 513-column two-tile softmax on GB300, five scalar loads and five\nscalar stores became one 128-bit access and one guarded 32-bit access in\neach direction. Runtime went from 4.872 to 3.791 µs (22% less time), and\nfrom 6.074 to 4.820 µs at 767 columns (21%).\n\nFolding a mask can also expose a wide byte store. `packLLVector` now\nbuilds 32-bit groups of narrow lanes and joins them with typed LLVM\nshuffles, preserving lane order and allowing the backend to reuse packed\nconversion results. On GB300, a Gluon FP32-to-E4M3 conversion storing\neight bytes per thread drops from six `PRMT` instructions to zero and\nemits one `STG.E.64`. The tests cover 16-bit lane packing and FP8 stores\non SM90 and SM100.",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "6d93d0e7f19c773b443b62630fd8302fd1a8bec8",
+      "comment": "[GPU] 消除 elected-thread 作用域内冗余内存谓词，并支持整数原子 RMW 的浮点按位操作。Utility.cpp 的 emitMemoryThreadPredicate 在 ThreadScopeOp 内改用 emitRedundantThreadPredicate 仅返回残留 CTA 谓词（空值表示所有线程可执行）；semantic.py 新增 _atomic_bitwise 统一 atomic_and/or/xor，对浮点类型先 bitcast 到同宽无符号整数再执行 RMW 并 bitcast 回；TritonOps.td 给 AtomicRMWOp 增加 hasVerifier；Ops.cpp 校验 AND/OR/XOR 必须为整数元素类型；测试覆盖 owner scope 内存操作与浮点按位原子。semantic.py 属于 Ascend 必然影响路径（被 release patch 修改且 Ascend 复用其原子语义）。",
+      "tags": [
+        "performance",
+        "feature",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": true,
+        "functionality": "python/triton/language/semantic.py 的 atomic_and/atomic_or/atomic_xor 被重构为共用 _atomic_bitwise，并新增对浮点类型的支持（bitcast 到同宽无符号整型后 RMW）。AscendBackend 复用上游 TritonSemantic（Ascend 未在 patch 中明确覆盖原子位运算），因此 Ascend 前端将获得新的浮点按位原子语义；同时 AtomicRMWOp 新增 verifier 要求 AND/OR/XOR 为整数元素类型，Ascend 若生成非整数按位原子将触发校验失败。此外 emitMemoryThreadPredicate 的变更位于 lib/Conversion/TritonGPUToLLVM（Ascend 不使用）。",
+        "testing": "Ascend 端到端测试中 tl.atomic_and/or/xor 的浮点用例（若存在）行为改变，需验证 bitcast 路径在 NPU 上的正确性；整数按位原子不受影响但 verifier 变更可能影响 IR 合法性检查。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut（tl.atomic_* 相关用例）",
+          "third_party/ascend/patch/triton-ascend-3.6.0.patch（semantic.py 补丁需同步）"
+        ]
+      },
+      "message": "[GPU] Omit redundant memory predicates in elected-thread scopes (#12638)\n\nInside an elected-thread scope, return only the residual CTA predicate.\nUse same-width integer bits for floating operands of integer atomic RMWs\nso scalar and tensor bitwise atomics can take the unconditional LLVM\npath.\n\nOn GB300, row moments went from two `STG.E` to one `STG.E.64` and from\n12 to 10 registers. Median kernel time was 5.067 µs before and 5.074 µs\nafter (neutral).",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/language/semantic.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": true,
+        "affected_interfaces": [
+          "python/triton/language/semantic.py::TritonSemantic.atomic_and",
+          "python/triton/language/semantic.py::TritonSemantic.atomic_or",
+          "python/triton/language/semantic.py::TritonSemantic.atomic_xor",
+          "python/triton/language/semantic.py::TritonSemantic.atom_red_typechecking_impl",
+          "lib/Dialect/Triton/IR/Ops.cpp::AtomicRMWOp::verify (shared C++ TTIR verifier added by the commit)"
+        ],
+        "adaptation_effort": "low",
+        "adaptation_guide": "This commit has three parts: (1) emitMemoryThreadPredicate change in lib/Conversion/TritonGPUToLLVM/Utility.cpp + Utility.h — this is the NVIDIA GPU->LLVM path that triton-ascend does NOT use, so no action. (2) A new AtomicRMWOp::verify() in lib/Dialect/Triton/IR/Ops.cpp with 'let hasVerifier = 1' on TT_AtomicRMWOp in TritonOps.td, rejecting AND/OR/XOR atomic RMW when the element type is not integer. This verifier lives in the shared platform-independent Triton (TTIR) dialect that Ascend consumes, so after syncing upstream it will be enforced in Ascend's TritonToLinalg path. (3) A frontend refactor in python/triton/language/semantic.py that routes atomic_and/or/xor through a new _atomic_bitwise() helper which bitcasts floating operands to same-width integers before emitting the RMW and bitcasts the result back. triton-ascend vendors its OWN fork of python/triton/language/semantic.py whose atomic_and/or/xor (lines ~1435-1454) still emit tt.atomic_rmw AND/OR/XOR directly on the original (possibly float) value, and whose atom_red_typechecking_impl does not reject f32/f64 for bitwise atomics. Net effect: if Ascend syncs this commit without porting the frontend change, tl.atomic_and/or/xor on a float pointer will produce tt.atomic_rmw on a float element and fail the new verifier ('and/or/xor requires an integer element type'). Required adaptation in third_party/ascend's forked semantic.py: port the upstream _atomic_bitwise() helper and rewrite atomic_and/or/xor to call it (bitcast ptr to tl.pointer_type(tl.get_int_dtype(dtype.primitive_bitwidth, signed=False), ptr.type.scalar.address_space), bitcast val to the int dtype, emit the RMW, then bitcast the old value back to the original dtype). Note two fork-specific details: Ascend's pointer_type uses an int address_space (default 1) rather than upstream's string 'global', and its builder method is self.tensor(...) not self.make_tensor(...); use ptr.type.scalar.address_space as upstream does so it is correct under both conventions. Alternatively, if Ascend does not intend to support float bitwise atomics, add an explicit rejection of non-integer element types for and/or/xor in atom_red_typechecking_impl to produce a clean Python-level error instead of an IR verification failure. The C++ verifier itself needs no Ascend-side change (it is inherited from upstream's shared Triton dialect).",
+        "risk": "low"
+      }
+    },
+    {
+      "sha": "27ee20c554e516db15040cf683296b88304a78e9",
+      "comment": "[NVIDIA] 全 warp 扫描复用 shuffle-up 的边界谓词。TargetInfoBase::shuffleUp 签名从 Value 改为 std::pair<Value, Value>（返回值 + 源 lane 是否在界），NV/AMD TargetInfo 同步实现；ScanOpToLLVM.cpp 中 shuffleValues 返回 pair 并在启用 upDistance 且 lane base 与逻辑边界匹配（shuffleBoundsMatch）时用 shfl.up 的 valid 谓词替代显式 ISETP 比较；AMD Utility 删除旧 shuffleUp 实现在 TargetInfo 中重构；测试大幅调整，移除旧的 scan.mlir 测试并新增 AMD/GFX90A 的 shuffle-offsets 检查。TargetInfoBase 是 C++ 层 target 抽象，按 Ascend 架构参考 Ascend 不使用 TritonGPUToLLVM 路径，但这是纯虚函数签名变更（C++ 编译期契约），若 Ascend 仓库编译涉及该头文件或存在其他实现需注意。",
+      "tags": [
+        "performance",
+        "third-party/nvidia",
+        "third-party/amd",
+        "lib/Conversion/TritonGPUToLLVM",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "TargetInfoBase::shuffleUp 纯虚函数签名变更（改为返回 std::pair<Value,Value>），但 Ascend 后端走 TritonToLinalg→BiShengIR 路径，不实现/不使用 TargetInfoBase，故无功能影响；NVIDIA/AMD TargetInfo 实现同步更新。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Reuse shuffle-up bounds predicates in full-warp scans (#12642)\n\nUse the bounds predicate returned by `SHFL.UP` in forward scans where\nall 32 lanes follow scan order. At shuffle distance `d`, this predicate\nis exactly `laneId >= d`, so it can guard the combine directly.\n\nOn GB300, a 32-element `i32` prefix sum went from 33 to 29 non-NOP SASS\ninstructions in the initial implementation. The five `SHFL.UP`\ninstructions wrote their predicates directly, eliminating four `ISETP`\ninstructions"
+    },
+    {
+      "sha": "fd91c147ef635b9e86b87e9cf073448cf87d769d",
+      "comment": "[NVIDIA] 避免读取零 TMEM 基址。NVGPUToLLVMPass.cpp 的 createTMAlloc 中，对 size>=512 的 TMEM 分配直接用常量 0 作为基址（跳过 shared mem 读回与第二个 barrier），仅保留分配完成所需的 barrier；小分配保持原逻辑。测试更新 nvgpu_to_llvm.mlir 验证 512/576 列分配不再 load shared mem 而用常量 0。纯 NVIDIA tcgen05 TMEM 分配路径。",
+      "tags": [
+        "performance",
+        "third_party/nvidia",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BAKCEND] Avoid reading zero TMEM base (#11845)\n\nTMEM allocations of 512 columns or more always have base offset zero.\nUse the constant directly instead of loading the allocation result from\nshared memory, while retaining the barrier that ensures allocation\ncompletes. This removes the second shared-memory barrier, which is only\nneeded to protect the loaded result.\n\nThe lowering test covers 512- and 576-column allocations. The focused\nConversion/nvgpu_to_llvm.mlir lit test passes."
+    },
+    {
+      "sha": "7452346c7251d033165682662a2602251fa68166",
+      "comment": "[NVIDIA] 在常规 Triton 中增加 padded FP6 转换与压缩 TMA store。新增 Utility.h 的 isFP6；Ops.cpp verifyDescriptorLoadStoreOp 允许 FP6 descriptor 配 i8 code store；DescriptorMemoryLayouts.cpp / OptimizeDescriptorEncoding.cpp 为 FP6 选择 B6P2x16 编码并保留 packing；python/src/ir.cc 的 create_tensor_descriptor_type 增加 fp6_format 参数并迁移 create_make_tensor_descriptor 绑定；specialize.cc 在 tensordesc 特化中加入 fp6 格式；language/core.py、semantic.py、__init__.py、runtime/interpreter.py、tools/tensor_descriptor.py 增加 fp6_format 类型/描述符支持与校验；language/extra/cuda/utils.py 新增 to_fp6 builtin；CUDABackend 注入 get_ptx_version codegen fn；测试覆盖 SM100/SM103 的转换与 store。注意 ir.cc 与 specialize.cc 均被 Ascend release patch 直接修改，上游变更会与 patch 冲突。",
+      "tags": [
+        "feature",
+        "third-party/nvidia",
+        "python/src",
+        "language",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "python/src/ir.cc 的 create_tensor_descriptor_type 签名新增可选 fp6_format 参数、create_make_tensor_descriptor 绑定迁移到 TritonOpBuilder；python/src/specialize.cc 的 specialize_tensordesc 增加 fp6_format 处理。这两个文件被 triton-ascend 的 release patch 直接修改，上游变更会与 patch 冲突，需同步更新 patch。另 python/triton/language/core.py、semantic.py、__init__.py 的 tensor_descriptor 类型/接口新增 fp6_format 参数（默认 None，向后兼容），Ascend 复用上游语言层，旧调用不受影响，但补丁涉及的 semantic.py 行号/上下文可能偏移。third_party/nvidia/language/cuda/utils.py 的 to_fp6 为 CUDA 专属，Ascend 不使用。",
+        "testing": "Ascend 若在 patch 中修改了 ir.cc/specialize.cc 相关绑定，需验证 patch 应用与编译；语言层新增参数默认值使现有 tensordesc 用例无需改动。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/patch/triton-ascend-3.6.0.patch（ir.cc / specialize.cc / semantic.py 补丁同步）",
+          "third_party/ascend/unittest/pytest_ut（tensordesc 相关用例回归）"
+        ]
+      },
+      "message": "[NVIDIA] Add padded FP6 conversion and compacting TMA stores to Triton (#12541)\n\nRegular Triton kernels can convert floating-point values to FP6 and\nstore them with TMA on SM100 and SM103. **The TMA box is 128 values wide\non both targets**, so each row writes 96 packed bytes to global memory.\n\n`triton.language.extra.cuda.to_fp6` accepts FP32, FP16, or BF16 and\nrounds to E2M3 or E3M2 using round-to-nearest-even with finite\nsaturation. It returns a `uint8` tile with one FP6 code in the low six\nbits of each byte. The store stages those bytes in the `b6p2x16`\nshared-memory layout from #12548, and TMA packs them on the way to\nglobal memory.\n\nUse block shape `[BLOCK_M, 128]` to store `BLOCK_M` rows per program.\nThis example builds a host descriptor for a one-row store into a\ncontiguous `uint8` destination with 96 bytes per row.\n\n```python\nfrom triton.tools.tensor_descriptor import TensorDescriptor\n\ndesc = TensorDescriptor.from_tensor(packed, [1, 128], fp6_format=\"e2m3\")\n```\n\nOne program can then convert and store one contiguous input row.\n\n```python\nimport triton\nimport triton.language as tl\nfrom triton.language.extra.cuda import to_fp6\n\n@triton.jit\ndef store_fp6_row(src, desc):\n    row = tl.program_id(0)\n    x = tl.load(src + row * 128 + tl.arange(0, 128))\n    desc.store([row, 0], to_fp6(x, \"e2m3\")[None, :])\n```\n\nKernels can also build the descriptor with\n`tl.make_tensor_descriptor(..., fp6_format=\"e2m3\")`. The inner extent\nand column offset count FP6 values. Outer strides count bytes.\n\nGB300 tests compare the converted codes and the packed destination byte\nfor byte for `BLOCK_M = 1, 2, 16, 128, 256`, both FP6 formats, all three\ninput dtypes, and host- and device-built descriptors. They also check\nrounding at a tie and a store at column 128. Both descriptor paths\ncross-compile for SM100.\n\nThe separate follow-up #12614 adds 64-value host stores on GB300.\n\n---------\n\nCo-authored-by: lezcano <lezcano-93@hotmail.com>",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/src/ir.cc",
+          "python/src/specialize.cc",
+          "python/triton/language/semantic.py",
+          "python/triton/runtime/interpreter.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "f254bd63d5ee162347da8f79ff0a3ed3b0936fe9",
+      "comment": "[AMD][WS] 单 warp 分区跳过 split barrier。ConvertWarpSpecializeToLLVM.cpp 的 createBarrier 在 numWarps==1 时改用 ROCDL::WaveBarrierOp 替代 BarrierJoin/SignalVar/Wait，节省指令；测试重写为检查各分区的 barrier 序列（partition0/1 使用 named barrier，partition2 使用 wave.barrier）。纯 AMD warp-specialize 降级路径。",
+      "tags": [
+        "performance",
+        "third-party/amd",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][WS] Skip the barrier for single warp partition (#12615)\n\nSkip the split barrier for the warp specialize partition if it only\ncontains a single warp. Though a split barrier on single warp already\nserves this purpose but skipping it save some instructions. This also\nmatches NVIDIA side `ConvertWarpSpecializeToLLVM`.\n\n---------\n\nSigned-off-by: Pengzhan Zhao <borontion@gmail.com>"
+    },
+    {
+      "sha": "13b7237e949f3fc975486c6dbd45763acf4752bd",
+      "comment": "[NVIDIA] 当循环内 tmem_read 与 useAcc=False 不一致时禁用 tmem 多缓冲。MMAv5PipelineUtility.cpp 新增 inferNextAccOnRead 递归推断 tmem_read 路径上 nextUseAcc 的值（支持常量、enclosing if、select、if 结果），accReadsForceBufferSwitch 要求每个 in-loop tmem read 都蕴含 nextUseAcc==false；accOverwrittenInLoop 收紧为同 block 且谓词恒为真的 TMEMStoreOp；isAccMultibufferingPossible 改为 (accReadsForceBufferSwitch && accUseFlagSetToFalse) || accOverwrittenInLoop。测试新增周期 reset、select reset、predicated reset store 等场景。NVIDIA Blackwell tmem 多缓冲优化逻辑。",
+      "tags": [
+        "bugfix",
+        "third-party/nvidia",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Disable tmem multi-buffer if there are inconsistent tmem_read and useAcc=False in the loop (#12562)\n\nWe will only allow tmem multi-buffer when every in-loop tmem read\nimplies nextUseAcc == false: switching to a new accumulator"
+    },
+    {
+      "sha": "547e5806242933c6ddf2bb39b1e40c495da68edb",
+      "comment": "[ConSan] 在启动屏障前初始化全部状态。Utility.cpp 的 populateAndPassToWarpSpecialize 将 lock 变量分配、CTA0 lock release 与启动屏障从 commit tensor 创建之前移到所有状态（commit tables 等）创建之后，确保其他 CTA 通过屏障时 CTA0 已填满所有共享集群状态，避免 false race 或掩盖真实 race；新增 NV/AMD 两个 lit 测试验证 fill_global_tensor 先于 lock_release 与 barrier。ConSan 属于 experimental/gsan 相关插桩，Ascend 参考架构中 gsan 使用与否未明确，但该文件为 lib/Dialect/TritonInstrument，非 Ascend 核心路径。",
+      "tags": [
+        "bugfix",
+        "lib/Dialect/TritonInstrument",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ConSan] Initialize all state before the startup barrier (#12333)\n\nMove lock initialization and startup synchronization after all sanitizer\nstate initialization. Previously, the commit tables were zero-filled\nafter the startup barrier, so another CTA could read them before CTA0\ninitialized them, or have its updates overwritten by CTA0. This could\ncause false race reports or hide real races."
+    }
+  ],
+  "architecture_based_on_sha": "0861b90f695e3c866f6f7eadd4be8339378ab017",
+  "architecture_generated_at": "2026-11-01T20:11:07.548246+08:00"
+}

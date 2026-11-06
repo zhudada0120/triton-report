@@ -1,4 +1,60 @@
 {
+  "79b4a25bfcc9325eb03b067d4d163225dadea872": {
+    "date": "2026-11-06",
+    "msg": "[AMD] Add FP16-accumulate WMMA support for WMMAv3 (#12177)"
+  },
+  "3a960ee854ec60101aee5f6e4bf3d3b8d7ae20a8": {
+    "date": "2026-11-06",
+    "msg": "[NVIDIA] Build host maps for 64-value FP6 TMA stores on SM103 (#12614)"
+  },
+  "ac80e167a4affa239c03321b0306093d2251efbd": {
+    "date": "2026-11-06",
+    "msg": "[GPU] Clear consecutive shared histogram bins with vector stores (#12640)"
+  },
+  "d02c6a5911d5cb5cafa67738e0a225f2e80dcc0d": {
+    "date": "2026-11-06",
+    "msg": "[NVIDIA] Expose CLC coordinate ranges to LLVM (#12639)"
+  },
+  "8045cd1e01d8af8987b83f6693efa17c64d477bc": {
+    "date": "2026-11-06",
+    "msg": "[NVIDIA] Lower full-warp boolean reductions to votes (#12635)"
+  },
+  "4f8de2455bdc86cefab5a2e1061b8a0bdaea1bf8": {
+    "date": "2026-11-06",
+    "msg": "[NVIDIA] Pack E5M2 RTZ results with NVVM byte permutation (#12637)"
+  },
+  "03bc8f1a37e46835d2646a0e04e5c988d8304f9f": {
+    "date": "2026-11-06",
+    "msg": "[Gluon] Fold uniform comparisons of tt.make_range (#12636)"
+  },
+  "6d93d0e7f19c773b443b62630fd8302fd1a8bec8": {
+    "date": "2026-11-06",
+    "msg": "[GPU] Omit redundant memory predicates in elected-thread scopes (#12638)"
+  },
+  "27ee20c554e516db15040cf683296b88304a78e9": {
+    "date": "2026-11-06",
+    "msg": "[NVIDIA] Reuse shuffle-up bounds predicates in full-warp scans (#12642)"
+  },
+  "fd91c147ef635b9e86b87e9cf073448cf87d769d": {
+    "date": "2026-11-06",
+    "msg": "[BAKCEND] Avoid reading zero TMEM base (#11845)"
+  },
+  "7452346c7251d033165682662a2602251fa68166": {
+    "date": "2026-11-06",
+    "msg": "[NVIDIA] Add padded FP6 conversion and compacting TMA stores to Triton (#12541)"
+  },
+  "f254bd63d5ee162347da8f79ff0a3ed3b0936fe9": {
+    "date": "2026-11-06",
+    "msg": "[AMD][WS] Skip the barrier for single warp partition (#12615)"
+  },
+  "13b7237e949f3fc975486c6dbd45763acf4752bd": {
+    "date": "2026-11-06",
+    "msg": "[NVIDIA] Disable tmem multi-buffer if there are inconsistent tmem_read and useAcc=False in the loop (#12562)"
+  },
+  "547e5806242933c6ddf2bb39b1e40c495da68edb": {
+    "date": "2026-11-06",
+    "msg": "[ConSan] Initialize all state before the startup barrier (#12333)"
+  },
   "f8cddb947b471d6902a39f62d0894d1e552e5e75": {
     "date": "2026-11-05",
     "msg": "[AMD][ConSan] Support async-copy mbarrier arrive (#12320)"

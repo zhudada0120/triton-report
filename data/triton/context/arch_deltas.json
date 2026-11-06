@@ -25,6 +25,48 @@
       "interface_changes": "BC breaking：将大量内联 PTX 替换为 LLVM/NVVM 操作与 intrinsic，同时删除旧 SM75 MMA lowering。主要改动：(1) math.sqrt→llvm.sqrt(afn)、math.rsqrt→NVVM rsqrt；(2) FP16/BF16/FP32 packed add/sub/mul 与 FP16/BF16 FMA 走 LLVM 向量操作，min/max 走 llvm.minimumnum/maximumnum（保留 FP32 packed FMA 在 PTX 以避免寄存器溢出）；(3) FP8 转换改用 NVVM convert ops + LLVM 算术，SM89 需 PTX 8.1，SM100f/110f/120f 上 packed BF16↔FP8 需 PTX 9.1/9.2；(4) 部分 i1→FP16/BF16、s8→BF16、BF16→FP32 cast 走 LLVM；(5) 未谓词化的默认 cache 全局 load/store 走 LLVM load/store（标量 load 保留 PTX 规避 ptxas 误编译）",
       "change_summary": "[BC Breaking][NVIDIA] Lower more operations through LLVM and NVVM (#12212)",
       "ascend_impact": false
+    },
+    "03bc8f1a37e46835d2646a0e04e5c988d8304f9f": {
+      "date": "2026-11-06",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "[Gluon] 折叠 tt.make_range 的均匀比较。TritonOps.td 给 MakeRangeOp 增加 hasCanonicalizer；Ops.cpp 新增 canonicalization 模式，用 ConstantIntRanges/intrange::evaluatePred 判断与常量比较在整段 range 上是否恒定并折叠为常量；Gluon Canonicalize.cpp 启用该 pattern；Utility.cpp 的 packLLVector 对 <32bit 窄元素按 32bit 分组构造并 ShuffleVector 合并；测试覆盖 canonicalize 与 packing 结果。注意该 pattern 注册在共享的 MakeRangeOp（TTIR）canonicalizer 上，Ascend 的前端也会生成 tt.make_range 并可能受益，但 Ascend 编译流水线走自行 pass，且 Ascend 的 canonicalize 是否启用该 pattern 取决于其 pass 配置；文件命中“可能影响”路径（lib/Diale",
+      "change_summary": "[Gluon] Fold uniform comparisons of tt.make_range (#12636)",
+      "ascend_impact": false
+    },
+    "6d93d0e7f19c773b443b62630fd8302fd1a8bec8": {
+      "date": "2026-11-06",
+      "affected_modules": [
+        "python/triton/language/semantic.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/language/semantic.py"
+      ],
+      "interface_changes": "[GPU] 消除 elected-thread 作用域内冗余内存谓词，并支持整数原子 RMW 的浮点按位操作。Utility.cpp 的 emitMemoryThreadPredicate 在 ThreadScopeOp 内改用 emitRedundantThreadPredicate 仅返回残留 CTA 谓词（空值表示所有线程可执行）；semantic.py 新增 _atomic_bitwise 统一 atomic_and/or/xor，对浮点类型先 bitcast 到同宽无符号整数再执行 RMW 并 bitcast 回；TritonOps.td 给 AtomicRMWOp 增加 hasVerifier；Ops.cpp 校验 AND/OR/XOR 必须为整数元素类型；测试覆盖 owner scope 内存操作与浮点按位原子。semantic.py 属于 Ascend 必然影响路径（被 release patch 修改且 Ascend 复用其原子语义）。",
+      "change_summary": "[GPU] Omit redundant memory predicates in elected-thread scopes (#12638)",
+      "ascend_impact": true
+    },
+    "7452346c7251d033165682662a2602251fa68166": {
+      "date": "2026-11-06",
+      "affected_modules": [
+        "python/src/ir.cc",
+        "python/src/specialize.cc",
+        "python/triton/language/semantic.py",
+        "python/triton/runtime/interpreter.py"
+      ],
+      "affected_interfaces": [
+        "python/src/ir.cc",
+        "python/src/specialize.cc",
+        "python/triton/language/semantic.py",
+        "python/triton/runtime/interpreter.py"
+      ],
+      "interface_changes": "[NVIDIA] 在常规 Triton 中增加 padded FP6 转换与压缩 TMA store。新增 Utility.h 的 isFP6；Ops.cpp verifyDescriptorLoadStoreOp 允许 FP6 descriptor 配 i8 code store；DescriptorMemoryLayouts.cpp / OptimizeDescriptorEncoding.cpp 为 FP6 选择 B6P2x16 编码并保留 packing；python/src/ir.cc 的 create_tensor_descriptor_type 增加 fp6_format 参数并迁移 create_make_tensor_descriptor 绑定；specialize.cc 在 tensordesc 特化中加入 fp6 格式；language/core.py、semantic.py、__init__.py、runtime/interpreter.py、tools/tensor_descriptor.py 增加 fp6_format 类型/描述符支持与校验；languag",
+      "change_summary": "[NVIDIA] Add padded FP6 conversion and compacting TMA stores to Triton (#12541)",
+      "ascend_impact": false
     }
   }
 }

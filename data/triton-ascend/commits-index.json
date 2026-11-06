@@ -1,4 +1,36 @@
 {
+  "8f0ade66580245e30ad97093526a4018e4e18fc7": {
+    "date": "2026-11-06",
+    "msg": "[ssbuffer](fix) fix outlinereuse"
+  },
+  "cc4de30b891a7b452a7f25ed6e6dcd94ce7cf738": {
+    "date": "2026-11-06",
+    "msg": "[ssbuffer](feat) outline start end sync and reuse (#3000)"
+  },
+  "79430e1fab235ba5bc6dbfd7e1bd09c14145e1f8": {
+    "date": "2026-11-06",
+    "msg": "Reapply A3 Operators (#2974)"
+  },
+  "8526625337df546cb531b48c2275f67fb57ed2a7": {
+    "date": "2026-11-06",
+    "msg": "[Launcher](fix) Initialize lock workspaces in stream order (#2959)"
+  },
+  "b4a04b793774db9ced7a095ac6e7e573d991e66f": {
+    "date": "2026-11-06",
+    "msg": "[tla](feat) add scalar and SIMD sqrt (#2976)"
+  },
+  "16a6da0f4e87b1e9551103709e90f1c538339e54": {
+    "date": "2026-11-06",
+    "msg": "[Proton](feat) Support MSPTI profiling and intra-kernel instrumentation (#2963)"
+  },
+  "11ba86544312919b2e948b26915161cbbc770b35": {
+    "date": "2026-11-06",
+    "msg": "Remove the yellow-blue collaborative pipeline (#3021)"
+  },
+  "15dba660b072ea22a23b9fa43e44a1e0396829db": {
+    "date": "2026-11-06",
+    "msg": "[CI](feat) add manual wheel upload and npuir payload OBS publish (#2868)"
+  },
   "ae07d3d13917a53300bb74127604242f7bf02f2e": {
     "date": "2026-11-05",
     "msg": "[docs](op) Modify triton dot op docs constraints (#2966)"

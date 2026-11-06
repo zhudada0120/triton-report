@@ -1,0 +1,12 @@
+{
+  "content_hash": "0b8ba39cab5fbbba",
+  "analysis": {
+    "interface_summary": "定义 1 个类；定义 2 个函数",
+    "key_interfaces": [
+      "TensorDescriptor",
+      "TensorDescriptor.__post_init__",
+      "TensorDescriptor.from_tensor"
+    ]
+  },
+  "cached_at": "2026-11-07T06:32:59.801340+08:00"
+}
