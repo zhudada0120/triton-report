@@ -1,0 +1,191 @@
+{
+  "date": "2026-11-07",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-11-08T05:10:43.258270+08:00",
+  "daily_summary": "当日变更集中在 DynamicCVPipeline / ssbuffer（Cube-Vector 双流水线）与 TritonToGraph 图优化两条线上：修复了多缓冲 loop counter 的类型保持（index/i32/i64）、冗余跨核同步消除、CloneOps 跨 block 依赖映射、cross-core 消费者递减插入点等问题；同时在 TritonToGraph 落地了 RFC #2686 的 SelectedBlockScan（rule bit 65536）+ QueryRowBatching（rule bit 131072）两个默认关闭的规则、把 DotRowCoalescing 的行提升引擎抽取为共享 RowLifting 组件，并引入 core_num 参与行数策略；此外 TLA 前端新增 AVE 支持的 pld/pst/vgather/vld/vunpack 与 AddressSpace 枚举、mmad_mx 微缩放 Cube 接口，修正 HFusion cast 的 round_mode 属性名以保留 RTZ，并做了 CI workflow 重命名与 triton-dist 子模块 commit 更新。整体是一批以正确性修复为主、伴随较大规模新优化规则合入的变更。",
+  "test_impact_summary": "当日变更几乎每个 commit 都自带针对性的新测试，测试看护影响以“新增看护点”为主而非“需修补现有用例”：DynamicCVPipeline 系列新增了 index/i32/i64 三种 counter 类型的 mlir 差分用例、端到端 index counter 的 pytest TTIR 用例、冗余 V->C 边 drop/keep 的 mlir 用例、CloneOps loop-yield 映射用例、cross-core 递减插入点的 for/while/嵌套 if 用例，覆盖了此前无看护的边界。TritonToGraph 的 #2686 引入了规模很大的新 matcher/rewriter（SelectedBlockScan 三个 TU + RowLifting 2000 行 + QueryRowBatching），用 nsa_selected_block_scan.mlir、query-row-batching.mlir 的正/负例、rule-mask 归因用例与 pytest 的白名单/默认关闭契约做了较强覆盖，但 RowLifting 中宽累加器切分、flat compute、descriptor 展开等分支的单测密度明显低于 matcher，且 core_num 新参数只验证了少量 core-num 场景。TLA 新增的 pld/pst/vgather/vld/vunpack 与 mmad_mx 均有 IR/compile/run 三层用例与前端契约测试，但 pld/pst 的越界与对齐只做了静态偏移检查，动态偏移的运行时约束依赖调用方。现有旧用例有少量需要跟随更新的点（vmaxs 的 MERGING 语义由 +0 改为保留 src0、row-coalescing-dot-runtime-grid 的 mask 形态变化、row-coalescing-dot-fallback 改名），这些已在同一 commit 内同步修改，总体测试策略仍以“每个 commit 自带回归 + lit/pytest 双轨”为主，未见需要跨 commit 统一重构测试的情况。",
+  "commits": [
+    {
+      "sha": "e599a68d47edecc831add2ea1ae9690a8e3d756e",
+      "comment": "修复 DynamicCVPipeline 多缓冲中 loop counter 类型不保持的问题。原实现对 arith::ConstantIntOp 使用 getIntOrFloatBitWidth()，当 scf.for/scf.while 的 induction variable 为 index 类型时会触发断言或无意义位宽；改为 arith::ConstantOp + builder.getIntegerAttr(type, 1/2/0)，直接用 counter 类型构造常量，从而同时支持 index、i32、i64。改动位于 AddMultiBufferInnerScope.cpp（append 的 i32 iterCounter 增量）与 AddMultiBufferOuterScope.cpp（双缓冲 polling 的 divsi/remsi/cmpi 常量）。新增两个 mlir 用例覆盖 inner scope 的 index/i32/i64 counter 与 outer scope 的 receiver/sender polling，并新增端到端 pytest 验证运行时控制流与 index 类型 modulo-two polling 外观。风险较低但值得注意：Ascend 的 scf 循环通常用 i32，index 类型 counter 在 A2/A3 路径是否真实出现需确认；新增 pytest 依赖 is_register_based_arch 跳过非 950 目标，属正确的门控。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 Inner-scope-while-counter-types.mlir、Outer-scope-polling-types.mlir 与 test_dynamic_pipeline_counter.py，均为新增看护点；无既有用例需要删除或修改。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AllocMultiCache/",
+          "third_party/ascend/unittest/pytest_ut/test_dynamic_pipeline_counter.py"
+        ]
+      },
+      "message": "[DynamicCVPipeline](fix) Preserve loop counter types in multibuffering (#2773)\n\n* [DynamicCVPipeline](fix) Preserve loop counter types\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>\n\n* [DynamicCVPipeline](test) Cover index counters end to end\n\n* [DynamicCVPipeline](test) Exercise runtime control flow\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>\n\n---------\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>"
+    },
+    {
+      "sha": "2b8741e562733f73d7489ee3d478461637631520",
+      "comment": "为 ssbuffer / DynamicCVPipeline 增加冗余跨核边消除能力。DependencyInfo.flagId 默认值由未初始化改为 0，并以负值作为“无需同步”的哨兵；新增 analyzeRedundantEdges（SyncAnalysis.cpp）用 DenseMap 建图，向 IntraCore 执行顺序边与跨核 V->C/C->V 依赖边求传递可达，在无环前提下把存在替代路径的显式依赖标为冗余；针对同一 V->C 目标有多条入边的特殊情况加了 isRealRedundantVectorToCubeEdge 特判，避免把真正需要的同步删掉。InterCoreTransferAndSync 在 flagId<0 时直接 return，assignDepFlagIds / remapFlagIdsToContinuous 均跳过负值。顺带把 getSsbufferCoreType/getCoreTypeWithIndex 从 DataDependencyAnalysis.cpp 移到 Utils.cpp（带命名空间），修正了原 helper 缺少 triton:: 限定的问题，并在 sortDependencies 中加入 producer op order 作为二级排序键以稳定依赖顺序。风险中等：冗余判定基于块级可达性，若某条路径虽然在图中但对同步语义不构成替代（例如依赖 loop 内不同迭代），可能误删同步；loopDepth>0 的依赖已被跳过，降低但未完全消除风险。新增 drop/keep 两个 mlir 用例。",
+      "tags": [
+        "feature",
+        "performance",
+        "medium-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 test_redundant_direct_v2c_edge_drop.mlir 与 test_redundant_direct_v2c_edge_keep.mlir 两个正向/反向看护用例；冗余消除属删除同步，需要更广的端到端回归来防止误删导致的同步缺失。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow/",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/"
+        ]
+      },
+      "message": "[ssbuffer](feat) remove redundant sync (#2962)\n\n(cherry picked from commit eb006cb6ed962c7a5afa9b1c32538bd290f7d3f1)"
+    },
+    {
+      "sha": "0e3c1ca79efb259cbafaf5dd4a64571b601de629",
+      "comment": "修复 third_party/ascend/lib/DynamicCVPipeline/AddControlFlowCondition/CloneOps.cpp 中跨 block 依赖的 remap 缺陷。原实现 updateCloneMapping 接受 yieldValues 集合，并把主循环体 terminator（scf.yield）的 operands 收集为 yieldValues，对所有 op 的 operand 若命中该集合则跳过 remap——这导致：(1) 主循环 yield 所消费的 producer 结果在被嵌套 block（如 scf.if）消费时不会重映射到该 block 的 clone，而是继续引用原值；(2) 嵌套 scf.if 的 yield operand 若恰好与主循环 yield 值相同则被误跳过。修复后 signature 简化为 updateCloneMapping(op, valueMap)，删除 yieldValues 的收集与跳过逻辑；关键在于 cloneOpsForBlock 中 curOps 本身已排除主循环 terminator（函数注释明确 'curOps excludes the main-loop terminator, so its yield remains unchanged'），因此主循环 yield 不需要特殊跳过，其余所有 op（含嵌套 region 中的 yield）一律按 valueMap 重映射，保证了 block-local clone 在 consumer 使用、sibling result、嵌套 yield 三处一致。新增 lit 测试 clone-loop-yield-uses.mlir 使用 ssbuffer.block_id / ssbuffer.main_loop 标注构造 producer(block 1)/consumer(block 2) 依赖，CHECK 断言 %[[CLONE]]#2 参与条件比较、两个嵌套 scf.yield 使用 %[[CLONE]]#0、主循环 yield 使用 %[[PRODUCER]]#0（即主循环 yield 不被改写）。实现方式合理、改动干净（12+/30-），把原本依赖显式集合和注释约定的隐式约束改为依赖 curOps 的构成约定，语义更简单但对其正确性依赖更强（若未来 curOps 收集逻辑调整未排除 terminator，将回归错误），建议在 cloneOpsForBlock 处保持注释与构造约束同步。整体属于 MLIR pass 层的低风险 bugfix，仅影响 DynamicCVPipeline 的 AddControlFlowCondition 阶段，不触及编译器前端/runtime/接口契约。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "commit 已新增 lit 回归用例 third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AddControlFlowCondition/clone-loop-yield-uses.mlir，直接覆盖本次修复点（主循环 yield 的 consumer 使用、sibling result 共享 clone、嵌套 yield remap）。因此测试侧无需再新增用例，但需要把该新用例纳入 CI/lit 列表确认可执行，并复核既有 DynamicCVPipeline MLIR 用例在行为变更后是否仍与 golden 一致。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AddControlFlowCondition/clone-loop-yield-uses.mlir",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/",
+          "third_party/ascend/lib/DynamicCVPipeline/AddControlFlowCondition/CloneOps.cpp"
+        ]
+      },
+      "message": "[ssbuffer](fix) fix cross-block dependency processing in CloneOps (#3008)\n\nSigned-off-by: m-everglow <2276518549@qq.com>\n(cherry picked from commit 1a18d77045c9214b23f0808ac83f05ed0b2b0ad1)"
+    },
+    {
+      "sha": "fab76dabf29ae3fcf4c55142bb886d6347c53090",
+      "comment": "纯 CI 工程变更：把所有 .github/workflows 下的 workflow 文件统一加 ascend- 前缀（ci.yml→ascend-ci.yml、create_release.yml→ascend-create_release.yml、documentation.yml→ascend-documentation.yml、llvm-build.yml→ascend-llvm-build.yml、pre-commit.yml→ascend-pre-commit.yml、runner-preparation.yml→ascend-runner-preparation.yml、wheels.yml→ascend-wheels.yml），并同步更新内部 paths 触发条件、workflow 引用（uses: ./.github/workflows/ascend-runner-preparation.yml）以及 ascend-wheels.yml 中 gh api 查询的 workflow 文件名。documentation workflow 的触发路径同时扩展为 *.md、docs/**/*.md、docs/**/*.mdx、docs/**/_toc.yaml。不影响编译器、运行时或 pass 的任何逻辑；但重命名会让外部（例如依赖原 ci.yml 的 badge、分支保护规则或第三方脚本）引用失效，属于仓库自身可收敛的工程风险。",
+      "tags": [
+        "ci",
+        "chore",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅改名与触发路径调整，不改变任何代码路径或测试内容；现有 lit/pytest 用例不受影响。",
+        "suggested_test_areas": []
+      },
+      "message": "Change the names of the yml files (#1916) (#2045)\n\n(cherry picked from commit 9f81b44804b80c4d6333bfce8db258bc9ad3f0a3)"
+    },
+    {
+      "sha": "bd64e3efb334708ec3671626a751842a23530c38",
+      "comment": "更新 TRITON_BUILD_TD 构建时拉取的 Triton-distributed-ascend 子模块 commit（82b8c919→64e4e09e）。仅一行常量变更，影响范围限于启用分布式构建的场景（setup_patch.py 的 _ensure_distributed_submodule），与主后端编译/运行路径无关。风险极低，但引用的新 commit 内容不可见，若其接口或补丁与应用侧有约定，需确认版本兼容。",
+      "tags": [
+        "chore",
+        "low-risk",
+        "build"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅更新子模块指针，不涉及本仓库编译流水线或测试代码；分布式构建回归由外部的 Triton-distributed-ascend 仓库自身负责。",
+        "suggested_test_areas": []
+      },
+      "message": "[triton-dist](feat) update triton distributed commit id (#3030)\n\n(cherry picked from commit 1524bdf8a23a6a95a428abfe1cdf9a084d04ea60)"
+    },
+    {
+      "sha": "e3675c44b66975d1a7776ea16a7b71684192ab8d",
+      "comment": "为 TLA 前端补充一批 AVE 后端 SIMD 访存与扩展算子，并引入显式地址空间。主要点：(1) tla_builder.cc 新增 create_simd_vgather/create_simd_pld/create_simd_pst/create_simd_vunpack，pld/pst 通过 predicateByteView 处理非 identity layout 的 subview 偏移（extract_strided_metadata + reinterpret_cast + memref.view 精确落到 32/16/8 字节），vgather 走 VFGatherOp（仅 16/32-bit 元素），vunpack 走 VFExtSI/VFExtUI（支持 8->16/16->32/8->32，8->32 用 ppN 选 lane）；(2) core.py 增加 AddressSpace 枚举与 _normalize_space，SPACES 增加 ssbuf，L0A_SF/L0B_SF 显式抛 NotImplementedError；(3) alloc/alloc_buffer 支持关键字 scope=，并统一为每次独立分配打 annotation.mark{mem_unique}，防止 HIVM 内存规划器复用存储；(4) vmaxs 的 MERGING 语义从 +0 改为保留原 src0（vsel(mask, result, src0)），并新增 i64 + 显式 mask 的 ZEROING 补偿 select（附 TODO 说明是等待 AVE i64 mask 修复的临时方案）。改动量大，风险中等：pld/pst 的 32 字节对齐与 32/64 字节可读范围只对静态偏移做编译期检查，动态偏移由调用方保证；mem_unique 会提高 UB 占用，可能与现有内存规划预算冲突；vmaxs 语义变更是行为破坏性变更（旧用例已同步改）。新增 allocation.py、pld.py、pst.py、predicate_views.py、vld.py、vunpack.py 与扩展的 simd_frontend_contract.py 覆盖面较好。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "tla",
+        "language"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增大量 tla_ut 用例（allocation/pld/pst/predicate_views/vld/vunpack）与 simd_frontend_contract 扩展，同时修改 vmaxs.py 以跟随 MERGING 语义变更；均为新增/跟随性更新，无删除。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/simd/",
+          "third_party/ascend/unittest/tla_ut/cube/allocation.py",
+          "third_party/ascend/unittest/tla_ut/simd_frontend_contract.py"
+        ]
+      },
+      "message": "[ascend](feat) add AVE-backed TLA SIMD memory and widening ops (#2977)\n\n* [ascend](feat) add AVE-backed TLA SIMD memory and widening ops\n\nExpose pld/pst through AVE predicate loads/stores, 16/32-bit vgather\nand vld through VFGatherOp, and strided integer vunpack through\nVFExtSIOp/VFExtUIOp. Preserve predicate subview offsets and exact\n32/16/8-byte stores. Keep output masking separate from widening's\nsource predicate and omit unnecessary selects for unmasked results.\n\nByte gathers, contiguous-half unpack, native predicate transforms,\nregister permutation, group reductions and scatter are outside this\nchange. No frontend LLVM intrinsic calls or pipeline changes are added.\n\nValidation on base 836931296 plus this change: standalone wheel build;\n169 frontend contracts; 534 new checks (339 numeric, 84 compile/run,\n111 IR) on physical device 1 of the 63 host, Ascend950PR with CANN\n9.2.0-beta.2; 12 adjacent vcvt/vpack/predicate checks. No simulator.\nExternal bishengir-compile is 2.0.0, ff04a33ad9cd; the embedded dialect\nsubmodule remains 4eb12142. The final documentation-only delta has an\nidentical runtime AST. No performance benchmark was performed.\n\n* [Ascend](feat) add explicit TLA allocation spaces\n\nExpose AddressSpace and the scope keyword while preserving legacy space calls. Mark independent allocations mem_unique and document Cube scope and native allocation limits. Reserve scale-factor spaces with an explicit unsupported diagnostic until HIVM defines their representation.\n\nValidate allocation IR, compilation and device accuracy (9 passed), Cube GEMM and DMA regressions (112 passed, 2 existing padding skips), and memory planning overflow without fallback reuse.\n\n(cherry picked from commit 0ab294d9919d7b10b53487589d6d7cd6471fc763)\n\n* [ascend](fix) fix vmaxs merging and i64 zeroing semantics\n\n(cherry picked from commit 9b27c2fb32454f69236155850ab2a40b36a361b6)\n\n* [ascend](chore) mark vmaxs i64 workaround for removal\n\n(cherry picked from commit 367780b23b4cc659747f8ab27f7ba901c2e0b838)\n\n---------\n\nCo-authored-by: wzy1214 <wzy1214@users.noreply.github.com>\nCo-authored-by: chnjz <1242418613@qq.com>\nCo-authored-by: xiwei <xiwei4@huawei.com>\n(cherry picked from commit 1e3e5d46fec337cf8933e3a9f1898508a7268384)"
+    },
+    {
+      "sha": "b3b2e7a55fc0cb7dc91cf96f49a2319714a4c269",
+      "comment": "调整 DynamicCVPipeline 中 cross-core 消费者递减（load/subi/store 到 ssbuf）的插入位置。此前统一插在 then block 的 yield 之前；现在对 Cube（isAIC）侧通过新增的 findLastMatmulOnUserChain 找到真正读取该 consumer 的最后一个 linalg.matmul，并用 isLaterInThenBlock 处理嵌套 op 与同 block 的顺序比较，把递减紧插在该 matmul 之后，避免递减出现在不相关的 matmul 之间或被嵌套 if 中的 matmul 误引导（嵌套 if 中 matmul 可能不执行，故 findLastMatmulOnUserChain 要求最终 matmul 直接位于 thenBlock 中，否则回退到 yield 前）。updateCrossCoreControlVars 的签名从接收 crossCoreOutputValues 前的值改为接收 crossCoreBuffers 以取 consumer。风险中等：插入位置依赖 matmul 与 consumer 的值依赖链遍历，深链或含环链需依赖 seen 集合；新增 for/while/嵌套 if 三个 mlir 用例把 CHECK 精确到 NEXT 行，对位置正确性有很强约束。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 crosscore-cond-after-matmul-for.mlir、-while.mlir、-nested-if.mlir 三个用例，覆盖不同 block、while 循环与嵌套 if 的插入位置；属新增看护点。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AddControlFlowCondition/"
+        ]
+      },
+      "message": "[ssbuffer](fix) move crossCore consumers update location (#2832)\n\n* [ssbuffer](fix) move crossCore consumers update location\n\n* [ssbuffer](fix) move crossCore consumers update location\n\n---------\n\nCo-authored-by: sxm <sunxianmiao@h-partners.com>\n(cherry picked from commit d727cd7eba74520207b545d851eede1e162abb11)"
+    },
+    {
+      "sha": "ba966c5f78c49bafa7b255c4dcfc3ae33405e861",
+      "comment": "修复 TritonToHFusion 中 FpToFp 转 cast 时的舍入属性名错误：原本创建 hfusion::CastOp 时把 RoundModeAttr 挂在名为 \"mode\" 的属性上，而 HFusion CastOp 的契约属性名是 \"round_mode\"，导致 rtz/trunc 等显式舍入模式被静默忽略、退回默认舍入，产生精度偏差。改为 getNamedAttr(\"round_mode\", roundModeAttr)。补充 mlir 用例把 fp32→fp16 的 CHECK 从 mode 改为 round_mode，并新增 fp32→bf16、fp32→fp8(E5M2) 两个 RTZ 用例；新增 test_fp_to_fp_rtz.py，用固定 IEEE 位模式做独立 oracle 校验舍入结果（含符号位与负零），FP8 用例仅 A5 运行。修复正确且影响面明确（仅 RTZ 路径），风险低；fp8 的 A5 门控说明 E5M2 RTZ 只在 GEN5 硬件支持，需注意 A2/A3 上的行为。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "TritonToHFusion"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "更新 fp_to_fp_rtz.mlir 的属性名并新增两个 cast 形态，新增端到端 test_fp_to_fp_rtz.py；均为新增/跟随性更新。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToHFusion/fp_to_fp_rtz.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_fp_to_fp_rtz.py"
+        ]
+      },
+      "message": "[Ascend](fix) Preserve RTZ rounding in HFusion casts (#2770)\n\n* [Ascend](fix) Preserve RTZ rounding in HFusion casts\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>\n\n* [Ascend](test) Add end-to-end RTZ cast regression\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>\n\n* [Ascend](test) Run E5M2 RTZ regression only on A5\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>\n\n---------\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>\n(cherry picked from commit e2e2cdd77bb730b5507044dd09f6fd44be56bacd)"
+    },
+    {
+      "sha": "a0bea5c81ea88ec765ade55d61980c56fb3b33f4",
+      "comment": "当日最大的一笔变更，落地 RFC #2686：新增 SelectedBlockScan（bit 65536，把查表式稀疏 gather 循环改写成 token 序 scan）与 QueryRowBatching（bit 131072，把 R 个 query 行合并到一个 program）两条规则，两者固定默认关闭（默认 rule-mask 仍为 3071，已知 mask 扩到 0x3FBFF），并约定 Rule A 不独立落地——它在私有 sandbox 里调用 QueryRowBatching 的 materialize 入口，联合提交，bit 131072 只决定 Rule B 是否被单独调度。实现上把 DotRowCoalescing 的通用行提升引擎抽取为 RowLifting（RowLiftBuilder / RowCountPolicy / selectRowsPerProgram），支持 reduce、row-invariant scf.if、make_tensor_ptr 展开、masked load/store、宽累加器按宽度切分、flat compute、grouped loop bounds；新增 core_num 端到端贯通（compiler.py→triton_ascend.cc→GraphOptimizationOptions→ResourceSnapshot→行数策略），使 gridX/R >= coreNum 保持至少一个 wave。SelectedBlockScan 拆成 Match/Build/Rule 三个 TU，matcher 用六个 parser + validateScan 做纯值比较（不依赖 ProgramAxisDependenceAnalysis，因为在 sandbox clone 上分析已失效），rewriter 支持 online-softmax（o/m/l + safe_m）与 additive dQ（单累加器 + 转置 K）两种模板，并有 UB(×kUBBufferReplication)/L0 预算门、grid-contract 与 get_num_programs 互斥检查、cleanup+verify。同时修正 ResourceCostModel 的 isUBResidentTensor 支持整型、getStaticTensorBytes 改为按元素字节向上取整避免溢出。风险高：代码量约 7k 行，涉及新的图变换、launch grid 契约（hacc.program_grid_transforms / hacc.coalesce_*）、跨规则联合提交，且 rewrite 会重排浮点归约顺序（fwd scan tile 宽于一个 block），仅在 opt-in 时生效限制了影响面，但默认开启的配套改动（ResourceCostModel、core_num 传参、requiresPostRewriteCleanup 扩展）会作用于所有 graph-optimize 路径。测试覆盖较充分：nsa_selected_block_scan.mlir（正/负例、65536==196608 等价、non-950 门控）、query-row-batching.mlir（幂等性、target 门控、core-num=28 降级、多种 bound 与宽累加器降级）、pytest 的 rule-mask 白名单与默认关闭契约；但 RowLifting 内部宽累加器切分与 descriptor 展开的分支覆盖相对薄弱。",
+      "tags": [
+        "feature",
+        "performance",
+        "high-risk",
+        "TritonToGraph",
+        "graph-optimize"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 nsa_selected_block_scan.mlir、query-row-batching.mlir，扩展 row-coalescing-dot-basic/runtime-grid/fallback 与 test_graph_optimize.py、test_compiler_layout_memory_contract.py 的 core_num 期望；属新增看护点加少量跟随性更新。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToGraph/",
+          "third_party/ascend/unittest/pytest_ut/test_graph_optimize.py",
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py"
+        ]
+      },
+      "message": "[TritonToGraph](feat) implement RFC #2686 (scan + query-row lift) (#3024)\n\n* [TritonToGraph](feat) add the SelectedBlockScan rule identity, facts and matcher\n\nSelected-block scan is the #2686 rule that turns the table-indexed sparse gather\nloop into a token-order scan.  This commit brings the identity and the matcher:\n\n- rule bit 65536, its own SelectedBlockScan phase (after ConvertModuloToMask,\n  before ProgramMapping), the factory declaration and the Python mirror.  The\n  bit is fixed default-off as RFC #2686 requires, so the default mask stays 3071;\n  SelectedBlockScanRule has no landing path of its own, which the rule body\n  enforces by always going through the row lift.\n- SelectedBlockScanFacts.h: the facts the matcher proves, the ScanCandidate that\n  aggregates the builder-facing ones, and the four shared entry points.\n  QueryRowBatching.h carries the joint entry the scan rewrite calls.\n- the matcher: six parsers, one fact each, plus validateScan for every tie-out\n  between them.  It compares values rather than syntax -- the per-iteration index\n  load is cut out of both dependence walks, which is why the K/V tiles count as\n  pid-independent, and loop-invariant scalar loads count as per-program\n  constants, which makes the varlen dispatch reachable.  A miss is a silent\n  nullopt with no diagnostics and no IR change.\n\n* [TritonToGraph](feat) rewrite the gather loop and commit it through the joint gate\n\nThe rewriter emits one template per carried-state form: online softmax keeps\nthree iter args and the safe_m guard, additive dQ keeps one accumulator and\nlands its contribution through the dot's C operand.  Both read the index table\nonce as a vector, clamp the padded lane to the last valid slot and turn the\nselection into a per-token weight, so the scf.if guard becomes a zero weight.\nBN = max(64, BS) for the forward form and BN = BS for the additive one, whose\ntransposed K is retained for a third dot.  The weight multiplies p in f32 before\nthe bf16 truncation and safe_m only ever subtracts, so the yielded m stays the\ntrue maximum.\n\nThe driver keeps the rewrite in a private sandbox: clone, re-match, rebuild,\ncleanup and verify, two on-chip budget gates (UB with the backend's multi-buffer\nreplication factor, and L0A/L0B/L0C) before and after the joint row lift, then a\ncommit-contract check that refuses a grid contract and an in-kernel flat program\nid at the same time.  The sandbox is handed to the row lift's materialize entry\nand dropped if it declines, so a decline leaves the live IR and its diagnostics\nuntouched and apply() cannot fail.  Build and registration follow.\n\n* [TritonToGraph](test) add the NSA fixtures and pin the rewritten shape\n\nFixtures are real kernel TTIR (what graph-optimize sees in production) or a\none-knob mutation of one: forward dense / dynamic-NS / H==1 / varlen, the\npadded-table S=17 case, the backward dQ form in both tile spellings, and the\nstatic-grid capture.\n\nnsa_selected_block_scan.mlir pins the target shape against the compiled gold\nstandard, the joint scan + row-lift form, and the rule-mask equality\n65536 == 196608; the driver file pins the option whitelist, the unknown-bit\nrejection and the static-grid contract; the budget file pins the UB/L0 warnings\nand that a declined form stays byte-identical.\n\n* [TritonToGraph](test) pin every matcher decline and the attribution guard\n\nThe negative file drives the refused shapes (two guards, extra loop load,\nmasked index load, flat table, ambiguous pid, forward transpose, non-zero\nother, S > 4096, trip mismatch, non-power-of-two BS, grid-dependent rhs, causal\nshift, tile wider than a block, folded offset, H > 1 head split, min combiner)\nand requires byte-identical IR with empty stderr, so an over-match cannot pass.\n\nThe attribution file proves rule-mask=0 and rule-mask=3071 leave every fixture\nbyte-for-byte unchanged, so a diff in this slot is attributable to the scan\nrewrite alone.  pytest covers the two mask whitelists, the fixed default-off\ncontract, the unknown-bit rejection and the 65536 == 196608 equality.\n\n* [TritonToGraph](refactor) extract the row-lifting engine into a shared component\n\nMove the generic part of DotRowCoalescing (row-dimension prepending,\nper-row bound inference, loop rebuilding and the row-invariant clone\npath) into RowLiftBuilder so other rules can reuse it.  DotRow keeps\nonly its matcher and the dot/store specific rewrite, and its output\nstays unchanged.\n\n* [graph-optimize](feat) finish the NSA row lift: Rule B, flat compute and wide-accumulator split\n\nBring the row lift in line with the reference implementation beyond the\nextracted engine:\n\n- add QueryRowBatchingRule (rule bit 131072) and register it under\n  Rules/QueryRowBatchingRule.cpp, with the row-count policy bounded by\n  L0A/L0C, UB peak and the physical core count (core_num now reaches the\n  pass through compiler.py, triton_ascend.cc and ResourceSnapshot)\n- lift tt.reduce and row-invariant scf.if, expand Q/O tensor pointers into\n  pointer tensors, and read the selected-block index table once per row\n- keep O/lse masked stores and the loop-carried state in the flat layout so\n  no per-iteration reshape appears inside the loop\n- split output accumulators wider than one vector register into two halves\n- turn both #2686 rule bits on by default (default rule mask 199679)\n\n---------\n\nCo-authored-by: gymgit1 <guoyiming17@huawei.com>\n(cherry picked from commit 12a7e9d23a1ada33c6977076d7ce3df0c64416fd)"
+    },
+    {
+      "sha": "ca54513f0a863be2695456c7da719c6e4589cb21",
+      "comment": "为 TLA 增加 Ascend950PR 微缩放 Cube 接口 tla.cube.mmad_mx 与配套的 tla.load_gm_to_l1_mx_scale。前端 cube.py 定义 MxFormat（E5M2/E4M3/E2M1）与 _mx_format 推断/校验逻辑：FP8 由 dtype 推断且不传 native format 属性，packed 整型必须显式给 MxFormat 并映射到 lhsFormat/rhsFormat(1/2/3)；校验 L1 空间、E8M0 int8/uint8 scale、2-D ND 或 4-D zZ/nN（含奇数 K-group 填充）、K 轴 32 对齐、FP4 与 FP8 不可混用、real_m/k/n 为 16 的倍数且 acc 形状等于 real 形状、bias 的 space 与 dtype；builder 侧 create_hivm_mmadmx 生成 hivm::MmadMxL1Op，real_k 传的是 stored 字节数（模板内部乘 FP4 packing 因子）。新增 dma.load_gm_to_l1_mx_scale 走 hivm::LoadMXScaleOp 而非 ND2NZ。风险中等：新 op 仅在 A5/CANN 新版本可用，接口契约较复杂（packed FP4 的 K 语义、scale shape 两种拼写、bias 形状放宽），若后端 verifier 与前端校验不一致会出现编译期报错；新增 mmad_mx_frontend_contract.py 用 Recorder 覆盖了绝大多数参数与拒绝路径，但缺少真实上板的 IR/run 用例。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "tla",
+        "cube"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 mmad_mx_frontend_contract.py 覆盖前端契约与全部拒绝分支；缺少 tla_ut/cube 下的 IR/compile/run 三层用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/cube/"
+        ]
+      },
+      "message": "[TLA](feat) add tla mmad_mx api\n\n(cherry picked from commit 2f18b1cc25b64e9980538f4e7b9d9c7117ae017a)"
+    }
+  ],
+  "architecture_based_on_sha": "408e31592b50e930fc6f01c244f309444005d575",
+  "architecture_generated_at": "2026-11-01T20:11:07.549514+08:00"
+}

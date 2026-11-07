@@ -1,0 +1,84 @@
+{
+  "date": "2026-11-07",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-11-08T05:09:56.936536+08:00",
+  "daily_summary": "当日变更集中在 NVIDIA GPU 后端的归约（reduction）降级优化与少量测试修复：两个连续的 NVIDIA 性能优化 commit 分别针对宽布尔寄存器归约（preferThreePredicateChains，三条交织谓词链）和布尔 warp 子组归约（vote.sync.any/all + ballot 掩码）优化 ReduceOpToLLVM 路径；一个 TritonGPU 变换 commit 扩展了 HoistTMEMAllocOutOfIf 以支持从 else 分支提升 TMEM 分配；另有一个 kernels 测试参考实现修复（swiglu 与 gamma 顺序）。整体方向围绕 NVIDIA 后端 lowering 质量与测试正确性，未触及跨后端抽象接口签名。",
+  "ascend_impact_summary": "当日四个 commit 对 triton-ascend 均无实质功能影响。前两个归约优化仅在 TargetInfoBase 中新增带默认实现（return false）的非纯虚方法 preferThreePredicateChains，并在 NVIDIA TargetInfo 中覆写，Ascend 不使用 TritonGPUToLLVM 降级路径，因此只需确认该方法非纯虚即可；HoistTMEMAlloc 属 TritonNvidiaGPU/TMEM 专属路径，Ascend 不涉及；kernels 测试修复仅影响 python/triton_kernels/tests。无接口签名变更，无需新增或更新测试。",
+  "commits": [
+    {
+      "sha": "e8dda3400e82957bf3408c8251619790c78d8d5c",
+      "comment": "该 commit 为 NVIDIA 后端添加宽布尔寄存器归约优化：当 i1 reduction 的 combiner 是纯 AND/OR/XOR/min/max（且 region 中只有一个非 terminator 操作）且每 lane 至少 32 个谓词时，使用三条交织累加器链（i%3 分组），使 ptxas 能把每次比较融合为链式谓词更新（ISETP...OR/AND 直接累加谓词），最后由一条 PLOP3 合并三个部分谓词，避免原先打包到通用寄存器再提取的开销。实现上在 TargetInfoBase 新增非纯虚方法 preferThreePredicateChains() 默认返回 false，NVIDIA TargetInfo 覆写返回 true；ReduceOpToLLVM.cpp 在检测到纯布尔 combiner 且 target 偏好时按 i>=3 改为 accumulate 到 vals[i%3]。还加入了对 combiner region 副作用的保护（要求无额外 ops），并用 mlir 测试覆盖 all/any/xor/min/max、带 vprintf 副作用、16/512 元素等场景。风险低：新方法有默认实现不影响其他 target；纯度检查保证语义不变；仅改变归约树分组顺序但对结合律成立的布尔运算等价。",
+      "tags": [
+        "performance",
+        "backend",
+        "nvidia",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅涉及 include/triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h（新增非纯虚方法 preferThreePredicateChains，默认 false，不强制子类实现）、lib/Conversion/TritonGPUToLLVM/ReduceOpToLLVM.cpp（TritonGPU→LLVM 降级路径）、third_party/nvidia/ 与 test/Conversion/。Ascend 走 TritonToLinalg/HIVM 路径，不使用 TritonGPUToLLVM 与 TargetInfoBase，也不存在 AscendTargetInfo 实现该路径。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Fold wide Boolean register reductions with three predicate chains (#12650)\n\nFor NVIDIA `any` and `all` reductions with at least 32 predicates per\nlane, use three interleaved accumulators. `ptxas` can fuse each\ncomparison into a chain update, and the three partials fit in one\n`PLOP3`.\n\n**Before** — GB300 `any(x == key)` packs partial results into a general\nregister and extracts them later.\n\n```asm\nISETP.NE.U32.AND P5, PT, R5, R0, PT;\nISETP.EQ.U32.OR  P5, PT, R4, R0.reuse, !P5;\n@P5 LOP3.LUT R2, R2, 0x1000000, RZ, 0xfc, !PT;       // set bit 24\n// ...\nLOP3.LUT P4, RZ, R2.reuse, 0x1000000, RZ, 0xc0, !PT; // extract bit 24\n```\n\n**After** — each compare updates a running predicate directly.\n\n```asm\nISETP.EQ.U32.OR P0, PT, R249, R0.reuse, P0;\nISETP.EQ.U32.OR P1, PT, R251, R0.reuse, P1;\nISETP.EQ.U32.OR P2, PT, R250, R0,       P2;\nPLOP3.LUT       P0, PT, P2, P0, P1, 0xfe, 0x0;       // P2 | P0 | P1\n```\n\nWith 256 values per lane, this repeated-fold microbenchmark went from\n**20.27 to 5.20 µs (−74.4%)**, with one `VOTE.ANY` per iteration in both\nversions."
+    },
+    {
+      "sha": "527657e26b33e1cfd13a5fae38ae2369ff65daaf",
+      "comment": "该 commit 优化 NVIDIA 布尔子组归约：当 warp 中存在归约组（reduction group）的复制副本（reduceLaneIdMask/broadcastLaneIdMask 的并集未覆盖全部 5 位）时，不再用 shuffle 树，而是用 vote.sync.any/all（组被完全广播时）或一次 vote.sync.ballot 收集所有谓词后用 group-zero 掩码（getGroupZeroMask）按各组的 lane 掩码测试，覆盖 i1 的 AND/OR 与 unsigned/signed min/max 等。辅助改动：把 getGroupZeroMask 从 TritonNvidiaGPU Ops.cpp 内联实现抽到 lib/Tools/LayoutUtils 中复用，并用其重写 getTMAMulticastMaskEncoding；TritonOps.td 中 getSingleCombiner 的文档更新（允许 region 含其他操作，实际由使用时配合 hasSingleElement 检查）；matchReduxKind 增加对 combine region 无额外操作的校验，避免 warp 指令替换有副作用的 region。测试覆盖复制谓词、带 printf 的归约、半 warp、奇偶交错等。风险低：只改变 NVIDIA 的 warpReduce 降级策略，掩码计算与原 getTMAMulticastMaskEncoding 逻辑等价；单独抽出的 getGroupZeroMask 是纯函数，不影响行为。",
+      "tags": [
+        "performance",
+        "nvidia",
+        "backend",
+        "refactor",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更涉及 include/triton/Dialect/Triton/IR/TritonOps.td（仅注释文档更新）、include/triton/Tools/LayoutUtils.h 与 lib/Tools/LayoutUtils.cpp（新增 getGroupZeroMask 工具函数，属共享工具但仅为新增，未改既有接口）、lib/Dialect/TritonNvidiaGPU/IR/Ops.cpp、third_party/nvidia/ 与 test/Conversion/。Ascend 不使用 TritonNvidiaGPU 方言与 NVIDIA warpReduce 路径；LayoutUtils 新增函数不影响 Ascend，其降级不依赖该工具。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Use warp votes and ballots for Boolean subgroup reductions (#12647)\n\nUse `vote.sync.any` or `vote.sync.all` when a warp holds replicated\ncopies of one reduction group. For independent groups, collect the\npredicates with one `vote.sync.ballot` and test each group’s lane mask.\nThis covers `i1` AND/OR and unsigned min/max.\n\n## Benchmarks\n\nBoolean row reductions with contiguous lane groups and four warps per\nCTA. The four-CTAs-per-SM grid includes both the partial reductions and\nthe full-warp control. Values are median paired changes in kernel time\nversus `ac80e167a4`. Negative is faster.\n\n| Lanes per reduction | GB300 `any` | GB300 `all` | GB200 `any` | GB200\n`all` | H100 `any` | H100 `all` |\n|---|---:|---:|---:|---:|---:|---:|\n| 2 | -0.6% | -0.3% | -0.3% | -0.4% | -0.5% | -0.3% |\n| 4 | -1.4% | -1.8% | -1.8% | -1.8% | -1.5% | -1.8% |\n| 8 | -2.4% | -3.6% | -2.4% | -3.5% | -2.5% | -3.3% |\n| 16 | -0.6% | -0.6% | -0.9% | -0.9% | -1.3% | -1.7% |\n| 32 (full warp) | 0.0% | +0.3% | 0.0% | 0.0% | 0.0% | +0.1% |\n\nThe partial cases use one input per lane. The full-warp control folds\nfour inputs per lane and emits identical machine code in both builds.\nIts deltas reflect timing variation."
+    },
+    {
+      "sha": "c778adfa78b1f5cd17674eda81740b67ba74c32a",
+      "comment": "该 commit 修复 python/triton_kernels/tests/test_matmul.py 中参考实现的 gamma/swiglu 顺序错误：kernel 先应用融合激活再乘 gammas（out = act(acc) * gammas），而参考实现原先在 matmul_torch 内部、swiglu 之前乘 gammas，计算成了 swiglu(acc*gammas)，因 swiglu 非线性导致 #8765 引入的 swiglu x gamma 用例被跳过。修复方式是参考实现改在 swiglu 后应用 gammas（存在 scatter_indx 时先把 gammas 通过固定形状置换索引重映射，避免 aten.nonzero 在 FakeTensor/compile warmup 下抛 DynamicOutputShapeException），并移除 AMD/NVIDIA 两处 skip；对 split_k>1 组合保留定向 skip（split-K 把激活移入 reduction 阶段，gamma 在 partial matmul 上先应用，语义仍不等价）。属测试/参考实现 bugfix，不影响编译与运行时功能。风险低，仅改测试文件。",
+      "tags": [
+        "bugfix",
+        "test",
+        "kernels",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。仅修改 python/triton_kernels/tests/test_matmul.py 的参考实现与 skip 条件，不涉及 BaseBackend/DriverBase/semantic/code_generator 等 Ascend 依赖接口，也不改动 Ascend 编译或运行路径。",
+        "testing": "无影响。该测试为 CUDA/ROCm 平台的 triton_kernels 测试，Ascend 端测试集中在 third_party/ascend/unittest，不共享该用例。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[KERNELS] Fix gamma/swiglu order in test_matmul reference (#12544)\n\nThe matmul kernels apply gammas after the fused activation\n(out = act(acc) * gammas), as changed in #7003 and #7027. The test\nreference instead applied gammas inside matmul_torch, before swiglu,\ncomputing swiglu(acc * gammas). Since swiglu is non-linear, the\nswiglu x gamma cases introduced by #8765 failed and were skipped on\nboth AMD and NVIDIA.\n\nApply gammas after swiglu in the reference (mapped through\nscatter_indx when present) and remove both skips.\n\n- With split_k > 1 the fused activation moves into the reduction stage\n  while gammas are still applied by the partial matmuls, so split-K\n  computes swiglu(acc * gammas) instead of swiglu(acc) * gammas. Keep a\n  targeted skip for that combination instead of re-enabling it.\n- Replace the boolean-mask scatter remapping of gammas with fixed-shape\n  permutation indexing so the reference also runs under compile warmup\n  (FakeTensor raised DynamicOutputShapeException on aten.nonzero)."
+    },
+    {
+      "sha": "b7196d974bb431964a4e675a1d5481f2ba1fb2c2",
+      "comment": "该 commit 让 HoistTMEMAllocOutOfIf 支持从 if 的任一分支提升 TMEM 分配：原先仅处理 then 分支内 tmem.alloc、else 分支 yield 初始值的情形，现在改为根据 alloc 所在块动态取 loadYield（alloc 块的 terminator）与 initYield（另一分支的 yield），从而也覆盖 alloc 在 else 分支的情况；同时要求两分支都使用 init（从而 init 支配 if），并相应地把 token 替换逻辑应用到正确的 yield 操作数上。新增 hoist_out_of_else 回归测试覆盖 else 分支场景。风险低：仅放宽已有限定模式的匹配条件，逻辑对两分支对称；若模式不匹配仍返回 failure。",
+      "tags": [
+        "bugfix",
+        "tritongpu",
+        "tmem",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅涉及 lib/Dialect/TritonGPU/Transforms/HoistTMEMAlloc.cpp 与 test/TritonGPU/hoist-tmem-alloc.mlir，属 TritonNvidiaGPU TMEM/tensor memory 专属的 TritonGPU 变换路径。Ascend 走 TritonToLinalg/HIVM 降级，不使用 TMEM 分配与 TritonGPU 的 TMEM 变换。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TritonGPU] Hoist TMEM allocations from either if branch (#12649)\n\nMake `HoistTMEMAllocOutOfIf` handle a TMEM update in either arm when the\nother arm yields the initializer. Add a regression test for the `else`\narm."
+    }
+  ],
+  "architecture_based_on_sha": "0861b90f695e3c866f6f7eadd4be8339378ab017",
+  "architecture_generated_at": "2026-11-01T20:11:07.548246+08:00"
+}

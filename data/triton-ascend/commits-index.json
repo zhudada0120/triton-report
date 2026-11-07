@@ -1,4 +1,44 @@
 {
+  "e599a68d47edecc831add2ea1ae9690a8e3d756e": {
+    "date": "2026-11-07",
+    "msg": "[DynamicCVPipeline](fix) Preserve loop counter types in multibuffering (#2773)"
+  },
+  "2b8741e562733f73d7489ee3d478461637631520": {
+    "date": "2026-11-07",
+    "msg": "[ssbuffer](feat) remove redundant sync (#2962)"
+  },
+  "0e3c1ca79efb259cbafaf5dd4a64571b601de629": {
+    "date": "2026-11-07",
+    "msg": "[ssbuffer](fix) fix cross-block dependency processing in CloneOps (#3008)"
+  },
+  "fab76dabf29ae3fcf4c55142bb886d6347c53090": {
+    "date": "2026-11-07",
+    "msg": "Change the names of the yml files (#1916) (#2045)"
+  },
+  "bd64e3efb334708ec3671626a751842a23530c38": {
+    "date": "2026-11-07",
+    "msg": "[triton-dist](feat) update triton distributed commit id (#3030)"
+  },
+  "e3675c44b66975d1a7776ea16a7b71684192ab8d": {
+    "date": "2026-11-07",
+    "msg": "[ascend](feat) add AVE-backed TLA SIMD memory and widening ops (#2977)"
+  },
+  "b3b2e7a55fc0cb7dc91cf96f49a2319714a4c269": {
+    "date": "2026-11-07",
+    "msg": "[ssbuffer](fix) move crossCore consumers update location (#2832)"
+  },
+  "ba966c5f78c49bafa7b255c4dcfc3ae33405e861": {
+    "date": "2026-11-07",
+    "msg": "[Ascend](fix) Preserve RTZ rounding in HFusion casts (#2770)"
+  },
+  "a0bea5c81ea88ec765ade55d61980c56fb3b33f4": {
+    "date": "2026-11-07",
+    "msg": "[TritonToGraph](feat) implement RFC #2686 (scan + query-row lift) (#3024)"
+  },
+  "ca54513f0a863be2695456c7da719c6e4589cb21": {
+    "date": "2026-11-07",
+    "msg": "[TLA](feat) add tla mmad_mx api"
+  },
   "8f0ade66580245e30ad97093526a4018e4e18fc7": {
     "date": "2026-11-06",
     "msg": "[ssbuffer](fix) fix outlinereuse"

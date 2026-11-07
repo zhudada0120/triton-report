@@ -1,4 +1,20 @@
 {
+  "e8dda3400e82957bf3408c8251619790c78d8d5c": {
+    "date": "2026-11-07",
+    "msg": "[NVIDIA] Fold wide Boolean register reductions with three predicate chains (#12650)"
+  },
+  "527657e26b33e1cfd13a5fae38ae2369ff65daaf": {
+    "date": "2026-11-07",
+    "msg": "[NVIDIA] Use warp votes and ballots for Boolean subgroup reductions (#12647)"
+  },
+  "c778adfa78b1f5cd17674eda81740b67ba74c32a": {
+    "date": "2026-11-07",
+    "msg": "[KERNELS] Fix gamma/swiglu order in test_matmul reference (#12544)"
+  },
+  "b7196d974bb431964a4e675a1d5481f2ba1fb2c2": {
+    "date": "2026-11-07",
+    "msg": "[TritonGPU] Hoist TMEM allocations from either if branch (#12649)"
+  },
   "79b4a25bfcc9325eb03b067d4d163225dadea872": {
     "date": "2026-11-06",
     "msg": "[AMD] Add FP16-accumulate WMMA support for WMMAv3 (#12177)"
