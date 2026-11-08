@@ -1,4 +1,20 @@
 {
+  "698e39e0d1e528043351f36a95007f75ea929ae8": {
+    "date": "2026-11-08",
+    "msg": "[AMD] Fix CodeGen build for LLVM @293a85c0 (#12660)"
+  },
+  "6d86e10586dec94539c6390b5cfce4be2d0d621a": {
+    "date": "2026-11-08",
+    "msg": "[AMD] Build LLVM @293a85c048f7 for CodeGen (#12656)"
+  },
+  "0191ad546f9513c309611b765cb3675b69eab18b": {
+    "date": "2026-11-08",
+    "msg": "[AMD] UpdateAsyncWaitCount: walk past region ops without async ops (#12629)"
+  },
+  "e4f37565cfc17d0ac4025ea810569ab393ec17c5": {
+    "date": "2026-11-08",
+    "msg": "[AMD][gfx9] Fix small K in MFMA  (#12630)"
+  },
   "e8dda3400e82957bf3408c8251619790c78d8d5c": {
     "date": "2026-11-07",
     "msg": "[NVIDIA] Fold wide Boolean register reductions with three predicate chains (#12650)"

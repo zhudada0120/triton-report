@@ -1,0 +1,87 @@
+{
+  "date": "2026-11-08",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-11-09T05:25:42.806364+08:00",
+  "daily_summary": "当日变更集中在上游 Triton 的 AMD 后端：一是跟进 AMD codegen 独立 LLVM pin 到 llvm/llvm-project@293a85c048f7，适配 ScopedNoAliasAAResult 构造函数变化并移除不再需要的 alias-scope domain 降级逻辑（同时清理 python/src/llvm.cc 中 to_bitcode 的 legacy_alias_scopes 参数）；二是修复 UpdateAsyncWaitCount pass 对含 region 的 op（tt.map_elementwise、scf.index_switch 等）过度保守回退导致 TDM prefetch 丢失的问题；三是修复 gfx9 MFMA 在 tensor K 维小于指令 K 维时的重复累加错误，改为通过 LinearLayout free-variable mask 选取 canonical lane/register 并零填充。变更几乎全部落在 third_party/amd 与 AMD 专属测试中，另有一处 python/src/llvm.cc 的 API 删参。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 基本无功能影响：前两个 commit 为纯 AMD 平台专属代码（third_party/amd 的 DAGBuilder、MFMA.cpp、UpdateAsyncWaitCount.cpp 及 AMD LLVM pin 文件），第三个 commit 仅删除 python/src/llvm.cc 中 to_bitcode 的 legacy_alias_scopes 参数——该参数由 AMD 后端 _serialize_for_amd_codegen 专用，Ascend 后端的 lowering 链路（TTIR→Linalg/HIVM→BiShengIR→npubin）不使用 llvm.to_bitcode 路径。三者的测试变更均位于 third_party/amd 或 python/test/gluon 的 AMD 专属用例，Ascend 无需更新测试。",
+  "commits": [
+    {
+      "sha": "698e39e0d1e528043351f36a95007f75ea929ae8",
+      "comment": "该 commit 配合 AMD codegen 的 LLVM pin 升级做适配：LLVM @293a85c0 中 ScopedNoAliasAAResult 不再有默认构造函数，改为需要传入 LLVMContext（用于读取分析选项），因此 DAGBuilder::setupAliasAnalysis 改为 `std::make_unique<ScopedNoAliasAAResult>(Func.getContext())`。同时因为新 pin 已支持 disjoint alias scope domain 格式，删除了 python/src/llvm.cc 中为旧 pinned LLVM 服务的 downgradeAliasScopeDomains 逻辑，并移除 to_bitcode 的 `legacy_alias_scopes` 参数；third_party/amd/backend/compiler.py 的 _serialize_for_amd_codegen 同步去掉 legacy_alias_scopes=True。实现上是一处 API 收敛与死代码清理，逻辑等价性依赖于「两个 pin 都接受新 domain 格式」这一前提。风险点：python/src/llvm.cc 是 triton-ascend release patch 直接修改的文件之一（Patch 影响映射 python/src/ir.cc 相邻的绑定层，llvm.cc 本身未被 patch 列出，但同属 python/src 绑定），若 Ascend 侧未调用该函数则无影响；一旦其他调用方仍传 legacy_alias_scopes 会 TypeError。整体属 low-risk 的平台适配。",
+      "tags": [
+        "chore",
+        "refactor",
+        "low-risk",
+        "amd-backend",
+        "build"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅涉及 third_party/amd 的 DAGBuilder 与 AMD 后端序列化逻辑，以及 python/src/llvm.cc 中 to_bitcode 的 legacy_alias_scopes 参数删除。该参数仅被 third_party/amd/backend/compiler.py 的 _serialize_for_amd_codegen 使用；Ascend 后端走 TTIR→Linalg/HIVM→BiShengIR 路径，不调用 llvm.to_bitcode，也不使用 AMD codegen 库。",
+        "testing": "无影响。新增/调整的测试不存在于 Ascend 测试范围。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Fix CodeGen build for LLVM @293a85c0 (#12660)\n\nThe AMD codegen LLVM pin moved to llvm/llvm-project@293a85c048f7, where\nScopedNoAliasAAResult no longer has a default constructor and instead\ntakes the LLVMContext it reads analysis options from. Pass the\nfunction's context when DAGBuilder sets up alias analysis.\n\nAlso drop the alias-scope domain downgrade applied when serializing IR\nfor the codegen library. It was added while that library was pinned to\nan LLVM that predated disjoint alias scopes; both the current pin\n(08b05a3352ee) and the new one (293a85c048f7) accept the new domain\nformat, so the downgrade only discarded the disjoint guarantee."
+    },
+    {
+      "sha": "6d86e10586dec94539c6390b5cfce4be2d0d621a",
+      "comment": "纯构建配置变更：将 cmake/amd-llvm-build-info.json 中的 AMD codegen LLVM 构建 pin 从 triton-lang/llvm-project@08b05a3352ee（build_number 3）切换到 llvm/llvm-project@293a85c048f7（PR 220442，实现 AsyncMark Stages，为 llvm.amdgcn.asyncmark/wait.asyncmark 增加常量 stage-mask 操作数与 per-stage SIInsertWaitcnts 打分）。这是上一个 commit 的配套前置，二者共同完成 AMD codegen LLVM 升级。风险仅在 CI/构建侧（需要新的预构建 LLVM 产物可用），不影响上游 Triton 语义与其他后端。",
+      "tags": [
+        "chore",
+        "ci",
+        "low-risk",
+        "amd-backend",
+        "build"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。仅为 AMD codegen 独立 LLVM 的构建 pin 元数据，Ascend 不使用 AMD codegen LLVM 依赖。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Build LLVM @293a85c048f7 for CodeGen (#12656)\n\nBump the AMD codegen LLVM build pin to\n`llvm/llvm-project@293a85c048f754b849829c7920846e4fbe5ab980`, the commit\nfor https://github.com/llvm/llvm-project/pull/220442 (\"[AMDGPU]\nImplement AsyncMark Stages\", merged 2026-11-06).\n\nThat change gives `llvm.amdgcn.asyncmark` / `llvm.amdgcn.wait.asyncmark`\na constant stage-mask operand and per-stage `SIInsertWaitcnts` scoring."
+    },
+    {
+      "sha": "0191ad546f9513c309611b765cb3675b69eab18b",
+      "comment": "修复 AMD UpdateAsyncWaitCount pass 的过度保守回退：computeMinCountBackward 此前对除 tt.reduce 外所有含 region 的 op 直接回退到 wait count 0，导致 Gluon kernel 在 TDM copy 与 wait 之间夹一个 tt.map_elementwise（进行累加器重缩放）时把 s_wait_tensorcnt 降为 0，丢失了 TDM prefetch。新增 regionsContainAsyncOps<countCommitGroups> 辅助函数，仅在 region 内确实存在被 countFunc 计数的 async op（或计数 commit group 时存在 ttg.AsyncCommitGroupOp）时才回退，其余 region op（tt.reduce、tt.map_elementwise、scf.index_switch 等）按普通 op 继续 walk。这实际上是把「是否能改变 outstanding count」判定精确化，恢复了正确的前向分析覆盖。测试在 test/TritonGPU/amd/amd-update-async-wait-count.mlir 增加两个用例：一个跨 tt.map_elementwise 期望 count=1，一个跨含 commit group 的 scf.index_switch 期望 count=1（TDM wait 只数 TDM op）。风险：countFunc 的计数语义需与各 async op 类型保持一致，否则仍可能漏算；pass 为 AMD 专属 lowering 环节。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "low-risk",
+        "amd-backend",
+        "triton-gpu-ir"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。UpdateAsyncWaitCount 是 third_party/amd/lib/TritonAMDGPUTransforms 下的 AMD 专属 pass，处理 amdg.async_tdm_* 与 ttg.async_commit_group，属于 AMD GPU lowering 路径；Ascend 后端不使用该 pass，也不生成 TDM/async commit group 相关 op。",
+        "testing": "无影响。变更测试位于 test/TritonGPU/amd/ 目录，属 AMD 专属 lit 测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] UpdateAsyncWaitCount: walk past region ops without async ops (#12629)\n\ncomputeMinCountBackward fell back to a wait count of 0 at every op with\nregions except tt.reduce. Ops such as tt.map_elementwise cannot issue\nasync copies, yet a Gluon kernel that rescales its accumulator through\ntt.map_elementwise between issuing TDM copies and waiting on them got\ns_wait_tensorcnt 0 and lost its prefetch.\n\nFall back only if the op's regions contain an async op or a commit\ngroup; any other region op, tt.reduce included, is walked past like a\nplain op."
+    },
+    {
+      "sha": "e4f37565cfc17d0ac4025ea810569ab393ec17c5",
+      "comment": "修复 gfx9 MFMA 在 tensor K 维小于 MFMA 指令 K 维时的错误累加：此前通过 adjustAccForSmallKDim 在算出结果后按 duplicationRate 对累加器做右移/乘法以纠正重复累加，但这种事后补偿不彻底且对 scaled 路径同样生效。本次改为在操作数侧处理——利用 toLinearLayout 的 getFreeVariableMasks 得到 register/lane 维度的 free mask：把与 kWidth 相关的重复寄存器置零，并用 lane id 非零 free bits 选择 canonical lane（isCanonicalKLane 时 select zero），当布局寄存器数少于需要的 numRegs 时补零。这样从源头避免重复累加，Delete adjustAccForSmallKDim 及其调用。测试方面把 test_amd_mfma 的 cd_regclass 参数化为 [None, 'a', 'v'] 并新增 test_amd_mfma_small_k（覆盖多种 instr_shape、k_width、block_k_div）与 test_amd_mfma_scaled_small_k（CDNA4 scaled MFMA，含 e2m1/e4m3/e5m2 混合类型与 MX scale）。风险：依赖 LinearLayout free-variable mask 的语义正确性；scaled 路径的 kBase/kWidth 组合较多，边界（如 numLayoutRegs>=numRegs 的分支）需回归验证。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "amd-backend",
+        "gluon",
+        "mfma"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更全部位于 third_party/amd/lib/TritonAMDGPUToLLVM/DotOpToLLVM/MFMA.cpp（AMD MFMA→LLVM 降级）与 python/test/gluon/test_core.py 的 AMD 专属用例，依赖 AMDMFMALayout / DotOperandEncoding 与 MFMA intrinsic；Ascend 不使用 TritonGPUToLLVM 与 AMD MFMA 路径，走 TritonToLinalg/HIVM，其 dot 通过 cann extension 与 Monkey-patch 的 TritonSemantic.dot 处理。",
+        "testing": "无影响。新增测试用 @gluon.jit 与 AMD MFMA layout，需 CDNA3/CDNA4 硬件，不进入 Ascend 测试范围。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][gfx9] Fix small K in MFMA  (#12630)\n\nFollow the fix like WMMA side for MFMA as well, use zero padding when\nthe tensor K dim is smaller than instruction K dim.\n\n---------\n\nSigned-off-by: Pengzhan Zhao <borontion@gmail.com>"
+    }
+  ],
+  "architecture_based_on_sha": "0861b90f695e3c866f6f7eadd4be8339378ab017",
+  "architecture_generated_at": "2026-11-01T20:11:07.548246+08:00"
+}
