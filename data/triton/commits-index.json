@@ -1,4 +1,36 @@
 {
+  "8388ffe6d190926368d4e500888bfd1baef03653": {
+    "date": "2026-11-09",
+    "msg": "[IR] Verify reduction / scan / map_elementwise combiner ops to be pure or assert / print / assume (#12668)"
+  },
+  "f83ec39833737bcbe4903cdb77d135b5d9b0bc78": {
+    "date": "2026-11-09",
+    "msg": "[BACKEND] Fix CTA split on small shapes (#12658)"
+  },
+  "275ac758dcdf74777382b0ff98f1c2e0a8a14d7b": {
+    "date": "2026-11-09",
+    "msg": "[TritonNvidiaGPU] Prefer Two CTA layouts for two-CTA MMA (#10817)"
+  },
+  "173580104f6b1c182472fe0ad3e11f639fbaa177": {
+    "date": "2026-11-09",
+    "msg": "[AMD] Re-enable kernarg preload under MIR dump/swap (#12654)"
+  },
+  "c6e3d8d67d3693e0ea11c1458a85cb4a8de5aca7": {
+    "date": "2026-11-09",
+    "msg": "[NVIDIA] Verify MMAv5 barrier predicates and TMEM transfer warp counts (#12666)"
+  },
+  "52e8a001c6bad9e3017102e1202e047e9cf15875": {
+    "date": "2026-11-09",
+    "msg": "[GPU] Directly dispatch a single unconditional warp specialization (#12664)"
+  },
+  "248fe023da7a2a6fc849adf66a74df90b5da65cb": {
+    "date": "2026-11-09",
+    "msg": "[GPU] Fold workerless warp specialization before creating TTGIR (#12663)"
+  },
+  "fc2c4016f891c650fac890fe1855e8c15f09b0c8": {
+    "date": "2026-11-09",
+    "msg": "[MEMBAR] Track elected NVIDIA publication issuers (#12661)"
+  },
   "698e39e0d1e528043351f36a95007f75ea929ae8": {
     "date": "2026-11-08",
     "msg": "[AMD] Fix CodeGen build for LLVM @293a85c0 (#12660)"

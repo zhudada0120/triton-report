@@ -67,6 +67,18 @@
       "interface_changes": "[NVIDIA] 在常规 Triton 中增加 padded FP6 转换与压缩 TMA store。新增 Utility.h 的 isFP6；Ops.cpp verifyDescriptorLoadStoreOp 允许 FP6 descriptor 配 i8 code store；DescriptorMemoryLayouts.cpp / OptimizeDescriptorEncoding.cpp 为 FP6 选择 B6P2x16 编码并保留 packing；python/src/ir.cc 的 create_tensor_descriptor_type 增加 fp6_format 参数并迁移 create_make_tensor_descriptor 绑定；specialize.cc 在 tensordesc 特化中加入 fp6 格式；language/core.py、semantic.py、__init__.py、runtime/interpreter.py、tools/tensor_descriptor.py 增加 fp6_format 类型/描述符支持与校验；languag",
       "change_summary": "[NVIDIA] Add padded FP6 conversion and compacting TMA stores to Triton (#12541)",
       "ascend_impact": false
+    },
+    "8388ffe6d190926368d4e500888bfd1baef03653": {
+      "date": "2026-11-09",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "在 TTIR 层为 tt.reduce/tt.scan/tt.map_elementwise 的回调 region 增加纯度验证：新增 verifyCallbackBody 遍历 region，允许纯操作、llvm.intr.assume、tt.assert、tt.print，禁止带有未知副作用或写内存操作的 op；并沿 tt.call 递归检查被调函数（多线程 pass 环境下跳过以防竞态）。原先 map_elementwise 只单独禁 store，现统一为通用校验。同步更新 Ops.td 文档、core.py docstring、invalid.mlir 与 UtilityTest。这是正确性加固，风险主要在于可能使原本合法（但语义不当）的 kernel 编译报错，以及递归检查被调函数在并发 pass 场景下的保守跳过。",
+      "change_summary": "[IR] Verify reduction / scan / map_elementwise combiner ops to be pure or assert / print / assume (#12668)",
+      "ascend_impact": false
     }
   }
 }

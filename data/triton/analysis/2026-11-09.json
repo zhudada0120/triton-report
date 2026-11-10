@@ -1,0 +1,170 @@
+{
+  "date": "2026-11-09",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-11-10T08:56:12.422671+08:00",
+  "daily_summary": "当日变更集中在 IR 校验与 warp specialization 相关的编译器核心重构：为 reduce/scan/map_elementwise 的 combiner 回调增加副作用验证、修复小 shape 下 CGA split 的 shape 感知问题、为 Blackwell 双 CTA MMA 偏好 2-CTA 布局、重构 warp_specialize 的无 worker 折叠与单站点直接分发 lowering、补充 NVIDIA MMAv5/TMEM 与 Membar 发行者追踪的校验，以及 AMD kernarg preload 在 MIR dump/swap 下的恢复。整体方向是提升 IR 正确性校验、布局推断精度与 warp specialization 代码生成质量。",
+  "ascend_impact_summary": "当日变更中，除 TTIR 方言（reduce/scan/map_elementwise）新增回调纯度验证会影响 Ascend 前端生成的 IR 校验外，其余均集中在 TritonGPU 布局/CGA split、warp specialization lowering、NVIDIA 专属方言与 MemBar/AMD 后端，均不在 Ascend 的 TritonToLinalg/HIVM 路径上。triton-ascend 需关注 reduce/scan/map_elementwise combiner 含副作用时的编译报错行为，以及 TritonGPU dialect 头文件中 getCTASplitNum 签名变化（若其 release patch 或共享代码触及）。",
+  "commits": [
+    {
+      "sha": "8388ffe6d190926368d4e500888bfd1baef03653",
+      "comment": "在 TTIR 层为 tt.reduce/tt.scan/tt.map_elementwise 的回调 region 增加纯度验证：新增 verifyCallbackBody 遍历 region，允许纯操作、llvm.intr.assume、tt.assert、tt.print，禁止带有未知副作用或写内存操作的 op；并沿 tt.call 递归检查被调函数（多线程 pass 环境下跳过以防竞态）。原先 map_elementwise 只单独禁 store，现统一为通用校验。同步更新 Ops.td 文档、core.py docstring、invalid.mlir 与 UtilityTest。这是正确性加固，风险主要在于可能使原本合法（但语义不当）的 kernel 编译报错，以及递归检查被调函数在并发 pass 场景下的保守跳过。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "medium-risk",
+        "Dialect-Triton"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "影响 lib/Dialect/Triton/IR/Ops.cpp 中 reduce/scan/map_elementwise 的 verifyRegions 逻辑（Ascend 前端生成的 TTIR 需通过此 verifier）。若 Ascend 用户在 combine_fn 中使用带内存写副作用或未被 verifier 识别为无害的 op，将在 Ascend 编译链路 ttir 阶段报错；同时 lib/Dialect/Triton/IR/CMakeLists.txt 新增 MLIRLLVMDialect 链接，Ascend 构建 TritonIR 库时链路依赖变化。",
+        "testing": "Ascend 的 reduce/scan/map_elementwise 相关端到端用例（如 test_reduce、test_scan、test_topk 中带自定义 combiner 的 kernel）若 combiner 含 load/store 等副作用将被拒绝，需确认现有用例均使用纯 combiner。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_reduce",
+          "third_party/ascend/unittest/pytest_ut/test_topk",
+          "含 map_elementwise 的 Ascend 算子测试"
+        ]
+      },
+      "message": "[IR] Verify reduction / scan / map_elementwise combiner ops to be pure or assert / print / assume (#12668)",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "f83ec39833737bcbe4903cdb77d135b5d9b0bc78",
+      "comment": "修复小 shape 下 getCTASplitNum 未考虑 shape 的问题：将自由函数 getCTASplitNum(Attribute) 改为 getCTASplitNum(Attribute, ArrayRef<int64_t> shape)，内部改用 toLinearLayoutIgnoringPadding(shape, layout).basesPerDim 计算，使 CGA split 能感知 tensor shape（当某维度小于 split 数时布局 basis 会广播而不再 split）。同步更新 Allocation、Utility(ReduceOpHelper)、LinearLayoutConversions、NvidiaGPU Ops 等调用点，getShapePerCTA(Attribute, shape) 改为直接用 getCGALayout().getCTASplitNum()。这是布局语义修正，影响所有使用 TTGIR 的路径，改动面较广但语义清晰。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "medium-risk",
+        "Dialect-TritonGPU",
+        "LinearLayout"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更集中在 TritonGPU dialect 的 CGA split 与 shape-per-CTA 计算、Allocation 共享内存估算以及 TritonNvidiaGPU verifier，Ascend 走 TritonToLinalg/HIVM 路径，不使用 TritonGPU 布局/CGA 语义。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Fix CTA split on small shapes (#12658)\n\nThe free method `getCTASplitNum` should be shape aware"
+    },
+    {
+      "sha": "275ac758dcdf74777382b0ff98f1c2e0a8a14d7b",
+      "comment": "为 Blackwell（SM100-119）双/多 CTA MMA 在 WS 关闭时偏好 M-first 的 2-CTA 布局：AssignCGALayouts.cpp 新增 preferTwoCTALayout（numCTAs>=2 且 compute capability 在 [100,120)），getDotCGASplit 增加 preferTwoCTA 分支按 splitM=max(2,numCTAs/2)、splitN=numCTAs/splitM 划分并校验 tile 合法尺寸，同时交换 ctaOrder 前两位使 N/M 优先顺序互换。实测 4/8-CTA matmul 提升 2-9%。属纯 NVIDIA 专属性能优化，NVIDIA 方言与 target 分支，不影响其他后端。",
+      "tags": [
+        "performance",
+        "low-risk",
+        "TritonNvidiaGPU"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅位于 lib/Dialect/TritonNvidiaGPU/Transforms/AssignCGALayouts.cpp，属 NVIDIA 专属 CGA 布局分配逻辑，Ascend 不使用 TritonNvidiaGPU 方言与 TritonGPU CGA 路径。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[TritonNvidiaGPU] Prefer Two CTA layouts for two-CTA MMA (#10817)\n\nWith WS disabled, M-first CTA layouts improve 4/8-CTA matmul throughput\nby 2–9% versus `main` (`f8cddb947b`) on GB200 (FP16, M=N=8192, SM cap\n1.2 GHz; TFLOPS main → PR, reconstructed fixed configurations, 2×60\nrotating rounds×32 launches).\n\n| K | 2 CTAs, no WS | 4 CTAs, no WS | 8 CTAs, no WS |\n| --: | --: | --: | --: |\n| 64 | 169.8 → 170.0 | 148.7 → 153.7 | 144.7 → 148.2 |\n| 512 | 810.8 → 807.8 | 468.0 → 493.5 | 529.5 → 542.3 |\n| 2048 | 1189.5 → 1189.6 | 525.8 → 562.7 | 716.1 → 774.4 |\n| 8192 | 1354.3 → 1335.9 | 531.4 → 579.3 | 743.9 → 805.6 |"
+    },
+    {
+      "sha": "173580104f6b1c182472fe0ad3e11f639fbaa177",
+      "comment": "AMD 后端重新启用 kernarg preload：LLVM 已支持将 firstKernArgPreloadReg 序列化到 MIR YAML（llvm-project#168374），因此移除 HIPBackend 中 TRITON_DUMP_MIR/TRITON_SWAP_MIR 下的 set_all_fn_arg_inreg 禁用逻辑。新增两个 MIR stage 测试，验证 preload state 序列化到 MIR 且 dump/swap 往返后代码与指令序列一致。纯 AMD 后端变更，不影响其他平台。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "low-risk",
+        "AMD"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/amd/backend/compiler.py 与 AMD 专属 MIR 测试，Ascend 不使用 AMD 后端路径。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Re-enable kernarg preload under MIR dump/swap (#12654)\n\nKernarg preload has been disabled whenever TRITON_DUMP_MIR or\nTRITON_SWAP_MIR is set, because the allocated preload SGPRs were not\nserialized to MIR YAML: a dump/swap round trip silently lost the preload\nand emitted a kernel that s_loads its arguments from memory. That meant\nMIR captured for scheduling work did not describe the code Triton\nactually ships.\n\nLLVM now serializes that state\n(https://github.com/llvm/llvm-project/pull/168374), so the guard can be\nremoved."
+    },
+    {
+      "sha": "c6e3d8d67d3693e0ea11c1458a85cb4a8de5aca7",
+      "comment": "加固 NVIDIA 方言校验：verifyMMAv5Op 要求 completion barriers 与 completionBarrierPreds 数量一致（Gluon 接受独立列表，防止 custom printer assert）；verifyTMEMOperand 在显式 register layout 时要求至少 4 个 warp（布局兼容检查读取两个 warp basis，2-warp 布局只有一项）。新增 invalid.mlir 回归。纯 TritonNvidiaGPU 方言验证加固，不影响其他后端。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "TritonNvidiaGPU"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Dialect/TritonNvidiaGPU/IR/ 下的 MMAv5/TMEM 验证逻辑，Ascend 不使用 NVIDIA 方言。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Verify MMAv5 barrier predicates and TMEM transfer warp counts (#12666)\n\nGluon accepts separate lists of MMAv5 completion barriers and\npredicates. Require one predicate per barrier for both plain and scaled\nMMA so verification catches mismatched lists before the custom printer\nasserts.\n\nRequire at least four warps for TMEM loads, stores, and initialized\nallocations with an explicit register layout. The layout compatibility\ncheck reads two warp basis entries, and a two-warp layout has only one.\n\nAdd verifier regressions for a missing completion predicate and a\ntwo-warp TMEM load in `test/TritonNvidiaGPU/invalid.mlir`."
+    },
+    {
+      "sha": "52e8a001c6bad9e3017102e1202e047e9cf15875",
+      "comment": "为 warp specialization 降级新增「直接派发」快路径：canDirectDispatch() 判定函数体内只有一个 ttg.warp_specialize、该 block 不在任何 CFG 循环中（!site->isReachable(site)）且支配函数内所有 llvm.return；满足时 lowerDirectWarpSpecialize 以 cond_br 分 default/worker、再用 width 化的 llvm.switch（基于 warp id）直达各 partition region，省去 ld.shared 读取 command byte、switch loop 的 latch 与 exit 时的 cta_barrier，从而省掉每条 worker 路径上的一对 barrier 与一次 shared load。新增 WarpSpecializeCallbacks::workerRegisterPartitions，由 NVIDIA 侧按「有效寄存器上限」把共享同一 cap 的 partition 分到同一组（含 padding partition 的 fill 逻辑，依赖 warpGroupStartIds 与 actualRegisters），使同一组走同一 CFG 路径、共享 setmaxnreg.inc/dec 与返回路径；AMDK 侧该字段为空则以 -1 归为同一代表。同时重构通用路径：抽出 forEachCapture/rewritePartitionRegion/rewriteDefaultRegion 复用，去掉原先的 defaultBlock+状态 -1/exit state 分支，把 header 改为函数原 entry block（参数留在 header 以保证支配所有 warp group，entry 用 splitBlock 拆出），将 barrier 编号统一为 NVIDIA 的 kWarpSpecializeCTABarrierId=1（与 NVGPUToLLVMPass::freeTMAlloc 中 teardown 用 channel 1 区分 WS 前后一致）。测试同步更新 warp_specialize_to_llvm.mlir（改为 cond_br + 直接 switch、C6_i8 exit state、去掉 default latch/双 barrier）与 nvgpu_to_llvm.mlir（maxntid→reqntid、新增 tcgen05 dealloc 前 barrier 断言）。潜在风险：直接派发正确性依赖 canDirectDispatch 的支配性与无环判定，若 CFG 判定有漏（例如未能覆盖异常/多返回路径）会产生错误跳转；reqntid 与 lookupNumWarps 的比较假设 CTA 线程数；workerRegisterPartitions 依赖 actualRegisters 与 warp 分配的一致性；此外这是纯 NVIDIA/AMD 路径，不涉及通用接口面。",
+      "tags": [
+        "performance",
+        "refactor",
+        "tritongpu-to-llvm",
+        "warp-specialization",
+        "nvidia",
+        "amd",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅涉及 lib/Conversion/TritonGPUToLLVM/WarpSpecializeUtility.{h,cpp}、third_party/nvidia 与 third_party/amd 的 ConvertWarpSpecializeToLLVM、NVGPUToLLVMPass 与 NV Utility.h。triton-ascend 不使用 TritonGPU→LLVM 的 warp specialization 降级路径（AscendBackend 走 TTIR→Linalg/HIVM→BiShengIR），也不实现/消费 TargetInfoBase 的 shuffle/barrier 相关接口。",
+        "testing": "无影响。相关 lit 测试在 test/Conversion/warp_specialize_to_llvm.mlir 与 test/Conversion/nvgpu_to_llvm.mlir（均属 NVIDIA/AMD 平台路径），triton-ascend 的 unittest 不运行这些用例。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[GPU] Directly dispatch a single unconditional warp specialization (#12664)\n\nImplement `warp_specialize` via the obvious `if/else` when the lowered\nkernel has one `ttg.warp_specialize` outside any CFG cycle and its block\ndominates every return.\nThe generic case uses the existing dispatcher.\n\nPartition sizes determine the warp-ID ranges. On NVIDIA, the **effective\nregister cap** determines which partitions share an entry and restore\npath.\n\nFor example, assume four default warps and three capture-free worker\npartitions. A uses warps 4–7 at 80 registers. B uses warps 8–9 and C\nuses warps 10–11, both at 48 registers.\n\n**Before**, the default group publishes one command byte per worker.\nEach switch case emits its own register adjustment.\n\n```text\ndispatch:\n    setmaxnreg.dec(24)\n    cta_barrier()\n    switch ld.shared.u8(state[warp_id - 4]):\n        case A:    run_case(A, 80)\n        case B:    run_case(B, 48)\n        case C:    run_case(C, 48)\n        case EXIT: return\n\nrun_case(body, cap):          # expanded separately in each case\n    setmaxnreg.inc(cap)\n    cta_barrier()\n    body()\n    cta_barrier()\n    setmaxnreg.dec(24)\n    goto dispatch\n```\n\n**After** Worker partitions avoid the `ld.shared` command and the exit\n`cta_barrier()`\n\n```text\nsetmaxnreg.dec(24)\ncta_barrier()\nif warp_id < 8:\n    setmaxnreg.inc(80)\n    A()\n    cta_barrier()\n    setmaxnreg.dec(24)\nelse:\n    setmaxnreg.inc(48)        # shared by B and C\n    if warp_id < 10: B()\n    else:            C()\n    cta_barrier()\n    setmaxnreg.dec(24)\nreturn\n```\n\nThis saves 2-3% in some kernels."
+    },
+    {
+      "sha": "248fe023da7a2a6fc849adf66a74df90b5da65cb",
+      "comment": "在创建 TTGIR 前折叠无 worker 的 warp specialization：GluonSemantic 中 workers 为空时直接 call_JitFunction 调用 default_partition；WarpSpecializeOp::verify 要求至少一个 partition region（partitionNumWarps 非空）；相应更新大量 lit 测试为合法形态并删除 test/Conversion/warp_specialize_to_llvm.mlir 中空 worker 用例。属 Gluon 前端与 TTGIR 方言校验改动，涉及 TritonGPUOps.td 文档与 Ops.cpp verifier。",
+      "tags": [
+        "feature",
+        "refactor",
+        "medium-risk",
+        "Gluon",
+        "Dialect-TritonGPU"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 python/triton/experimental/gluon 与 lib/Dialect/TritonGPU/IR/Ops.cpp 的 warp_specialize 验证，Ascend 不使用 Gluon 前端（自有 tla DSL）也不使用 TritonGPU 的 warp_specialize。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[GPU] Fold workerless warp specialization before creating TTGIR (#12663)\n\nCall the default Gluon function directly when the worker list is empty.\nRequire at least one worker partition in ttg.warp_specialize."
+    },
+    {
+      "sha": "fc2c4016f891c650fac890fe1855e8c15f09b0c8",
+      "comment": "Membar 分析修正 NVIDIA publication 发行者追踪：将 TMEMCopyOp、CLCTryCancelOp、FenceMBarrierInitReleaseClusterOp 纳入 Warp0Leader 发行者，MMAv5 与 TCGen5Commit 的 Publication 也标记 Warp0Leader；删除原先按 issuer 相等跳过 sync 的 canSkip 逻辑，改为使用 filter；NVIDIA 侧 canSkipBarSync 增加同一 region 内 init/inval 之间可跳过的判断，避免多余 bar.sync。同时相应更新 ttng 测试用例（补充 init_barrier/tc_gen5_commit/wait_barrier 等）。纯 Membar 分析与 NVIDIA canSkipBarSync 变更，测试更新集中在 TritonNvidiaGPU 测试。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "medium-risk",
+        "Analysis-Membar",
+        "TritonNvidiaGPU"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Analysis/Membar.cpp 与 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/Membar.cpp；Membar 分析虽在共享 Analysis 目录，但其线程同步语义与 NVIDIA canSkipBarSync 均为 GPU 路径专用，Ascend 走 Linalg/HIVM 不使用该分析。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[MEMBAR] Track elected NVIDIA publication issuers (#12661)\n\nWe were missing this and adding unnecessary `bar.sync`s."
+    }
+  ],
+  "architecture_based_on_sha": "0861b90f695e3c866f6f7eadd4be8339378ab017",
+  "architecture_generated_at": "2026-11-01T20:11:07.548246+08:00"
+}

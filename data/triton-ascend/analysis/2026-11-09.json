@@ -1,0 +1,137 @@
+{
+  "date": "2026-11-09",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-11-10T08:58:51.765432+08:00",
+  "daily_summary": "当日变更围绕 Ascend 后端的正确性修复展开，集中在三条主线：一是 TritonToLinalg 的 tt.dot_scaled 软件路径对齐上游语义（scale 解码/NaN 处理/可选 scale/操作数类型统一/FP4 解包），并配套大量 MLIR 与端到端 pytest 回归；二是 TritonToStructured 的 ImplicitPermute 能力扩展，支持数据依赖（来自 tt.load/select）的离散偏移与广播 mask/other 的轴重映射，配合 ReshapeConverter 的 allow_reorder 隐式转置；三是修复去交织（deinterleave）在非结构化循环中的写回缺陷，新增离散去交织的 loop 提升与共享优化。此外有一个仅文档的 commit，补充动态复用环境变量说明并更新 buffer 扩展 API 文档与 dtype 支持矩阵。整体方向是提升 Ascend 后端在 MX/FP4/稀疏注意力类离散访存场景下的编译正确性与覆盖度。",
+  "test_impact_summary": "当日四条功能修复均内建了针对性测试，覆盖质量较高：dot_scaled 三个 commit 分别新增了 MLIR 转换单测（FileCheck 精确断言 IR 结构）与端到端 pytest（含极端 E8M0 码、NaN scale、FP4 打包组合、FP16/BF16 混合操作数、非 F32 out_dtype 报错），dot_scaled_fp4.mlir 还因行为变化从期望 hfusion.matmul_mx 改为 linalg.matmul，属于对既有断言的正确性修订，需确认无其他用例依赖旧行为。ImplicitPermute commit 新增了稀疏 gather/广播 mask/非均匀 other 的 e2e 用例，并把 getTransposedValue 引入 Reshape 路径，建议补充 allow_reorder reshape 形状不匹配的负向用例与 MLIR 级单测。Deinterleave commit 新增了离散去交织回归用例，但新引入的 loop 提升与共享判定（操作等价性、设备打印只读判定、parallel_loop 恢复）逻辑复杂、失败静默回退，建议补充 MLIR 级测试覆盖提升失败分支与共享被拒绝（区间有写）的路径，并验证 hoist 后 hivm.parallel_loop 属性恢复对下游流水的影响。整体上现有测试对新增语义覆盖较充分，但少数复杂控制流重写缺少负向与边界用例，测试看护需持续关注。",
+  "commits": [
+    {
+      "sha": "4c536e9df66192cb23c788db891ca07b7a412eb2",
+      "comment": "纯文档变更。在英/中两份 environment_variable_and_compiler_options_reference.md 中新增 TRITON_ASCEND_ENABLE_DYNAMIC_REUSE 环境变量说明（0 关闭 / 1 动态复用 / 2 额外 tile 复用与后台编译，标注 simt_only 不支持 tile 复用），对应 reuse 框架的开关。同时更新 docs/zh/python-api/_ascend_constraints.py：把平台表头从 'Ascend A2/A3'、'Ascend 950' 改成 'Atlas A2/A3 products'、'Ascend 950PR&950DT products' 并对齐表格宽度；为 buffer 扩展的 alloc/bind_buffer/to_buffer/to_tensor/subview/buffer 补充 dtype_support 表与 constraints（subview 明确了 offset 32 字节对齐、stride 全为 1、尺寸不超原 buffer 等约束），并把原 triton.language.extra.cann.extension.subview 的条目迁移/删除到 buffer.language.subview。风险极低，仅文档与文档生成脚本，但需注意 _ascend_constraints.py 中 key 名称与文档实际 API 路径一致（subview 从 extension 迁移到 extension.buffer 命名空间），若 API 实际未迁移则文档会失配。",
+      "tags": [
+        "docs",
+        "low-risk",
+        "reuse",
+        "language-DSL-docs"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅修改文档 markdown 与文档生成辅助脚本 CONSTRAINTS 字典，不涉及任何运行时代码路径，无需新增或修改测试。",
+        "suggested_test_areas": [
+          "docs/zh/python-api/_ascend_constraints.py 文档生成流程的人工/CI 检查"
+        ]
+      },
+      "message": "[docs](fix) document dynamic reuse and update buffer API references (#3054)\n\n* [docs](fix) document dynamic reuse and update buffer API references\n\n* fix"
+    },
+    {
+      "sha": "3e127b472932ba62fc0618584e1192211cbc7e29",
+      "comment": "修复 DotScaledConverter 中软件方式实现的 scaled-dot 的 scale 因子解码，目标是使行为与上游 DecomposeScaledBlocked::scaleTo16 一致。主要改动：(1) 引入 scaleBlockSize=32 / e8m0One=127 常量替代散落的魔法数字；(2) 默认（缺省）scale 的构造条件从 isFP8Input||isFP4Input 放宽为 !lhsScale / !rhsScale，并在 scale 类型上按 scaleBlockSize 计算 K 方向分组；(3) 用 scaleTo16 lambda 替换原先手写的 i16 位移/bitcast 逻辑：整型 scale 按目标计算类型位宽（FP16 时经 FP32）zext→shli→bitcast，严格模式下对 E8M0 code 0 用 select 修正为 2^-127 次正规（按上游语义），fast_math 下保持纯指数解码；并新增 convertFloatScale 处理已是浮点类型的 scale（BF16/FP16 等宽类型经 FP32 中转并加 RINT 舍入模式）；(4) NaN 判定由 CmpFPredicate::UNO 改为 UNE（利用 x!=x，规避后端不支持无序谓词的差异）；(5) 仅当 op.getAScale() 存在时才做 scaledLhs 乘法与 lhs scale NaN 掩码，修复无 scale 时对操作数做了不该做的乘 1 与掩码的问题。风险点：严格模式 code 0 修正改变了原先的指数-only 解码语义，依赖次正规/极值 scale 的既有模型输出可能发生变化（属于正确性修正，但与旧实现 bit 不一致）；round_mode 依赖 hfusion dialect attr，若 hfusion 未加载或后续上游移除该 attr 会编译失败。整体属于对齐上游的 bugfix，方向正确且测试覆盖到位。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "triton-to-linalg",
+        "ascend-lowering",
+        "dot-scaled"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "修复改变了 E8M0 scale 的解码语义（code 0 次正规修正、fast_math 与严格模式分叉、浮点 scale 处理路径、无 scale 时不再乘 1），这些是数值与 IR 结构双重变化，必须新增/更新测试看护。commit 本身已新增 lit 测试 dot_scaled_scales.mlir 与 pytest test_dot_scaled_scales.py，覆盖极值解码、NaN、浮点与可选 scale；但既有 dot_scaled 相关端到端用例可能因数值变化需要回归确认。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/dot_scaled_scales.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_dot_scaled_scales.py",
+          "third_party/ascend/unittest/pytest_ut/test_dot*.py",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/"
+        ]
+      },
+      "message": "[TritonToLinalg](fix) Correct software scaled-dot scales (#2993)\n\n* [TritonToLinalg](fix) Correct software scaled-dot scales\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>\n\n* [TritonToLinalg](fix) Follow upstream scaled-dot scale conversion\n\n* [Tests](fix) Respect fast_math in scaled-dot reference\n\n* [TritonToLinalg](fix) Preserve scaled-dot fast-math decoding\n\n---------\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>"
+    },
+    {
+      "sha": "982d57800d62c30e310d2a8bd7067e6c33796761",
+      "comment": "在 DotScaledConverter 中新增计算类型统一：对齐上游 DecomposeScaledBlocked，若 lhs 或 rhs 任一格式为 FP16 则 computeType=FP16，否则 BF16，并在扩展 scale 之前把两个操作数都转换为 computeType。转换规则：位宽更小（如 FP8→BF16/FP16）用 arith.extf 直接提升；位宽相等但类型不同（BF16↔FP16）经 FP32 中转（extf 到 f32 再 truncf 回目标类型），并给 truncf 设置 round_mode=rint 以匹配 RTNE 语义。这一改动修正了此前可能在不同操作数类型组合下按各自原始类型做缩放/乘法导致与上游数值不一致的问题（例如 BF16 值先以 FP32 缩放会保留非零贡献，而先转 FP16 再缩放则按 RTNE 归零）。风险：经 FP32 中转的双重舍入要求后端支持对应 arith op 与 hfusion round_mode attr；compute 类型提升会改变 matmul 输入 dtype，对依赖特定 dtype 匹配的下游 fusion/硬件路径（如 910B 上 BF16/FP16 mix 的 cube 指令）需要回归验证。改动本身无删除逻辑，风险较低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "triton-to-linalg",
+        "ascend-lowering",
+        "dot-scaled"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了操作数类型提升与转换顺序语义（转换在缩放之前、FP16 优先、等宽类型经 FP32+RINT），属于可观察的数值/IR 行为变化，需要测试看护。commit 已补充 lit 测试 dot_scaled_operand_types.mlir、dot_scaled_invalid_scales.mlir 与 pytest test_dot_scaled_operand_types.py（含 converts_before_scaling 的 RTNE 精确断言与非 F32 输出报错）。需要注意非法 scale shape 的用例依赖具体错误文案，且 FP8 相关用例在非 A5 环境跳过，回归集需确认覆盖。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/dot_scaled_operand_types.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/dot_scaled_invalid_scales.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_dot_scaled_operand_types.py",
+          "third_party/ascend/unittest/pytest_ut/test_dot*.py"
+        ]
+      },
+      "message": "[TritonToLinalg](fix) Match upstream scaled-dot operand types (#2980)\n\n* [TritonToLinalg](fix) Preserve FP32 scaled-dot intermediates\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>\n\n* [TritonToLinalg](fix) Match upstream scaled-dot compute types\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>\n\n* [TritonToLinalg](fix) Remove unreachable scaled-dot FP32 check\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>\n\n---------\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>"
+    },
+    {
+      "sha": "8f478f5d2be01051643b2b848637eae11a772b17",
+      "comment": "TritonToStructure 的 ImplicitPermute 能力扩展（另有 ReshapeConverter 改动）。核心：PtrAnalysis/PtrState 新增 dynamicOffsets（不透明数据依赖偏移，语义为 addr = affine + Σ dynamicOffsets），新增 visitOperandDataTensor 把整数张量（tt.load/arith.select 的结果）记为数据偏移且不递归其操作数；mulState/addState/createAddPtrOp 支持数据偏移的乘法、加法合并与重建（跳过数据轴、处理零 stride 广播、必要时 reshape 到 reduced tile 布局）。MemOpTransformer/PtrAnalysis 增加 enableDataTensorOffset 开关，仅 createNewAddPtr（ImplicitPermute）路径开启，其余路径保持旧行为。新增 remapBroadcastMask（在 mask 分析失败时重映射广播 mask 的轴、剥离冗余 expand_dims）、remapSplatOther（splat/常量 other 重映射，非 splat 返回 null 回退）、canPermuteLoadOperands 校验纯置换前提，并修正 materializeImplicitBroadcast 在 permuted 状态下的索引顺序。ImplicitPermute LoadConverter 重写为失败返回 notifyMatchFailure、仅在 dynamicOffsets 非空时才跳过 950 快路径，并新增 mask/other/result 类型一致性校验。ReshapeConverter 支持 allow_reorder=true 时按非单例轴的置换匹配插入 transpose。该能力显著扩大支持范围（稀疏注意力/离散 gather），但地址重建逻辑复杂，注释中已标注混合数据/仿射 stride 的 FIXME（如 16*idx[j]+2*j 会丢 2*j）并直接拒绝该场景；非 splat other 与非广播 mask 也暂不支持，属已知限制。",
+      "tags": [
+        "feature",
+        "high-risk",
+        "TritonToStructured",
+        "ImplicitPermute",
+        "PtrAnalysis"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 test_implicit_permute_gather.py 覆盖隐式转置 gather、行 gather（无隐式转置对照）、广播 mask（含非广播回退分支）与非均匀 tensor other 三类场景，是本次新增的核心看护点；implicit permute 与地址分析重构影响面大，现有隐式转置/去交织相关既有用例也需回归确认未退化。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_implicit_permute_gather.py",
+          "TritonToStructured 现有 lit/MLIR 测试（PtrAnalysis、ImplicitPermute、MaskAnalysis、Broadcast）",
+          "TritonToLinalg ReshapeConverter allow_reorder 路径的负向（形状不匹配）用例"
+        ]
+      },
+      "message": "[TritonToStructure](feat) Add implicit permute for axis discrete offsets (#3018)\n\n* tmp\n\n* fix\n\n* fix precommit"
+    },
+    {
+      "sha": "7fd929fac7e495236a6a0d72923cdbd380ee218a",
+      "comment": "TritonToLinalg 的 DotScaledConverter 增加 FP4（E2M1）软件解包路径。引入 useNativeMx 判定（要求 FP8/FP4 输入、dst rank 2 且 F32、lhs/rhs 均 K-pack、scale 为 E8M0 或缺失，且 FP4 时 packed K 至少 64 字节 minimumNativeFp4StorageK），仅满足条件才走 hfusion.matmul_mx，否则走软件解包。unpackFp4 按 E2M1 [sign|exp|frac] 位域解码：从目标浮点类型推导 mantissa/sign 位与 0.5 bit pattern，分别处理 normal/subnormal/zero，用 JoinOp+C退换 TransOp+CollapseShapeOp 把 nibble 沿 K 轴（lhs_k_pack?1:0）或 M/N 轴（rhs_k_pack?0:1）展开，并按上游 Fp4ToFpOp 规则直接解码到 FP16（任一操作数 FP16）或 BF16。小 K 的 FP4 因 MatMulMx 小 K 分解限制而回退到 linalg.matmul（dotScaled_fp4.mlir 期望从 hfusion.matmul_mx 改为 linalg.matmul）。解码数学正确（所有 E2M1 值在 FP16/BF16 均可精确表示），但位操作较多且沿用了尚未完全收敛的 computeType 逻辑，需依赖新增测试看护。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "medium-risk",
+        "TritonToLinalg",
+        "dot-scaled",
+        "fp4"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "修改了既有 dotScaled_fp4.mlir 的期望（hfusion.matmul_mx → linalg.matmul），属行为断言变更；新增 dot_scaled_fp4_unpack.mlir（非 K 轴打包、FP4+FP16 混合）与 test_dot_scaled_fp4.py（四种 k_pack 组合的数值一致性），是 FP4 解包路径的主要看护点；920 之前平台对 FP4 的 skip 逻辑也需确认。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/dotScaled_fp4.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/dot_scaled_fp4_unpack.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_dot_scaled_fp4.py"
+        ]
+      },
+      "message": "[TritonToLinalg](fix) Unpack FP4 before software scaled dot (#2994)\n\n* [TritonToLinalg](fix) Unpack FP4 before software scaled dot\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>\n\n* [TritonToLinalg](fix) Decode FP4 directly to the compute type\n\n---------\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>"
+    },
+    {
+      "sha": "c0fc56e3d5a6565a7ff16c75e25ca63e0801e660",
+      "comment": "修复离散去交织（deinterleave）在非结构化循环中的写回缺陷。LoadStoreConverter 中当 load 位于带 ExtractedLoadOrStore 的父循环时，改为严格校验其唯一 user 为 insert_slice 且 source/dest 与循环 region iter args 匹配，才启用离散写回路径；并新增 writebackDest（allocOp）穿入 DeinterleaveStatusOptimization / DeinterleaveStatusWithMaskOptimization。InterleaveOptimization.cpp 新增 finishDeinterleavedLoad：以 bufferization::MaterializeInDestinationOp 写回目标 buffer 并打 triton.discrete_deinterleave 标记，同时移除相关 ExtractedLoadOrStore 循环上的 hivm.parallel_loop 以免 V-to-MTE2 反向依赖错误；两个 deinterleave 入口增加 isValidDeinterleaveDestination 与前置 mask/fill 校验（原来用 assert，现改为失败回退）。新增 optimizeDiscreteDeinterleavedLoads 后处理 pass（在 finalizeLoweredModule 中调用）：识别带标记的写回，把 lane 抽取从循环内提升到循环外，分配一个宽 buffer（最后一维×2）让 even/odd 两次 gather 写入同一宽 tile 的不同奇偶列，并对可等价、区间内无内存写/未知副作用的后续同 parity gather 复用早期快照（canShareDiscreteGather 使用 OperationEquivalence + IRMapping，并白名单化只读 memref.load/ToTensor/纯设备打印 triton_print*）。该方案根治了 'memref.alloc op error: read before first write'，但提升/共享逻辑较长、失败分支静默回退，且对设备打印的识别与 parallel_loop 属性操作较敏感，是本次风险最高的实现细节。",
+      "tags": [
+        "bugfix",
+        "high-risk",
+        "TritonToLinalg",
+        "deinterleave",
+        "InterleaveOptimization"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 test_discrete_deinterleave_load（离散 gather + stride-2 尾维，断言 ttadapter 中 ExtractedLoadOrStore 计数为 1 且数值正确），是本次修复的回归看护点；hoist 与共享的失败回退分支、写回目标校验、以及在去交织场景下 parallel_loop 被移除/恢复对下游流水的影响尚无专门用例，建议补充。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_interleave_optimizaiton.py",
+          "InterleaveOptimization 的 MLIR/lit 级测试（hoist 成功与失败回退、canShareDiscreteGather 拒绝路径）",
+          "去交织与 hivm.parallel_loop / DynamicCVPipeline 交互的回归"
+        ]
+      },
+      "message": "[Deinterleave](fix) fix deinterleave for unstructure loop (#3032)\n\n* [Deinterleave](fix) fix deinterleave for unstructure loop\n\n* [Deinterleave](test) add regression case for discrete deinterleave writeback (#19)\n\nAdd test_discrete_deinterleave_load in pytest_ut: row addresses come from an\nindex tensor (discrete gather) and the last dim is strided by 2, so both parity\nloads share one ExtractedLoadOrStore loop and the deinterleave writeback must\nland in the loop-external buffer. Without the fix the kernel fails to compile\nwith \"memref.alloc op error: read before first write\".\n\nAlso apply clang-format/yapf to the touched files so pre-commit passes.\n\n---------\n\nCo-authored-by: gymgit1 <guoyiming17@huawei.com>"
+    }
+  ],
+  "architecture_based_on_sha": "408e31592b50e930fc6f01c244f309444005d575",
+  "architecture_generated_at": "2026-11-01T20:11:07.549514+08:00"
+}

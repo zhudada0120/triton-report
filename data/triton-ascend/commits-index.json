@@ -1,4 +1,28 @@
 {
+  "4c536e9df66192cb23c788db891ca07b7a412eb2": {
+    "date": "2026-11-09",
+    "msg": "[docs](fix) document dynamic reuse and update buffer API references (#3054)"
+  },
+  "3e127b472932ba62fc0618584e1192211cbc7e29": {
+    "date": "2026-11-09",
+    "msg": "[TritonToLinalg](fix) Correct software scaled-dot scales (#2993)"
+  },
+  "982d57800d62c30e310d2a8bd7067e6c33796761": {
+    "date": "2026-11-09",
+    "msg": "[TritonToLinalg](fix) Match upstream scaled-dot operand types (#2980)"
+  },
+  "8f478f5d2be01051643b2b848637eae11a772b17": {
+    "date": "2026-11-09",
+    "msg": "[TritonToStructure](feat) Add implicit permute for axis discrete offsets (#3018)"
+  },
+  "7fd929fac7e495236a6a0d72923cdbd380ee218a": {
+    "date": "2026-11-09",
+    "msg": "[TritonToLinalg](fix) Unpack FP4 before software scaled dot (#2994)"
+  },
+  "c0fc56e3d5a6565a7ff16c75e25ca63e0801e660": {
+    "date": "2026-11-09",
+    "msg": "[Deinterleave](fix) fix deinterleave for unstructure loop (#3032)"
+  },
   "e599a68d47edecc831add2ea1ae9690a8e3d756e": {
     "date": "2026-11-07",
     "msg": "[DynamicCVPipeline](fix) Preserve loop counter types in multibuffering (#2773)"
