@@ -1,0 +1,163 @@
+{
+  "date": "2026-11-10",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-11-11T06:37:38.532396+08:00",
+  "daily_summary": "当日的变更集中在四个方向：(1) Gluon 实验性示例的 block-scaled matmul 被拆分为 A/B 独立流水线，允许不等深度的 producer ring 并优先发 B 加载，属纯示例/测试改动；(2) NVIDIA SM103 的 64-value FP6 TMA store 从仅支持 rank-2 扩展到 rank 2~5，同时放宽了 TritonNvidiaGPU 方言 verifier 和 host 端 tensor map 编码（driver.c），属 NVIDIA 专属能力扩展；(3) TTGIR→LLVM 的 scan carry 优化，当 scan 轴仅映射到寄存器（lane-local）时跳过 shuffle，并新增通用 Lowering 测试；(4) generic warp-specialize 的 setmaxnreg 修复，重构了 WarpSpecializeUtility 的回调接口（去掉 RegisterReallocPhase，改为 getWorkerRegisterCap/reallocWorkerRegisters/reallocDefaultRegisters），使共享 physical warpgroup 的多个 partition 在同一指令处统一调整寄存器上限，并同步调整了 NVIDIA/AMD 两个 backend 的回调实现与 scratch 大小计算；此外还有 triton_kernels 中 NVFP4（tensor_scale）校验收紧、AMD CDNA4 bank conflict 计数修复、以及一个 GCC narrowing 编译修复。绝大多数改动落在 NVIDIA/AMD 专属路径或实验性/示例代码上。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 基本无影响。6 个 commit 中，Gluon 示例、FP6 TMA（TritonNvidiaGPU 方言 + NVIDIA driver.c + CUDA 测试）、NVFP4 校验（triton_kernels）、AMD CDNA4 bank conflict（gluon_ir.cc 中 AMD TargetInfo 分支）均属 pure NVIDIA/AMD 或高层 kernel 库路径；ScanOpToLLVM 的 lane-local carry 优化与 WarpSpecializeUtility 的 setmaxnreg 重构都位于 lib/Conversion/TritonGPUToLLVM/，而 Ascend 走 TTIR→Linalg/HIVM→BiShengIR 的自有 lowering，不使用 TritonGPUToLLVM 路径，也不实现 TargetInfoBase；GCC narrowing 修复同样只改 WarpSpecializeUtility.cpp。因此所有 commit 的 ascend_affected 均为 false，triton-ascend 无需改动功能或测试。",
+  "commits": [
+    {
+      "sha": "087ba577e00fd21ea365de128d11438f6f056cf4",
+      "comment": "仅修改 python/examples/gluon/04-2cta-block-scale-matmul.py 一个实验性 Gluon 示例。将原先共享的 issue_loads/issue_mma 辅助函数拆解为 issue_operand_load，把单一 load_empty_bars/load_ready_bars 拆成 a_empty_bars/a_ready_bars/b_empty_bars/b_ready_bars，使 A、B（含各自 scales）拥有独立 ring 与独立深度；mma_scaled_warp_specialized 的 num_buffers 参数变为 a_buffers/b_buffers，并新增 A_LEAD/B_LEAD 逻辑在进入主循环前预填较深 ring 的额外槽位；mma 侧改为分别等待 a_ready/b_ready 并把两个 empty barrier 一并传给 async_mma_scaled_impl。测试扩展了 get_best_config 拆分深度并按 (1,3)/(3,1) 参数化验证不等深度。功能上是实验性示例的性能/可调性探索，无 API 契约变化，风险很低；但示例代码里 mbarrier 的 phase/leader 逻辑较复杂，若 ring 深度不等时预填条件（j*BLOCK_K < K）与实际 K 不匹配可能引入静默错误，仅影响该示例自身。",
+      "tags": [
+        "performance",
+        "test",
+        "low-risk",
+        "gluon",
+        "examples"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。该 commit 只修改 python/examples/gluon/ 下的实验性 Gluon 示例（NVIDIA Blackwell/Rubin 的 tcgen05 block-scaled matmul），Ascend 不使用 Gluon nvidia 路径，也不使用该示例。",
+        "testing": "无影响。测试改动为示例内联的 pytest 参数化（test_mma_scaled_best_config），与 triton-ascend 测试无关。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Gluon] Add split A/B pipelines to the block-scaled matmul example (#12643)\n\nUse one producer warp to drive separate A and B rings, each holding its\ninput and scales. Expose independent pipeline depths while preserving\nexisting preset depths, and issue B loads first. Extend the\nbest-configuration test to cover unequal pipeline depths. Experimental\nresults suggest that B-first load ordering is beneficial and tuning A/B\npipeline depths can improve throughput at long K."
+    },
+    {
+      "sha": "51e03b402c635116c91f30de0e26304bf6f730f6",
+      "comment": "扩展 NVIDIA SM103 上 64-value FP6 TMA store 的能力：lib/Dialect/TritonNvidiaGPU/IR/Ops.cpp 的 verifyTMAEncoding 把原先要求 shape.size()==2 改为 2~5，并在错误信息中更新描述；third_party/nvidia/backend/driver.c 的 fillTMADescriptorTiled 不再硬编码 2D tensor map（原 words[2]=0x690），而是按 rank 写入 dim/stride/box，用 0x680|((rank-1)<<4) 描述 rank，并用位域 words[14] 组合各外层 boxSize；同时增加 rank 1~5 的边界检查。测试侧 test_tma_descriptor.py 对 box64 store 在 rank 2 与 rank 5 都做了 host/compile 覆盖，并断言 sp.async.bulk.tensor.{rank}d。风险中等：手写 CUtensorMap 位布局（words[2]/[3+i]/[9+i]/[13]/[14]）依赖 CUDA tensor map ABI，任何布局偏移错误都可能静默产生错误的 TMA 描述符，且现有 MLIR verifier 放宽后需要依赖 host 端校验兜底。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "nvidia",
+        "tma",
+        "dialect"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。修改点位于 include/lib/Dialect/TritonNvidiaGPU（NVIDIA 专属 dialect）与 third_party/nvidia/backend/driver.c（CUDA 专属 C 源码），均为 Ascend 不使用的路径；Ascend 后端不消费 ttng TMA op，也不走 CUDA tensor map 编码。",
+        "testing": "无影响。测试为 python/test/unit/cuda/ 与 test/TritonNvidiaGPU/ 下的 NVIDIA 专属用例。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Support higher-rank 64-value FP6 host TMA stores on SM103 (#12685)\n\nSM103 can store 64 FP6 values (48 packed bytes) along the innermost\ndimension of a TMA tile. Triton's host descriptor encoder and verifier\npreviously supported this only for rank-2 tensors. This change extends\nunswizzled stores to ranks 2–5 by encoding the extent, stride, and box\nsize of each outer dimension.\n\nThe GPU tests cover both FP6 formats at each rank. They compare the full\ndestination buffer against the expected packed bytes, including the\nguard regions, and check that the compiler emits a TMA store of the\nmatching rank. The SM100 compile test covers rejection of a 64-value\nstore at ranks 2 and 5.\n\n## Validation\n\nRebuilt commit `cffb21597591b846907474b771002523b98c5222` on an NVIDIA\nGB300 (SM103). Confirmed Python imported `triton`, `libtriton.so`, and\nthe NVIDIA backend from that checkout.\n\n- `python -m pytest -q -s --tb=short\npython/test/unit/cuda/test_tma_descriptor.py\npython/test/gluon/test_core.py -k fp6` — **97 passed** in 11.12s (18,898\ndeselected).\n- `lit -v test/TritonNvidiaGPU/invalid.mlir` — **1 passed** using the\nrebuilt `triton-opt`."
+    },
+    {
+      "sha": "b760c68dfda067938d72c387d4c44cd9f557a763",
+      "comment": "在 TTGIR→LLVM 的 ScanOpToLLVM 中做 lane-local 优化：把 shuffleCarry 重命名为 gatherCarry，新增 laneLocal 参数，用 inverse.sublayoutIsZero({axis}, {kLane}) 判定 scan 轴是否只映射到寄存器（例如 blocked layout sizePerThread=[1,1]、threadsPerWarp=[1,32]、warpsPerCTA=[4,1]、order=[0,1] 上的 axis-0 scan），若为真则直接取 totals[reg] 而不发 shuffle，从而消除同一 lane 内的无用 shuffle 指令。测试在 test/Conversion/scan_to_llvm.mlir 新增 lane-local-carries.mlir 段，对正向/反向、以及 shape 不能整除 lane 数（broadcast lanes）三种情况断言不出现 shfl/ds.bpermute 等指令，并且同时用 NVIDIA 与 AMD 两条 lowering 管线跑同一份 FileCheck。属于正确的局部优化，sublayoutIsZero 判定复用 LinearLayout 代数，逻辑清晰；风险低，但需注意 lane-local 判定依赖 inverse 子布局构造顺序，若上游 LinearLayout 表示发生变化需复核。",
+      "tags": [
+        "performance",
+        "low-risk",
+        "tritongpu-to-llvm",
+        "scan",
+        "layout"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Conversion/TritonGPUToLLVM/ScanOpToLLVM.cpp，属 TritonGPU→LLVM 代码生成路径；triton-ascend 采用 TTIR→Linalg/HIVM→BiShengIR 的独立 lowering，不使用 TritonGPUToLLVM 路径，其 tt.scan 由 TritonToLinalg 等自研 pass 处理。",
+        "testing": "无影响。测试为 test/Conversion/scan_to_llvm.mlir（lit，默认 GPU 路径），Ascend 的 scan 测试在 third_party/ascend/unittest/pytest_ut 下，不受影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Skip lane-local scan carry shuffles (#12186)\n\nSkip lane-local scan carry shuffles when the scan axis maps only to\nregisters, for example an axis-0 scan of an 8×32 tensor with blocked\nlayout `sizePerThread=[1,1], threadsPerWarp=[1,32], warpsPerCTA=[4,1],\norder=[0,1]`.\n\n| Case — GB200 GPU 1; mean of six paired run medians, 31 samples × 256\nlaunches per run | Upstream main `f8cddb947b` µs | This PR `82157d3cab`\nµs | Latency change |\n|---|---:|---:|---:|\n| 16-value scan | 1.1170 | 1.1191 | +0.19% |\n| 4096-value scan, 512-value tiles | 3.7768 | 3.7768 | +0.00% |\n| Segmented scan, one segment | 1.7722 | 1.7880 | +0.89% |\n| Segmented scan, reset every 37 values | 1.7776 | 1.7908 | +0.75% |\n| Segmented scan, singleton segments | 1.7670 | 1.7835 | +0.93% |\n| 8×32 axis-0 tuple sum, 256 programs | 1.5544 | 1.5002 | -3.49% |\n| 128×32 axis-0 add, 256 programs | 3.2732 | 2.7461 | -16.10% |\n| 128×32 axis-0 tuple sum, 256 programs | 5.3796 | 5.3776 | -0.04% |"
+    },
+    {
+      "sha": "ccfdb2fbd8a9157b608e43b7b506746ad09c3fb5",
+      "comment": "在 python/triton_kernels 中收紧 NVFP4 语义：新增 numerics_details/mxfp.py 的 check_tensor_scale(operand, block_scale, tensor_scale)，以「operand 是 packed FP4(torch.uint8)/FP4 且 block scale 为 float8_e4m3fn」判定 NVFP4，并要求 tensor_scale 的存在与否与是否为 NVFP4 严格一致，否则抛 ValueError——这改变了此前「其他格式也允许 tensor scale」「NVFP4 可省略 tensor scale（默认 unit）」的宽松行为。matmul.py 在 dense matmul、apply_precision（PyTorch reference）中分别对 A、B 调用 check_tensor_scale，并新增 `uses_nvfp4` 检查，非 Blackwell（compute capability < 10.0）直接抛错，阻止 Hopper 上以 NVFP4 走 BF16 fallback 或 BF16→NVFP4 epilogue。测试补全 reject 用例（test_matmul_rejects_invalid_tensor_scale / test_matmul_rejects_nvfp4_on_unsupported_gpu），并移除对其它格式 tensor scale（column/both）的测试。这是有意的 API 语义收紧，属破坏性行为变更，仅影响 triton_kernels 高层库用户，上游编译器不受影响。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "medium-risk",
+        "triton_kernels",
+        "nvfp4"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更只涉及 python/triton_kernels（高层算子库）与 NVFP4/Blackwell 校验，不属于 BaseBackend/DriverBase/code_generator/compiler/semantic/interpreter 等 Ascend 依赖的接口路径；Ascend 不使用 NVFP4 也不是 CUDA 目标。",
+        "testing": "无影响。测试为 python/triton_kernels/tests/ 下的 CUDA/Blackwell 用例，与 third_party/ascend/unittest 无关。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[triton_kernels] Restrict `tensor_scale` to NVFP4 only, and NVFP4 to Blackwell+ (#12680)\n\n## Summary\n\nThe NVIDIA FP4 (NVFP4) format represents each input with packed FP4\nvalues, E4M3 block scales, and a tensor scale. Matmul previously\naccepted NVFP4 inputs with an implicit unit tensor scale and allowed\ntensor scales on other formats. Validate each input independently in\ndense matmul and the PyTorch reference. On Hopper, valid NVFP4 inputs\ncould dispatch a BF16 tensor-core fallback, and a BF16 matmul could pack\nits output into NVFP4 in software. Restrict NVFP4 matmul execution to\nNVIDIA Blackwell and newer. The structured sparse matmul in\n[#12652](https://github.com/triton-lang/triton/pull/12652) builds on\nthis change.\n\n## Desired features\n\n- Require `a_mx_tensor_scale` for NVFP4 activations and\n`b_mx_tensor_scale` for NVFP4 weights. A zero-dimensional tensor\ncontaining one supplies unit scaling.\n- Reject a tensor scale on any other operand format, including MXFP4\nwith E8M0 block scales.\n- Support mixed-format inputs by checking A and B separately.\n- Reject NVFP4 on either input or in the output quantization epilogue\nunless the execution target is CUDA with compute capability 10.0 or\nhigher.\n\n## Validation\n\nOn an NVIDIA H100, both previously successful reproductions now raise\nthe Blackwell requirement: NVFP4 × NVFP4 with FP32 output, and BF16 ×\nBF16 with NVFP4 output. A BF16 control matched exactly. All 29 focused\npytest cases passed, including the individual A, B, and output\nrejections and MXFP4 and mixed-FP8 controls.\n\nOn an NVIDIA GB300, all 42 focused cases passed. For 4096 × 4096 × 4096\ndense and eight-expert routed matmul, the NVFP4 packed output and E4M3\nblock scales matched the reference byte-for-byte.\n\n```sh\npython -m pytest -s --tb=short python/triton_kernels/tests/test_matmul.py \\\n  -k 'rejects_nvfp4_on_unsupported_gpu or rejects_invalid_tensor_scale or matmul_mixed_fp8_preserves_fp16_precision'\n```\n\n## Lines Changed\n\n| Type | Added | Removed | Net |\n| --- | ---: | ---: | ---: |\n| Tests | 94 | 40 | +54 |\n| Core Logic | 21 | 4 | +17 |\n| AutoGenerated | 0 | 0 | 0 |\n| Total | 115 | 44 | +71 |\n\n## Reviewers Guide\n\nDense matmul and the PyTorch reference in `matmul.py` each call\n`check_tensor_scale` once for A and once for B. Dense dispatch then\nchecks the CUDA target before selecting a kernel. The same guard covers\nthe NVFP4 output epilogue with ordinary floating-point inputs. The\nshared function in `numerics_details/mxfp.py` compares the operand\nformat with the presence of a tensor scale. `test_matmul.py` covers both\nmismatch directions and supplies explicit unit and varying scales to\nvalid NVFP4 inputs."
+    },
+    {
+      "sha": "dddf5617b6c406f841d896bf32f14c1c95e064ab",
+      "message": "[NVIDIA] Fix split setmaxnreg instructions in generic warp-specialize dispatch (#12677)",
+      "comment": "这是当日最大的结构性改动，修复 generic warp-specialize dispatcher 中同 physical warpgroup 内多个 logical partition 读到不同 command byte、从而执行不同 setmaxnreg 指令副本（PTX 规定同一 warpgroup 所有 warp 必须执行同一条 setmaxnreg）的未定义行为。重构 include/WarpSpecializeUtility.h：删除 RegisterReallocPhase 枚举与 workerRegisterPartitions，改为 getWorkerRegisterCap(ws, partition)、reallocWorkerRegisters(b, cap, acquire)、reallocDefaultRegisters(b, ws, acquire) 三个回调 + warpsPerCommand，createAllBarrier 去掉 barIdx 参数；lowerWarpSpecializeCommon 签名去掉 switchLoopBarrierIdx。WarpSpecializeUtility.cpp 中把命令字改为按 warpsPerCommand 分槽（command slot 索引 = group / warpsPerCommand），新增 groupWorkerPartitions 使跨 warpgroup 边界的 partition 共享 command，新增 lowerWorkerGroup：多个 partition 共享 cap 时生成 common entry，在同一处 setmaxnreg 后再用 llvm.switch on warp id 分派到各 body，结束后统一 barrier + 恢复 cap 再回 worker loop；direct dispatch 路径同样按 cap 分组并引入 warp-id 分支。Allocation.cpp 的 defaultAllocationAnalysisScratchSizeFn 把 function 级 scratch 大小（worker warp 数）并入统一出口，NVIDIA 侧再除以 4（每 command 覆盖一个 warpgroup 4 warp）。NVIDIA 侧 ConvertWarpSpecializeToLLVM 重写回调：warpsPerCommand=4、getWorkerRegisterCap 用 actualRegisters[p+1] 并映射 lowRegs→-1、createRegRealloc 增加 acquire 参数切换 inc/dec；AMD 侧 ConvertWarpSpecializeToLLVM 只做适配（createAllBarrier 新签名、去掉 reallocRegisters、去掉 barIdx 参数）。测试改动覆盖 allocate_warp_groups_then_lower.mlir、warp_specialize_to_llvm.mlir 的预期 IR（包含新增 llvm.switch on warp id、计数变化、scratch size 变化）、以及 dynamic_register_reallocation 中 actualRegisters 首项从 152 改 64。风险较高：这是 lowering 核心逻辑重构，触及 GPU 无关的通用 WarpSpecializeUtility 与 NVIDIA/AMD 各自回调的接口契约，任何 command slot 映射或 barrier 顺序错误都可能导致 warpgroup 死锁或寄存器限制错乱；测试主要靠 lit 的 IR 期望而非端到端 GPU 验证（不过 commit 描述给出了 SASS 对照）。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "high-risk",
+        "tritongpu-to-llvm",
+        "warp-specialization",
+        "nvidia",
+        "amd",
+        "allocation"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。核心修改在 include/triton/Conversion/TritonGPUToLLVM/WarpSpecializeUtility.h 与 lib/Conversion/TritonGPUToLLVM/WarpSpecializeUtility.cpp、lib/Analysis/Allocation.cpp、third_party/{nvidia,amd}/lib/.../ConvertWarpSpecializeToLLVM.cpp，全部属于 TritonGPU→LLVM 路径与 warp-specialize 降级。triton-ascend 不使用 TritonGPUToLLVM、不实现 TargetInfoBase、ttg.warp_specialize 也不在其 lowering 链路上（Ascend 走 TritonToLinalg/HIVM），因此 WarpSpecializeCallbacks 的接口变更不会波及 AscendBackend/NPUDriver。Allocation.cpp 的 defaultAllocationAnalysisScratchSizeFn 虽在 lib/Analysis 通用模块，但仅被各 GPU 后端 register 的 scratchSizeFn 消费，Ascend 无对应实现。",
+        "testing": "无影响。测试为 test/Conversion/ 下 GPU 路径 lit 用例与 NVIDIA/AMD python 测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "ef6b9ef19c3e4d5d2f7eee88e8b17a375520b2f3",
+      "comment": "修复 gluon_ir.cc 中 gl.bank_conflicts 在 CDNA4 swizzled layout 下的断言崩溃（LinearLayout::getInDimSizeLog2 找不到 'vector' 维）。原实现用 smemLayout.getInDimSize('vector')*bitwidth 猜测 vectBitwidth，但对 AMDMFMALayout + SwizzledSharedLayout 组合该 in-dim 不存在。改为先用 regLayout.invertAndCompose(smemLayout) 得到寄存器→smem 的映射，再用 tt::largestVectorisation 求 elemsPerVec，vecBitwidth = max(32, elemsPerVec*bitwidth)，从而与 getSharedLdStTiles 的实际 ld/st 宽度一致；同时把 assert 从仅检查 srcTile.laneAddr 扩展到 laneMask 也需为空。测试在 test_frontend.py 新增 test_bank_conflicts_amd，用 DotOperandLayout(0, AMDMFMALayout) + 多种 SwizzledSharedLayout（对应 ds_read_b128/ds_read_b64）在 HIP_TARGET_CDNA4 上断言 bank conflict 计数，硬编码期望值 3/1/0/7/1/0 依赖 AMD TargetInfo.getSharedLdStTiles 行为，若 AMD 侧 tile 策略调整需同步。改动局限于 Gluon 的 AMD 分支，风险低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "amd",
+        "gluon",
+        "linear-layout"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。修改在 python/src/gluon_ir.cc 的 AMD 分支（构造 tt::AMD::TargetInfo 并调用 getSharedLdStTiles），属 Gluon AMD 路径；triton-ascend 用自有 tla DSL 与 third_party/ascend/lib 中的 C++ 实现，不使用 Gluon 的 nvidia/amd 后端适配，也不依赖 AMD TargetInfo。虽然 python/src/gluon_ir.cc 本身是共享绑定文件，但本次改动只在 AMD 专属 lambda 内替换了布局计算，不改变对外的 bank_conflicts 绑定签名。",
+        "testing": "无影响。测试在 python/test/gluon/test_frontend.py，非 Ascend 测试路径。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][GLUON] Fix bank conflict count for swizzled layout on CDNA4 (#12653)\n\n#9662 added support to use `gl.bank_conflicts` to count bank conflicts\nfor swizzled layout on cdna4 but from testing, it failed with:\n\n```\ntriton/lib/Tools/LinearLayout.cpp:286: int32_t mlir::triton::LinearLayout::getInDimSizeLog2(StringAttr) const: Assertion `it != bases.end() && \"inDim not found in layout\"' failed.\n```\n\nThis trace down to the missing `vector` dim in\n`get_shared_bank_conflicts`. This PR changes to use convert layout to\nget the needed vector bit width.\n\n---------\n\nSigned-off-by: Pengzhan Zhao <borontion@gmail.com>"
+    },
+    {
+      "sha": "b5dd760d749098395a5430e99c8069cb15e4a996",
+      "comment": "针对 #12664 引入的 GCC narrowing 编译错误的修复：在 WarpSpecializeUtility.cpp 的 forEachCapture 中，把 llvm::enumerate 得到的 size_t 索引 i 显式 static_cast<int32_t>(i) 后再放入 ArrayRef<LLVM::GEPArg>{0, i}，避免 GCC 在初始化列表里对 size_t→int32_t 报 narrowing 警告/错误。改动一行、语义等价，属于构建健康性修复，风险极低；它同时说明 warp-specialize lowering 在将 capture 索引降到 GEP 时使用 32 位常量（capture 数量受 warp 数限制，实际不会溢出）。",
+      "tags": [
+        "bugfix",
+        "chore",
+        "low-risk",
+        "tritongpu-to-llvm",
+        "build",
+        "warp-specialization"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更只改 lib/Conversion/TritonGPUToLLVM/WarpSpecializeUtility.cpp，属 Ascend 不使用的 TritonGPU→LLVM 路径。",
+        "testing": "无影响。无测试变更。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Fix GCC narrowing error in warp specialization lowering (#12676)\n\nFix the GCC build failure introduced by #12664 by explicitly casting\nwarp-specialization capture indices to `int32_t`."
+    },
+    {
+      "sha": "e0a53baf112362632843ac65c3d1c5b090cc79ca",
+      "message": "[Docs] Scope compiler changes and MLIR tests to frontend-reachable IR (#12667)\n\nHand-written MLIR can express states that Triton and Gluon programs\nnever produce. Clarify that compiler changes and MLIR regression tests\nshould cover IR that Python programs can reach, including patterns\nintroduced during lowering.",
+      "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 triton-ascend。",
+      "tags": [
+        "chore"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    }
+  ],
+  "architecture_based_on_sha": "0861b90f695e3c866f6f7eadd4be8339378ab017",
+  "architecture_generated_at": "2026-11-01T20:11:07.548246+08:00"
+}

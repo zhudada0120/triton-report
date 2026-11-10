@@ -1,0 +1,179 @@
+{
+  "date": "2026-11-10",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-11-11T06:38:17.437761+08:00",
+  "daily_summary": "当日变更集中在四条主线：(1) 文档治理——新增基于 GitHub Actions + 阿里 open-code-review 的 PR 文档质量自动审查工作流，并对全仓中文文档做了一轮 AIDD 扫描整改（术语空格、代码块语言标注、锚点链接、示例代码纠错等）；(2) TLA 前端能力大幅扩展——GM view 改为保留指针 provenance 的 tt.make_tensor_ptr 路径、新增 A5 显式同步接口（INTRA 计数器、buffer token、sync_all 展开为 block flag）、新增 scalar expression API（select/maximum/minimum/cast/cdiv/clamp/max_value/infinity/set_atomic）与 vsubc/vmul mask 等 SIMD 补充；(3) 工具链兼容性——host compiler identity 改为 stat+ELF magic 简化实现，新增 Ascend AOT（ahead-of-time）编译支持（tools/npu + link.py/compile.py patch + launcher_export.so）；(4) 新算子接入——sparse_gather_load_to_L1buffer custom op 前端 + buffer 语义 custom op result 处理。整体上 TLA 语言层是本次变更的核心战场，同时 AOT 与 custom op 机制涉及编译/加载链路的关键契约变化。",
+  "test_impact_summary": "测试看护影响显著：(1) TLA 相关变更新增了大量测试文件（scalar/ 目录下 9 个文件、sync/ 下 buffer_sync.py 与 sync_intra_block.py、simd/vsubc.py、dma/set_atomic.py、tla_ut/README 更新），并删除了 flash_attn.py 以及多个 vector/ 用例中对 pointer_cast 计数的断言（GM view 改走 make_tensor_ptr 后 pointer_cast 不再出现）。这些测试是新增/改写而非简单回归，需要在 CI 上验证 TLA 全量用例；(2) 多处 TLA 用例因 NPUIR bd228fae 的 AffinityHIR read-before-write 回归与 add_cmp e2e mismatch 被 pytest.skip 或移除 test_run，属于已知缺陷的临时性遮蔽，需要跟踪上游修复后恢复；(3) sync_all 的 IR 表达从 hivm.hir.sync_block 变为展开后的 sync_block_set/wait 序列，sync_pipe 与 sync_block 的断言全面重写，且要求 IR 中不得残留 sync_block——这是 TLA 后端契约收紧，compile pipeline 的 check_ttadapter 也新增对 hivm.hir.sync_block 的禁止，任何旧的 sync_all 用例都需要同步更新；(4) AOT 新增 test_aot.py（446 行）覆盖 matmul 无特化/有特化/无可用 kernel 三种场景，涉及外部 C 进程 dlopen launcher_export.so 的完整链路，属于新增的关键看护点；(5) custom op 的 buffer-out（无 result）语义变更影响所有使用 out 为 buffer 的 custom op，新增 test_sparse_gather_load_to_l1buffer.py 覆盖 dst 作为 output、arg_attrs 地址空间/布局、symbol 命名、stride_token i64 宽化与四类拒绝场景；(6) host compiler identity 简化后删除了两个依赖 build_id 与 loader --list 的 pytest 用例，新的 stat-based identity 需要重新确认在不同安装/升级场景下缓存失效行为；(7) 文档类变更原则上不需要测试，但 generate_rule.py 是新脚本，官方建议随 workflow 做一次 dry-run。总体上现有测试需要大量更新，新增测试点覆盖不足的地方在 AOT 与 custom op buffer 语义上需重点看护。",
+  "commits": [
+    {
+      "sha": "336b07586357e5708799837e280f90746ca22755",
+      "comment": "新增 GitHub Actions 工作流 doc-review.yml 与生成脚本 generate_rule.py，触发条件为 PR open/synchronize/reopen 命中文档路径，或 issue_comment 以 /doc-review 或 @doc-review 开头且由 MEMBER/OWNER/COLLABORATOR/PR 作者发起。脚本在运行时 clone gitcode 上的 doc-quality 私有仓（使用 DOC_QUALITY_TOKEN），读取 h2_registry.json 与规则 markdown 拼装成 OCR ProjectRule JSON，并把 doc-quality 的 F/S/N/H 严重性映射到 OCR 的 critical/high/medium/low。规则写入 /tmp 以避开 Action 内部 checkout 的 clean。实现上有几个值得注意的点：(1) 使用 pull_request_target 事件在基础仓 secrets 上执行，脚本本身仅读取仓内固定路径，未直接检出 PR head 到可执行位置，风险相对可控，但仍属敏感面；(2) rule JSON 使用 force-include 语义，通过 exclude 列出全部代码/配置文件后缀以逼近 docs-only，若 OCR 扩展名清单变化需要同步；(3) 规则生成步骤 continue-on-error，若 clone 失败则 rule 参数为空回退到 OCR 默认规则，行为不显式；(4) LLM key 解析分为默认（TRANSLATION_ASCEND + Volcengine deepseek）与覆盖（LLM_API_KEY + DOC_REVIEW_LLM_API_BASE/MODEL）两条路径，默认走共享 secret 需注意配额与泄露面。",
+      "tags": [
+        "ci",
+        "feature",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯 CI 工作流与规则生成脚本，不触及编译器、运行时或 TLA 代码路径，现有测试无需更新；脚本本身无单元测试，建议在 CI 上以一次 PR dry-run 验证。",
+        "suggested_test_areas": [
+          ".github/workflows/doc-review.yml",
+          ".github/doc-review/generate_rule.py"
+        ]
+      },
+      "message": "[docs](feat) add doc quality review workflow for PR documentation (#3077)\n\nAdd a GitHub Actions workflow that automatically reviews documentation\nchanges in PRs for quality issues across three dimensions, powered by\nthe doc-quality project's H2 detection rules.\n\nChanges:\n- .github/workflows/doc-review.yml: new workflow triggered on PR\n  open/synchronize/reopen (docs/zh/**/*.md, *.md, *.rst, .po files) and\n  via /doc-review or @doc-review comments. Uses\n  alibaba/open-code-review Action with LLM (Volcengine deepseek-v4-flash\n  by default, overridable via DOC_REVIEW_LLM_API_BASE/DOC_REVIEW_LLM_MODEL\n  vars).\n- .github/doc-review/generate_rule.py: script that clones the doc-quality\n  repo at runtime, reads its h2_registry.json and rule markdown files,\n  and emits an OCR rule JSON covering .md/.rst/.po files. Maps\n  doc-quality's F/S/N/H severity levels to OCR's\n  critical/high/medium/low, with scoring rules and common spec injected.\n\nDetection standards are fetched dynamically from the upstream doc-quality\nrepo, so rule updates propagate without local maintenance.\n\nCo-authored-by: yanggaofeng (C) <y60124509@china.huawei.com>"
+    },
+    {
+      "sha": "d52737ae7e631b3653240aa98571941dad255697",
+      "comment": "大规模中文文档整改（36 文件，+1049/-1014），主要由 AIDD 与 skill 扫描驱动。改动类型包括：中英文之间空格规范化（如 'Triton-Ascend' 与中文之间去空格）、标题与术语统一、代码块语言标注（diff→python、text→output 等）、shell 命令改用 fenced bash、锚点链接修复（debugging.md 中引用改为 [4. 解释器模式](#debug-interpreter-mode) 等）、示例代码语义纠错（07 精度比对示例中 tl.arange(0, XS) 改为 tl.arange(0, triton.next_power_of_2(XS)) 以适配常量必须为 2 的幂；04 fused attention 示例把 pre_tokens/next_tokens 修正为 pre_tockens/next_tockens 以匹配 torch_npu API；09 costmodel 示例补充 num_warps 注释；环境变量表补充）。其中 04_fused_attention_example.md 还修正 `acc = tl.load(acc_ptr + block2d_acc)` 的 store 类型为 Out.dtype，以及 `_attn_fwd_inner` 循环步长由固定 20 改为 tl.num_programs(0)。这些示例修改若直接来自可运行 sample，则属于示例正确性修复；但本 commit 未同步修改 third_party/ascend/tutorials 下的实际运行代码（如 04 对应的教程），存在文档与教程代码不同步的风险。此外 instructions_guide.md 中 `cd {PATH_TO}/llvm_project` 改为 llvm-project，与社区仓名不一致（社区仓为 llvm-project），需确认本地构建脚本实际使用的目录名。",
+      "tags": [
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯文档与示例 markdown 文本修改；示例中的代码片段已同步为可运行语义，但实际执行路径仍以 third_party/ascend/tutorials/*.py 与 unittest 为准，现有测试无需更新。",
+        "suggested_test_areas": [
+          "docs/zh/examples/",
+          "docs/zh/debug_guide/",
+          "docs/zh/migration_guide/"
+        ]
+      },
+      "message": "[docs](fix) Modify the issues with documents by AIDD and skill scanning (#3056)\n\n* modify aidd issue\n\n* modify aidd issue\n\n* modify the AIDD issue\n\n* modify the AIDD issue"
+    },
+    {
+      "sha": "7d7ae4ddc44165912c254f4b63e855f105db1334",
+      "comment": "TLA GM view provenance 改进是本 commit 的主线。此前 tla.view(ptr) 走 ptr_to_int + 1-D hivm.hir.pointer_cast，导致 memref 不再是 kernel 参数的直接派生，alias analysis 无法追溯存储根。新设计在前端构造 tt.addptr（带完整 i64 元素偏移）+ tt.make_tensor_ptr（携带静态 shape/strides）+ 带 tla.gm_view 标记的 builtin.unrealized_conversion_cast 桥接到 buffer memref 类型；TLAToLinalgPass 删除 TLAAddPtrConversion/TLAPtrToIntConversion，改为复用通用 AddPtr/Load/MakeTensorPtr/PtrToInt converter，并新增 TLABufferBridgeConversion 只处理被标记的 bridge（source/result memref 需 cast-compatible）。GM buffer 类型改用默认 memory space（而不是显式 GM attr）以与转换后的指针参数一致；GM offset 在乘 stride 前先 widen 到 i64 避免 i32 溢出。同时修 bitcast：若源/目标是 pointer 且 backing element type 不一致则 notifyMatchFailure 而非静默重解释。附带改动：(1) tla_builder.cc 新增 create_tla_pointer_view 与 create_tla_pipeline（scoped loop builder binding，返回 loop 与 i64 iv）；(2) 移除 alloc 上无条件的 annotation.mark mem_unique，允许后端存储复用，测试断言从 '存在 mem_unique' 改为 '不存在'；(3) simd.py 新增 vsubc（vsub + unsigned vcmp 组合）、vmul 增加 mask/mode 参数、vsub/vxor/vor/vmins 等文档补全；(4) tla_test_utils.py 注释从 pointer_cast 更新为 descriptor views，多个 vector/ 用例移除 pointer_cast/reinterpret_cast 计数断言。风险点：GM view 的 IR 形态对所有 TLA GM 访问路径均发生变化，下游依赖 pointer_cast 或 mem_unique 的后端优化/测试都会受影响；虽然 commit 声称已跑单测，但 test_ir 的断言被削弱（只验证 memref.reinterpret_cast 存在，不再验证 count），依赖 test_run 的数值验证兜底；create_tla_pipeline 尚未被前端使用，属于纯新增 binding。",
+      "tags": [
+        "feature",
+        "refactor",
+        "medium-risk",
+        "TLA",
+        "compiler",
+        "language-backend"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "GM view 的 IR 表达从 pointer_cast 变为 make_tensor_ptr + marked bridge，所有 vector/、dma/ 及 cube/ 用例中依赖 pointer_cast/mem_unique 的断言需要重写；alloc 去 mem_unique 直接修改了 cube/allocation.py 的 IR 校验；vsubc 新增专用测试 dma/tla_ut/simd/vsubc.py。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/vector/",
+          "third_party/ascend/unittest/tla_ut/dma/pointer_offset.py",
+          "third_party/ascend/unittest/tla_ut/cube/allocation.py",
+          "third_party/ascend/unittest/tla_ut/simd/vsubc.py"
+        ]
+      },
+      "message": "[ascend](feat) improve TLA GM view provenance (#3014)\n\n* [ascend](feat) preserve provenance for TLA GM views\n\nMotivation: TLA GM views currently go through ptr_to_int plus a 1-D\nhivm.hir.pointer_cast, so the resulting memref no longer originates from the\nkernel argument. Alias analysis cannot follow the storage root, and the opaque\nscalar-pointer carrier is the only thing left to reason about.\n\nDesign: express a GM view as standard Triton pointer IR. The frontend builds\ntt.addptr with the full signed element displacement, then tt.make_tensor_ptr\ncarrying the static shape and strides, and bridges the result to the buffer\nmemref type with a marked builtin.unrealized_conversion_cast. tla-to-linalg\nreuses the generic AddPtr, MakeTensorPtr and PtrToInt converters, so the view\nbecomes a memref.reinterpret_cast rooted at the converted kernel argument, and\na local pattern removes the marked bridge. GM buffer types use the default\nmemory space to match converted pointer arguments, GM offsets are widened to\ni64 before the stride multiply, and non-GM entries keep the pointer_cast path.\n\nRisks: changes the IR shape of every TLA GM view. Pointer bitcasts that change\nthe backing element type are rejected instead of silently reinterpreting\nelements. Opaque pointers that do not originate from a kernel argument keep a\npointer_cast root and are not affected beyond the extra view.\n\n* [ascend](feat) add TLA builder binding for scoped loops\n\nMotivation: the TLA builder can emit a scope region, but it cannot yet\ncreate a loop region inside one. Frontend work needs a native binding\nthat returns both the loop and its induction variable so the body can\nbe emitted afterwards from Python.\n\nDesign: create a scope region carrying a marker attribute, emit one\nscf.for with a zero lower bound and unit step inside it, and return the\nloop together with an i64 view of the induction variable. The body\nterminator is removed so the caller fills the body and yields; bounds\nare emitted before the region is opened.\n\nRisks: the binding is not used by the shipped frontend yet. It only adds\na builder entry point and depends on the SCF dialect, which the TLA\npipeline already loads.\n\n* [TLA](fix) stop forcing unique allocations\n\nMotivation: Unconditionally marking every TLA allocation mem_unique\nprevents the backend from reusing otherwise eligible storage.\n\nDesign: Remove the frontend mark while preserving buffer version hints.\nUpdate allocation documentation and IR assertions to match. Leave backend\npipeline marking and memory-planning options unchanged.\n\nRisks: Allocations can become eligible for backend storage reuse. Compiler\nand device tests were not run.\n\nAssisted-by: AI\n\n* [ascend](feat) add composed TLA vsubc\n\n* [ascend](feat) add vmul mask/mode and complete SIMD specs\n\n---------\n\nCo-authored-by: liupengcheng2012 <liupengcheng38@huawei.com>\nCo-authored-by: xiwei <xiwei4@huawei.com>\n(cherry picked from commit b45c2a32cb82fe5187296b57531066d30f99b5de)"
+    },
+    {
+      "sha": "1e0fd3736003baa97ddce9bbdbbb583694869d3d",
+      "comment": "简化 host compiler identity 实现：删除了复杂的 _npu_elf_info（解析 ELF64 program headers、PT_INTERP、GNU build ID）与基于 ld-linux --list 的依赖解析，改为 portable 的 'ELF magic + realpath + stat identity + 采样两次防替换' 方案，schema 从 1 升到 2 并把缓存 key 前缀改为 host-compiler-version-v2 以主动失效旧缓存。同时修 NPUUtils.get_so_path 的缓存失效逻辑（_cache_path 存在但文件不在时重建）。动机应是跨 glibc/musl 与其他 ELF loader 的可移植性，以及避免为每次编译器查询而执行 ld-linux --list。代价是失去了对 '二进制被手工 patch 但 stat 不变' 的检测（原先 build ID 可识别），以及失去对 LD_LIBRARY_PATH / ld.so.cache 变化的依赖解析感知；不过 stat identity 采样两次已覆盖并发替换，且安装包升级通常会改变 inode/mtime，风险可接受。测试方面删除了 test_compiler_library_build_id_invalidates_even_with_unchanged_stat 与 test_compiler_version_unresolved_dependencies_query_live 两个用例，对应的行为不再看护。",
+      "tags": [
+        "refactor",
+        "bugfix",
+        "low-risk",
+        "compiler"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "删除了两个针对 ELF build ID 与 loader --list 的测试用例；新的 stat-based identity 需要补基于 realpath 变化/inode 变化/采样中替换的用例，否则 identity 缓存失效路径缺少看护。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_launcher_plan.py"
+        ]
+      },
+      "message": "[compiler](fix) simplify host compiler identity to portable stat+ELF-magic (#2904)\n\n(cherry picked from commit 7c1f9a30dd99f227ac93ead96b532e8d1109b44b)"
+    },
+    {
+      "sha": "c0550fb6866526662f28437f8bf634820cdc5e1b",
+      "comment": "为 Ascend 增加 AOT（ahead-of-time）编译支持：新增 third_party/ascend/tools/npu/（aot.py、compile.c/h），通过 setup_patch.py 与 patch 将 python/triton/tools/compile.py、link.py 的上游行为改造为 NPU 分支——compile.py 调用 prepare_params 生成 launcher_export.so 与 launcher_cann.h 并填充模板参数，link.py 接受 --backend npu 并用 launcher_cann.h 替代 <cuda.h>、把 CUresult/CUstream 改写为 NPUresult/NPUstream、c_sig 正则支持 void*。launcher.py 新增 _python_link_flags，把 libpython 静态链入 launcher 产物（AOT 场景下 C 进程 dlopen launcher_export.so 时 PyExc_RuntimeError 等数据符号需 eager 解析）。launcher_cann.h 新增 NPU_AOT_USE_ACL 分支：CANN>=9.1 走 aclrtBinaryLoadFromData + aclrtBinaryGetFunction 与 aclrtLaunchKernelWithHostArgs 匹配，老版本走 rtDevBinaryRegister/rtFunctionRegister；并提供 npuAotLaunch 通过 dlopen launcher_export.so 的 triton_launch_kernel 完成启动。npu_utils.cpp 的 triton_allocate_workspace_on_stream 在 torch_npu caching allocator 未初始化时回退 aclrtMalloc，并用全局 mutex + unordered_set 登记 raw 指针以配对释放。compiler.py 的两个 metadata 解析路径补 profile_scratch_size/align。已有 test_aot.py（446 行）覆盖 matmul 无特化/有特化/无可用 kernel 三种端的 C 侧链接-加载-运行-比对。风险点：(1) patch 触及 python/triton/tools/compile.py 与 link.py 这两份上游文件，上游后续变更会与 patch 冲突；(2) _python_link_flags 依赖 sysconfig LIBDIR 与 sys.version_info，无 Python 开发的宿主环境或静态 Python 构建下可能不可用；(3) 两套 CANN 版本（>=9.1 与老版本）走不同注册/启动协议，测试用例仅使用当前安装的 CANN，另一分支缺看护；(4) raw workspace registry 是进程级静态，AOT 与 JIT 混用时路径切换的并发/生命周期正确性依赖 release 侧的 set 查找，需谨慎；(5) test_aot.py 中 gcc + -Wl,--no-as-needed -lpythonX.Y 强制 libpython 在 DT_NEEDED 中，这是为绕过 --as-needed 的 workaround，本身依赖宿主 Python 版本。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "compiler",
+        "runtime",
+        "AOT"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 test_aot.py 覆盖三条 AOT 链路（无特化 matmul、带 hints matmul、无可用 kernel 的失败路径）；但 CANN<9.1 的 rt-style 分支、raw workspace fallback、Python 链接 flags 的跨环境可用性均未被现有测试覆盖，建议补充分支与失败场景。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_aot.py",
+          "third_party/ascend/unittest/pytest_ut/test_launcher_plan.py",
+          "third_party/ascend/backend/launcher.py",
+          "third_party/ascend/backend/npu_utils.cpp"
+        ]
+      },
+      "message": "[Compile](feat) Support ahead-of-time compilation on Ascend (#3019)\n\n(cherry picked from commit c31a92fd3728371e3a2ac38db606999c8420bfef)"
+    },
+    {
+      "sha": "b74caa76670c3ff3c1727f6456ebd4e63e669a3b",
+      "comment": "A5 显式同步接口扩展：(1) sync.py 新增 MODE.INTRA，语义为单个物理 A5 计数器，不隐式访问 flagid+16 的伴生计数器；block_set_flag/wait_flag 的 flagid 支持 runtime i64（无边界检查），静态 ID 界限 Vector 15、Cube 31；(2) 新增 mutex_lock/mutex_unlock，emit hivm.hir.get_buf/rls_buf，PR4478 后由 pipe 推断 core、不再携带 TCoreTypeAttr，bufid 范围 [0,31]，mode 为编译期 bool；(3) sync_all 不再作为 hivm.hir.sync_block 保留，前端在编译期通过 lower_tla_sync_all 展开为 pipe barrier + 一组 sync_block_set/wait，根据 module_core_type 是否为 MIX 与 enclosing 是否在 cube scope 中区分：纯 AIV 用 flag 12/14、纯 Cube 用 13、MIX 场景用 10/11/13 的握手协议；在 SIMD/SIMT scope 内调用 sync_all 报错；(4) getSyncPipe 增加 pipe/core 合法性检查，PIPE_ALL 只允许用于 barrier；(5) builder 新增 create_tla_mutex_lock/unlock，tla_builder.cc 重构 createBlockSync 支持对象 flag id，删除 create_tla_pipeline 等旧路径。(6) AscendNPU-IR submodule 更新到 bd228fae。同时因该 NPUIR 版本存在 AffinityHIR read-before-write 回归与 add_cmp e2e mismatch，多个测试（dsa、add_cmp、sync_block/sync_pipe/sync_intra_block 的 compile/run）被 pytest.skip。风险点：(1) sync_all 的语义从 backend op 下沉到前端展开，展开规则对纯/混合核与 scope 位置高度敏感，任何模块核类型推断偏差都会导致错误 flag 交互；(2) block flag 的 runtime ID 无边界检查，用户侧错误 ID 会静默越界；(3) mutex_lock 的命名容易与主机 mutex 混淆，文档已注明是硬件 pipeline token；(4) 大量 skip 遮蔽了真实回归，需在 NPUIR 修复后解除。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "high-risk",
+        "TLA",
+        "sync",
+        "compiler"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "sync_pipe.py 与 sync_block.py 的断言全面重写（原 hivm.hir.sync_block 改为断言展开后的 sync_block_set/wait 序列，且禁止残留 sync_block）；新增 sync_intra_block.py 与 buffer_sync.py；多处 compile/run 因 NPUIR 回归被 skip，需要跟踪恢复。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/sync/sync_pipe.py",
+          "third_party/ascend/unittest/tla_ut/sync/sync_block.py",
+          "third_party/ascend/unittest/tla_ut/sync/sync_intra_block.py",
+          "third_party/ascend/unittest/tla_ut/sync/buffer_sync.py",
+          "third_party/ascend/language/tla/compiler.py"
+        ]
+      },
+      "message": "[ascend](feat) add explicit A5 synchronization interfaces (#2971)\n\n* [ascend](feat) add explicit A5 synchronization interfaces\n\nAdd direct intra-block counter mode and buffer token synchronization, adapt GetBuf/RlsBuf bindings to the current AscendNPU-IR PR4478 contract, and cover static/dynamic IDs, core pipes and argument validation.\n\nExpand sync_all into pipeline barriers and explicit block set/wait flags at the frontend boundary after core-mode inference, preserving pure-core and mixed-core sequences. Correct the A5 test cases to use symmetric pure-AIV INTER/SUBBLOCK protocols and a mixed sync_all(True) kernel, with compile/run coverage for every mode.\n\nSigned-off-by: miushuxin <yaoji2@huawei.com>\n\n* [ascend](chore) update AscendNPU-IR submodule for PR4478\n\n* [TLA](fix) fix failed TLA unit test cases in CI\n\nAlso skip cases still failing on AscendNPU-IR bd228fae (AffinityHIR read-before-write / add_cmp mismatch).\n\n* [Docs](feat) document remaining public TLA interfaces\n\n---------\n\nCo-authored-by: miushuxin <yaoji2@huawei.com>\n(cherry picked from commit 2022fbb3c407f828235cfbb1647d7633de0f0667)"
+    },
+    {
+      "sha": "0540279a15fdd69eeb6327fa62fd79fa6aa8a489",
+      "comment": "新增 custom op sparse_gather_load_to_L1buffer，用于稀疏注意力场景把 index 选中的 paged cache 区域直接从 GM 搬到 L1（NZ 布局），并按相邻 region id 合并为一次连续传输。前端部分：(1) ascend_ir.cc 的 create_custom_op 识别 out 全为 memref 的 buffer 语义场景，此时不创建 result 类型，避免 sret 指针把真实参数整体右移一位；(2) custom_op.py 的 _to_value 支持通用 tl.base_value（buffer 等），_to_result 通过 _rewrap 按 out.type 重建结果，保留 buffer 类；同时把 builder 调用从 ascend builder 切换到 _semantic.builder，修复在循环内因插入点不同步导致常量被误删的 bug；(3) builtin_custom_ops.py 定义 _sparse_gather_load_to_L1buffer，强制 core=CUBE、pipe=PIPE_MTE2、data_layout={'out': Fractal}、address_space={'out': L1}，并对 dtype/32B 对齐/容量/stride_token 宽化做严格断言；(4) mem_ops.py 暴露 dst-first 的 API。测试 test_sparse_gather_load_to_l1buffer.py 检查 out 是 outs 而非 ins、无 result、arg_attrs 带 cbuf+Fractal、tcore_type=CUBE、pipe=MTE2、symbol 随 dtype 变化、stride_token 宽化为 i64、以及四类拒绝场景。风险点：(1) 'out 全为 memref 即视为 buffer 语义' 是启发式，当一个 custom op 希望返回与 out 同类型的 memref（而非 in-place 写）时会被静默降级；(2) _to_result 用 ty._unflatten_ir 重建 value 依赖类型系统，若未来出现非 buffer/tensor 的 value 子类需要扩展；(3) 该 op 的前端检查以 Python assert 形式存在，在 python -O 下会被剥离，需要确认生产构建未启用 -O。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "custom-op",
+        "language-backend",
+        "mem_ops"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 test_sparse_gather_load_to_l1buffer.py 覆盖该 op 的 TTIR 契约；但 create_custom_op 的 buffer 语义变更影响所有现有使用 buffer 作为 out 的 custom op（如 index_select、gather_out_to_ub 等），现有 custom op 测试需回归确认不再多出 result 或 sret 偏移。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_sparse_gather_load_to_l1buffer.py",
+          "third_party/ascend/language/cann/extension/custom_op.py",
+          "third_party/ascend/language/cann/extension/mem_ops.py",
+          "third_party/ascend/ascend_ir.cc"
+        ]
+      },
+      "message": "[Ascend](feat) Add sparse_gather_load_to_L1buffer custom op (#2221)\n\nFrontend for the sparse_gather_load_to_L1buffer builtin: the buffer-language binding, the cann extension custom-op registration and mem_ops entry, and the end-to-end demo. The destination buffer is named first to match the NPUIR template's dst-first library-call ABI.\n\nCo-authored-by: crazyDannyBoy <xudezheng1@huawei.com>\nCo-authored-by: Cursor <cursoragent@cursor.com>\n(cherry picked from commit 38c0079ecca1953e384a9986c1907350d895a901)"
+    },
+    {
+      "sha": "1d0824d20246647d3b678ea45e9db362feba0703",
+      "comment": "新增 TLA scalar expression API，是当日最大的语言层变更（22 文件，+2959/-31）。新增 tla/scalar.py 暴露 select/maximum/minimum/cast/cdiv/max_value/infinity/clamp，全部委托标准 Triton 语义并用运行时检查拒绝非标量/bfloat16/float16，同时把 set_atomic 加入 dma.py 与 tla_builder.cc。TLAToLinalgPass 的 TLABitcastConversion 从只支持 pointer bitcast 扩展到数值 bitcast（arith.bitcast），并注册 TTOpConverters::ClampFConverter 与 triton::ClampFOp 的 illegal 标记；verify 路径补上 signalPassFailure 后的 return。compiler.py 的 check_ttadapter 把 tt.clampf 纳入允许列表。新增 scalar/ 测试目录：cast.py/cdiv.py/clamp.py/infinity.py/max_value.py/maximum.py/minimum.py/select.py/xor.py/scalar_frontend_contract.py 与 dma/set_atomic.py，并在 simd_frontend_contract.py 的 builder 白名单检查中加入 base_bound 以容纳基础 triton 的 create_* 方法。若干值得注意的取舍：(1) 明确禁用 bfloat16 输入，float16 在 maximum/minimum/clamp 中被拒，在 cast/select 中仅 bfloat16 被禁；(2) maximum/minimum 在 PropagateNan.NONE 下暂时不支持单 NaN 输入（等 CCE 修复 maxnum/minnum），测试中把对应正例注释掉并加 TODO；(3) clamp 在 SIMD VF 内调用被注释说明当前 A5 codegen 拒绝浮点标量 min/max in VF，IR 测试同时覆盖 in/out VF 两个位置但 compile 只测 out VF；(4) max_value 的浮点最大值用 math.ldexp(2 - 2^-m, exp_bias) 手工计算，隐含假定 IEEE round-to-nearest 的最大有限值的表达方式，float16/bf16/f32/f64 均已覆盖但依赖浮点格式常量，若未来引入 tf32 等需要扩展；(5) xor 的支持通过标准 Triton 的 tensor ^ 运算符而非显式 scalar API 暴露，测试覆盖 integer/boolean 与 literal 左/右以及 augmented assignment。风险：新增 API 面积大且语义与浮点特殊值（NaN/±0/±inf）紧密相关，测试用例与 API 几乎同时新增，属于同作者验证，外部视角的差分测试（与社区 tl.* 逐值比较）在 scalar_frontend_contract.py 中已有部分实现，但都跑在 TLA 自己的 pipeline 上。",
+      "tags": [
+        "feature",
+        "high-risk",
+        "TLA",
+        "language-backend",
+        "scalar"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 scalar/ 目录下 9 个测试文件与 dma/set_atomic.py，覆盖 IR/compile/run 三阶段与前端契约；同时 dma/scalar_load.py 删除 test_pointer_free_triton_op_is_not_blanket_rejected（tt.bitcast 现在被 TLABitcastConversion 处理而非豁免），需要显式改为断言 arith.bitcast 的用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/scalar/",
+          "third_party/ascend/unittest/tla_ut/dma/set_atomic.py",
+          "third_party/ascend/unittest/tla_ut/dma/scalar_load.py",
+          "third_party/ascend/unittest/tla_ut/simd_frontend_contract.py",
+          "third_party/ascend/lib/TritonToLinalg/TLAToLinalgPass.cpp"
+        ]
+      },
+      "message": "[TLA](feat) Add scalar expression (#3001)\n\n* [TLA](feat) Add set_atomic support and NPU accuracy tests\n\nSigned-off-by: lbqg <songyaofei2@huawei.com>\n\n* [TLA](feat) Add scalar expressions and math interfaces\n\nExpose scalar select, maximum, minimum, cast, cdiv, clamp, max_value and\ninfinity. Delegate expression semantics to standard Triton and construct\ntyped constants directly. Support integer/boolean XOR with literals and\naugmented assignment.\n\nLower scalar numeric bitcasts to arith.bitcast and register the shared\nClampFConverter. Reject bfloat16 expression/cast inputs and float16 clamp\ninputs while retaining bfloat16 constant construction. Keep floating\nscalar clamp outside SIMD VF on the tested target.\n\nTemporarily exclude single-NaN maximum/minimum inputs with PropagateNan.NONE\nuntil CCE scalar maxnum/minnum lowering is corrected. Document this input\nrestriction and remove the corresponding positive tests.\n\nAdd API exports and per-interface frontend, IR, compilation and device\naccuracy tests. Scalar casts use direct runtime arguments for\nnumerical conversions and fixed source bits for bitcast checks.\n\nValidation: 898 focused maximum/minimum frontend and IR tests passed.\nNo local NPU execution was performed.\n\nAssisted-by: AI\nSigned-off-by: lbqg <songyaofei2@huawei.com>\n\n---------\n\nSigned-off-by: lbqg <songyaofei2@huawei.com>\nCo-authored-by: lbqg <songyaofei2@huawei.com>\n(cherry picked from commit 633f6f8bd9864e3ec246943fdf492921dcf0b087)"
+    }
+  ],
+  "architecture_based_on_sha": "408e31592b50e930fc6f01c244f309444005d575",
+  "architecture_generated_at": "2026-11-01T20:11:07.549514+08:00"
+}

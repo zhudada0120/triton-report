@@ -1,4 +1,36 @@
 {
+  "087ba577e00fd21ea365de128d11438f6f056cf4": {
+    "date": "2026-11-10",
+    "msg": "[Gluon] Add split A/B pipelines to the block-scaled matmul example (#12643)"
+  },
+  "51e03b402c635116c91f30de0e26304bf6f730f6": {
+    "date": "2026-11-10",
+    "msg": "[NVIDIA] Support higher-rank 64-value FP6 host TMA stores on SM103 (#12685)"
+  },
+  "b760c68dfda067938d72c387d4c44cd9f557a763": {
+    "date": "2026-11-10",
+    "msg": "[BACKEND] Skip lane-local scan carry shuffles (#12186)"
+  },
+  "ccfdb2fbd8a9157b608e43b7b506746ad09c3fb5": {
+    "date": "2026-11-10",
+    "msg": "[triton_kernels] Restrict `tensor_scale` to NVFP4 only, and NVFP4 to Blackwell+ (#12680)"
+  },
+  "dddf5617b6c406f841d896bf32f14c1c95e064ab": {
+    "date": "2026-11-10",
+    "msg": "[NVIDIA] Fix split setmaxnreg instructions in generic warp-specialize dispatch (#12677)"
+  },
+  "ef6b9ef19c3e4d5d2f7eee88e8b17a375520b2f3": {
+    "date": "2026-11-10",
+    "msg": "[AMD][GLUON] Fix bank conflict count for swizzled layout on CDNA4 (#12653)"
+  },
+  "b5dd760d749098395a5430e99c8069cb15e4a996": {
+    "date": "2026-11-10",
+    "msg": "[BACKEND] Fix GCC narrowing error in warp specialization lowering (#12676)"
+  },
+  "e0a53baf112362632843ac65c3d1c5b090cc79ca": {
+    "date": "2026-11-10",
+    "msg": "[Docs] Scope compiler changes and MLIR tests to frontend-reachable IR (#12667)"
+  },
   "8388ffe6d190926368d4e500888bfd1baef03653": {
     "date": "2026-11-09",
     "msg": "[IR] Verify reduction / scan / map_elementwise combiner ops to be pure or assert / print / assume (#12668)"

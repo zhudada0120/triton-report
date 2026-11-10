@@ -1,4 +1,36 @@
 {
+  "336b07586357e5708799837e280f90746ca22755": {
+    "date": "2026-11-10",
+    "msg": "[docs](feat) add doc quality review workflow for PR documentation (#3077)"
+  },
+  "d52737ae7e631b3653240aa98571941dad255697": {
+    "date": "2026-11-10",
+    "msg": "[docs](fix) Modify the issues with documents by AIDD and skill scanning (#3056)"
+  },
+  "7d7ae4ddc44165912c254f4b63e855f105db1334": {
+    "date": "2026-11-10",
+    "msg": "[ascend](feat) improve TLA GM view provenance (#3014)"
+  },
+  "1e0fd3736003baa97ddce9bbdbbb583694869d3d": {
+    "date": "2026-11-10",
+    "msg": "[compiler](fix) simplify host compiler identity to portable stat+ELF-magic (#2904)"
+  },
+  "c0550fb6866526662f28437f8bf634820cdc5e1b": {
+    "date": "2026-11-10",
+    "msg": "[Compile](feat) Support ahead-of-time compilation on Ascend (#3019)"
+  },
+  "b74caa76670c3ff3c1727f6456ebd4e63e669a3b": {
+    "date": "2026-11-10",
+    "msg": "[ascend](feat) add explicit A5 synchronization interfaces (#2971)"
+  },
+  "0540279a15fdd69eeb6327fa62fd79fa6aa8a489": {
+    "date": "2026-11-10",
+    "msg": "[Ascend](feat) Add sparse_gather_load_to_L1buffer custom op (#2221)"
+  },
+  "1d0824d20246647d3b678ea45e9db362feba0703": {
+    "date": "2026-11-10",
+    "msg": "[TLA](feat) Add scalar expression (#3001)"
+  },
   "4c536e9df66192cb23c788db891ca07b7a412eb2": {
     "date": "2026-11-09",
     "msg": "[docs](fix) document dynamic reuse and update buffer API references (#3054)"
