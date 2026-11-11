@@ -1,4 +1,60 @@
 {
+  "0ee0f56a83ccef6f40fd01656d7ec93874ce630a": {
+    "date": "2026-11-11",
+    "msg": "[CI](fix) bundle triton_dist into CI wheels (TRITON_BUILD_TD=ON) (#3088)"
+  },
+  "8529b8f47454e759e724af6e06ababe31d4b02ac": {
+    "date": "2026-11-11",
+    "msg": "Revert \"[launch](fix)  Optimize the storage directory for shared libraries (#2945)\" (#3116)"
+  },
+  "7800f36e5681fbf5970c3b7a6bb0622eec106dd5": {
+    "date": "2026-11-11",
+    "msg": "[compiler](fix) 恢复 DynamicCV 限制并使用 metadata 架构 (#3095)"
+  },
+  "f2a856705b14e81beaae0ba2215ac2af12c40327": {
+    "date": "2026-11-11",
+    "msg": "[TritonToStructured](fix) Look through bitcast in pointer analysis (#3041)"
+  },
+  "055f0ada6363cdaef4aaa264ad31759e45cfb2e3": {
+    "date": "2026-11-11",
+    "msg": "Revert \"[compiler](fix) disable DynamicCV on new targets (#3070)\" (#3098)"
+  },
+  "12bd5cdeb428e8781360036de839e6f6bd65f3b7": {
+    "date": "2026-11-11",
+    "msg": "[TLA] feat: add scalar fill for contiguous UB buffers (#2956)"
+  },
+  "034e73c6b2740d85619af8ce9100b58208f83453": {
+    "date": "2026-11-11",
+    "msg": "[ControlFlowOpt](fix) preserve nested while signatures (#2991)"
+  },
+  "75abac0d47e73553dd0c94d2cca33156225a611f": {
+    "date": "2026-11-11",
+    "msg": "[TritonToLinalg] Support zero-extended tensor offsets in BlockDataParser (#3081)"
+  },
+  "7de49cd80796293cc6ca29e4028144c798d9f489": {
+    "date": "2026-11-11",
+    "msg": "[TLA](feat) Add scalar interface  (#3063)"
+  },
+  "912ce2c5871f4057446917ddb7f31c8db129a291": {
+    "date": "2026-11-11",
+    "msg": "[Proton](feat) enable A5 intra-kernel collection through MSPTI (#3067)"
+  },
+  "6c380a0f948e6690ee0050e79ed6964b2b4fc75f": {
+    "date": "2026-11-11",
+    "msg": "[TritonMemoryAccess](fix) Simplify shared pointer analysis (#3035)"
+  },
+  "eab2aa4bbbb410acd796950e037d629ce9f4b8a0": {
+    "date": "2026-11-11",
+    "msg": "[compiler](fix) disable DynamicCV on new targets (#3070)"
+  },
+  "e8d644505f70ccf460c78709d4584807749eaac5": {
+    "date": "2026-11-11",
+    "msg": "[Docs](fix) update nightly installation in readme (#3124)"
+  },
+  "074cf62907f815694a01e5cdc4ac78a90610ae82": {
+    "date": "2026-11-11",
+    "msg": "[docs](fix) clarify scope operation constraints (#3114)"
+  },
   "336b07586357e5708799837e280f90746ca22755": {
     "date": "2026-11-10",
     "msg": "[docs](feat) add doc quality review workflow for PR documentation (#3077)"

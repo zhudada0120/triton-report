@@ -1,0 +1,288 @@
+{
+  "date": "2026-11-11",
+  "repo": "triton-lang/triton-ascend",
+  "daily_summary": "当日工作集中在 Ascend 后端的正确性与架构整理上：CI wheel 构建默认开启 triton_dist 打包，DynamicCV 经历一次'限制→回退→重新以 metadata 架构落地'的反复，TritonToStructured 的 PtrAnalysis 新增等宽 bitcast 穿透修复 bool load/store 的零 stride，TritonControlFlowOpt 修复嵌套 while 签名不一致时的崩溃，TritonToLinalg 支持 zero-ext 张量偏移，TLA 新增 UB 标量 fill 与标量 abs 接口，Proton 启用 A5 通过 MSPTI 的 intra-kernel 采集，TritonMemoryAccess 共享指针分析做了一次大规模 API 收敛（去掉可配置 Rules、统一为单个具体分析器并新增 loop/SCF/ChangeInfo 能力），同时回退了共享库缓存目录的优化，另有两处文档更新与一处 TLA scope 约束说明。整体呈现'多处小修 + 一块大重构'的格局，架构风险主要落在 PtrAnalysis 大重构与 Proton patch 上。",
+  "test_impact_summary": "当日变更普遍配套了较完整的测试：tiny CI/文档类改动无需测试看护；DynamicCV 系列三次提交各自带 UT 但相互覆盖，最终只需保留落在 3095 上的 A5-only + metadata 架构用例并删除已回退版本的旧用例；PtrAnalysis bitcast、ControlFlowOpt 嵌套 while、ExtUI 偏移、TLA fill/abs、Proton A5 均新增了针对性 lit/pytest 或 gtest 用例，测试策略上最需要关注的是 PtrAnalysis 大重构——它一次性重写公共 API（去掉 PtrAnalysis<Rules>、bind/clear 改为 setInfo/reset）、新增 loop 假设缓存与 ChangeInfo 比较语义，并把大量测试从'isEmpty 表示不可用'改为'failed 表示不可用、opaque base 表示可靠回退'，测试数量与语义都发生结构性变化，建议重点复核各消费方（TritonToStructured/TritonToLinalg 等）是否已迁移到新 API 且回归通过；此外 Proton A5 用例因依赖 MSPTI 硬件采样，CI 上通常会 skip，需要在有 A5 环境时单独看护。",
+  "commits": [
+    {
+      "sha": "0ee0f56a83ccef6f40fd01656d7ec93874ce630a",
+      "comment": "CI 轮子构建默认开启 TRITON_BUILD_TD=ON：wheels.Dockerfile 新增 ARG 并注入 ENV，ascend-wheels.yml 的 Test-Wheels NPU 作业增加对 site-packages 下 triton_dist/language/extra/libshmem_device.py 的文件存在性断言。动机是 CI 轮子默认不带 triton_dist，pip 覆盖安装时会按旧 RECORD 删除该包并破坏下游 import。改动仅涉及构建与 CI 工作流，但 TRITON_BUILD_TD 默认值翻转会影响所有通过该 Dockerfile 构建产物的用户（包括不希望引入 triton-distributed 依赖的场景），属于面广但影响明确的变更；断言只查文件不 import，避免了运行时依赖问题。",
+      "tags": [
+        "ci",
+        "chore",
+        "low-risk",
+        "build"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "变更本身即是在 CI 中新增断言，属于测试基础设施变更，需要随构建产物一起验证。",
+        "suggested_test_areas": [
+          ".github/workflows/ascend-wheels.yml",
+          ".github/workflows/build/wheels.Dockerfile"
+        ]
+      },
+      "message": "[CI](fix) bundle triton_dist into CI wheels (TRITON_BUILD_TD=ON) (#3088)\n\nThe wheel CI never sets TRITON_BUILD_TD, so setup_patch.py defaults it\nto OFF and the built wheels ship without triton_dist or the\nTritonDistributed compiler plugin. Users who pip-install such a wheel\nover an installation whose wheel bundled triton_dist lose the package:\npip uninstall deletes the recorded files and leaves empty namespace\ndirectories behind, so downstream imports fail with\n\n  ImportError: cannot import name 'libshmem_device' from\n  'triton_dist.language.extra' (unknown location)\n\nBuild the CI wheels with TRITON_BUILD_TD=ON, matching the build step in\nintegration-tests-ascend.yml, so the wheel bundles triton_dist from the\npinned Triton-distributed-ascend revision. Extend the Test-Wheels NPU\njob to assert triton_dist/language/extra/libshmem_device.py is present\nin the installed wheel.\n\nCo-authored-by: Claude Code <noreply@anthropic.com>"
+    },
+    {
+      "sha": "8529b8f47454e759e724af6e06ababe31d4b02ac",
+      "comment": "回退 #2945 引入的 bin_cache_manager，把 npu_utils.so 与 launcher runtime 的缓存位置从'后端包内固定 bin/ 目录'改回 TRITON_CACHE_DIR。回退理由未在 commit message 明说，但被回退改动是为了规避 PyTorch Inductor 每次用例重指向 TRITON_CACHE_DIR 导致 host 产物被搁浅；回退后 runtime 会随 Inductor 重指向而重建（测试断言 builds 从 2 变 4、6，并更新了自定义 cache manager / remote cache 的查询计数断言）。风险在于：回退恢复了'每次 Inductor 重指向都重建 npu_utils.so 与 runtime'的行为，可能带来测试场景下的编译开销与重复构建，且第三方/自定义 cache manager 会再次看到 host 产物查询。utils.bin_cache_manager 被整体删除，属于 API 移除，需确认外部无引用。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "medium-risk",
+        "runtime",
+        "cache"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "回退改动了缓存行为与构建次数语义，相关用例的断言已被同步改写（缓存根切换、Inductor 重指向、自定义/远端 cache manager 计数）。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_launcher_plan.py",
+          "third_party/ascend/unittest/pytest_ut/test_backend_npu_utils_build_flags.py",
+          "third_party/ascend/backend/launcher.py",
+          "third_party/ascend/backend/driver.py"
+        ]
+      },
+      "message": "Revert \"[launch](fix)  Optimize the storage directory for shared libraries (#2945)\" (#3116)\n\nThis reverts commit c73d1f58"
+    },
+    {
+      "sha": "7800f36e5681fbf5970c3b7a6bb0622eec106dd5",
+      "comment": "重新落地'DynamicCV 仅 A5'限制，但与之前被回退的 #3070 不同，这次改用 metadata 中的架构信息而非 getattr(metadata['target'], 'arch')。三处生效点：AscendBackend.parse_options 在非 A5 时强制 enable_dynamic_cv_pipeline=False；ttir_to_linalg 在注册 dynamic_cv_pipeline 前用 metadata.get('target_arch', metadata.get('arch')) 判断；linalg_to_bin 中 --enable-vf-operand-substitution 也增加 A5 判断。测试同时覆盖 target_arch 与 arch 两个 metadata key，说明作者有意兼容两条元数据通路。相比 #3070 更稳健（getattr 对 target 缺失/为 None 时安全），但 metadata 里同时存在 target.arch、target_arch、arch 三套来源，长期看是一处需要收敛的隐式契约。",
+      "tags": [
+        "bugfix",
+        "compiler",
+        "low-risk",
+        "dynamic-cv"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 parse_options 的 A5-only 参数化用例、ttir_to_linalg 的 A5-only 注入用例以及 bisheng 选项按 metadata 架构取值的用例，且与已回退版本的同名测试存在覆盖关系。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler.py",
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "third_party/ascend/backend/compiler.py"
+        ]
+      },
+      "message": "[compiler](fix) 恢复 DynamicCV 限制并使用 metadata 架构 (#3095)"
+    },
+    {
+      "sha": "f2a856705b14e81beaae0ba2215ac2af12c40327",
+      "comment": "TritonToStructured 的 PtrAnalysis 新增 visitOperandBitcast：当 bitcast 前后张量形状一致、指针地址空间相同、且 pointee 存储位宽相同（i1 按 8 位计）时，递归分析源操作数并在标量基址上重建 bitcast，从而让 bool load/store 前端产生的 ptr<i1>→ptr<i8> 转换不再被当作不透明基址，避免非 SIMT 路径生成 stride 为 0 的 memref 描述符而被 BiShengIR 拒绝。修复点精准，并有 lit 用例覆盖 2D/3D 广播轴与无 bitcast 对照，另有端到端 pytest 覆盖 simd 与 simd_simt_template 两种模式。潜在风险是 getPointerStorageBits 把 i1 折为 8 位这一 Ascend ABI 假设需要在其他位宽（如 i4/f8）上有明确的'不识别即失败'行为，当前实现通过返回 nullopt 保守拒绝，行为合理。",
+      "tags": [
+        "bugfix",
+        "compiler",
+        "low-risk",
+        "triton-to-structured",
+        "pointer-analysis"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 lit 用例 PtrAnalysisBitcast.mlir 与端到端 pytest，需要纳入回归看护；同时该修复针对的是只会在 simd 路径暴露的 stride 0 问题，simt_only 无法覆盖，需保留两种模式的用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToStructured/PtrAnalysisBitcast.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_bool_bitcast_middle_axis.py",
+          "third_party/ascend/lib/TritonToStructured/PtrAnalysis.cpp"
+        ]
+      },
+      "message": "[TritonToStructured](fix) Look through bitcast in pointer analysis (#3041)\n\n* [TritonToStructured](fix) 指针分析穿透元素类型 bitcast\n\nbool 的 load/store 在前端会被改写为 ptr<i1> -> ptr<i8> 的 tt.bitcast，\nPtrAnalysis 原先把它整体当作不透明基址，丢失 broadcast/addptr 的逐维\nstride 信息，非 SIMT 路径因此生成 stride 为 0 的 memref 描述符并报\n\"strides must not be zero\"。\n\n新增 visitOperandBitcast：当张量形状、地址空间与 pointee 存储位宽一致\n(i1 按 8 位计) 时，递归分析 bitcast 的源操作数，并在标量基址上重建\nbitcast，使零 stride 轴仍能被 createAddPtrOp 压缩。\n\n* [TritonToStructured](test) 补充指针分析穿透等宽 bitcast 的 UT 用例\n\n* [TritonToStructured](test) 补充 bool 指针 bitcast 的端到端 UT 用例\n\n* [TritonToStructured](test) 按 yapf 规范格式化端到端 UT 用例\n\n* [TritonToStructured](test) 修正端到端 UT 的 BLOCK_N 未覆盖 N 的问题"
+    },
+    {
+      "sha": "055f0ada6363cdaef4aaa264ad31759e45cfb2e3",
+      "comment": "回退 #3070（禁用新目标 DynamicCV），恢复为仅按 enable_dynamic_cv_pipeline 标志决定是否注入 dynamic_cv_pipeline 与 --enable-vf-operand-substitution。该回退在 #3095 之前落地，属于一次策略反复；回退本身未说明原因，回退后非 A5 架构只要显式打开该开关仍会走 DynamicCV lowering。由于该提交被同日的 7800f36 以'使用 metadata 架构'的方式重新实现，最终效果是限制保留但判断通路不同，需关注这段期间是否有依赖旧语义的用例残留。",
+      "tags": [
+        "bugfix",
+        "revert",
+        "compiler",
+        "medium-risk",
+        "dynamic-cv"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "回退同时删除了 #3070 引入的测试（test_dynamic_cv_pipeline_is_enabled_only_on_a5 与 ttir_to_linalg A5-only 用例），测试集回到原状；随后 7800f36 以新语义重新添加等价覆盖。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler.py",
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py"
+        ]
+      },
+      "message": "Revert \"[compiler](fix) disable DynamicCV on new targets (#3070)\" (#3098)\n\nThis reverts commit 42f507e399f6eba7e68f204862f300cf0588b08a."
+    },
+    {
+      "sha": "12bd5cdeb428e8781360036de839e6f6bd65f3b7",
+      "comment": "TLA 新增 tla.fill：对连续行主序、offset 0 的 UB buffer 做标量广播填充，底层发出一条 hivm.hir.vbrc（空 broadcast_dims），并在 C++ builder 侧对 dst 必须是 memref、必须位于 UB、value 必须是标量且类型与元素类型一致做四重校验。Python 侧 _check_dst/_check_value 明确拒绝 GM/L1/L0A/B/L0C/BT/FB、非连续 stride、非零或动态 offset、i1、未审的 dtype（仅 fp32/bf16/int32），并拒绝 bool、越界整型、浮点填整型等场景，同时给出可移植替代方案。这是一个刻意收窄的首版接口，拒绝路径清晰，风险集中在：subview offset 目前被 subview 本身丢弃（offset=None），已被显式拒绝，不会误填到分配起点；但 dtype 白名单与 i1 的对齐假设仍需后续设备证据。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "tla",
+        "language"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 fill.py 与 fill_frontend_contract.py 两套测试：前者做 IR/编译/运行三段式验证（含 reshape、负值、0 值），后者是 host-only 契约测试覆盖全部拒绝分支，需要纳入 tla_ut 回归。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/memory/fill.py",
+          "third_party/ascend/unittest/tla_ut/memory/fill_frontend_contract.py",
+          "third_party/ascend/language/tla/fill.py",
+          "third_party/ascend/language/tla/cpp/tla_builder.cc"
+        ]
+      },
+      "message": "[TLA] feat: add scalar fill for contiguous UB buffers (#2956)"
+    },
+    {
+      "sha": "034e73c6b2740d85619af8ce9100b58208f83453",
+      "comment": "TritonControlFlowOpt 修复嵌套 while 签名不一致的问题：当 while 的 before/after 参数均不含指针时，analyzeWhile 直接走 analyzeNestedOperations 只做嵌套分解并返回；同时 rewriteWhileOp 在 rewriteOwnSignature() 为假时保留两侧原始签名、把 oldToNewStart 重排为恒等映射，而不是逐项复制 newResultTypes。这解决了'外层 while 无返回值或 before/after 参数数量不等/类型不同'时崩溃或签名被改坏的问题。修复思路是把'是否重写自身签名'这一判定显式化，逻辑清晰；新增的 lit 用例覆盖了无返回值、after 参数多于 before、同名不同型三种边界，看护到位。",
+      "tags": [
+        "bugfix",
+        "compiler",
+        "low-risk",
+        "control-flow-opt"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 while_nested_pointer_signatures.mlir 覆盖三类签名边界，需要纳入 ControlFlowOpt 的 lit 回归；此外 rewriteWhileOp 的 oldToNewStart 处理变更影响所有经该 pass 的 while，建议确认原有 while 用例仍通过。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonControlFlowOpt/while_nested_pointer_signatures.mlir",
+          "third_party/ascend/lib/TritonControlFlowOpt/ControlFlowRewrite.cpp",
+          "third_party/ascend/lib/TritonControlFlowOpt/ControlFlowAnalysis.cpp"
+        ]
+      },
+      "message": "[ControlFlowOpt](fix) preserve nested while signatures (#2991)"
+    },
+    {
+      "sha": "75abac0d47e73553dd0c94d2cca33156225a611f",
+      "comment": "修复 TritonToLinalg 的 BlockDataParser 对零扩展（arith::ExtUIOp）动态偏移的处理缺失。原 parse() 的 op 分发链只有 ExtSIOp、TruncIOp、DivSIOp 等分支，没有 ExtUIOp，导致形如 arith.cmpi → arith.extui (i1→i32) 的结果被当作普通 SSA 值/掩码处理，从而两个后果：一是 i1 的 true 语义被误当作掩码或符号扩展（true 应该为 1，而不是继续转发到窄输入）；二是 i8 255 这类高位为 1 的值可能按有符号解释变成 -1，索引错行。实现上有两处改动：(1) 在 parse() 中增加 ExtUIOp 分支，调用 parseDynamicOffset<arith::ExtUIOp> 后直接 return success()，即把零扩展结果当作数值地址数据处理，而不是转发到输入（注释明确说明这是为了保留无符号语义）；(2) 在 parseDynamicOffset 模板里把 canExtractScalar 的初始值由固定的 false 改为 std::is_same_v<OpTy, arith::ExtUIOp>，使得单元素零扩展结果是可提取的动态标量，并在 cast 之后（而非之前）执行 tensor.extract，保证提取到的是扩展后的宽值而非窄输入。测试侧新增 extui_indirect_offset.mlir，包含 cmp_extui_row_offset（Inductor embedding 的 token/count 选择 count 作为行偏移）、unsigned_singleton_offset（i8 255 应索引 255）、cmp_extui_vector_offset（多个布尔应为逐元素偏移而非共享标量/控制 gather 的掩码）、unsigned_vector_offset 四个用例，并在 Ascend910B2 与 Ascend950PR（compile-on-910-95）以及 named-ops 开/关下验证。风险评估：改动仅限 Ascend 自有 pass，不涉及上游 BaseBackend/DriverBase 接口与 patch 文件；逻辑上 ExtUIOp 分支排在 ExtSIOp 之后、TruncIOp 之前，对既有 ExtSIOp 路径无侵入；canExtractScalar 的修改用 if constexpr/std::is_same_v 精确限定到 ExtUIOp，不会影响 tt.load 等既有可提取标量的判定。潜在风险是 parseDynamicOffset 是模板函数，新增分支后若其他调用点（例如 future 的 ExtUIOp 嵌套在 div/rem 中）行为发生变化需回归验证，且 ExtUIOp 作为标量提取入口后，未加 mask 的 LoadOp 语义与其它分支的一致性需要持续关注。总体看是针对 Inductor 生成模式（布尔数值参与地址计算）的正确性修复，属于中低风险。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "third_party/ascend/lib/TritonToLinalg",
+        "third_party/ascend/unittest/Conversion"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "本次 commit 已经自带新增测试文件 extui_indirect_offset.mlir（112 行，4 个 FileCheck 用例，覆盖标量/向量、布尔 extui 与 i8 无符号 extui，并覆盖 named-ops 开关与 910-95 管线），因此无需再额外新增测试；但需要确认该文件已被 lit 测试套件正确发现并纳入 CI 看护（third_party/ascend/unittest/Conversion/General/TritonToLinalg 目录），同时建议在 code review 后补充对 tt.load/tt.store 携带 extui 偏移、extui 与 mask 组合、extui/extsi 混合链路的用例以巩固回归面。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/extui_indirect_offset.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_load.py 等端到端偏移类用例",
+          "third_party/ascend/unittest/lit.cfg.py（确认新用例被 lit 收集）"
+        ]
+      },
+      "message": "[TritonToLinalg] Support zero-extended tensor offsets in BlockDataParser (#3081)\n\nSigned-off-by: gymgit1 <guoyiming17@huawei.com>"
+    },
+    {
+      "sha": "7de49cd80796293cc6ca29e4028144c798d9f489",
+      "comment": "TLA 新增标量 tla.abs：包装 tl.math.abs，保留输入 dtype 与定宽整型语义（有符号最小值不饱和、不清零符号），显式拒绝 bf16/fp64/fp8 与非标量输入，且不分配 buffer、不做 SIMD 广播。同时修复了 cdiv 负例比较：后端初始化后 dtype guard 会让同一个错误在 TLA 与 Triton 调用点产生不同源码位置，改为只比较异常类型与 error_message。abs 的接口收窄策略与 fill 一致（白名单 + 明确报错），风险主要是'有符号最小值保持原值'这一语义与直觉的 abs 不同，已在 docstring 与测试（int8 -128、int32/64 最小值、fp -0/inf/nan）中显式固化。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "tla",
+        "language"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 abs.py 三段式用例（IR/compile/run，覆盖 11 种 dtype 与边界值）及 scalar_frontend_contract 中的大量参数化用例，需要纳入 tla_ut 回归；另有 cdiv 负例比较逻辑的调整，影响已有的负例契约测试。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/scalar/abs.py",
+          "third_party/ascend/unittest/tla_ut/scalar/scalar_frontend_contract.py",
+          "third_party/ascend/language/tla/scalar.py"
+        ]
+      },
+      "message": "[TLA](feat) Add scalar interface  (#3063)\n\n* [TLA](feat) Add scalar abs interface\n\nExpose tla.abs as a scalar wrapper around the standard Triton builtin.\nPreserve input dtype and fixed-width integer semantics without implicit\nbuffers or SIMD broadcasts. Support bool, signed and unsigned integers,\nand FP16/FP32; reject BF16, FP64, float8 and non-scalar inputs.\n\nAdd frontend contracts and writeback kernels with IR/compile/run stages.\nCover integer minima, both halves of 64-bit results, negative zero,\ninfinities, NaNs, literals and JIT helper composition.\n\nValidation: 4927 scalar frontend/IR tests passed, 208 device-stage tests\nskipped, and all 11 supported input types compiled to A5 ELF objects with\nNPUIR 403adacfc11b in an isolated build. NPU accuracy was not run.\n\nAssisted-by: AI\nSigned-off-by: lbqg <songyaofei2@huawei.com>\n\n* [TLA](fix) Ignore source locations in cdiv diagnostic comparisons\n\nAfter Ascend backend initialization, dtype guards report cdiv errors at\nthe TLA and Triton call sites. Compare exception types and diagnostic\nbodies so differing source excerpts do not fail equivalent negative cases.\n\nValidation: all 4,819 scalar frontend contract tests passed both before\nand after backend patch initialization in an isolated frontend runtime.\nNo NPU execution.\n\nAssisted-by: AI\nSigned-off-by: lbqg <songyaofei2@huawei.com>\n\n---------\n\nSigned-off-by: lbqg <songyaofei2@huawei.com>\nCo-authored-by: lbqg <songyaofei2@huawei.com>"
+    },
+    {
+      "sha": "912ce2c5871f4057446917ddb7f31c8db129a291",
+      "comment": "Proton 通过 MSPTI 在 A5 上启用 intra-kernel 采集：compiler 侧在 A5 目标且启用 instrumentation 时不再 patch ttir_to_linalg，而是设置 proton_collection=mspti、profile_scratch_size=0，并在 bishengir-compile 命令行追加 --proton-metadata-output，编译后读取 json 写入 metadata。proton_patch.patch 大幅扩展：新增 channelTrace 概念、record_instrumentation_events pybind、A5 的 AscendRuntime 改为运行时 dlsym（Dispatch<ExternLibAcl>，避免硬链 libascendcl）、新增 mspti_instrumentation.py（ctypes 封装 msptiInstrumentation* C API，串行化采集、channel/pipe 语义、warmup、debug dump），并在 trace args 中标明 coverage=sampled_hardware_channels、all_logical_blocks=false。变更体量大且触及上游 Proton patch，风险最高处在于 patch 与上游 main-dev 的同步、以及 A5 采样语义（非全 block 覆盖）被正确传播到 trace 元数据。",
+      "tags": [
+        "feature",
+        "high-risk",
+        "proton",
+        "profiler",
+        "a5"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 A5 instrumentation 端到端 pytest，但同时依赖真实 A5 硬件与 MSPTI 库，非 A5 环境整模块 skip，CI 覆盖有限；patch 侧改动（CMake、TraceWriter、InstrumentationProfiler）大量为 C++ 行为变更，需要 patch apply/reverse 与构建开关的验证。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/proton_ut/test_ascend_instrumentation_a5.py",
+          "third_party/ascend/patch/proton_patch.patch",
+          "third_party/ascend/backend/compiler.py"
+        ]
+      },
+      "message": "[Proton](feat) enable A5 intra-kernel collection through MSPTI (#3067)\n\n* [Proton](feat) collect A5 intra-kernel traces through MSPTI\n\nPort the latest Proton increment onto upstream main-dev. Preserve the A3 software-buffer path, label partial hardware sampling, and keep upstream Proton changes in the opt-in Ascend patch.\n\nValidate compiler routing, metadata export and collector cleanup with 136 passing host tests (28 existing skips). Check patch apply/reverse and repeated build toggles.\n\n* [Proton](test) simplify A5 instrumentation coverage\n\n* [Proton](fix) load ACL instrumentation APIs at runtime"
+    },
+    {
+      "sha": "6c380a0f948e6690ee0050e79ed6964b2b4fc75f",
+      "comment": "TritonMemoryAccess 共享指针分析的一次大规模重构（约 6850 增 / 4689 删，29 个文件）：删除 IntegerUtils、PtrAnalysisRules（CommonPtrRules/ControlFlowPtrRules）、PtrInfoUtils、PtrAnalysisRules.h，新增 Utils.h/Utils.cpp，把 PtrAnalysis 从模板 PtrAnalysis<Rules> 改为具体类，用 setInfo/reset 取代 bind/clear，新增 loop-local 假设缓存与 popLoopCache、analyzeChanges/ChangeInfo（按字段比较 descriptor 保留性）、以及 SCF 数值不动点（for/while/if 的轴 kinds 与常量 stride 传播）。语义上还把'不可用'从 isEmpty 改为 analyze 失败，opaque tensor base 现在作为可靠回退（新增 hasScalarBase），DynamicOpaqueTensor 生成 tensor.generate 的零位移。这是一次影响面极大的架构收敛：所有消费方（TritonToStructured/TritonToLinalg 的 ptr 分析）必须同步迁移到新 API；测试从 113 扩到 156+ 并新增 CommonPtrSCFTest.cpp、PtrAnalysisSubAxisTest.cpp（由 ExtensionTest 重命名）。风险集中在 API 破坏性变更、循环不动点的收敛性与精度（保留常量 stride 的规则较复杂），以及'partial 轴不再视为可绑定'这类语义收紧是否会在下游产生新失败。",
+      "tags": [
+        "refactor",
+        "high-risk",
+        "pointer-analysis",
+        "triton-memory-access",
+        "compiler"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "重构彻底改变了 PtrAnalysis 公共 API 与结果语义，几乎所有 Analysis 单测都被改写（PtrAnalysis<CommonPtrRules> → PtrAnalysis，bind/clear → setInfo/reset，isEmpty 判空 → failed/opaque base 判定），并新增 SCF 不动点、ChangeInfo、动态切片/插入、sub-axis 校验等大量用例；PtrAnalysisExtensionTest 重命名为 PtrAnalysisSubAxisTest 并移除 TokenRules 模板扩展用例。需要确认所有消费方与测试都完成迁移且回归通过。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Analysis/CommonPtrSCFTest.cpp",
+          "third_party/ascend/unittest/Analysis/PtrAnalysisSubAxisTest.cpp",
+          "third_party/ascend/unittest/Analysis/PtrAnalysisControlFlowTest.cpp",
+          "third_party/ascend/unittest/Analysis/PtrAnalysisOpCoverageTest.cpp",
+          "third_party/ascend/unittest/Analysis/PtrAnalysisShapeTest.cpp",
+          "third_party/ascend/lib/TritonMemoryAccess/PtrAnalysis.cpp"
+        ]
+      },
+      "message": "[TritonMemoryAccess](fix) Simplify shared pointer analysis (#3035)\n\n* refactor(ascend): separate pointer rules and result operations\n\nKeep CommonPtrRules focused on dispatch and recursive input queries, with\nall shape, integer and pointer parsers together. Group complete result\nconstruction and transformations in PtrAnalysisInfo; keep axis calculations,\nproofs and materialization in PtrInfoUtils and integer proofs in IntegerUtils.\nPreserve the original analysis behavior and brief logical-stage comments.\n\nValidation: rebuilt six implementation and eleven test translation units\nwith clang 15 / LLVM 22; all 113 CPU tests pass with no skips. Applicable\npre-commit and git diff checks pass. Function-body comparison and independent\nreview confirm the original calculations, session recursion and IR placement.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* refactor(ascend): simplify shared pointer analysis facts\n\nConstruct valid axis facts at their producers instead of normalizing them\nlater, and consolidate arithmetic dispatch and shape updates. Keep simple\nuniform and unit-dimension reshape facts and exact offsets for other\nreshapes; remove per-field integer select reconstruction.\n\nUse failure for unavailable Common rules results. Require complete offsets\nfor integer and ordinary-pointer results and bindings while retaining\nBlockPtr descriptor reconstruction. Preserve dynamic tensor casts, slices\nand insertions, and recover div/rem facts for proven aligned dynamic origins.\n\nCover axis consistency, failure propagation and rebinding, dynamic shapes,\nexact offsets and conservative decomposition with public-analysis tests.\nReject dynamic-shape pointer bitcast rescaling before constructing an\ninvalid dense factor; preserve equal-width dynamic casts.\nValidation: 133 CPU unit tests and applicable pre-commit checks pass.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* fix(ascend): recover uniform pointer-analysis origins\n\nComplete uniform facts after slices remove unknown axes and after shape or\nvalue-preserving casts propagate an incomplete bound origin. Reuse numerical\noffsets, including attribute-backed pointer offsets, so subsequent uniform\nmultiplication retains its structured form.\n\nCover dynamic slice origins, signed casts, selected pointer broadcasts and\nattribute-backed identity casts. The slice and reshape regressions fail on\nthe previous implementation; public-analysis tests and pre-commit pass.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* feat(ascend): infer loop-carried axes in common pointer analysis\n\nInfer numeric for/while carrier and result axes by joining initial facts and\nall control-flow edges to a finite fixed point. Join scalar-condition if\nbranches and construct origins and strides from the current SSA value, so\nstrides may change between iterations without losing affine structure.\n\nAdd isolated hypothesis queries that preserve configured Rules and explicit\nbindings. Keep independent caches and recursion state for each hypothesis,\nnormalize unit axes before sampling, and retain exact values for unknown\naxes. SCF rewriting stays with the consumers.\n\nCover changing strides, uniform and cross-dependent carriers, zero-trip\nresults, nonlinear later iterations, different while edge arities, nested\nloops, partial/unit axes, extension rules and query isolation.\nValidation: 146 public-analysis GTests and scoped pre-commit checks pass.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* refactor(ascend): simplify shared pointer analysis\n\nReplace configurable pointer rules and bindings with one concrete analyzer,\nloop-local hypothesis caches, and validated setInfo/reset entry points.\nConsolidate parsing in PtrAnalysis and integer/offset helpers in Utils.\n\nRepresent descriptor preservation with ChangeInfo and retain exact numerical\noffsets for partially structured tensors. Preserve block descriptor bases,\nopaque per-lane pointer bases, and supported sub-axis facts needed by future\nconsumer migrations. Keep consumer rewrites outside the shared analyzer.\n\nUpdate the public-analysis tests for the concrete API and its cache lifecycle,\ncontrol-flow proofs, descriptor reconstruction, and conservative fallbacks.\nValidation: isolated Debug build and 151 public-analysis GTests pass.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* fix(ascend): preserve constant strides across numeric control flow\n\nCarry known constant strides through the existing numeric SCF fixed point.\nUniform loop updates now preserve strides such as 1 and -2 instead of\nreconstructing them from tensor samples. Keep a constant only when every\nincoming edge agrees; losing it triggers another iteration even when the\naxis remains Structured.\n\nMaintain separate while before/after facts and preserve equal constants\nacross if branches. Keep the current SSA as the exact full offset, and use\nruntime stride samples when a constant cannot be proved.\n\nCover uniform updates, cross-carrier invalidation, both while edges, nested\nquery order, branch joins, and partial axes. The four constant-preservation\nregressions fail with the previous implementation.\n\nValidation: isolated Debug build, 17 SCF tests, all 156 public-analysis\nGTests, and scoped pre-commit checks pass.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n---------\n\nSigned-off-by: KanuaK <yihan_z@qq.com>"
+    },
+    {
+      "sha": "eab2aa4bbbb410acd796950e037d629ce9f4b8a0",
+      "comment": "首次尝试把 DynamicCV 限制在 A5：ttir_to_linalg 与 linalg_to_bin 用 getattr(metadata.get('target'), 'arch', None) 取架构，parse_options 在非 A5 时强制关闭。该实现随后被 055f0ada 回退、7800f36 以 metadata 架构方式重新实现，因此本提交在当日净效果中被抵消。单独看，getattr 链对 metadata['target'] 缺失是安全的，但依赖 target 对象存在，与后来选用的 target_arch/arch 元数据 key 不一致，是这次反复的直接诱因。",
+      "tags": [
+        "bugfix",
+        "compiler",
+        "low-risk",
+        "dynamic-cv"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "该提交与其测试随后被同日 055f0ada 完整回退，再由 7800f36 以新语义重新覆盖，最终测试归属在 7800f36，本提交无需单独维护用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler.py"
+        ]
+      },
+      "message": "[compiler](fix) disable DynamicCV on new targets (#3070)\n\n* [compiler](fix) 限制 DynamicCV 仅用于 A5 架构\n\n* [compiler](fix) 复用 A5 架构判断"
+    },
+    {
+      "sha": "e8d644505f70ccf460c78709d4584807749eaac5",
+      "comment": "README 中英文档补充 Introduction 段落与 Nightly Build 安装说明，给出 3.6.0+devYYYYMMDD 的版本格式示例与华为云 nightly 索引地址，并提示 nightly 为测试构建不建议生产使用。纯文档改动，无代码风险；唯一需要注意的是示例版本号与未来版本节奏的同步维护。",
+      "tags": [
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯文档更新，不涉及任何代码或测试逻辑。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](fix) update nightly installation in readme (#3124)\n\n* [Docs](fix) update nightly installation in readme\n\n* fix comment"
+    },
+    {
+      "sha": "074cf62907f815694a01e5cdc4ac78a90610ae82",
+      "comment": "Ascend 约束文档补充 scope 操作约束：scope.scope 不可嵌套、cube scope 不得含 vector 指令（反之亦然）、scope 内定义的 tensor 不得在 scope 外使用。这些是 TLA scope 语义的使用约束说明，属于文档完善；但这类约束当前仅以文档形式存在，若前端或 verifier 没有对应检查，用户仍可能在编译期才遇到难懂的报错，后续可考虑把三条约束落成前端校验。",
+      "tags": [
+        "docs",
+        "low-risk",
+        "tla"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅修改文档中的约束描述文本，未引入或修改校验逻辑，现有测试无需变化；若后续把约束实现为前端检查，则需新增负例测试。",
+        "suggested_test_areas": [
+          "docs/zh/python-api/_ascend_constraints.py"
+        ]
+      },
+      "message": "[docs](fix) clarify scope operation constraints (#3114)\n\nSigned-off-by: zhaojingkai <zhaojingkai4@huawei.com>"
+    }
+  ],
+  "generated_at": "2026-11-12T07:48:39.919657+08:00",
+  "architecture_based_on_sha": "408e31592b50e930fc6f01c244f309444005d575",
+  "architecture_generated_at": "2026-11-01T20:11:07.549514+08:00"
+}

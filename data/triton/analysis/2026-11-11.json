@@ -1,0 +1,193 @@
+{
+  "date": "2026-11-11",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-11-12T07:47:07.514871+08:00",
+  "daily_summary": "当日变更集中在 AMD 后端（TDM 完成作用域推断、PartitionedSharedLayout 的 TDM gather/store/scatter 支持、ConSan 多 CTA 启动同步）和 NVIDIA 后端（设备端 TMA descriptor 打包已有字段并处理 Blackwell 大分配类、移除 ptxas regAllocOptLevel 临时规避）。此外有一个通用前端修复：函数参数上的 tt.annotate 提示（multiple_of/max_contiguous/max_constancy）不再被丢弃。整体上以平台专属编译/lowering 的完善与性能修复为主，上游通用接口（BaseBackend/DriverBase/CompiledKernel 等）没有变动。",
+  "ascend_impact_summary": "当日 6 个 commit 中有 1 个触及 Ascend 后端必然影响/可能影响路径：commit ea8ea5de1a 修改 python/src/ir.cc（value.set_attr 中函数块参数的处理逻辑），该文件是 triton-ascend release patch 直接修改的绑定文件，且参数提示语义变化会影响 Ascend 前端生成的 TTIR，因此存在冲突与语义一致性风险；需检查 release patch 在该函数上的上下文是否仍可应用，并验证 multiple_of/max_contiguous/max_constancy 在 Ascend 前端/下游 pass 中的表现。其余 5 个 commit 全部位于 third_party/amd 和 third_party/nvidia（含其测试），属于纯平台专属实现，对 triton-ascend 无影响。",
+  "commits": [
+    {
+      "sha": "58c0b9ae2f888da313b3124b5d4ddfe13823922e",
+      "comment": "AMD 后端为 async wait 增加完成作用域（completion scope）推断。背景是 Membar 分析开始根据 wait 的完成作用域决定是否插入 CTA barrier：TDM wait 之前默认全部视为 CompletionSync::All，导致 load-only 阶段插入了多余的 CTA barrier。设计上：(1) 在 MLIR 层的 MembarAnalysis 增加 virtual getCompletionSync(Operation*) 钩子（include/triton/Analysis/Membar.h、lib/Analysis/Membar.cpp），把「op → ThreadSyncKind」的分类抽到一个可覆写的虚函数中；(2) 新增 AMDMembarAnalysis 子类（third_party/amd/lib/TritonAMDGPUToLLVM/Membar.cpp），消费 UpdateAsyncWaitCount 写入的 amdg.completion_scope 注解，实现按后端定制；(3) UpdateAsyncWaitCount 增加前向数据流分析 AsyncCompletionAnalysis，用每队列一个 pending-global-write 位（ordinary copy / TDM 两类）跟踪控制流，遇到 full wait 的清零、partial wait 保守保留，含调用/不支持区域则退化为 All；无 async store 的目标直接全部标 shared；(4) 定义 kAsyncCompletionScopeAttrName 注解常量。整体设计合理，把「能力/数据流证明」和「membar 策略」解耦成注解 + 可覆写钩子，测试覆盖很充分（分支汇合、loop backedge、warp_specialize 区域、callee 调用、多 token 等）。主要风险在于：MembarAnalysis 新增 virtual 方法改变了通用分析基类的可覆写契约，行为等价性依赖所有子类默认实现不变（已保留默认路径）；UpdateAsyncWaitCount 新增前向数据流分析在不支持区域上的保守退化若不正确可能造成漏 barrier（但方向上偏保守 All，安全）。",
+      "tags": [
+        "performance",
+        "refactor",
+        "medium-risk",
+        "AMD",
+        "membar-analysis",
+        "async-pipeline"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Infer async_wait completion scope (#12648)\n\n- Background\nWith the recent change, Membar analysis now look into the `wait` op's\ncompletion scope. Especially it sets `CompletionSync::All` flag when the\n`wait` can potentially complete the global memory write. And when it's\nobserved, it'll insert barrier before the next coming global memory\nload.\nTDM waits currently default to All completion scope, which can insert\nunnecessary CTA barriers before global reads during load-only phases.\nInfer their scope in UpdateAsyncWaitCount and consume the annotation in\nAMD membar analysis.\n\n- Design\nA forward scan tracks possible pending async stores or scatters through\ncontrol flow. Waits use Shared when none are pending; otherwise they\nretain All. A full hardware wait clears the pending-write flag after\nclassifying the wait, while partial waits conservatively retain it.\nCalls and unsupported control flow retain All."
+    },
+    {
+      "sha": "ea8ea5de1a8376b56009428169bc59ad53828850",
+      "comment": "修复前端用户提示（tl.multiple_of / tl.max_contiguous / tl.max_constancy）在函数参数上被静默丢弃的 bug。原实现 value.set_attr 对 BlockArgument 只在非 FuncOp 的 entry block 上把提示写为 `<name>_arg<id>` 属性，FuncOp 的 block arg 则完全不处理。新实现在 FuncOp 的 block 开头插入 tt.annotate op 承载提示，并 self.replaceAllUsesExcept 重定向所有使用，从而保证即使提示在代码文本上出现在使用之后也能支配所有使用；重复提示复用同一 annotation（因为 self 已被替换为 annotate 的结果）。这一修复对 matmul 场景的 stride 对齐提示生效，PR 描述中给出了明显的性能恢复数据（12.4µs → 6.19µs）。实现上正确利用了 tt.annotate 的既有语义，并补丁了 scalar/pointer/tensor 参数、使用先于提示、重复提示等前端回归测试。风险点：在函数入口块最前面插入 annotate 并重定向 block argument 的所有使用，会改变 TTIR 形态（参数使用从原始 block arg 变为 annotate 结果），可能影响依赖 block argument 身份的 pass（如参数特化/内联/axis-info 传播），需要在 Ascend 的下游 TTIR 消费路径上确认 annotate op 能被正确穿透。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "frontend",
+        "medium-risk",
+        "python-bindings"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "python/src/ir.cc 是 triton-ascend release patch（triton-ascend-3.6.0.patch）直接修改的文件，本次在 init_triton_ir 的 value.set_attr 绑定中重写了 BlockArgument 分支（FuncOp 情形从「跳过」改为插入 tt.annotate + replaceAllUsesExcept，非 FuncOp entry block 情形移到 else if 分支）。这一改动会与 Ascend 的 ir.cc patch 产生文本冲突，构建期 patch 可能无法应用；同时 TTIR 中函数参数的使用从原始 block arg 变为 tt.annotate 结果，Ascend 的 TritonToLinalg/结构化/AxisInfo 消费链需要能正确处理或穿透 tt.annotate op，否则参数提示的重定向会改变 Ascend 前端到 Linalg 的输入形态。",
+        "testing": "需验证：1) Ascend release patch 应用到更新后的 ir.cc 是否仍成功；2) 带 multiple_of/max_contiguous/max_constancy 参数提示的 kernel 在 Ascend 后端编译是否正常、提示是否被下游正确利用；3) 现有基于参数 block arg 的 TTIR 匹配测试（lit/pytest 检查 %arg0 使用）是否因出现 tt.annotate 而失效。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/patch/triton-ascend-3.6.0.patch",
+          "third_party/ascend/unittest/pytest_ut/",
+          "third_party/ascend/lib/.../TritonToLinalg 相关 lit 测试"
+        ]
+      },
+      "message": "[Frontend] Preserve hints on function arguments with tt.annotate (#12701)\n\n`tl.multiple_of(stride, 8)` was silently ignored when `stride` was a\nfunction argument: `value.set_attr` skipped `FuncOp` block arguments.\nEmit `tt.annotate` at the start of the argument's block and redirect its\nuses, preserving the existing value-wide hint semantics. Repeated hints\nreuse the annotation. This also preserves `max_contiguous` and\n`max_constancy` hints on helper-function arguments.\n\nAdd frontend regressions for scalar, pointer, and tensor arguments,\nincluding uses emitted before the hint and repeated hints. Existing\nnon-function region-argument handling is unchanged.\n\nFound while investigating #12698. With this fix, adding only\n`tl.multiple_of(stride_x_m, 8)` and `tl.multiple_of(stride_w_n, 8)` to\nthe baseline matmul recovers the alignment-driven speedup and eliminates\nspills:\n\n| K | ptxas | Baseline | Direct stride hints | #12698 |\n|---|---|---:|---:|---:|\n| 40 | -O1 | 12.40 µs | 6.19 µs | 6.05 µs |\n| 56 | -O1 | 12.43 µs | 6.65 µs | 6.50 µs |\n| 40 | -O3 | 8.18 µs | 5.81 µs | 5.86 µs |\n| 56 | -O3 | 8.18 µs | 6.35 µs | 6.35 µs |\n\nMeasurements used GB300, BF16 inputs/output, M=1024, N=2048, blocks of\n128×256×64, eight warps, four stages, and split-K=1. Each row used\nidentical inputs and launch settings across variants, with 31\ninterleaved samples of 128 warmed CUDA-graph launches. Every variant\nmatched an independent FP32 reference cast to BF16 exactly. Compiler\nsources were based on dddf5617b6; all variants used the same PR-base\nassembler method to account for the later removal of\n`--regAllocOptLevel=2`.\n\nValidation:\n\n- The new scalar/pointer regression fails with the original compiler\nbecause it emits no annotations.\n- 951 frontend tests and both existing GPU vectorization-hint cases pass\nwith the rebuilt compiler (953 total).\n- `test/Triton/inline-hints.mlir` passes, covering inlining and axis\nanalysis.\n- The compiler was built and tested on the Brix GB300.\n- All commit hooks passed, including Ruff, YAPF, clang-format, and mypy.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/src/ir.cc"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "edb9e623fb16bbe12353dcda224f01a8b1e6ffca",
+      "comment": "AMD CDNA5 上为 TDM store 与 TDM scatter 支持 PartitionedSharedLayout 源（仅行划分）。TDM store 的 lowering 此前已按 partition 逐个处理，只需在 AsyncTDMCopyLocalToGlobalOp::verify 中识别 PartitionedSharedEncodingAttr 并对内层 layout 复用 verifyTDMSharedMemoryEncoding 校验（padding 间隔必须等于最内层 piece 维度），同时修正 shapePerCTA 计算。TDM scatter 需要更实质的改动：把 srcMemObj.getBase() 改为 getBases() 全部 partition 基址，getPaddedEncoding 与 toLinearLayoutIgnoringPadding 替换原先的手写 padded 分支，并把 srcPtrs/sharedLayout 传入 emitTDMGatherScatter；同时在 TDMUtility 中重构 emitTDMGatherScatter 以支持多 LDS 基址（按 partition 索引 extractelement 选择基址）并统一 padding/rowToShared 计算。测试新增 lit（row/col/multi-instruction 的 store，row 的 scatter）、invalid 用例、以及 CDNA5 gluon 运行时测试。风险主要在 lowering 的地址计算：partition 基址选择 + rowToShared 偏移 + padding 的组合较多，若有误可能导致越界/错位写，但 lit + 运行时测试覆盖较好。",
+      "tags": [
+        "feature",
+        "AMD",
+        "low-risk",
+        "lowering",
+        "shared-layout"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Support PartitionedSharedLayout in TDM Store/Scatter for CDNA5 (#12702)\n\nSupports `PartitionedSharedLayout` as the source of TDM store and TDM\nscatter (row partitioning only) on CDNA5.\n\nExisting lowerings already handle partition pieces, so TDM store only\nneeds verifier changes. TDM scatter additionally passes all partition\nbases and the padding-agnostic shared layout, reusing the TDM gather\npath. Adds lit and unit tests."
+    },
+    {
+      "sha": "fbd70d9e44ca05f6253c84fc5553981dd79b44b0",
+      "message": "[AMD][gfx1250] Support PartitionedSharedLayout in TDM Gather (#12651)",
+      "comment": "AMD CDNA5 上为 TDM gather 支持行划分的 PartitionedSharedLayout。AsyncTDMGatherOp::verify 对 partitioned encoding 走 verifyTDMSharedMemoryEncoding 并限定 partitionDim == 0，内层 layout 复用现有 padded/swizzled 校验。lowering 侧把 dstMemObj.getBase() 改为 getBases()，用 toLinearLayoutIgnoringPadding 统一 sharedLayout 计算，并重构 emitTDMGatherScatter：新增 sharedLayout 参数与 ldsPtrs 数组，用 sharedLayout.pseudoinvert() 把 tile 行映射为 (offset, partition)，每 chunk 通过 xor(chunk0Partition, partDelta) 从多基址 vector 里 extractelement 选基址，再叠加 padding 后的字节偏移生成 ldsAddr；同时把 instruction count 计算（analyzeGatherScatterLayout）改为接收 sharedLayout，用 partition 基向量限定「一条指令只写入一个 piece」从而修正指令数（pieceRows 上限）。UpdateAsyncWaitCount 相应把 getTDMGatherScatterIntrinsicCount 的调用改为区分 gather/scatter 并传 smem 类型。整体与同日的 scatter/store commit 配套，形成 TDM + PartitionedSharedLayout 的完整支持。风险在于伪逆得到的 partition/offset 拆分依赖 layout 是行划分这一前提（已由 verifier 保证），以及多基址 vector 选择的正确性；测试含 lit、指令数单测和运行时正确性/指令数断言，覆盖充分。",
+      "tags": [
+        "feature",
+        "AMD",
+        "low-risk",
+        "lowering",
+        "shared-layout"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "2811380e19eb4133fd7549096828edc36f479362",
+      "comment": "NVIDIA 后端修复 #12589：设备端创建的 tensor map 未命中 Blackwell 大分配类（large allocation class），导致跨越至少 128KiB 的 TMA load 变慢。方案是在 SM90/SM100/SM103 上把编译期已知的 tensor map 字段直接打包进零初始化的 descriptor word（packTensormapTemplate 按实测的 word/bit 布局编码 rank、elemtype、interleave、swizzle、fill、box_dim、global_dim、global_stride、element_stride），设备端只需用 tensormap.replace 修补运行时基址和无法静态确定的字段；其他目标退回原有的 zero-fill + 逐字段 replace。对 Blackwell + PTX>=9.5，还实现了分配类判定：字段全静态时在编译期算最后元素的起始字节并与 128KiB-1 比较，命中则打标并用 .alloc_same 保留；跨度动态时生成运行期谓词并用 .alloc_large 条件设置。为此 populateTMAToLLVMPatterns 新增 ModuleAxisInfoAnalysis 参数以读取常量信息，TritonGPUToLLVM 同步传入 axisInfoAnalysis。实现复杂度高（手工 bit 布局编码、PTX 版本/arch 门控），硬编码的 word/bit 布局若与 PTX ISA 不一致会生成错误的 descriptor；但测试很扎实：与 cuTensorMapEncodeTiled 的 64 字节硬件描述符逐字节比对（rank 1–5 × 3 dtype、static/dynamic）、alloc class 阈值测试、compile-only 的 PTX 断言。风险主要是可维护性与未来 PTX/新架构适配。",
+      "tags": [
+        "performance",
+        "bugfix",
+        "NVIDIA",
+        "medium-risk",
+        "tma",
+        "lowering"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Pack known fields into device TMA descriptors (#12689)\n\nFixes #12589.\n\nDevice-created tensor maps can miss Blackwell's large allocation class,\nwhich slows some TMA loads from tensors spanning at least 128 KiB.\n\nOn SM90, SM100, and SM103, pack compile-time-known tensor map fields\ninto zero-initialized descriptor words. This works during offline\ncompilation. The device uses `tensormap.replace` for the runtime address\nand any remaining fields. Other targets use the zero-fill fallback.\n\nOn SM100 and SM103 with PTX 9.5 or later, the allocation-class cutoff\nuses the last element's starting byte and accounts for padded strides.\nWhen the span is known, the compiler packs the class and uses\n`.alloc_same` to preserve a packed large class while patching the\naddress. When the span is dynamic, the kernel predicates `.alloc_large`\non the runtime span. Earlier PTX versions leave the allocation flag at\nits default. [PTX ISA\nreference](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#data-movement-and-conversion-instructions-tensormap-replace)\n\n## Testing\n\n- 235 tests passed on GB300, covering descriptor loads and stores,\nswizzled Gluon transfers, and the allocation-class cutoff for dense and\npadded strides.\n- The host comparison checks ranks 1–5 with three dtypes. Static and\nruntime device descriptors must match the 64 hardware bytes from\n`cuTensorMapEncodeTiled` with matching encoder settings and have zeroes\nin the trailing 64 bytes.\n- 55 compile-only tests passed. Six descriptor cases also passed with\nCUDA hidden for SM90, SM100, and SM103.\n- 308 lit tests passed and two were unsupported. The lowering checks\ncover packed fields, the runtime allocation-class predicate, and the\nzero-fill fallback.\n- With ptxas 13.4.59, all six offline descriptor cases and both GB300\ncutoff cases passed with the small allocation class."
+    },
+    {
+      "sha": "eaf56d5e020480ca8b65fa6d5b687ba480cc7838",
+      "comment": "修复 AMD 多 CTA kernel 中 ConSan 启动集群 barrier 的同步语义。问题的根因是 AMD 上每个 warp 必须各自消费自己的 cluster-barrier 完成信号（每次 wait 会消耗一次 arrive 的完成），若 warp specialization 的 worker warp 没有参与启动 wait，后续某个 wait 可能提前消费启动完成而提前返回；同时一个 CTA 内的所有 warp 必须先完成启动 wait，才能再次发起 cluster arrive。方案：(1) 把 NVIDIA ClusterOpsToLLVM 中私有的 lowerClusterSyncForAllWarps 提升为 TritonGPU 通用工具 emitClusterSyncForAllWarps（include/triton/Dialect/TritonGPU/Transforms/Utility.h + lib/.../Utility.cpp），新增 joinWarps 选项，NVIDIA 侧改为调用通用实现并保持原行为（joinWarps 默认 false）；(2) AuxDataMap 把启动 cluster barrier 的插入推迟到 instrumentation walk 之后（新增 startupClusterBarrierAnchor + createStartupClusterBarrier），避免 ConSan 给自身生成的 op/region 插桩；(3) AMD 的 createInitClusterBarrier 用 emitClusterSyncForAllWarps(joinWarps=true) 让所有 warp（含 worker partition）执行 cluster wait 并 join，再补 cluster scope 的 release/acquire fence，因为 AMD native cluster barrier 只同步执行不同步内存；(4) 新增 ConSanTargetHooks::supportsCrossCTASharedMemory()（AMD 返回 false），据此把 AMD 的 scatter 检查与 allocation poison 后的同步降为 CTA-local barrier（避免在 worker partition 内嵌套 warp_specialize）。设计清晰，把启动同步从「instrumentation 过程中生成」改为「之后生成」是关键正确性修复。测试新增 lit 覆盖无 WS 多 CTA、多 worker partition 的启动 wait 与 join、partition 内 poison 只用 local barrier，以及 CDNA5 真实运行时 ConSan 测试。",
+      "tags": [
+        "bugfix",
+        "AMD",
+        "ConSan",
+        "medium-risk",
+        "warp-specialization"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][ConSan] Handle startup cluster barrier synchronization in multi-CTA kernels (#12646)\n\nHandle startup cluster barrier synchronization in multi-CTA kernels.\nOn AMD, each warp must consume its own cluster-barrier completion. Every\nwarp in the CTA, including warps used in warp specialization worker\nregions, must therefore wait on ConSan's startup cluster barrier.\nOtherwise, a later wait can consume the startup completion and return\nearly. All warps in a CTA must also finish the startup wait before that\nCTA signals another cluster arrival.\n\n- Move NVIDIA's all-warps cluster synchronization helper into TritonGPU\n  utilities as `emitClusterSyncForAllWarps`, with an opt-in `joinWarps`\n  flag, preserving NVIDIA's existing synchronization behavior.\n- Generate the startup synchronization after the instrumentation walk\n  so ConSan does not instrument its generated operations and regions.\n- Make every warp execute the startup wait and join before continuing.\n  Since AMD's native cluster barrier only synchronizes execution, add\n  cluster-scoped release and acquire fences to make state initialization\n  and lock release visible across the cluster.\n- Use CTA-local barriers for AMD scatter checks and after allocation\n  poisoning, since AMD shared-memory accesses are confined to the\n  current CTA. Poisoning can also run inside worker partitions, where\n  the cluster synchronization would nest the warp_specialize op created\n  by `emitClusterSyncForAllWarps`."
+    },
+    {
+      "sha": "c3ac6f6dae62893723ac1b13abb711b4cd39a31f",
+      "message": "[AMD][CI] Bump rocjitsu image to 20261110 (#12697)\n\n- Update to Nov 10 2026 rocm whls\n- Drop skips that are now passing",
+      "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 triton-ascend。",
+      "tags": [
+        "chore"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "b93eac1c2fb957a13190f6f4db69c5dfb9629522",
+      "message": "[AGENTS.md] Allow matching constant operands (#12687)\n\nThe lowering guidelines currently prohibit inspecting any other\noperation, which also rules out matching an operand's defining constant\noperation.\n\nExplicitly allow matching constant-valued operands through their\ndefining constant operations. Keep the restriction on inspecting other\noperations and following loop-carried values, with other cross-operation\nreasoning delegated to a separate analysis or transformation pass.\n\nValidation: `git diff --check` and the applicable pre-commit hooks\npassed. Documentation-only change; no build or tests needed.",
+      "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 triton-ascend。",
+      "tags": [
+        "chore"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "5a65cea23b5ac6bdfaf1e97d619b8d8d1c966ce8",
+      "comment": "移除 CUDABackend 中为绕过 ptxas 13.x bug 而强制添加的 --regAllocOptLevel=2 参数，恢复 ptxas 默认寄存器分配优化等级（因为 ptxas >= 13.2 已修复该问题）。改动只是 third_party/nvidia/backend/compiler.py 中 ptxas 命令行拼接的一处删除，影响面极小，但对所有 NVIDIA 用户生效：寄存器分配行为会变化，性能/occupancy/spill 可能发生波动，需要依赖 CI 与日常 benchmark 验证。风险判定为低（编译器默认行为），但仍建议关注 ptxas 版本下限是否在构建/运行时被校验（否则官方升级前的旧 ptxas 可能再次遇到原 bug）。",
+      "tags": [
+        "chore",
+        "NVIDIA",
+        "low-risk",
+        "ptxas"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Drop --regAllocOptLevel=2 ptxas workaround (#12682)\n\nRemove the forced `--regAllocOptLevel=2` flag in `CUDABackend` that was\nadded to work around a ptxas 13.x bug.\n\nThe updated Nvidia ptxas version (>=13.2) resolves the underlying issue, so the\nworkaround is no longer needed and ptxas can use its default register\nallocation optimization level.\n\nRelying on CI to validate this change."
+    }
+  ],
+  "architecture_based_on_sha": "0861b90f695e3c866f6f7eadd4be8339378ab017",
+  "architecture_generated_at": "2026-11-01T20:11:07.548246+08:00"
+}

@@ -79,6 +79,18 @@
       "interface_changes": "在 TTIR 层为 tt.reduce/tt.scan/tt.map_elementwise 的回调 region 增加纯度验证：新增 verifyCallbackBody 遍历 region，允许纯操作、llvm.intr.assume、tt.assert、tt.print，禁止带有未知副作用或写内存操作的 op；并沿 tt.call 递归检查被调函数（多线程 pass 环境下跳过以防竞态）。原先 map_elementwise 只单独禁 store，现统一为通用校验。同步更新 Ops.td 文档、core.py docstring、invalid.mlir 与 UtilityTest。这是正确性加固，风险主要在于可能使原本合法（但语义不当）的 kernel 编译报错，以及递归检查被调函数在并发 pass 场景下的保守跳过。",
       "change_summary": "[IR] Verify reduction / scan / map_elementwise combiner ops to be pure or assert / print / assume (#12668)",
       "ascend_impact": false
+    },
+    "ea8ea5de1a8376b56009428169bc59ad53828850": {
+      "date": "2026-11-11",
+      "affected_modules": [
+        "python/src/ir.cc"
+      ],
+      "affected_interfaces": [
+        "python/src/ir.cc"
+      ],
+      "interface_changes": "修复前端用户提示（tl.multiple_of / tl.max_contiguous / tl.max_constancy）在函数参数上被静默丢弃的 bug。原实现 value.set_attr 对 BlockArgument 只在非 FuncOp 的 entry block 上把提示写为 `<name>_arg<id>` 属性，FuncOp 的 block arg 则完全不处理。新实现在 FuncOp 的 block 开头插入 tt.annotate op 承载提示，并 self.replaceAllUsesExcept 重定向所有使用，从而保证即使提示在代码文本上出现在使用之后也能支配所有使用；重复提示复用同一 annotation（因为 self 已被替换为 annotate 的结果）。这一修复对 matmul 场景的 stride 对齐提示生效，PR 描述中给出了明显的性能恢复数据（12.4µs → 6.19µs）。实现上正确利用了 tt.annotate 的既有语义，并补丁了 scalar/pointer/tensor 参数、使用先于提示、重复提示等前端回归测试。风险点：在",
+      "change_summary": "[Frontend] Preserve hints on function arguments with tt.annotate (#12701)",
+      "ascend_impact": false
     }
   }
 }

@@ -1,4 +1,40 @@
 {
+  "58c0b9ae2f888da313b3124b5d4ddfe13823922e": {
+    "date": "2026-11-11",
+    "msg": "[AMD] Infer async_wait completion scope (#12648)"
+  },
+  "ea8ea5de1a8376b56009428169bc59ad53828850": {
+    "date": "2026-11-11",
+    "msg": "[Frontend] Preserve hints on function arguments with tt.annotate (#12701)"
+  },
+  "edb9e623fb16bbe12353dcda224f01a8b1e6ffca": {
+    "date": "2026-11-11",
+    "msg": "[AMD] Support PartitionedSharedLayout in TDM Store/Scatter for CDNA5 (#12702)"
+  },
+  "fbd70d9e44ca05f6253c84fc5553981dd79b44b0": {
+    "date": "2026-11-11",
+    "msg": "[AMD][gfx1250] Support PartitionedSharedLayout in TDM Gather (#12651)"
+  },
+  "2811380e19eb4133fd7549096828edc36f479362": {
+    "date": "2026-11-11",
+    "msg": "[NVIDIA] Pack known fields into device TMA descriptors (#12689)"
+  },
+  "eaf56d5e020480ca8b65fa6d5b687ba480cc7838": {
+    "date": "2026-11-11",
+    "msg": "[AMD][ConSan] Handle startup cluster barrier synchronization in multi-CTA kernels (#12646)"
+  },
+  "c3ac6f6dae62893723ac1b13abb711b4cd39a31f": {
+    "date": "2026-11-11",
+    "msg": "[AMD][CI] Bump rocjitsu image to 20261110 (#12697)"
+  },
+  "b93eac1c2fb957a13190f6f4db69c5dfb9629522": {
+    "date": "2026-11-11",
+    "msg": "[AGENTS.md] Allow matching constant operands (#12687)"
+  },
+  "5a65cea23b5ac6bdfaf1e97d619b8d8d1c966ce8": {
+    "date": "2026-11-11",
+    "msg": "[NVIDIA] Drop --regAllocOptLevel=2 ptxas workaround (#12682)"
+  },
   "087ba577e00fd21ea365de128d11438f6f056cf4": {
     "date": "2026-11-10",
     "msg": "[Gluon] Add split A/B pipelines to the block-scaled matmul example (#12643)"
