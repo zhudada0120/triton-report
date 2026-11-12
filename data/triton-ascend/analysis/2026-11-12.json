@@ -1,0 +1,235 @@
+{
+  "date": "2026-11-12",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-11-13T06:56:42.129693+08:00",
+  "daily_summary": "当日变更以修复类为主，覆盖 Ascend 后端编译链路（TritonToLinalg 的 argmin/argmax 归约初始化与 sigmoid/select 切片策略、TritonToGraph 的 radix/直方图重写门控、TritonToStructured 的隐式 permute 限制、DynamicCVPipeline 的 matmul AB fill 归属）、运行时启动器（AOT libpython 链接回退、共享库目录参数回退、device limit 异常处理）、前端兼容性（Python 3.14 __annotate__ 的 aggregate 哈希 patch）以及大量文档规范化整理，另有一些 launcher/compiler 的小修复回退。整体属于质量收敛的一天：多个提交本质是修复此前引入的回归（revert 共享库目录、revert libpython 链接），并在 lowering 层补齐边界语义（tail/select、索引位宽、upper-bit 校验）。",
+  "test_impact_summary": "本日变更显著扩展了 MLIR 层与设备端的看护面：argmin/argmax 增加了专门的 lit 用例覆盖 benefit 优先级、符号/无符号哨兵、宽索引与 generic 回退；select 切片新增了 dual-target（A2/A5）lit 文件与设备 pytest（动态偏移、常量 tail、multibuffer、越界）；TritonToGraph 新增 radix/narrow 的 lit 用例与设备 pytest，并新增 Utils 单测（traverseForwardUpdateUserChainIf 的共享/重复 operand 遍历）；histogram parking 与 unsigned narrowing 也有设备 pytest。同时 compiler/driver 侧增加了 graph_optimize 事件顺序、compile_on_910_95 派生的 pytest 检查与 get_device_limit 异常用例。这些新测试点均应纳入 CI 看护，且需关注双目标（910_95/A2_A3）路径分别执行。文档类提交不引入测试点，但 test_aot.py 的改动涉及测试自身的运行方式，需确认 AOT 用例在无 libpython 链接场景下仍能通过。",
+  "commits": [
+    {
+      "sha": "62f6b54e0f2420d6b718e0d4f89fa7a464d2e78f",
+      "comment": "回退 c73d1f58 引入的 _build_shared 的 bin_dir 参数：将签名从 _build_shared(name, sources, debug=False, bin_dir=None) 改回 _build_shared(name, sources, debug=False)。这是针对 launcher 共享库存储目录优化的回退，缩减了 launcher 构建接口的参数面。注意：同一批变更中 98ab27bb 又把 bin_dir=None 加回来了，说明该目录优化最终被重新引入，两个提交需合看以理解最终态。风险较低，但需确认调用方是否仍在传 bin_dir。",
+      "tags": [
+        "refactor",
+        "bugfix",
+        "low-risk",
+        "launcher"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅为参数签名回退，且后续 98ab27bb 又恢复了 bin_dir 语义，现有 launcher/AOT 相关测试足以覆盖构建路径。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_aot.py"
+        ]
+      },
+      "message": "Revert \"[launch](fix)  Optimize the storage directory for shared libraries (#2945)\" (#3094)\n\nThis reverts commit c73d1f58"
+    },
+    {
+      "sha": "54227ff548641048ed2922a6705e741153ff7448",
+      "comment": "将 npu_compile 两处临时文件名从 kernel.mlir 改为 kernel.ttadapter.mlir（linalg_to_bin_enable_npu_compile_910_95 与 _A2_A3 两条路径）。这是为了让传给 bishengir-compile 的输入文件扩展名与 ttadapter IR 语义一致，避免按扩展名做分派的工具/日志产生误解。实现改动极小且对称，风险低。需注意是否有脚本/dump 逻辑依赖 kernel.mlir 文件名。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "compile"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅是临时文件命名变化，不影响产物与 metadata；现有编译 e2e 测试可隐式覆盖。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut（编译 e2e）"
+        ]
+      },
+      "message": "[compile](fix) fix tmp_file_name in npu_compile (#3093)"
+    },
+    {
+      "sha": "00364a17a81632d8ece1b806c8378c57a1249dff",
+      "comment": "修复 DynamicCVPipeline 中 linalg.fill 被误判为 Cube/Vector 依赖源的问题。OpClassifierPass::matchFillPattern 增加判断：若 fill 结果被 linalg.matmul 的 DPS input（A/B 操作数）使用则不做 cube mark；DataDependencyAnalysis 新增 isUsedByMatmulAB 反向遍历（处理 loop carried iter_args、跳过 vector 标记 op、matmul 前两个操作数判定），并修正 isCubeAndVectorOp 原本逻辑反转的问题（原先 !isa 分支写反）。同时更新 flag_reuse_cross_direction.mlir 的 core_type 标注（VECTOR→CUBE）并新增 test_fill_used_in_matmul_ab.mlir 覆盖 matmul AB 场景。该变更修正了 ssbuffer 依赖分析语义，对 Cube/Vector 流水划分有实质影响，需谨慎回归。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "DynamicCVPipeline",
+        "TritonToGraph"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 fill-used-in-matmul-AB 的 lit 用例，且修改了原有 lit 用例的期望，需要确保 CI 覆盖新旧两种场景。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow/test_fill_used_in_matmul_ab.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow/flag_reuse_cross_direction.mlir",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut"
+        ]
+      },
+      "message": "[ssbuffer](fix) fill for matmul AB (#3097)\n\n* [ssbuffer](fix) Fill connot used in matmul A/B\n\n* [ssbuffer](fix) fill for matmul AB\n\n---------\n\nCo-authored-by: shaoyiyang <shaoyiyang1@huawei.com>\n(cherry picked from commit 531e0bace3a41920f95cb11464a586c6f91191ba)"
+    },
+    {
+      "sha": "7391dc13a8ce663a8f03f8fc25e96b147cb05942",
+      "comment": "修复 NPUUtils.get_device_limit 在 NPU_DEVICE_LIMIT 环境变量非法（ValueError）时返回 False,None,None 导致下游解包 None 的崩溃。改为先取 get_device_core() 的 num_aic/num_aiv，异常分支返回 (False, num_aic, num_aiv)，保证返回值语义一致。配套在 test_driver.py 增加 -1,48 与 abc 两种非法环境值用例。改动小且防御性强，风险低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "driver"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 get_device_limit 异常路径的 pytest 用例，需要随 CI 执行；测试本身已随提交加入。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_driver.py"
+        ]
+      },
+      "message": "[compiler](fix) fix get_device_limit error (#3121)\n\n(cherry picked from commit cfc479732f87ad681d4007cfb6f2597e4ff441e4)"
+    },
+    {
+      "sha": "02c73006b7c78324923511cf0dc79d12ed568307",
+      "comment": "修复 TritonToLinalg 中 ArgMin/ArgMax 专用 pattern 在 #2440 之后可能被 generic ReduceConverter 抢先匹配、导致 value/index 累加器未初始化的问题。方案给 ArgMinMaxBaseConverter 设置 PatternBenefit(2) 提升优先级，并把整数哨兵值从固定 i8/u8/i32 改为按实际输出位宽用 APInt 推导（getSignedMax/MinValue、getMax/MinValue，索引类型按 elemTypes[1] 位宽处理）。新增 argminmax_priority.mlir 覆盖优先级、符号/无符号、宽索引、generic 回退。该变更直接影响归约正确性，属于重要语义修复。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "TritonToLinalg"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 argminmax_priority.mlir，且需双 pass 配置（含/不含 compile-on-910-95）运行，属于必须看护的回归用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/argminmax_priority.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_topk.py 等归约相关用例"
+        ]
+      },
+      "message": "[TritonToLinalg](fix) prioritize initialized argmin/max reductions (#3109)\n\nThe generic ReduceConverter can win over the existing ArgMin/ArgMax\npatterns after #2440, leaving value/index accumulators uninitialized.\nGive the specialized patterns a higher benefit while preserving their\nmatching rules and the generic fallback.\n\nDerive integer value and index sentinels from each output's actual width\ninstead of fixed i8/u8 and i32 limits. Add MLIR coverage for pattern\npriority, signed/unsigned identities, wide indices and generic fallback.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n(cherry picked from commit b61482b2d4018039aeaa1668683e569392c02837)"
+    },
+    {
+      "sha": "4f3bafc3ea970d52e3a590fbdf5a4d8b7ac3ba1a",
+      "comment": "SelectCanonicalizer 大改：1) 950（compileOn91095）走 direct slice，不再做 zero-offset prefix 重建，从而在支持非对齐 UB copy 的 950 上减少 buffer 扩张；A2/A3 保留原 prefix workaround。2) 新增 overwriteFalsePrefix 优化：对 Tail mask 且 false 为常量、true 单 use 时，反向把 false 前缀写入 true，利用 bufferization 复用计算出的 buffer。3) 动态 offset 越界 guard 统一为 dynamicDim/dynamicOffset，并在移动 slice op 时改为遍历 sliceOps 统一 move。4) LoadStoreMaskAnalysis 增加 Tail 识别（常数或 extent-offset 形式）。5) TritonToLinalgPass 将 compileOn91095 传入 SelectCanonicalizer。新增 348 行 dual-target lit 与设备 pytest（动态查表偏移、常量 tail、宽索引、越界）。该变更同时含性能优化与正确性修复，涉及两代硬件路径分支，回归面较大。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "medium-risk",
+        "TritonToLinalg",
+        "TritonMemoryAccess"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 select_target_slices.mlir（A2/A5 双前缀）与 test_select_dynamic_offset.py（动态偏移、常量 tail、multibuffer、越界），均为新增看护点；同时依赖原有 select 相关回归不退化。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/select_target_slices.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_select_dynamic_offset.py",
+          "third_party/ascend/unittest/pytest_ut 中 where/select 相关算子用例"
+        ]
+      },
+      "message": "[TritonToLinalg](fix) restore 950 slices with tail buffer reuse (#3007)\n\n* [TritonToLinalg](perf) use direct select slices on Ascend 950\n\nAvoid reconstructing zero-offset prefixes for contiguous Tail/Middle selects\non 950, where NPU IR supports unaligned UB copies. Keep the existing prefix\nworkaround on A2/A3 to avoid alignment-induced buffer expansion and retain\nthe dynamic-start bounds guard for both paths.\n\nAdd dual-target lowering checks and dynamic-offset correctness coverage for\nboundary, empty-interval, dtype and loop-carried cases.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* [TritonToLinalg](perf) reuse true buffers for constant tail selects\n\nRecognize tail masks whose selected interval reaches the tensor extent. For a constant false value and single-use true value, insert the false prefix into the true tensor so bufferization can reuse the computed buffer.\n\nKeep direct slices for other Ascend 950 selects and the existing dynamic bounds guard. Add lowering and device coverage for constant tails, shared true values, mixed kernels, and out-of-range bounds.\n\n---------\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n(cherry picked from commit 122e39178877cd4eca7536728221cfa84e661bac)"
+    },
+    {
+      "sha": "cd4c84881a8b347f99b162f9738925e0cc4203d3",
+      "comment": "修正隐式 permute 在短连续段上的误优化：ImplicitPermute LoadConverter 增加连续段字节数检查（A5 下需 >=64 字节且 32 字节对齐，动态 offset 时才启用该门控），不满足则 notifyMatchFailure 放弃 permute；PtrAnalysis::createAddPtrOp 限制只有单一非 singleton 轴时才允许 reshape 搬移（多非 singleton 轴需要 transpose，暂不支持），并把 allowReorder 从 !identityPermute 改为 false；MemOpConverter::createNewAddPtr 对 nullptr 做保护；TritonOpConverter 删除 ReshapeConverter 中 allow_reorder 的转置逻辑。新增 ImplicitPermuteShortContiguousLoad.mlir。这是修复 bucket-softmax 回归的关键限制，逻辑上收窄了优化触发面，风险中等。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "TritonToStructured",
+        "TritonToLinalg"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了短连续段的 lit 用例（skip_short_contiguous_load），且改动影响 reshape/permute 路径，需确认既有 TritonToStructured 用例不回归。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToStructured/ImplicitPermuteShortContiguousLoad.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToStructured/ 其他 reshape/permute lit"
+        ]
+      },
+      "message": "[ImplicitPermute](fix) Skip implicit load permutation for short co... (#3110)\n\n* [ImplicitPermute] Skip implicit load permutation for short contiguous segments when it will cast to simt\n\n* fix\n\n* fix precommit\n\n* [TritonToStructured](fix) Restrict data offset reshapes to a single non-singleton axis (#3086)\n\n(cherry picked from commit 56088c80dc6e09bc2393c45c1311deedd2c15aa8)"
+    },
+    {
+      "sha": "98ab27bb83bb4199d9418bf69fe866c1c085e352",
+      "comment": "回退为 launcher 产物链接 libpython 的改动（_python_link_flags、extra_ldflags、torch library rpath），恢复 _build_shared(name, sources, debug, bin_dir=None) 与 utils 的 extra_ldflags 移除。提交信息称该 libpython 链接破坏了测试用例。同步调整 test_aot.py：新增 _torch_npu_library_dir（测试侧自行拼接 torch_npu 库路径）、LD_LIBRARY_PATH 过滤空串、并用 runpy 内联方式启动 compiler 脚本（先 import torch_npu）。这是用测试自行承担运行时环境准备来替代产物自链接的方案，把 rpath/链接职责从产物移到测试环境，需要确认 AOT 在无 Python 解释器的 C 进程中仍可 dlopen。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "launcher",
+        "AOT"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "test_aot.py 被修改（_torch_npu_library_dir、runpy 启动、LD_LIBRARY_PATH 过滤），AOT 测试行为变化，需要确认在无 libpython 链接产物下 AOT 仍可 dlopen 并通过。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_aot.py",
+          "third_party/ascend/backend/launcher.py 相关构建路径"
+        ]
+      },
+      "message": "[AOT](fix) Revert libpython link that broke testcase (#3117)\n\n(cherry picked from commit d56ab5f03ecb8d82c1d3a4e8945f83d1ab5a9238)"
+    },
+    {
+      "sha": "006f7ea7f64823baced1660eb95d278cce8a77f6",
+      "comment": "解决 Python 3.14 PEP 649 为带注解的类合成 __annotate__、被 language/core.py 的 _aggregate 通过 inspect.getmembers 收进 hash_attrs、导致 runtime/jit.py::record_reference 抛 'Unsupported function referenced'（test_aggregate_with_tuple 失败）的问题。按 Ascend 仓约定不直接改社区 core.py，而是把修复写入 triton-ascend-3.6.0.patch，并将 core.py 加入 setup_patch.py 白名单。逻辑对齐上游 #9529/#10581：跳过 __annotate__ 与 __annotate_func__。属于前端兼容性 patch，风险中低，但涉及 patch 维护与新 Python 版本兼容。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "patch",
+        "language"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "已有 test_aggregate_with_tuple 作为回归点；本提交只改 patch 与白名单，不新增测试。",
+        "suggested_test_areas": [
+          "python/test/ 中 aggregate 相关用例（test_aggregate_with_tuple）"
+        ]
+      },
+      "message": "[language](fix) 以 patch 方式修复 Python 3.14 aggregate 哈希包含 __annotate__ (#3045)\n\nPython 3.14 按 PEP 649 为带注解的类合成 __annotate__，_aggregate 通过\ninspect.getmembers 收集成员时会把它写入 hash_attrs，导致\nruntime/jit.py::record_reference 抛出 \"Unsupported function referenced\"，\ntest_aggregate_with_tuple 因此失败。\n\n按 Ascend 仓约定，不直接修改社区文件 python/triton/language/core.py，\n而是把改动写入 third_party/ascend/patch/triton-ascend-3.6.0.patch，\n并将 core.py 加入 setup_patch.py 的 patch 白名单。\n\n代码与注释对齐上游最新实现（#9529 与 #10581）：__annotate__ 与\n__annotate_func__ 均跳过，不额外发挥。\n\n(cherry picked from commit 9e74ed81e2850377f814d162e1fd332f65ecc74c)"
+    },
+    {
+      "sha": "cb309da35f9eacce369f9ee404682ece20e6dee9",
+      "comment": "恢复 TritonToGraph 的 radix 相关重写（此前因后端问题被禁用），并引入 compileOn91095 门控：Passes.td/GraphOptimizationOptions/triton_ascend.cc pybind/compiler.py _graph_optimize_kwargs 全链路透传 compile_on_910_95；GraphOptimizePass 在 910_95 下仅对候选 op（NarrowUnsignedTensor 候选与 FoldHistogramParking 候选）执行受限的 greedy 重写（ExistingAndNewOps strictness），避免 module-wide 折叠影响后续图分析可见性。新增 Rules/NarrowUnsignedTensor.h（i64→i32 收窄，含 upper-bit 校验、signed shift 保护）与 Rules/FoldHistogramParking.h（hist(select(mask,x,0)) - correction 折叠为 hist(select(mask,x,-1))）；Utils.cpp 的 traverseForwardUpdateUserChainIf 加 handledOperations 去重（修 diamond/重复 operand 重复访问）；TritonToLinalgPass 的 repairUnknownLocations 前移至仅在输入含 FileLineColLoc 时执行，并新增 Utils 单测与多份 lit。这是本日最大的一次功能性提交，涉及 A5-only 优化启用、图分析可见性与遍历去重，回归风险较高。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "high-risk",
+        "TritonToGraph",
+        "TritonToLinalg",
+        "Utils"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 graph-optimize-narrow-shared-producer.mlir、graph-optimize-radix-topk-threshold.mlir、disabled_line_info.mlir、recover_line_info.mlir、Utils 单测（ForwardTraversalTest）、test_compiler_layout_memory_contract.py 的 graph 选项断言、test_histogram_parking.py、test_unsigned_tensor_narrowing.py，并修改 CMakeLists 增加 Utils 子目录；测试面显著扩大，且含 A3 跳过逻辑需按目标硬件执行。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToGraph/graph-optimize-narrow-shared-producer.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToGraph/graph-optimize-radix-topk-threshold.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/disabled_line_info.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/recover_line_info.mlir",
+          "third_party/ascend/unittest/Utils/ForwardTraversalTest.cpp",
+          "third_party/ascend/unittest/pytest_ut/test_compiler_layout_memory_contract.py",
+          "third_party/ascend/unittest/pytest_ut/test_histogram_parking.py",
+          "third_party/ascend/unittest/pytest_ut/test_unsigned_tensor_narrowing.py"
+        ]
+      },
+      "message": "[TritonToGraph](fix) restore radix rewrites pending backend fix (#2986)\n\n(cherry picked from commit 97f81c947287fe69154264cc60dbd35238a77f44)"
+    },
+    {
+      "sha": "fdaacb7bf4bdc52749ea80a44dcf2b043d1c5189",
+      "comment": "大规模中文文档规范化（AIDD 问题修复）：统一中英文间空格、术语大小写（Kernel/Pass/Vector/UB/LLVM 等）、标点与列表符号、代码块语言标记（text→output）、标题层级与链接文案，并给多个文档补了首段概述。覆盖 FAQ、架构设计、autotune、社区规范、调试指南（debugging/profiling/precision/msdebug/ub_overflow/warmup）、安装指南、环境变量与编译选项参考、max_autotune、quick_start、release_note。纯文档改动，不影响编译与运行。",
+      "tags": [
+        "docs",
+        "low-risk",
+        "documentation"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯文档格式与措辞调整，不涉及代码或测试。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](fix) fix the AIDD issue in the document.  (#3089)\n\n* fix AIDD issue\n\n* fix AIDD issue\n\n* fix AIDD issue\n\n* fix AIDD issue\n\n---------\n\nCo-authored-by: liujiaxin02 <liujiaxin108@h-partners.com>"
+    },
+    {
+      "sha": "ee33962cc924eb68932c53ea5a42535e3228c2b4",
+      "comment": "更新 README/README_zh 的 Nightly 安装说明：从每日构建（固定 devYYYYMMDD 版本号）改为每周更新的 Nightly 测试包，安装命令简化为不指定版本号；历史列表表述改为 package list/历史列表。纯文档改动，但需注意与 release_note/installation_guide 中 Nightly 描述的时效一致性。",
+      "tags": [
+        "docs",
+        "low-risk",
+        "documentation"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯 README 文档更新，无代码与测试影响。",
+        "suggested_test_areas": []
+      },
+      "message": "[docs](fix) update nightly install readme (#3134)"
+    }
+  ],
+  "architecture_based_on_sha": "408e31592b50e930fc6f01c244f309444005d575",
+  "architecture_generated_at": "2026-11-01T20:11:07.549514+08:00"
+}

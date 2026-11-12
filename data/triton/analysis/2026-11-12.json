@@ -1,0 +1,87 @@
+{
+  "date": "2026-11-12",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-11-13T06:56:17.821810+08:00",
+  "daily_summary": "当日变更集中在 NVIDIA 与 AMD 专属路径以及解释器小修：一是回退 #12677 的 warp-specialized worker dispatcher 改动（恢复旧的按 warp 的 command byte 调度与 setmaxregister 语义，涉及 WarpSpecializeUtility、Allocation、NVIDIA/AMD 的 ConvertWarpSpecializeToLLVM 及 lit 测试）；二是把 TRITON_SWAP_MIR / TRITON_SWAP_MIR_ENABLE_MISCHED 加入缓存失效环境变量集合并补充 knobs 测试；三是回退移除 --regAllocOptLevel=2 的 ptxas 13.x workaround；四是修复解释器原子操作的内存序归一化（load/compare_exchange failure 不允许 release/acq_rel）。整体为后端稳定性与正确性修复，无跨后端接口契约变化。",
+  "ascend_impact_summary": "当日四个 commit 对 triton-ascend 均无功能性影响：warp specialization dispatcher 与 ptxas regAllocOptLevel 变更属于 NVIDIA/AMD 专属的 TritonGPUToLLVM 与 third_party 后端代码路径，Ascend 走 TTIR→Linalg/HIVM 链路不使用；缓存失效环境变量仅新增 AMD 专属 knob，不影响 Ascend 缓存键；解释器原子内存序修复位于 python/src/interpreter.cc，属于上游共享 binder 文件但未改变 ReduceOps/解释器 Python 接口契约，且 Ascend 的 monkey-patch 与 AscendReduceOps 不受影响。无需新增或更新 Ascend 测试。",
+  "commits": [
+    {
+      "sha": "5b4f3714345601ce624b44691afced165b3e907e",
+      "comment": "回退 #12677 的 warp-specialized worker dispatcher 改动，理由是原改动并非修复 UB，且导致部分 kernel 性能回退。核心变更是把 WarpSpecializeCallbacks 从 getWorkerRegisterCap/reallocWorkerRegisters/reallocDefaultRegisters/warpsPerCommand 的抽象改回单一 reallocRegisters(phase, regionNumber) + workerRegisterPartitions + createAllBarrier(barIdx)，并在 lowerWarpSpecializeCommon 中恢复按 per-warp command byte 的 switch 循环（每 worker warp 一个 i8 状态、按 warp 而非按 4-warp 分组派发、恢复 setmaxregister 在 partition 起止的 acquire/release 语义），以及 lowerDirectWarpSpecialize 中按 warp 填充 partitionForWarp、SwitchLoopStart 处重新分配寄存器。配套修改 Allocation.cpp 恢复每 warp 一个 scratch byte（去掉 /4 的 NVIDIA 特化），NVIDIA/AMD 两处 ConvertWarpSpecializeToLLVM 适配新回调签名（AMD 提供空 reallocRegisters 并传 barrierIdx=0）。风险：该改动回退了一个已被下游（NVIDIA/AMD）验证过的 dispatcher，涉及寄存器分配与 barrier 索引共享内存布局，若 NVIDIA kWarpSpecializeCTABarrierId 冲突检测逻辑（assert barIdx < kNumBarriers）在有多个 ws 场景下布局变化，可能出现 barrier 数量超限；同时 AMD 端直接传 0 作为 barrier 索引，需确认 AMD 侧不使用该 index。整体属于 NVIDIA/AMD 专属 lowering 路径的回退，测试同步更新了 lit 期望，测试覆盖较完整。",
+      "tags": [
+        "refactor",
+        "bugfix",
+        "performance",
+        "medium-risk",
+        "conversion",
+        "nvidia-backend",
+        "amd-backend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更全部位于 TritonGPUToLLVM 的 warp specialization lowering（WarpSpecializeUtility/WarpSpecializeUtility.h、lib/Analysis/Allocation.cpp 的 scratch size 逻辑）以及 third_party/nvidia、third_party/amd 的 ConvertWarpSpecializeToLLVM，属于 Ascend 不使用的 TritonGPU→LLVM 路径（架构上下文中该路径标记为'绝不影哬'）。Ascend 走 TTIR→Linalg/HIVM 链路，不消费 gpu.warp_specialize / WarpSpecializeCallbacks。",
+        "testing": "无影响。变更的 lit 测试位于 test/Conversion/allocate_warp_groups_then_lower.mlir 与 test/Conversion/warp_specialize_to_llvm.mlir，均为上游 NVIDIA/AMD TritonGPUToLLVM 测试，Ascend 的 third_party/ascend/unittest 不涉及。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Revert warp-specialized worker dispatch change from #12677 (#12720)\n\nReverts #12677 to restore the previous warp-specialized worker\ndispatcher. It seems that it wasn't really necessary as it doesn't seem\nto be UB, and the change worsened perf on a few kernels."
+    },
+    {
+      "sha": "7c1a7ca5dc89fd1b6fc7008436cad04f0dea1b1e",
+      "comment": "修复 AMD MIR swap 相关环境变量未参与缓存键导致 swapped 与 unswapped 构建共享缓存条目的静默错误：make_amdgcn 在 stage 内执行 swap，但缓存命中会跳过 stage，从而返回先编译的二进制。做法是把 TRITON_SWAP_MIR 与 TRITON_SWAP_MIR_ENABLE_MISCHED 加入 include/triton/Tools/Sys/GetEnv.h 的 CACHE_INVALIDATING_ENV_VARS 集合，并在 python/test/unit/test_knobs.py 中新增测试，验证四个配置（unset、/mir/a、/mir/b、enable_misched）产生四个不同 cache key。这是一个干净的、后端无关的缓存机制修复——只扩展了缓存失效变量列表，不改变 get_cache_key 的算法；TRITON_SWAP_MIR 的值被折叠进 key，因此能区分不同 swap 目录但不能感知同目录内容被改写（commit message 已注明）。风险低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "cache",
+        "amd-backend",
+        "test"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。虽然 include/triton/Tools/Sys/GetEnv.h 与 python/src 的 get_cache_invalidating_env_vars 绑定是跨后端共享的，但本次只是向 CACHE_INVALIDATING_ENV_VARS 追加两个 AMD MIR swap 专属的环境变量名（TRITON_SWAP_MIR / TRITON_SWAP_MIR_ENABLE_MISCHED），Ascend 编译流程不设置也不读取这两个变量，因此 Ascend 的缓存键计算与命中行为完全不变，不构成缓存格式或 key 算法变更。",
+        "testing": "无影响。新增测试位于 python/test/unit/test_knobs.py（AMD codegen/MIR 相关场景），Ascend 的 third_party/ascend/unittest 无需对应测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Invalidate the compilation cache on the MIR swap knobs (#12669)\n\nTRITON_DUMP_MIR invalidates the cache but TRITON_SWAP_MIR and\nTRITON_SWAP_MIR_ENABLE_MISCHED do not, so a swapped build shares a cache\nentry with the unswapped one. The swap happens inside make_amdgcn, a\npipeline stage, and the stages only run on a cache miss. A hit therefore\ndoes not reuse the swapped build, it skips the stage, never opens the\nMIR file, and returns whichever binary was compiled first.\n\nThat makes the failure silent and order-dependent: compile a kernel\nonce, then set TRITON_SWAP_MIR and run again, and the swapped MIR is\nignored while the run reports success.\n\nListing the vars partitions the cache rather than disabling it, so\nrepeat runs of the same configuration still hit. ENABLE_MISCHED needs\nthe same treatment: it decides whether the machine scheduler reruns over\nthe swapped MIR, which changes the emitted code.\n\nNote the key folds in the variable's value, so this distinguishes\ndifferent swap directories but not the same directory with rewritten\ncontents."
+    },
+    {
+      "sha": "4a7b73ca19cb4d443e5682edb5f044202d878163",
+      "comment": "回退之前移除 ptxas --regAllocOptLevel=2 的改动，重新在 CUDABackend.make_ptx 的 ptxas 命令行中加回 reg_alloc 选项，以规避 ptxas 13.x 的 bug。变更范围极小（third_party/nvidia/backend/compiler.py 单文件，+5/-2），仅影响 NVIDIA 后端的 PTX→cubin 汇编阶段，对其他后端编译流水线零影响。风险低，属于纯 NVIDIA 平台特定 workaround 的恢复。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "nvidia-backend",
+        "build"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅位于 third_party/nvidia/backend/compiler.py 的 CUDABackend.make_ptx 中 ptxas 命令行构造，属于架构上下文中明确标注为'Ascend 不使用'的纯 NVIDIA 专属实现。Ascend 后端 add_stages 使用 ttir/ttadapter/npubin 流水线，不调用 make_ptx/ptxas。",
+        "testing": "无影响。无测试文件变更，Ascend 测试不受影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Revert \"[NVIDIA] Drop --regAllocOptLevel=2 ptxas workaround\" (#12717)"
+    },
+    {
+      "sha": "add426adc3b89435fb5341a07aaeae0e0b270f43",
+      "comment": "修复 Triton 解释器中原子操作把调用方 memory_order 原样透传给 std::atomic::load 与 compare_exchange_weak/strong 的 failure 参数，导致启用 _GLIBCXX_ASSERTIONS 时进程 abort 的问题（遵循 C++ 标准：这两处不允许 release/acq_rel）。实现方式是新增 load_order() 归一化函数（acq_rel→acquire、release→relaxed、其余透传），在 atomic_cmp、atomic_fadd、atomic_compare_exchange_strong 的 load 与 failure 位置应用；成功序保持不变。改动位于 python/src/interpreter.cc，是纯正确性修复，语义上只降低非法组合到最强合法同步，不改变 Triton 原子 API 语义。测试方面作者依赖现有 test_core.py 的 atomic 用例在 _GLIBCXX_ASSERTIONS 构建下验证，未新增 lit 测试。注意该文件是 nanobind 绑定的一部分，属于上游共享 binder 文件，但改动是解释器内部静态辅助函数，不改变任何 Python 侧接口。风险低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "interpreter",
+        "concurrency"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 python/src/interpreter.cc 的原子操作实现内部（新增静态 load_order 辅助函数并调整 load/compare_exchange failure 的内存序），未改变解释器对外的 Python 接口契约（未触及 ReduceOps.apply_impl、InterpreterBuilder 等 Ascend 依赖的扩展点），也未改变 python/src 中与 Ascend 相关的 ir.cc/specialize.cc 绑定。Ascend 的 AscendReduceOps 仅覆写 apply_impl，且 Ascend 对 atomic 的语义走自己的前端/semantic 路径，该 C++ 内部归一化仅使解释执行在 _GLIBCXX_ASSERTIONS 构建下不再 abort，不影响 Ascend 既有行为。",
+        "testing": "无影响。变更未新增测试，仅依赖上游 python/test/unit/language/test_core.py 的 atomic 用例；Ascend 端无对应测试需要调整。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Interpreter] Normalize atomic memory ordering (#12710)\n\nFixes #12690.\n\n## Problem\n\nThe Triton interpreter forwards the caller's memory order unchanged to\n`std::atomic::load()` and to the failure argument of\n`compare_exchange_weak` / `compare_exchange_strong`. C++ does not permit\n`memory_order_release` or `memory_order_acq_rel` in either position.\nToolchains\nthat enable `_GLIBCXX_ASSERTIONS` therefore abort the Python process for\ncommon\ninterpreter atomic operations, including `tl.atomic_cas`, floating-point\n`tl.atomic_add`, and integer `tl.atomic_max` / `tl.atomic_min`.\n\n## Change\n\nNormalize the order only where the C++ API requires it:\n\n- `acq_rel` becomes `acquire` for loads and compare-exchange failure\nordering.\n- `release` becomes `relaxed` for those same positions.\n- All other orders pass through unchanged.\n\nThe success ordering of compare-exchange remains unchanged. This\npreserves the\nstrongest valid synchronization that each API position can accept.\n\n## Testing\n\nI reproduced the original abort on `main` with a source build using\n`CXXFLAGS=-D_GLIBCXX_ASSERTIONS`. After the patch, the same command\ncompletes:\n\n```bash\ncd python/test/unit\nTRITON_INTERPRET=1 python -m pytest -s -m interpreter \\\n  language/test_core.py -k atomic --device=cpu\n```\n\nResult: `612 passed, 386 skipped, 7721 deselected`.\n\n`pre-commit run --from-ref origin/main --to-ref HEAD` passes.\n\n## New contributor declaration\n\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [ ] I have added tests.\n  - [x] This PR does not need a new test because the existing\n`test_atomic_rmw` and `test_atomic_cas` cases reproduce the abort when\nTriton is built with `_GLIBCXX_ASSERTIONS`; the same matrix now passes.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n  - [ ] The `lit` tests I have added follow these\n[best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\n    including the \"tests should be minimal\" section.\n\nCo-authored-by: AckerMan5659 <AckerMan5659@users.noreply.github.com>"
+    }
+  ],
+  "architecture_based_on_sha": "0861b90f695e3c866f6f7eadd4be8339378ab017",
+  "architecture_generated_at": "2026-11-01T20:11:07.548246+08:00"
+}

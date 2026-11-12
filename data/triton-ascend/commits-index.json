@@ -1,4 +1,52 @@
 {
+  "62f6b54e0f2420d6b718e0d4f89fa7a464d2e78f": {
+    "date": "2026-11-12",
+    "msg": "Revert \"[launch](fix)  Optimize the storage directory for shared libraries (#2945)\" (#3094)"
+  },
+  "54227ff548641048ed2922a6705e741153ff7448": {
+    "date": "2026-11-12",
+    "msg": "[compile](fix) fix tmp_file_name in npu_compile (#3093)"
+  },
+  "00364a17a81632d8ece1b806c8378c57a1249dff": {
+    "date": "2026-11-12",
+    "msg": "[ssbuffer](fix) fill for matmul AB (#3097)"
+  },
+  "7391dc13a8ce663a8f03f8fc25e96b147cb05942": {
+    "date": "2026-11-12",
+    "msg": "[compiler](fix) fix get_device_limit error (#3121)"
+  },
+  "02c73006b7c78324923511cf0dc79d12ed568307": {
+    "date": "2026-11-12",
+    "msg": "[TritonToLinalg](fix) prioritize initialized argmin/max reductions (#3109)"
+  },
+  "4f3bafc3ea970d52e3a590fbdf5a4d8b7ac3ba1a": {
+    "date": "2026-11-12",
+    "msg": "[TritonToLinalg](fix) restore 950 slices with tail buffer reuse (#3007)"
+  },
+  "cd4c84881a8b347f99b162f9738925e0cc4203d3": {
+    "date": "2026-11-12",
+    "msg": "[ImplicitPermute](fix) Skip implicit load permutation for short co... (#3110)"
+  },
+  "98ab27bb83bb4199d9418bf69fe866c1c085e352": {
+    "date": "2026-11-12",
+    "msg": "[AOT](fix) Revert libpython link that broke testcase (#3117)"
+  },
+  "006f7ea7f64823baced1660eb95d278cce8a77f6": {
+    "date": "2026-11-12",
+    "msg": "[language](fix) 以 patch 方式修复 Python 3.14 aggregate 哈希包含 __annotate__ (#3045)"
+  },
+  "cb309da35f9eacce369f9ee404682ece20e6dee9": {
+    "date": "2026-11-12",
+    "msg": "[TritonToGraph](fix) restore radix rewrites pending backend fix (#2986)"
+  },
+  "fdaacb7bf4bdc52749ea80a44dcf2b043d1c5189": {
+    "date": "2026-11-12",
+    "msg": "[Docs](fix) fix the AIDD issue in the document.  (#3089)"
+  },
+  "ee33962cc924eb68932c53ea5a42535e3228c2b4": {
+    "date": "2026-11-12",
+    "msg": "[docs](fix) update nightly install readme (#3134)"
+  },
   "0ee0f56a83ccef6f40fd01656d7ec93874ce630a": {
     "date": "2026-11-11",
     "msg": "[CI](fix) bundle triton_dist into CI wheels (TRITON_BUILD_TD=ON) (#3088)"

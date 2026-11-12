@@ -1,4 +1,20 @@
 {
+  "5b4f3714345601ce624b44691afced165b3e907e": {
+    "date": "2026-11-12",
+    "msg": "[NVIDIA] Revert warp-specialized worker dispatch change from #12677 (#12720)"
+  },
+  "7c1a7ca5dc89fd1b6fc7008436cad04f0dea1b1e": {
+    "date": "2026-11-12",
+    "msg": "[AMD] Invalidate the compilation cache on the MIR swap knobs (#12669)"
+  },
+  "4a7b73ca19cb4d443e5682edb5f044202d878163": {
+    "date": "2026-11-12",
+    "msg": "Revert \"[NVIDIA] Drop --regAllocOptLevel=2 ptxas workaround\" (#12717)"
+  },
+  "add426adc3b89435fb5341a07aaeae0e0b270f43": {
+    "date": "2026-11-12",
+    "msg": "[Interpreter] Normalize atomic memory ordering (#12710)"
+  },
   "58c0b9ae2f888da313b3124b5d4ddfe13823922e": {
     "date": "2026-11-11",
     "msg": "[AMD] Infer async_wait completion scope (#12648)"
