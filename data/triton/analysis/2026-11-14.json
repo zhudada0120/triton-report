@@ -1,0 +1,128 @@
+{
+  "date": "2026-11-14",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-11-15T05:44:51.684267+08:00",
+  "daily_summary": "当日变更集中在三方面：一是构建可用性修复（python/build_helpers.py 在非 x86_64/aarch64 平台跳过 NVIDIA 工具链下载，避免 404 构建失败）；二是 AMD/GPU 侧能力增强与语义修正（为 Gluon 的 padded shared layout 新增 bank conflict 分析、AMD buffer atomic 实现 AtomicOpInterface、HIP 补上 libdevice.ffs）；三是 NVIDIA NVWS 的 MMAv5 异步提升条件收紧与解释器整数常量越界语义对齐。整体偏向平台特定优化与构建/测试健壮性，未触及跨后端核心抽象层的签名契约。",
+  "ascend_impact_summary": "当日 5 个 commit 对 triton-ascend 均无实质功能影响。build_helpers.py 的 NVIDIA 工具链跳过属于构建脚本逻辑，Ascend 不依赖其下载流程；Gluon bank conflict 分析、AMD buffer atomic 接口实现、HIP libdevice.ffs 均属 third_party/amd 与 Gluon 专属路径，Ascend 不使用 TritonGPU/LLVM 或 AMD/GLUON 路径；NVWS MMAv5 同步/异步调整仅涉及 third_party/nvidia；解释器 _int_constant 变更位于 python/triton/runtime/interpreter.py（属 Ascend 监控的 '可能影响' 路径），但仅影响 get_int*/get_uint* 构建常量的越界截断行为，未改变 ReduceOps/apply_impl 等 AscendReduceOps 所覆写的方法签名，因此不破坏 AscendReduceOps，仅需在解释器语义层面留意与 Ascend 编译器常量语义的一致性。",
+  "commits": [
+    {
+      "sha": "cc3d5aefdcd29e2d2cb8505e8322a2370f93217e",
+      "comment": "构建可用性修复：在 python/build_helpers.py 新增 _nvidia_toolchain_available()，仅当 platform.machine() 属于 x86_64/aarch64/arm64 时才执行 NVIDIA 工具链下载；否则打印警告并提前 return，避免 ppc64le/riscv64 等平台在 cmake configure 阶段因 CUDA 12.9+ 归档 404 而失败。实现简单清晰，属防御性平台检查，不改变支持平台行为。风险很低：若未来 NVIDIA 恢复其它架构发布，需要更新此白名单；且该检查依赖平台标识字符串，arm 变体命名（arm64 vs aarch64）已兼容。该文件不涉及任何编译流水线接口契约。",
+      "tags": [
+        "bugfix",
+        "chore",
+        "low-risk",
+        "build"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Build] Skip NVIDIA toolchain downloads on unsupported platforms (#12753)\n\n## Summary\n\nAddresses https://github.com/triton-lang/triton/issues/12749\n\nNVIDIA only publishes the CUDA toolkit versions Triton pins (12.9+) for\nx86_64 and aarch64. On other architectures (`ppc64le`, `riscv64`), the\ndownloads return 404 and the build fails at `cmake` configure time.\n\nThese tools are runtime-only. They are not required during the build\nitself.\n\n## Error before this fix\n```\ndownloading nvcc:\ncurl: (22) The requested URL returned error: 404\nhttps://developer.download.nvidia.com/.../cuda_nvcc-linux-ppc64le-12.9.86-archive.tar.xz\nCMake Error at CMakeLists.txt:158 (execute_process):\nexecute_process failed command indexes:\n1: “Child return code: 1”\n-- Configuring incomplete, errors occurred!\n```\n\n## Testing\n\n- **ppc64le**: Verified nvidia tool downloads are skipped with a\nwarning. Triton wheel builds successfully with `LLVM_SYSPATH` pointing\nto a locally-built LLVM.\n- **x86_64**: Verified nvidia tools (nvcc, cuobjdump, nvcc-crt) are\nstill downloaded normally. No behavior change on supported platforms.\n\n\n<!---\nThe core Triton is a small number of people, and we receive many PRs\n(thank\nyou!).  To help us review your code more quickly, **if you are a new\ncontributor (less than 3 PRs merged) we ask that you complete the\nfollowing\ntasks and include the filled-out checklist in your PR description.**\n\nComplete the following tasks before sending your PR, and replace `[ ]`\nwith\n`[x]` to indicate you have done them.\n-->\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [ ] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n- [x] This PR does not need a test because `the change is a platform\navailability check that guards an existing download loop. It only\naffects platforms where the downloads would 404. Verified manually on\nppc64le (skipped) and x86_64 (unchanged)`.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)"
+    },
+    {
+      "sha": "d98b6b2a93cd5cc7720dabf61ff270cd54645156",
+      "comment": "为 AMD Gluon 的 padded shared layout 增加 bank conflict 检测：在 GenericSwizzling.h 导出 getLaneTile；python/src/gluon_ir.cc 的 bank_conflicts 绑定在 shared layout 为 PaddedSharedEncodingAttr 时改走 toLinearLayoutIgnoringPadding 并调用新增的 bankConflictsMemDescPadded，同时用 padded.getMinInterval() 限制向量化宽度（maxVecBitwidth=128）；third_party/amd/.../Utility.cpp 新增基于 XOR 基底去重的分组分析实现，并在 test_frontend.py 补充大量 padded layout 用例。实现聚焦于布局分析正确性（bank_conflicts 仅供 Gluon 前端诊断用），注释也明确说明不影响 lowering 与其他代码，且不覆盖转置/非连续 load。风险低，且 python/src/gluon_ir.cc 的改动仅为该绑定函数内部实现，未改变 Python 可见的签名。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "amd-backend",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][GLUON] Add bank conflict detection for padded shared layout (#12719)\n\nExtend `gl.bank_conflicts` to detect bank conflicts for AMD's padded\nshared layout. This is backed by a size-independent analysis\n`bankConflictsMemDescPadded` - similar to the swizzled case\n`bankConflictsMemDesc`.\n\nThe current analysis is only based on layout instead of lowering. So it\nhas some limitations, for example, it can not analyze transposed load\n(`ds_read_b64_tr_b16`) and non-contiguous load (`ds_read2_b64`). Future\nPR will extend to support them. It will only impact the correctness of\n`gl.bank_conflicts` but not other part of the code.\n\n---------\n\nSigned-off-by: Pengzhan Zhao <borontion@gmail.com>"
+    },
+    {
+      "sha": "65a66eaa7fd4433f8a994be9dd00f6779a6bf242",
+      "comment": "修复 NVWS 中 MMAv5 被过早提升为异步导致的正确性问题：原逻辑在 aref 的 async load 场景下把所有消费者 MMAv5 置为 is_async=true，可能让下一轮迭代在 MMA 仍读取 shared tile 时覆写它。改为 promoteToAsync：仅当 A/B（及 scaled 场景下 AScale/BScale）都能跨迭代安全读取（经 aref 保护或循环外不可变分配，且非 mutable memdesc）时才提升；同时把收集消费者与调用提升的时机提前到 multiBufferAref 之前（因为原实现依赖 get enter op 仍在 IR 中被使用）。LowerArefCreate 不再携带 defaultNumStages。变更收敛于 third_party/nvidia 的 NVWS pass 与 test/NVWS lit 用例，属 NVIDIA 专属路径。风险中等（涉及 warp specialization 流水正确性），但有 lit 测试覆盖。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "nvidia-backend",
+        "pipeliner"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVWS] Keep MMAv5 synchronous for unbuffered operands (#12742)\n\nPromote MMAv5 to async only when each operand, including scales, is\nprotected by an aref or is immutable outside the loop. This prevents the\nnext iteration from overwriting a shared tile while the MMA is still\nreading it.\n\nRepro:\n```bash\nTRITON_INSTRUMENTATION_MODE=consan python -m pytest -q python/triton_kernels/tests/test_matmul.py::test_op\\[None-True-False-False-False-pad_b-128-720-576-768-ragged-bfloat16-bfloat16-None-10-1-False-False-False-False-None-False-False-False-True-swiglu_opts152\\]\n```"
+    },
+    {
+      "sha": "68a16da2563fbd30fffb480712f02e6e09a83d0b",
+      "comment": "对齐解释器与编译路径的整数常量越界语义：编译路径的 get_int*/get_uint* 以 int64/uint64 传值并由 arith.constant 保留低位，因此 tl.full(shape, 0xFFFFFFFF, tl.int32) 为 -1；而解释器直接用 np.array([value], dtype=np.int32) 在 NumPy 2 下抛 OverflowError。新增 _int_constant 先构造 int64（有符号）或 uint64（无符号）数组再 astype 收窄，保持超出 64 位范围的值仍报错。切中 python/triton/runtime/interpreter.py 的 InterpreterBuilder 常量构建方法（get_uint8/get_int8/.../get_int64）。这是该文件被 Ascend release patch 修改、且 AscendReduceOps 继承 ReduceOps 的路径，但本次没有改动任何 ReduceOps/apply_impl 的方法签名或归约接口，AscendReduceOps 的覆写点不受影响；行为变化仅体现在会越界截断的常量场景，理论上能提升解释器与 Ascend 编译语义的一致性。附带 test_core.py 新增 interpreter 标记用例。风险低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "interpreter",
+        "language-frontend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "python/triton/runtime/interpreter.py 属于 Ascend 监控的 '可能影响' 路径（被 release patch 修改、AscendReduceOps 继承 ReduceOps），但本次仅修改 InterpreterBuilder 的 get_int8/get_uint8/get_int16/get_uint16/get_int32/get_uint32/get_int64/get_uint64 八个常量构建方法的内部实现并新增模块级辅助函数 _int_constant，未改动 ReduceOps.apply_impl 或任何 AscendReduceOps 所覆写/依赖的方法签名与归约接口，因此不会导致 AscendReduceOps 失效；若 Ascend 侧解释执行用例依赖越界整数常量行为，其结果会与编译路径对齐而非破坏。",
+        "testing": "无需为 AscendReduceOps 增加/修改测试；若 triton-ascend 有解释器模式（TRITON_INTERPRET=1）下的常量语义用例，可顺带验证越界常量行为与 npu 编译路径一致。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[INTERPRETER] wrap out-of-range integer constants like the compiled path (#12730)\n\nfixes #12729.\n\nthe compiled builder's `get_int*` / `get_uint*` take the value as an\nint64 or uint64 and `arith.constant` keeps the low bits, so\n`tl.full(shape, 0xFFFFFFFF, tl.int32)` is `-1` and `tl.full(shape, 0xFF,\ntl.int8)` is `-1`. the interpreter built the same constants with\n`np.array([value], dtype=np.int32)`, which numpy 2 rejects with\n`OverflowError`, so kernels that compile fine could not run under\n`TRITON_INTERPRET=1`.\n\nthe interpreter now builds the constant as an int64 (signed types) or\nuint64 (unsigned types) array and narrows it with `astype`, the same\napproach `ReduceScanOpInterface.to_tensor` already uses. values that do\nnot fit the 64-bit argument (`2**63` for a signed type, a negative value\nfor an unsigned one) still raise, as they do in the compiled builder.\nin-range values are unchanged.\n\n`test_full_int_constant_out_of_range` in `test_core.py` covers int8,\nint16, int32 and uint8; it is marked `interpreter`, so it runs on both\npaths. the expected values match the ttir constants from compiling the\nsame kernel for a cuda target.\n\ntests (cpu only, main python sources on the 3.9.0 native extension,\nnumpy 2.5.4, `TRITON_INTERPRET=1 --device cpu`):\n- new test: 4 passed with the fix, 4 failed without it\n- `test_core.py -k \"full or cast or scalar or constant or where or\nbitwise or shift or bin_op or unary or reduce\"`: 1873 passed, 314\nskipped; the 2 `test_cat_shape_mismatch` failures are the same without\nthis change and come from the mixed main/3.9.0 setup\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)\n\n---------\n\nSigned-off-by: Dundy Pasupuleti <dundysm@gmail.com>",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/runtime/interpreter.py"
+        ],
+        "recommend_refresh": true
+      }
+    },
+    {
+      "sha": "bab9406a1aeaf8bfc8cc8e8d72c33a3625083edd",
+      "comment": "重新界定 AtomicOpInterface 的语义为『对全局内存的原子访问』，并修正接口与实现的不一致：AtomicOpInterface 的 getMemSemantic 补上 methodBody，使其默认实现生效；让 TT_AtomicPollOp、TT_DescriptorReduceOp、TTNG_AsyncTMAReduceOp、AMD BufferAtomicRMWOp/BufferAtomicCASOp 实现该接口（DescriptorReduce/TMAReduce 的 getPtr 返回 desc，语义固定 RELAXED）。随之清理原先对 AtomicPollOp 的显式 isa 判断（Allocation.cpp、MoveUpPrologueLoads.cpp）与 TMAStoresPipeline 的双重分支；needsClusterBarrier 将 gpu::LocalAtomicScatterRMWOp 纳入 scratch 广播判定，替代此前通过 AtomicOpInterface 命中的方式。Membar 因此可复用 AMD buffer atomic 的 release barrier。注意这是对接口语义的重新定义：如果 Ascend 侧存在任何依赖 AtomicOpInterface 泛化遍历（含 atomic_poll）的 pass，其匹配集合会变化；但 Ascend 现走 TritonToLinalg 路径，不消费 TMAStoresPipeline/Membar/Allocation 这些 GPU 侧分析。头文件 TritonOpInterfaces.td 位于 include/triton/Dialect/Triton/（属 release patch 覆盖路径），存在 patch 上下文冲突风险。",
+      "tags": [
+        "refactor",
+        "feature",
+        "medium-risk",
+        "ir",
+        "amd-backend",
+        "nvidia-backend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "变更主要落在 include/triton/Dialect/Triton/IR/TritonOpInterfaces.td 与 TritonOps.td（属 Ascend release patch 覆盖的 Triton IR attr/op 定义路径）以及 AMD/NVIDIA 专属 op 定义与 GPU 侧分析 pass（lib/Analysis/Allocation.cpp、lib/Analysis/Utility.cpp、TMAStoresPipeline.cpp、MoveUpPrologueLoads.cpp）。Ascend 走 TritonToLinalg/HIVM 路径，不使用 TritonGPU 侧的 Membar/Allocation/TMAStoresPipeline 分析，也不定义 AMD/NVIDIA 专属 op，因此 AtomicOpInterface 语义收敛与新增实现不会影响 AscendBackend 的编译流水线；TritonOps.td 中 TT_DescriptorReduceOp 新增 extraClassDeclaration 与 AtomicOpInterface trait，一般不影响 Ascend 对 descriptor 相关 op 的消费，但由于该文件在 release patch 覆盖清单内，main2main 同步时需关注 patch 是否在相邻上下文发生冲突。",
+        "testing": "无需新增 Ascend 端用例；若 release patch 应用到 include/triton/Dialect/Triton/IR/*.td 时出现冲突，需要在 patch 维护流程中处理。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[IR] Scope AtomicOpInterface to global memory atomics (#12744)\n\n`AtomicOpInterface` describes atomic accesses to global memory and\nexposes their target and memory ordering. Implement it for\n`tt.atomic_poll`, AMD buffer RMW and CAS, and descriptor reductions that\natomically update a global destination with relaxed ordering.\n\nMembar can now reuse the release barrier emitted by an AMD buffer atomic\nbefore it reuses LDS scratch. Shared-memory scatter uses the existing\nscratch analysis to identify cross-CTA result broadcasts. ConSan lock\noperations keep their own synchronization semantics."
+    },
+    {
+      "sha": "ecd97a63d120a6a5862dd0002a5544e8bb392a3b",
+      "comment": "为 AMD HIP 后端补齐 libdevice.ffs：ROCm device lib 不提供 ffs，按 HIP 头文件定义 (x==0 ? -1 : ctz(x)) + 1 用 __ockl_ctz_u32/__ockl_ctz_u64 实现，返回 int32 与 CUDA 版本签名一致；对 0 的情况通过 _semantic.where 返回 0（与 CUDA ffs 返回 0 语义一致，注释中 -1 的表述需注意 HIP 与 CUDA 在 0 输入上的差异，测试参考实现取 0）。新增 test_libdevice.py::test_ffs 覆盖 int32/int64 与边界值。改动完全位于 third_party/amd/language/hip/libdevice.py 与 python/test/unit/language/test_libdevice.py，属 AMD 专属实现；Ascend 通过 get_module_map 将 libdevice 映射到 extra.cann.libdevice，不使用 hip 实现。风险低。",
+      "tags": [
+        "feature",
+        "low-risk",
+        "amd-backend",
+        "libdevice"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Add `libdevice.ffs` for the HIP backend (#12736)\n\nROCm device libs do not provide `ffs`; HIP defines `__ffs`/`__ffsll` in its\nheaders as `(x == 0 ? -1 : ctz(x)) + 1`. Implement `libdevice.ffs` the same way\non top of `__ockl_ctz_u32`/`__ockl_ctz_u64`, matching the CUDA signature\n(`int32`/`int64` input, `int32` result). Previously `libdevice.ffs`\nfailed to compile on AMD."
+    }
+  ],
+  "architecture_based_on_sha": "0861b90f695e3c866f6f7eadd4be8339378ab017",
+  "architecture_generated_at": "2026-11-01T20:11:07.548246+08:00"
+}

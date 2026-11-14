@@ -1,4 +1,28 @@
 {
+  "cc3d5aefdcd29e2d2cb8505e8322a2370f93217e": {
+    "date": "2026-11-14",
+    "msg": "[Build] Skip NVIDIA toolchain downloads on unsupported platforms (#12753)"
+  },
+  "d98b6b2a93cd5cc7720dabf61ff270cd54645156": {
+    "date": "2026-11-14",
+    "msg": "[AMD][GLUON] Add bank conflict detection for padded shared layout (#12719)"
+  },
+  "65a66eaa7fd4433f8a994be9dd00f6779a6bf242": {
+    "date": "2026-11-14",
+    "msg": "[NVWS] Keep MMAv5 synchronous for unbuffered operands (#12742)"
+  },
+  "68a16da2563fbd30fffb480712f02e6e09a83d0b": {
+    "date": "2026-11-14",
+    "msg": "[INTERPRETER] wrap out-of-range integer constants like the compiled path (#12730)"
+  },
+  "bab9406a1aeaf8bfc8cc8e8d72c33a3625083edd": {
+    "date": "2026-11-14",
+    "msg": "[IR] Scope AtomicOpInterface to global memory atomics (#12744)"
+  },
+  "ecd97a63d120a6a5862dd0002a5544e8bb392a3b": {
+    "date": "2026-11-14",
+    "msg": "[AMD] Add `libdevice.ffs` for the HIP backend (#12736)"
+  },
   "5b4f3714345601ce624b44691afced165b3e907e": {
     "date": "2026-11-12",
     "msg": "[NVIDIA] Revert warp-specialized worker dispatch change from #12677 (#12720)"

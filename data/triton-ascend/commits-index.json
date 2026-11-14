@@ -1,4 +1,16 @@
 {
+  "ee15e295649ccf85b4e4b78316c736d00365c1a5": {
+    "date": "2026-11-14",
+    "msg": "[DynamicCVPipeline](fix) Preserve block IDs on scalar replacements (#3159)"
+  },
+  "38beef754113fb0a65d7c562e5c4f058d7a37951": {
+    "date": "2026-11-14",
+    "msg": "[Libdevice](feat) Add A3 remaining operators (#3113)"
+  },
+  "44e6c7b67099541bf5184c78f660a207a224616f": {
+    "date": "2026-11-14",
+    "msg": "[DynamicCVPipeline](feat) enable load_buffer_pool marking (#3164)"
+  },
   "62f6b54e0f2420d6b718e0d4f89fa7a464d2e78f": {
     "date": "2026-11-12",
     "msg": "Revert \"[launch](fix)  Optimize the storage directory for shared libraries (#2945)\" (#3094)"

@@ -1,0 +1,72 @@
+{
+  "date": "2026-11-14",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-11-15T05:45:05.607808+08:00",
+  "daily_summary": "当日三个 commit 集中在 Ascend 后端两条独立的编译/算子链路上：一是 DynamicCVPipeline（Cube/Vector 双流水线）的稳定性修复与能力扩展——修正了标量算术 canonicalization 在 block ID 分配后被重建导致 CloneOps 触发 fallback 的问题（将 eventScalar 判定泛化为 scalarReplacement，并新增 block ID 保留规则与单测 MLIR），同时为 dynamic_plan 使能时额外标记 hivm.load_buffer_pool；二是 libdevice 的 A3（910_93/A2_A3 代）剩余算子补齐——把 atan/tanh/pow/trunc/round/acos/signbit/gamma/nearbyint/asin/rint/ceil/cos/floor/sin/hadd/rhadd/ffs 等一批 fp32 SIMD 实现扩展到 A3 target，并统一从 core.extern_elementwise 迁移到带 workspace 声明的 _libdevice_elementwise（同时更新 libdevice.220.bc 位码），删除 __hmf_powi_fp32 分支。整体是后端特性补齐与流水线稳健性改进，不触及上游接口契约。",
+  "test_impact_summary": "本日变更需要看护的重点有两块：一是 DynamicCVPipeline 的语义边界被显式收窄/扩展（标量替换保留 block ID、折叠到既有 producer 时不得改写其 block ID、未分配 block 的既有 producer 保持未分配），这属于 IR 级别的行为契约，新增的 preserve_scalar_block_ids.mlir 已覆盖三条主要路径，但还需要在 DynamicCVPipeline_ut 的 mlir_diff 端到端用例中回归验证真实流水线不因新增 hivm.load_buffer_pool 属性或 block ID 保留而走 fallback；二是 libdevice 向 A3 target 扩展了大量算子，这些算子的正确性只能靠 pytest_ut 的算子级端到端用例（需要 CANN + A3 环境）保证，而现有用例大概率未覆盖 A3 分支与新增 workspace 声明，存在漏测风险。libdevice.220.bc 位码更新无法通过单测直接校验，需要依赖算子级精度比对。整体测试策略上，建议在 A3 环境补充 libdevice 算子矩阵测试，并在 DynamicCVPipeline lit 测试中覆盖 load_buffer_pool 属性标记。",
+  "commits": [
+    {
+      "sha": "ee15e295649ccf85b4e4b78316c736d00365c1a5",
+      "comment": "修复 DynamicCVPipeline 中 PreserveControlAttrsCanonicalize pass 的 block ID 保留逻辑。原实现只对『带 kOuterEventControl 且结果全为标量的无副作用无 region 操作』（eventScalar）做 block ID 传递，但标量算术 canonicalization 在 block ID 分配之后仍可能重建指针容量表达式（如 pointer_cast 的 capacity 由 extent 加一合成），此时 from 已不再是被跟踪的控制流 op、也不带 outer event 属性，导致 to 拿不到 block ID，CloneOps 检查失败触发 fallback。本次将判定从 eventScalar 泛化为 scalarReplacement（有结果、无 region、无内存副作用、结果类型全为 int/index/float），并把 kOuterEventControl / kCoreType 的复制收窄为『scalarReplacement 且 from 带 kOuterEventControl』时才执行，从而在保留既有 producer guard（折叠到已有 producer 时不覆盖其已有 block ID、未分配者保持未分配）的前提下补齐容量折叠场景。实现方式克制、边界清晰，风险在于：scalarReplacement 判定放宽后，会命中更多标量算术 op，需要确认不会把 block ID 意外传播到跨 block 语义的标量计算上（作者用『折叠到既有 producer 保持其 ID』的 guard 缓解）。新增 MLIR lit 测试覆盖 pointer_capacity 折叠、折叠到带 ID 的既有 producer、折叠到未分配 ID 的既有 producer 三条路径，测试设计到位。影响范围限于 third_party/ascend/lib/DynamicCVPipeline，不触及上游接口。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "DynamicCVPipeline",
+        "ascend-lib-passes"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 preserve_scalar_block_ids.mlir lit 测试覆盖三条关键路径，属于测试资产增强；但该修复改变了 DynamicCVPipeline 中 block ID 传播的行为契约，需要在 DynamicCVPipeline_ut 的 mlir_diff 端到端用例中确认真实流水线（含 pointer capacity 折叠场景）不再触发 CloneOps fallback，否则可能出现修复仅在 lit 层通过而端到端仍回退的情况。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/preserve_scalar_block_ids.mlir",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/",
+          "third_party/ascend/lib/DynamicCVPipeline/SplitDataflow/PreserveControlAttrsCanonicalize.cpp"
+        ]
+      },
+      "message": "[DynamicCVPipeline](fix) Preserve block IDs on scalar replacements (#3159)\n\nScalar arithmetic canonicalization can rebuild pointer-capacity expressions\nafter DynamicCV has assigned block IDs. Preserve the replaced operation's\nID on a newly inserted scalar producer so CloneOps does not trigger fallback.\n\nRetain the same-block and existing-producer guards, and cover capacity\nfolding plus existing producers with and without an assigned ID.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>"
+    },
+    {
+      "sha": "38beef754113fb0a65d7c562e5c4f058d7a37951",
+      "comment": "为 A3 代 NPU 补齐 cann libdevice 中剩余的 fp32 SIMD 算子实现。核心改动是把此前仅对 A5/A6 使能的一批 fp32 快速路径扩展到 _is_a3_target：atan、tanh、pow、trunc、round、acos、signbit、gamma、nearbyint、asin、rint、ceil、cos、floor、sin、hadd、rhadd、ffs（新增 __hmf_ffs_i64 的 workspace 声明），并将其中多数实现从裸 core.extern_elementwise 迁移到 _libdevice_elementwise 并显式声明 workspace（元素大小、dtype、是否含标量广播），这是对工作空间分配的严格化——若 workspace 元数据与实际位码不符，会导致 UB 占用估算或编译失败，因此需与 libdevice.220.bc 的更新严格配套。同时删除了 __hmf_powi_fp32 分支（pow 的 int32 指数被先 cast 成 fp32，统一走 __hmf_pow_fp32），简化了 dispatch 但可能改变 pow 在 int 指数场景下的数值路径，需关注精度回归。tanh 分支重构后 A3 走 workspace=(1, float32, True) 的 __hmf_tanh_fp32，A5/A6 仍走原 dispatch，逻辑正确但嵌套较深。整体是对后端算子覆盖面的正向补齐，风险集中在两处：一是 workspace 声明元数据的准确性（影响 UB 分配），二是 pow 删除 powi 路径带来的数值一致性。影响面限定在 third_party/ascend/language/cann/libdevice.py 与 libdevice.220.bc，不涉及上游接口。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "libdevice",
+        "ascend-language",
+        "A3-target"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增大量 A3 target 的 fp32 算子快速路径与 workspace 声明，现有 pytest_ut 中的 libdevice 算子用例大概率只覆盖 A5/A6 或通用 fn 路径，A3 分支（尤其是 workspace 元数据驱动的 UB 分配与 __hmf_ffs_i64 的 12 元素 workspace）缺乏直接看护；pow 删除 __hmf_powi_fp32 分支后 int 指数场景的数值行为需要与预期精度做回归比对；libdevice.220.bc 位码更新本身不可单测验证，只能靠算子级精度测试兜底。建议新增/扩展 A3 环境下的算子矩阵测试。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/ (libdevice 相关算子用例，如 test_math / test_libdevice)",
+          "third_party/ascend/language/cann/libdevice.py",
+          "third_party/ascend/backend/lib/libdevice.220.bc"
+        ]
+      },
+      "message": "[Libdevice](feat) Add A3 remaining operators (#3113)\n\n* add a3_remaining_simd\n\n* update A3 operators bc\n\n* delete __hmf_powi_fp32\n\n---------\n\nCo-authored-by: lijiarong <lijiarong17@huawei.com>"
+    },
+    {
+      "sha": "44e6c7b67099541bf5184c78f660a207a224616f",
+      "comment": "在 AddDynamicCVPipelinePass 中，当 canEnableDynamicPlan(moduleOp) 成立、设置 hivm.dynamic_plan=true 的同时额外设置 hivm.load_buffer_pool=true，使能 load buffer pool 标记。改动极小（3 行），目的是让下游 BiShengIR/HIVM 侧在动态流水线规划下复用 load buffer 缓冲池，减少重复 buffer 分配。风险点在于：该属性一旦打开，后续 pass 对 load buffer 的复用假设被放宽，若某些 kernel 的 load 语义存在别名/重叠约束，可能出现 buffer 复用导致的正确性问题，需依赖下游编译器对该属性的语义保证；另外该属性与会改变存在 hivm.dynamic_plan 场景下的编译产物，可能影响此前已通过性能/正确性验证的 DynamicCVPipeline 用例。变更范围限于 third_party/ascend/lib/DynamicCVPipeline，不触及上游接口。",
+      "tags": [
+        "feature",
+        "performance",
+        "medium-risk",
+        "DynamicCVPipeline",
+        "ascend-lib-passes"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 hivm.load_buffer_pool 属性会改变 enabled dynamic plan 时的 HIVM 编译产物，DynamicCVPipeline_ut 的 MLIR 差分测试需要更新期望输出（新增属性），并需要验证 load buffer pool 复用不会破坏动态流水线用例的正确性；此外该属性仅在 canEnableDynamicPlan 为真时生效，建议补充非 dynamic plan 场景不受影响的回归用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/",
+          "third_party/ascend/lib/DynamicCVPipeline/AddDynamicCVPipeline.cpp"
+        ]
+      },
+      "message": "[DynamicCVPipeline](feat) enable load_buffer_pool marking (#3164)\n\nCo-authored-by: MrZhuyuan <zhuyuanyingjie@huawei.com>"
+    }
+  ],
+  "architecture_based_on_sha": "408e31592b50e930fc6f01c244f309444005d575",
+  "architecture_generated_at": "2026-11-01T20:11:07.549514+08:00"
+}
