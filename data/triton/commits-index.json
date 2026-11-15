@@ -1,4 +1,8 @@
 {
+  "1c53e566ef8f719ff9b69132a72ad943e5409492": {
+    "date": "2026-11-15",
+    "msg": "[AMD] Make release atomics cover writes from every warp (#12657)"
+  },
   "cc3d5aefdcd29e2d2cb8505e8322a2370f93217e": {
     "date": "2026-11-14",
     "msg": "[Build] Skip NVIDIA toolchain downloads on unsupported platforms (#12753)"

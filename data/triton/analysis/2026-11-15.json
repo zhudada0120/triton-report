@@ -1,0 +1,31 @@
+{
+  "date": "2026-11-15",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-11-16T06:10:56.899965+08:00",
+  "daily_summary": "当日仅有一个 AMD 后端内存序正确性修复：修复 AMD（gfx942/gfx950/gfx1250 等）上 release/acq_rel 原子操作在多 warp / 多 CTA 场景下的内存序缺陷——由于 s_barrier 本身不等待内存计数器、workgroup fence 也不等待 global 写回，其它 wave 在 barrier 前发出的写入可能仍在飞行中，导致 release 的 L2 写回（buffer_wbl2 / global_wb）漏掉它们，跨 XCD 的消费者会读到陈旧数据。实现上给 TargetInfoBase 新增默认为 no-op 的 releaseBeforeAtomicBarrier 钩子，insertAtomicOrderingBarriers 增加 MemSyncScope 参数并在 barrier 前按需调用（仅当 numWarps>1 或 numCTAs>1），AMD TargetInfo 给出各 ISA family 的具体实现（CDNA2/3/4 用 s_waitcnt vmcnt(0)，gfx1250/RDNA4 用 s_wait_storecnt 0，gfx11 用 agent scope release fence + MMRA global 标签，其它走带 global MMRA 的 release fence），并同步更新 NVIDIA/AMD/GSan 各调用点的函数签名与 lit 测试。",
+  "ascend_impact_summary": "该变更触及 C++ 层 TargetInfoBase 抽象（include/triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h）与 Utility.h 中 insertAtomicOrderingBarriers 的签名，属于 Ascend 明确不使用的 GPU→LLVM lowering 路径，且新增的 releaseBeforeAtomicBarrier 为非纯虚、默认空实现的虚函数，不会破坏 Ascend TargetInfo 的编译。其余改动（third_party/amd、third_party/nvidia、test/Conversion/amd）均为平台特定代码。因此对 triton-ascend 无功能与测试影响。",
+  "commits": [
+    {
+      "sha": "1c53e566ef8f719ff9b69132a72ad943e5409492",
+      "comment": "修正 AMD 后端 release/acq_rel 原子在多 warp / 多 CTA 下的内存序正确性缺陷。根因：标量/冗余原子由一个线程在 CTA barrier 后发出，其 release fence 只等待发起 wave 自己的计数器；AMD 上 s_barrier 不等待任何内存计数器，且围绕它的 workgroup fence 也不等待 global 写，因此其它 wave 在 barrier 前发出的写入可能仍在飞行，release 的 L2 写回（gfx942/950 的 buffer_wbl2、gfx1250 的 global_wb）会漏掉它们，跨 XCD 的 acquire 消费者读到陈旧数据，典型破坏 split-KV attention 的『各 warp 写 partial、单线程递增计数器』模式。实现方式：(1) TargetInfoBase 新增虚函数 releaseBeforeAtomicBarrier(loc, rewriter, scope)，默认空实现，保证 NVIDIA 等不需额外处理的 target 零成本；(2) insertAtomicOrderingBarriers 新增 MemSyncScope 参数，在 beforeMemoryEffects 阶段、仅当 lookupNumWarps(op)>1 或 lookupNumCTAs(op)>1 时于 emitBarrier() 之前调用该钩子，使每个 wave 先释放自己的写，再由 barrier 统一排序后发出原子；(3) AMD TargetInfo 实现：cta scope 直接跳过（barrier 已覆盖），CDNA2/3/4 用 rocdl.s.waitcnt 0x0F70（仅 vmcnt(0)，保留 expcnt/lgkmcnt），CDNA5/RDNA4 用 rocdl.s.wait.storecnt 0，RDNA3/RDNA4m（gfx11 无 store-counter 等待原语）以及 default 分支发出带 amdgpu-synchronize-as=global MMRA 标签的 release fence（gfx11 用 agent scope 以避免 InstCombine 合并相邻同 scope fence 丢掉该 fence），让 LLVM 自选等待指令，gfx11 上会折叠为 barrier 已有的 store wait；(4) 更新 MemoryOpToLLVM、GSanToLLVM、AMD LoadStoreOpToLLVM（BufferAtomicRMW/CAS/Load/Store、AtomicCAS/RMW）、NVIDIA LoadStoreOpToLLVM 等所有调用点传入 op.getScope()。风险面：insertAtomicOrderingBarriers 是跨后端共享的签名（位于 Utility.h），所有调用者必须同步更新，漏改会编译失败（已全部覆盖）；AMD 各 ISA family 的等待语义依赖 ROCDL 编码与 MMRA 标签行为，若后端 LLVM 对 MMRA+fence 的处理变化可能引入性能或正确性偏差；多 warp 下的额外 s_waitcnt/s_wait_storecnt 会增加少量指令开销（设计上把 L2 写回合并到原子自身的 release，避免每 wave 重复写回，已尽量降低）。测试覆盖较充分：新增 multi_wave / single_wave / cta-scope 三组 lit 用例，并给 gfx942/950 加 GFX9 前缀、给 RDNA 测试加 gfx1200 RUN 行与 GFX11/GFX12 前缀，验证各 scope 与 ISA 的指令序列差异及 cta/single-wave 不插入额外等待。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "conversion",
+        "tritongpu-to-llvm",
+        "amd",
+        "memory-model"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更核心位于 include/triton/Conversion/TritonGPUToLLVM/ 与 lib/Conversion/TritonGPUToLLVM/（GPU→LLVM lowering 与 TargetInfoBase），按架构上下文该路径为 Ascend 明确不使用的路径——Ascend 由 bishengir 完成最终 codegen，不消费 TritonGPU→LLVM lowering，也不实现 TargetInfoBase。新增的 releaseBeforeAtomicOrderingBarrier 为非纯虚、默认空实现的虚函数，即使 Ascend 存在 TargetInfo 子类也不会因新增纯虚方法而编译失败。其余文件为 third_party/amd、third_party/nvidia 与 test/Conversion/amd，均为平台特定或测试代码。",
+        "testing": "无影响。新增/修改的 lit 测试全部位于 test/Conversion/amd/（tritongpu_to_llvm.mlir、tritongpu_to_llvm_rdna.mlir），属 AMD 专属转换测试，triton-ascend 不参与。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Make release atomics cover writes from every warp (#12657)\n\nA scalar or warp-redundant atomic is issued by one thread after a CTA\nbarrier, and its release fence lowers to waits on the issuing wave's own\ncounters. On AMD, `s_barrier` waits on no memory counter, and the\nworkgroup fences around it don't wait for global writes either, since\nwaves of a workgroup see them through a shared L1 (or L0 in CU mode). So\nwrites another wave issued before the barrier can still be in flight\nwhen the atomic goes out. On gfx942/gfx950 the release's L2 writeback\n(`buffer_wbl2`) can then miss them, and a consumer on another XCD that\nacquires the atomic reads stale data:\n\n```\nwave 1:  store ─(in flight)────────────────────────────► reaches L2 late\nwave 0:  store  s_barrier  buffer_wbl2  s_waitcnt vmcnt(0)  atomic\n```\n\ngfx1250 has the same shape with `global_wb`. This breaks the common\n\"every warp writes partials, one thread bumps a counter\" pattern, for\nexample split-KV attention that merges in the last split, which today\nneeds an inline-asm `s_waitcnt` to be correct.\n\nHave every thread release its own writes before the leading barrier, so\nthe barrier orders all of them before the atomic:\n\n- `insertAtomicOrderingBarriers` takes the atomic's scope and, for a\n`release` or `acq_rel` atomic with more than one warp or CTA, calls the\nnew `TargetInfoBase::releaseBeforeAtomicBarrier` hook before the\nbarrier. The hook is a no-op by default; NVIDIA needs nothing since\n`bar.sync` plus a scoped fence is cumulative.\n- AMD skips `cta` scope, which the barrier already covers. Each wave\nonly waits for its own stores: `s_waitcnt vmcnt(0)` on CDNA2/3/4 and\n`s_wait_storecnt 0` on gfx1250. The atomic's own release after the\nbarrier then writes back L2 once for all waves. Other targets emit a\nglobal-only release `llvm.fence` at the atomic's scope and let LLVM\nchoose the waits; on RDNA4 it folds into the store wait the barrier\nalready has."
+    }
+  ],
+  "architecture_based_on_sha": "1c53e566ef8f719ff9b69132a72ad943e5409492",
+  "architecture_generated_at": "2026-11-15T21:06:50.425498+08:00"
+}
