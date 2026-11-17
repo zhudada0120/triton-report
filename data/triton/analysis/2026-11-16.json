@@ -1,0 +1,27 @@
+{
+  "date": "2026-11-16",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-11-17T09:11:55.933746+08:00",
+  "daily_summary": "当日仅有一个测试类变更：清理两处已过时的跳过逻辑。随着平台捆绑的 ptxas 升级到 13.5.37（此前修复了 transposed + swizzle-0 shared layout 的编译 bug），移除了 python/test/gluon/test_core.py 中 test_mma_shared_inputs 对 16-bit 转置共享布局的 skip，以及 python/test/unit/language/test_tensor_descriptor.py 中 test_mxfp8_mxfp4_matmul_tma 在非 SM100 CUDA 设备上对 BLOCK_K < K 多迭代用例的 skip。变更不涉及任何编译器、IR 或运行时接口，仅仅是恢复既有测试覆盖，属于纯测试层面的清理工作，风险极低。",
+  "ascend_impact_summary": "当日变更全部位于上游 NVIDIA/CUDA 相关的 Python 测试文件（python/test/gluon/test_core.py、python/test/unit/language/test_tensor_descriptor.py），属于纯测试代码修改，不涉及 BaseBackend/DriverBase 接口、tt 方言定义、code_generator 或 compiler 流水线等任何 triton-ascend 依赖的路径。因此对 triton-ascend 无任何功能或测试影响，无需更新测试。",
+  "commits": [
+    {
+      "sha": "46eccb199bfd3f3559b512c4a15870bd45e6a74d",
+      "comment": "清理测试中两处已过时的 skip 逻辑。[Tests] Re-enable stale Hopper and PTXAS test skips 移除 python/test/gluon/test_core.py 中 test_mma_shared_inputs 针对 PTXAS 13.0.88 之前版本 bug（16-bit 转置且 swizzle=0 的共享布局）的 workaround skip——因为捆绑 ptxas 已升级到 13.5.37，该 bug 已修复，代码注释本身也要求升级后移除；同时移除 python/test/unit/language/test_tensor_descriptor.py 中 test_mxfp8_mxfp4_matmul_tma 在非 SM100 CUDA 设备（如 A100/Hopper）上对 BLOCK_K < K 多迭代 K 循环的 skip（此前标注 'Currently broken on hopper'），使这些用例在更多 GPU 上恢复执行。实现上仅删除 pytest.skip 分支，无任何生产代码改动。潜在风险在于此前被 skip 的用例（尤其是 A100 上 tensor descriptor lowering 不同、以及 Hopper 上的多迭代 MXFP8xMXFP4 TMA matmul）首次在 CI 中运行，若失败则可能需要把 skip 收窄到 pre-Hopper GPU 而非完全移除，但该风险仅限测试稳定性，不影响编译流水线或运行时。",
+      "tags": [
+        "test",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Tests] Re-enable stale Hopper and PTXAS test skips (#12779)\n\n`test_mxfp8_mxfp4_matmul_tma` skips every `BLOCK_K < K` case on CUDA\ndevices other than SM100 with the reason \"Currently broken on hopper\",\nso the multi-iteration K loop of this MXFP8 x MXFP4 TMA matmul is not\ntested on Hopper. `test_mma_shared_inputs` skips 16-bit cases with a\ntransposed, swizzle-0 shared layout to work around a PTXAS bug; its code\ncomment says the bug is fixed in PTXAS 13.0.88 and asks for the\nworkaround to be removed after the upgrade.\n\nThe bundled ptxas is now 13.5.37\n([cmake/nvidia-toolchain-version.json](https://github.com/triton-lang/triton/blob/ac03912f0c3538032a3eff720bfade022cb71fa5/cmake/nvidia-toolchain-version.json#L2)).\nThis PR removes both skips.\n\nOn an H200 (sm_90) with Triton built from [main as of\n2026-11-11](https://github.com/triton-lang/triton/commit/7c1a7ca5dc89fd1b6fc7008436cad04f0dea1b1e)\nand its bundled ptxas 13.5.37, with the skips removed:\n\n- `test_mxfp8_mxfp4_matmul_tma`: all 36 cases passed, including the 28\nthat were skipped before.\n- `test_mma_shared_inputs`, the formerly skipped 16-bit subset: 516\ncases passed; 24 more were skipped by the test's own shared-memory limit\ncheck.\n\nNot run: this branch's head, which sits on a newer main, H100, Blackwell\n(the `instr_m=128` and 2-CTA cases of `test_mma_shared_inputs` run only\nthere), and A100. The first skip also covered A100, where tensor\ndescriptors are lowered differently, so the 28 multi-iteration cases\nwill run on A100 for the first time in this PR's CI; if they fail there,\nthe skip can be narrowed to pre-Hopper GPUs instead of removed.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [ ] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n- [x] This PR does not need a test because it only re-enables existing\ntests in `/python/test`.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)\n\nSigned-off-by: Han-Yin Chang <nick20350@gmail.com>"
+    }
+  ],
+  "architecture_based_on_sha": "1c53e566ef8f719ff9b69132a72ad943e5409492",
+  "architecture_generated_at": "2026-11-15T21:06:50.425498+08:00"
+}

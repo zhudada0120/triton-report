@@ -1,4 +1,8 @@
 {
+  "46eccb199bfd3f3559b512c4a15870bd45e6a74d": {
+    "date": "2026-11-16",
+    "msg": "[Tests] Re-enable stale Hopper and PTXAS test skips (#12779)"
+  },
   "1c53e566ef8f719ff9b69132a72ad943e5409492": {
     "date": "2026-11-15",
     "msg": "[AMD] Make release atomics cover writes from every warp (#12657)"

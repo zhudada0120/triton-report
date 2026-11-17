@@ -1,4 +1,16 @@
 {
+  "877602d68629a6e9471800b3fb32a30459af37db": {
+    "date": "2026-11-16",
+    "msg": "[ssbuffer](feat) Enhance ssbuffer in scalar-bound scenarios (#3197)"
+  },
+  "e445abdfaa6781f4b0ee3c2b982ea9ab9b540041": {
+    "date": "2026-11-16",
+    "msg": "[ssbuffer](fix) Tensor iter-arg pairs not add flowopt cond (#3090)"
+  },
+  "a9f012e92695fac8d985582e58d37078023f5ccd": {
+    "date": "2026-11-16",
+    "msg": "[TritonToLinalg](fix) preserve prefixes for loop-indexed point selects (#3176)"
+  },
   "ee15e295649ccf85b4e4b78316c736d00365c1a5": {
     "date": "2026-11-14",
     "msg": "[DynamicCVPipeline](fix) Preserve block IDs on scalar replacements (#3159)"

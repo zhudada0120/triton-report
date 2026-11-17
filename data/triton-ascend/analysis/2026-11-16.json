@@ -1,0 +1,75 @@
+{
+  "date": "2026-11-16",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-11-17T09:12:18.889292+08:00",
+  "daily_summary": "当日三个 commit 都集中在 DynamicCVPipeline 的 ssbuffer 控制流条件体系与 TritonToLinalg 的 select lowering 上。最大的一项（#3197）对 ssbuffer 条件系统做了结构性重构：把原来基于「依赖边计数器」的方案换成「每个计算块独占一个计数器」的 block-counter 方案，新增 CrossCorePattern 分析来精确识别 CUBE/VECTOR 交替的四/五块链式流水线，新增 preload 条件（块间预取深度约束）与基于 arith.select 的单轮标志链，并用 scf.while 取代 scf.for 作为主循环，同时把上游旧实现整体冻结成一套 Legacy pass 供白名单/不匹配内核回退使用。第二个 commit（#3090）是一个独立的小修复：flowopt 条件不应施加于同一迭代内的 tensor iter-arg 生产者/消费者对。第三个 commit（#3176）修复 TritonToLinalg 中动态点 select 的切片策略，把「零起点前缀重建」限定在由 scf.for 归纳变量直接索引的单元素区域上，避免 TopK 等 reduction 派生位置的性能回退。整体方向是继续打磨 950 上 cube-vector 流水线的控制流正确性与性能，并加固 lowering 的架构特定行为。",
+  "test_impact_summary": "测试看护影响较大且集中。commit #3197 引入了一整套新的运行时语义（block counter 内存布局、PIPE_S 仅在初始化时握手一次、主循环转 scf.while、flag 链用 arith.select、preload 上界公式），并直接把原先多个 AddControlFlowCondition lit 测试的 CHECK 全部改写；同时新增了 CrossCorePattern 的 pattern 判定、legacy 回退、preload 条件、pure scalar 块、主循环 for→while 转换等多组新测试，使得 AddControlFlowCondition 目录成为本次变更最需要重点看护的区域。该 commit 还留下一个 XFAIL 标记（skip-flowopt-tensor-iter-arg.mlir），属于有意为之的分支差异，需要在 legacy 路径刷新后清理，测试策略上应把它当作技术债跟踪。commit #3090 属于修复 + 新增回归测试，测试覆盖充分。#3176 在 select_target_slices.mlir 中补充了 loop-carried、static、loop-indexed row、reduction-derived 等多个正负样例，双目标（A2/A5）CHECK 也同步更新，属于典型的「修复同时补测」。综合看，现有测试在新语义路径上覆盖较完整，但需要注意两点：一是 main_loop 从 for 变 while 会影响所有下游消费 ssbuffer.main_loop/scf.for 形态的 pass 与端到端 pytest_ut 用例，建议跑全量 DynamicCVPipeline 与 950 端到端算例；二是 block counter 的固定字节偏移（base 24、stride 8、向量副本 +1024）是硬编码契约，若与 SSBufferManager/bishengir 的 ssbuf 布局约定不一致，仅靠 lit 测试无法发现，需要设备侧验证。",
+  "commits": [
+    {
+      "sha": "877602d68629a6e9471800b3fb32a30459af37db",
+      "comment": "本 commit 对 DynamicCVPipeline/AddControlFlowCondition 的 ssbuffer 条件体系做了较大重构，主线是将「按跨核依赖组（group）计数的计数器」替换为「按计算块（ssbuffer.if block）独占计数的 block counter」。核心变化：(1) 新增 CrossCorePattern.h/.cpp，对模块的跨核依赖图做图分析，判定是否为单条 CUBE↔VECTOR 交替、每跳双缓冲（2*(L-1) 个 tightly coupled buffer）、单入口的链式流水线（支持 4 块 mla 与 5 块 paged-decode 两种长度）。(2) AddControlFlowCondition.cpp 中据此将内核分流为 normal preload 或 legacy 路径：黑名单内核、非 core-pair main loop、pattern 不匹配、含 outer main loop 的模块统一走新增的 Legacy pass 副本（UpdateLoopOps/LoopIterTimes/ConditionInfoLegacy），Legacy 代码是从上游实现整体冻结的拷贝，注释明确说明「不要手工同步」。(3) UpdateConditionInfo 中新增 buildCrossCoreBlockEdges / assignBlockCounterSlots / collectPreloadBlocks / addPreloadConditions / addCrossCoreBlockConditions / getBlockCounterMemrefs / loadCounter / updateBlockCounterVars / insertCounterInitPipeS，把计数器分配成每块一个 slot（基址 24、步长 8、向量块额外 +1024 副本），条件改为基于 c_producer - c_consumer 的 sgt/slt，向量侧只读自身核副本、cube 侧读两个向量核副本并要求相等。(4) 新增 preload 条件：按依赖图分层，第一层可领先 buffer_num-1 轮，其余层按层差约束，且仅对同核的、存在祖先关系的块互相比较。(5) 新增 flag 链：每次迭代以 arith.select 累积「本轮已有块运行」标志，最多一个计算块执行，纯标量块不参与链。(6) UpdateLoopIterTimes 中删除旧的 iteration 扩增与 factor 计算，改为把主循环 scf.for 手工重写为 scf.while，while 条件为各块 counter < upperBound 的 OR，并支持独立运行（triton-opt --update-loop-iter-times）时从 IR 重建 ControlFlowConditionInfo。(7) UpdateLoopOps 中移除逐迭代 PIPE_S 握手（改为仅在 counter 初始化前后各做一次握手，flag=15）。(8) SplittedIfWrapSsbufIf 把 condition 打包拆成两步，先填 else 再移动 condition 定义链，避免把循环 flag 移进 wrapper。风险点：block counter 的字节偏移与 1024 跨核副本偏移是硬编码契约，依赖下游 ssbuf 布局；主循环形态从 scf.for 变为 scf.while，可能影响所有以 scf.for 为前提的下游 pass 与外部工具；legacy/normal 双路径增加了维护成本且有 XFAIL 记录的分支差异；pattern 判定条件较多，误判会导致内核走错路径（性能或正确性），需设备侧验证。",
+      "tags": [
+        "refactor",
+        "feature",
+        "performance",
+        "high-risk",
+        "DynamicCVPipeline",
+        "ssbuffer",
+        "test"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了 CrossCorePattern 判定、preload 条件、block counter、flag 链、主循环 for→while 转换、legacy 回退等大量行为，绝大多数现有 AddControlFlowCondition lit 测试的 CHECK 已被同步改写（crosscore-cond-after-matmul-*、intra-core-condition-order、intraDep_flow_opt_test、multi_flow_opt_test、while-update-condition-*、splitted-if-wrap-ssbuf-if-for 等），并新增了 black-list-kernel、legacy-kernel、pattern-kernel、pattern-merge-entries、pattern-two-chains、pattern-single-buffer、pattern-wide-transfer、pattern-vector-cube、preload-condition、preload-condition-three-buffers、pure-scalar-block、update-loop-iter-times-main-loop-to-while 等测试。此外 skip-flowopt-tensor-iter-arg.mlir 增加了 XFAIL: * 标记 legacy 路径的已知差异。由于主循环形态改变且 counter 使用硬编码偏移，仅靠 lit 测试不足以覆盖，需要设备侧端到端看护。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AddControlFlowCondition/",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/",
+          "third_party/ascend/unittest/pytest_ut/ (950 端到端算子，如 mla/paged decode/TopK 类)",
+          "third_party/ascend/unittest/costmodel_ut/ 与 autotune_ut/ (若流水线参数受影响)"
+        ]
+      },
+      "message": "[ssbuffer](feat) Enhance ssbuffer in scalar-bound scenarios (#3197)"
+    },
+    {
+      "sha": "e445abdfaa6781f4b0ee3c2b982ea9ab9b540041",
+      "comment": "本 commit 修复 flowopt 条件的一个语义错误：当 flowopt 的 source 节点与 current 节点恰好是同一迭代内的 tensor iter-arg 生产者/消费者对时，不应施加 flowopt 条件。实现上在 UpdateConditionInfoPass::setFlowOptCondition 中新增静态辅助函数 isTensorIterArgIfPair，遍历 info->tensorIterArgDepsMap[loopOp] 判断 (source==producer && current∈consumers) 或 (current==producer && source∈consumers)，命中则直接返回 flowOptCond = nullptr 并成功返回。改动很小、定位清晰，属于对已有 flowopt 机制的边界修正。潜在风险是依赖 tensorIterArgDepsMap 的准确性；若该 map 在某些路径下尚未填充（例如 while 主循环或跨 loop 场景），该判断会静默失效，退化为原行为而非误跳。同时新增了 skip-flowopt-tensor-iter-arg.mlir 回归测试，用 CHECK-NOT arith.cmpi sge / arith.ori 明确断言 flowopt 条件未被生成。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "DynamicCVPipeline",
+        "ssbuffer",
+        "test"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "commit 自身新增了 skip-flowopt-tensor-iter-arg.mlir 作为回归测试，用 FileCheck 的 CHECK-NOT 断言 flowopt 条件不被生成；同时该测试在 #3197 中因 legacy 路径被标记 XFAIL，说明此修复在 normal preload 路径生效而 legacy 路径不携带。测试侧应确保该用例在 normal 路径上通过，并跟踪 XFAIL 状态。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AddControlFlowCondition/skip-flowopt-tensor-iter-arg.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AddControlFlowCondition/ (flowopt 相关用例)"
+        ]
+      },
+      "message": "[ssbuffer](fix) Tensor iter-arg pairs not add flowopt cond (#3090)\n\nCo-authored-by: sxm <sunxianmiao@h-partners.com>"
+    },
+    {
+      "sha": "a9f012e92695fac8d985582e58d37078023f5ccd",
+      "comment": "本 commit 修复 TritonToLinalg 中 arith.select 的 SelectCanonicalizer 在 950 上对动态点选择使用直接切片（direct slices）导致的性能回退。背景：950 支持非对齐 UB 拷贝，因此此前对动态偏移的点选会走 direct slice；但在 mix_fused 的 score 更新与 probability 选择循环中，按循环索引逐元素更新时 direct slice 会明显劣化。修复方案是：当 dynamicDim != -1、所有维度折叠结果均为常量 1、且 dynamicOffset 去掉 arith::IndexCastOp 后正好是某个 scf.for 的归纳变量时，强制走「零起点前缀重建」路径（useLoopPointPrefix=true），从而 useDirectSlices = useDirectSelectSlices && !useLoopPointPrefix。关键实现细节：只对 classification 穿透 index cast，切片创建与 bounds guard 仍使用原始（可能已窄化的）值；scf::getForInductionVarOwner 保证纯标量位置（如循环携带的 integer iter_arg）不会被误判。为控制副作用，作者特意把范围限定为单元素区域，静态偏移、较大区域、reduction 派生位置（TopK）都保留 direct slice，从而避免 TopK 三个用例 149%-191% 的延迟恶化。同时保留 bound guard 与常量尾部 buffer 复用逻辑。风险点较低，但依赖 950/A2 双目标行为差异，以及 scf.for 归纳变量识别的稳健性（跨 region 的 iv owner 判定）。测试补充充分，覆盖了 loop-carried 点更新、静态点、概率选择循环、循环携带位置、循环索引整行、reduction 派生位置等多种正反例。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "low-risk",
+        "TritonToLinalg",
+        "test"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "修改了 SelectCanonicalizer 的切片选择策略，属于 lowering 行为变更，必须同步更新测试。commit 已在 select_target_slices.mlir 中把 @dynamic_point 的注释与行为说明改为「任意运行时点保留 direct slice，仅循环归纳位置走前缀」，并新增 @loop_carried_point、@static_point、@loop_point_probability、@loop_carried_position、@loop_point_row、@reduction_point 六个用例，分别覆盖 A2/A5 双目标 CHECK 与 COMMON 正负断言，属于充分的回归覆盖。设备侧端到端应关注 mix_fused 与 TopK 的性能不出现回退。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/select_target_slices.mlir",
+          "third_party/ascend/unittest/pytest_ut/ (mix_fused、TopK 等端到端性能用例)"
+        ]
+      },
+      "message": "[TritonToLinalg](fix) preserve prefixes for loop-indexed point selects (#3176)\n\n* [TritonToLinalg](fix) preserve prefixes for dynamic point selects\n\nOn 950, dynamically selecting one element from a loop-carried score\nvector uses direct slices and regresses mix_fused. Use zero-start prefix\nreconstruction for these regions while preserving direct slices for\nlarger regions and static offsets.\n\nKeep the bounds guard and constant-tail buffer reuse. Cover loop-carried\npoint updates and static points in the dual-target lowering test.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* [TritonToLinalg](fix) restrict point prefixes to loop indices\n\nThe dynamic-singleton prefix fallback also catches reduction-derived\npositions in TopK. With the same NPU IR toolchain, it increases the\nlatency of the three measured TopK cases by 149-191%.\n\nLimit the fallback to a single-element region indexed directly by an\nscf.for induction variable, looking through index casts only for source\nclassification. Preserve the actual cast value in slices and bounds\nchecks, and explicitly exclude integer iter_args from the induction\nvariable check.\n\nKeep direct slices for data-dependent positions and larger regions.\nCover both mix_fused select roles, carried positions, loop-indexed matrix\nrows, and reduction-derived TopK positions. Describe the measured\nbehavior without asserting a general scalar-copy cost on Ascend 950.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n---------\n\nSigned-off-by: KanuaK <yihan_z@qq.com>"
+    }
+  ],
+  "architecture_based_on_sha": "ee15e295649ccf85b4e4b78316c736d00365c1a5",
+  "architecture_generated_at": "2026-11-15T21:06:50.427270+08:00"
+}

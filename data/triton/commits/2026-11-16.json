@@ -1,0 +1,40 @@
+{
+  "date": "2026-11-16",
+  "repo": "triton-lang/triton",
+  "branch": "main",
+  "commits": [
+    {
+      "sha": "46eccb199bfd3f3559b512c4a15870bd45e6a74d",
+      "author": {
+        "name": "Han-Yin Chang",
+        "email": "nick20350@gmail.com"
+      },
+      "date": "2026-11-16T10:04:57+08:00",
+      "message": "[Tests] Re-enable stale Hopper and PTXAS test skips (#12779)\n\n`test_mxfp8_mxfp4_matmul_tma` skips every `BLOCK_K < K` case on CUDA\ndevices other than SM100 with the reason \"Currently broken on hopper\",\nso the multi-iteration K loop of this MXFP8 x MXFP4 TMA matmul is not\ntested on Hopper. `test_mma_shared_inputs` skips 16-bit cases with a\ntransposed, swizzle-0 shared layout to work around a PTXAS bug; its code\ncomment says the bug is fixed in PTXAS 13.0.88 and asks for the\nworkaround to be removed after the upgrade.\n\nThe bundled ptxas is now 13.5.37\n([cmake/nvidia-toolchain-version.json](https://github.com/triton-lang/triton/blob/ac03912f0c3538032a3eff720bfade022cb71fa5/cmake/nvidia-toolchain-version.json#L2)).\nThis PR removes both skips.\n\nOn an H200 (sm_90) with Triton built from [main as of\n2026-11-11](https://github.com/triton-lang/triton/commit/7c1a7ca5dc89fd1b6fc7008436cad04f0dea1b1e)\nand its bundled ptxas 13.5.37, with the skips removed:\n\n- `test_mxfp8_mxfp4_matmul_tma`: all 36 cases passed, including the 28\nthat were skipped before.\n- `test_mma_shared_inputs`, the formerly skipped 16-bit subset: 516\ncases passed; 24 more were skipped by the test's own shared-memory limit\ncheck.\n\nNot run: this branch's head, which sits on a newer main, H100, Blackwell\n(the `instr_m=128` and 2-CTA cases of `test_mma_shared_inputs` run only\nthere), and A100. The first skip also covered A100, where tensor\ndescriptors are lowered differently, so the 28 multi-iteration cases\nwill run on A100 for the first time in this PR's CI; if they fail there,\nthe skip can be narrowed to pre-Hopper GPUs instead of removed.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [ ] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n- [x] This PR does not need a test because it only re-enables existing\ntests in `/python/test`.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)\n\nSigned-off-by: Han-Yin Chang <nick20350@gmail.com>",
+      "parents": [
+        "1c53e566ef8f719ff9b69132a72ad943e5409492"
+      ],
+      "stats": {
+        "total_additions": 0,
+        "total_deletions": 8,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "python/test/gluon/test_core.py",
+          "status": "modified",
+          "additions": 0,
+          "deletions": 5,
+          "patch": "@@ -2531,11 +2531,6 @@ def _run_tma_mma_shared_inputs(warps, reps, ctas_per_cga, two_ctas, multicast, u\n def test_mma_shared_inputs(bitwidth, transpose_a, transpose_b, acc_dtype, warps, swizzling_a, swizzling_b, instr_m,\n                            shape_m, shape_n, shape_k, ctas_per_cga, two_ctas):\n     skip_if_unsupported_cluster_size(math.prod(ctas_per_cga))\n-    # FIXME: Workaround for a bug in PTXAS when the shared layout is transposed and the swizzling is 0\n-    # This is fixed in PTXAS 13.0.88. Remove once we upgrade\n-    if bitwidth == 16 and ((transpose_a and swizzling_a == 0 and shape_m > 1) or\n-                           (not transpose_b and swizzling_b == 0 and shape_n > 1)):\n-        pytest.skip(\"Skipped due to a bug in PTXAS when the shared layout is transposed and the swizzling is 0\")\n     if ctas_per_cga[0] == 1 and two_ctas:\n         pytest.skip(\"Need at least 2 CTAs for 2CTA mode\")\n "
+        },
+        {
+          "filename": "python/test/unit/language/test_tensor_descriptor.py",
+          "status": "modified",
+          "additions": 0,
+          "deletions": 3,
+          "patch": "@@ -1328,9 +1328,6 @@ def test_mxfp8_mxfp4_matmul_tma(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES,\n     if BLOCK_N == 256 and BLOCK_K == 256:\n         NUM_STAGES = min(NUM_STAGES, 2)\n \n-    if BLOCK_K < K and is_cuda() and torch.cuda.get_device_capability(0)[0] != 10:\n-        pytest.skip(\"Currently broken on hopper\")\n-\n     a = torch.randint(20, 40, (M, K), dtype=torch.uint8).view(torch.float8_e5m2).to(device)\n \n     dtype_src_str = \"float8e5\"\n"
+        }
+      ]
+    }
+  ]
+}
