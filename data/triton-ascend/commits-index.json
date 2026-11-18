@@ -1,4 +1,12 @@
 {
+  "f058c6a367dcd688534237b7960ea94eaba7f830": {
+    "date": "2026-11-17",
+    "msg": "[ascend](revert) Revert FP8 saturation from #3139 (#3259)"
+  },
+  "f46de0c2205b2b32a55220bd71d5064219f72300": {
+    "date": "2026-11-17",
+    "msg": "[docs](fix) restrict doc-review workflow to PRs targeting main (#3219)"
+  },
   "877602d68629a6e9471800b3fb32a30459af37db": {
     "date": "2026-11-16",
     "msg": "[ssbuffer](feat) Enhance ssbuffer in scalar-bound scenarios (#3197)"

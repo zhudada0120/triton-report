@@ -1,0 +1,50 @@
+{
+  "date": "2026-11-17",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-11-18T08:11:41.984160+08:00",
+  "daily_summary": "当日变更只有两笔：一是回滚了此前 #3139 引入的 FP8 软件饱和（clampToFiniteFp8Range）逻辑——因为它在 A5 SwiGLU MXFP8 量化场景下带来明显软件开销，回滚后恢复 arith.truncf 直接截断的原有行为，并同步删除了配套的 MLIR lit 测试 fp_to_fp_saturation.mlir、pytest 用例 test_fp8_saturation.py 以及 fx_to_fp_scalar_rtne.mlir / clamp_fp8.mlir 中的饱和相关 CHECK 断言；二是对 doc-review GitHub Actions 工作流做 CI 收敛，将触发限制为仅针对 main 分支的 PR，并新增 actions:write 权限与非 main PR 的显式 cancel 逻辑。整体方向是‘撤销一次引入性能损耗的语义增强 + 收窄文档审阅 CI 的触发面’，均为回归/收敛性变更，不涉及编译流水线或后端接口的架构性改动。",
+  "test_impact_summary": "测试影响集中在第一笔回滚：删除的 fp_to_fp_saturation.mlir、test_fp8_saturation.py 正是此前为覆盖 FP8 饱和语义而新增的看护点，回滚后这些断言不再有效，现有 clamp_fp8.mlir / fp_to_fp_scalar_rtne.mlir 已同步调整 CHECK 以匹配‘无饱和’的 arith.truncf 形态，因此测试套件本身是一致的、不会失败，但需要意识到 FP8 溢出/Inf 输入（f32->f8E4M3FN / f8E5M2、f16/bf16 -> fp8 等）的有限饱和行为以及 NaN/有符号零保持语义重新失去了显式看护——这属于已知限制被主动接受，但若后续再引入饱和或硬件侧行为变化，缺少回归网。从测试策略层面看，本次是‘删除看护’而非‘新增看护’，建议在 A5 MXFP8 量化路径（SwiGLU 等真实 kernel）上保留至少一个端到端的数值等价/性能基线型用例，以免性能回退再现而无感知。第二笔为 CI workflow 改动，不涉及产品测试，但若需验证 cancel 逻辑，可在非 main PR 上手动评论 /doc-review 观察是否被 Cancelled，仅属运维验证。",
+  "commits": [
+    {
+      "sha": "f058c6a367dcd688534237b7960ea94eaba7f830",
+      "comment": "回滚 #3139（843bbb08）引入的 FP8 软件饱和。变更点：(1) 删除 TritonOpConverter.cpp 中的 clampToFiniteFp8Range 辅助函数及其在两处 FpToFpCanonicalizer 分支（升位 f32 后再截断的分支、直接降位分支）中的调用，并把 arith.truncf 的操作数还原为直接输入/ExtF 结果，同时移除不再需要的 llvm/ADT/APFloat.h 头引用；(2) 同步删除专门验证饱和语义的 lit 测试 fp_to_fp_saturation.mlir 与 pytest 用例 test_fp8_saturation.py；(3) 更新 clamp_fp8.mlir 与 fp_to_fp_scalar_rtne.mlir 中的 CHECK，去除 cmp/select 饱和序列断言，并顺带把 FileCheck 的 OFFSET 捕获改为固定 %9。动机明确：软件饱和在 A5 SwiGLU MXFP8 量化场景带来可观开销，回滚以恢复性能，代价是重新接受溢出/Inf 输入的‘有限饱和’已知限制。风险点：从架构上下文看，该函数位于 Ascend 自有 lowering（TritonToLinalg）中，仅作用于 fp8 目标类型的 tt.fp_to_fp 规范化，与上游 TritonSemantic.dot 的 _patched_dot 路径无直接耦合，因此不会波及后端接口契约；但需注意若上层 kernel（如 MXFP8 量化）依赖饱和来避免 Inf/NaN 产生，回滚后数值语义会变化（溢出输入变为非饱和截断结果），已有依赖饱和的精度对拍用例需确认是否仍通过。此外该改动使 Triton 语义与上游 Triton FP8 饱和约定出现偏差，属刻意接受的已知行为差异，建议在文档/注释中标注。",
+      "tags": [
+        "performance",
+        "bugfix",
+        "refactor",
+        "medium-risk",
+        "TritonToLinalg",
+        "ascend-lowering"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "本次回滚主动删除了两个专门看护 FP8 饱和语义的测试文件（fp_to_fp_saturation.mlir、test_fp8_saturation.py），并修改了 clamp_fp8.mlir、fp_to_fp_scalar_rtne.mlir 的 CHECK 断言。测试套件已被同步更新为‘无饱和’形态，因此不会出现失败，但覆盖面上 FP8 溢出/Inf/NaN/有符号零的有限饱和行为重新失去显式用例看护，需要评估是否保留（或以性能基线形式）补充覆盖。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/clamp_fp8.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/fp_to_fp_scalar_rtne.mlir",
+          "third_party/ascend/unittest/pytest_ut/（A5 MXFP8 量化端到端数值/性能基线用例）"
+        ]
+      },
+      "message": "[ascend](revert) Revert FP8 saturation from #3139 (#3259)\n\nRevert 843bbb08e20a8d8a8c1338348360278859d52ced to remove the software saturation\noverhead observed in A5 SwiGLU MXFP8 quantization.\n\nThis restores the previous FP8 conversion behavior, including its known\nfinite-saturation limitation for overflow and infinity inputs.\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>"
+    },
+    {
+      "sha": "f46de0c2205b2b32a55220bd71d5064219f72300",
+      "comment": "收窄 doc-review GitHub Actions 工作流的触发条件：pull_request_target 事件增加 branches: [main]，使自动触发只针对目标分支为 main 的 PR；针对 issue_comment 手动触发（/doc-review、@doc-review）路径，新增从 PR 上下文取 base_ok 输出，并在 base.ref != 'main' 时通过 github-script 调用 cancelWorkflowRun 显式取消本次运行（并 sleep 60s 防止后续 step 继续），同时给 Checkout/Clone rule/Resolve LLM credentials/Run Doc Quality Review 等 step 加上 if 守卫，保证非 main PR 时跳过实际工作。另新增 actions: write 权限以允许取消运行。变更仅限 .github/workflows/doc-review.yml，属 CI/工程效率改动，不影响 Triton 编译流水线、后端接口或语言语义；主要风险在于 cancelWorkflowRun 的 runId 与 workflow 文件/事件匹配关系、以及 60s sleep 带来的 runner 占用，建议在非 main PR 上实测一次 /doc-review 以确认状态确为 Cancelled 且不产生额外的 PR 评论。",
+      "tags": [
+        "ci",
+        "chore",
+        "low-risk",
+        "github-actions",
+        "docs"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "变更仅涉及 GitHub Actions 工作流配置，不涉及 triton-ascend 的编译器、后端或 Python 测试代码，无需新增/更新单元或端到端测试用例。属于 CI 配置改动，无产品级测试看护需求。",
+        "suggested_test_areas": []
+      },
+      "message": "[docs](fix) restrict doc-review workflow to PRs targeting main (#3219)\n\nCo-authored-by: yanggaofeng (C) <y60124509@china.huawei.com>"
+    }
+  ],
+  "architecture_based_on_sha": "ee15e295649ccf85b4e4b78316c736d00365c1a5",
+  "architecture_generated_at": "2026-11-15T21:06:50.427270+08:00"
+}

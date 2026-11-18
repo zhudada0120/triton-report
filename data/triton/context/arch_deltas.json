@@ -1,5 +1,42 @@
 {
   "baseline_sha": "1c53e566ef8f719ff9b69132a72ad943e5409492",
   "baseline_generated_at": "2026-11-15T21:00:51.016894+08:00",
-  "deltas": {}
+  "deltas": {
+    "c590e26174098075360fbe67bf251f9c408c7d89": {
+      "date": "2026-11-17",
+      "affected_modules": [
+        "python/triton/compiler/code_generator.py"
+      ],
+      "affected_interfaces": [
+        "python/triton/compiler/code_generator.py"
+      ],
+      "interface_changes": "修复两处 host 内存泄漏。(1) python/src/ir.cc 引入 OwningModuleOp 子类，在析构时 erase 无父 Block 的顶层 ModuleOp，并持有 py::object 形式的 MLIRContext 引用，保证 context 在 erase 之后才销毁；parse_mlir_module 改用 module.release() 而非 clone()，create_module 返回 OwningModuleOp。这修正了此前 'ModuleOp 非拥有句柄 + OwningOpRef 被丢弃' 导致顶层 Operation* 泄漏的问题，同时避免用 py::keep_alive 穿过 builder.__dict__ 造成 nanobind 泄漏报告。(2) code_generator.py 删除 visit_FunctionDef 中 '# initialize defaults' 死循环及 visiting_arg_default_value，因为调用点已通过 bound_args.apply_defaults() 应用默认值且每个参数",
+      "change_summary": "[PYTHON] Fix MLIR ModuleOp and detached default-arg ConstantIntOp leaks (#12437)",
+      "ascend_impact": true
+    },
+    "459a62be445a746099aad7bd4b76f18f64916e59": {
+      "date": "2026-11-17",
+      "affected_modules": [
+        "include/triton/Dialect/Triton/"
+      ],
+      "affected_interfaces": [
+        "include/triton/Dialect/Triton/"
+      ],
+      "interface_changes": "前端新增 clmul（carry-less multiplication）：在 TT 方言新增 TT_ClMulOp（Elementwise/Commutative/SameOperandsAndResultType/Pure，操作数与结果均为 TT_IntLike），TritonToTritonGPU 注册 GenericOpPattern，TritonGPUToLLVM 用 POPULATE_BINARY_OP 映射到 LLVM::ClmulOp；python/src/ir.cc 新增 create_clmul；python/triton/language/math.py 实现 clmul（binary_op_type_legalization 后校验整数，非整数抛 'clmul requires integer operands'）；Gluon 以 builtin 包装复用；interpreter 新增 create_clmul（int1 退化为 bitwise_and，其余按位循环 XOR 累加并截断）。测试覆盖类型提升、广播、边角值、非法 dtype、lit lowering",
+      "change_summary": "[Frontend] Expose carry-less multiplication in Triton and Gluon (#12756)",
+      "ascend_impact": true
+    },
+    "735d1b531eea03cdd32eccc1c475358b0b16b75f": {
+      "date": "2026-11-17",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "修复 fp16/bf16 常量双重舍入（#12242）：python/src/ir.cc 的 get_bf16 与 get_fp16 由接受 float 改为接受 double，get_fp16 从 getF16FloatAttr(v) 改为 getFloatAttr(f16, v)，使 Python float 直接一次性舍入到目标 16 位类型而非先经 fp32（例如 1 + 2^-11 + 2^-30 此前在 fp16 下错误地舍入为 1.0）。interpreter 的 get_bf16 从 get_fp32 改为 get_fp64 再截断，保持一致。新增前端 FileCheck 测试与解释器位模式测试。属于 [BC Breaking] 的语义修正：常量数值可能变化，且绑定签名变化。风险在于依赖旧舍入结果的既有 kernel 数值会有微小差异（这是修正方向），以及任何以 float 形参调用这些绑定方法的 C++/绑定层调用方。",
+      "change_summary": "[FRONTEND][BC Breaking] Round fp16 and bf16 constants once (#12778)",
+      "ascend_impact": false
+    }
+  }
 }

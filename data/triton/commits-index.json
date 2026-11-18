@@ -1,4 +1,36 @@
 {
+  "c590e26174098075360fbe67bf251f9c408c7d89": {
+    "date": "2026-11-17",
+    "msg": "[PYTHON] Fix MLIR ModuleOp and detached default-arg ConstantIntOp leaks (#12437)"
+  },
+  "c2774dc0bc9121d15a2ed0b38ab885179ccae3ad": {
+    "date": "2026-11-17",
+    "msg": "[Rubin] Add functional Early A Release to tcgen05_commit (#12696)"
+  },
+  "a059bc039d8f1fc86d5b17934561077b585551d7": {
+    "date": "2026-11-17",
+    "msg": "[Pipeliner] Use one loop-carried cursor per async load ring (#12791)"
+  },
+  "4b346ae4c225f75299cb9d9bea4238a2b6ef8276": {
+    "date": "2026-11-17",
+    "msg": "[AMD] Expose AMD LDS allocation to LLVM with static shared memory (#12715)"
+  },
+  "459a62be445a746099aad7bd4b76f18f64916e59": {
+    "date": "2026-11-17",
+    "msg": "[Frontend] Expose carry-less multiplication in Triton and Gluon (#12756)"
+  },
+  "ea5722944bf5229aa4a0b89333caf2f2177b0395": {
+    "date": "2026-11-17",
+    "msg": "[Gluon] Expose grid dependency control for Hopper and newer (#12750)"
+  },
+  "521e477746b43a27415be7430e64aa623d4e8619": {
+    "date": "2026-11-17",
+    "msg": "[LLVM] Build core LLVM SDK at 293a85c048f7 (AsyncMark Stages) (#12679)"
+  },
+  "735d1b531eea03cdd32eccc1c475358b0b16b75f": {
+    "date": "2026-11-17",
+    "msg": "[FRONTEND][BC Breaking] Round fp16 and bf16 constants once (#12778)"
+  },
   "46eccb199bfd3f3559b512c4a15870bd45e6a74d": {
     "date": "2026-11-16",
     "msg": "[Tests] Re-enable stale Hopper and PTXAS test skips (#12779)"

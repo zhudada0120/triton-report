@@ -1,0 +1,221 @@
+{
+  "date": "2026-11-17",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-11-18T08:07:16.705936+08:00",
+  "daily_summary": "当日变更覆盖五个方向：(1) Python 绑定层内存泄漏修复，通过 OwningModuleOp 将 MLIR ModuleOp 生命周期绑定到 Python 对象，并移除 code_generator 中产生 detached 常量的死代码；(2) NVIDIA Rubin 架构 tcgen05.commit 的 early A release 功能（新增 early_a_release 属性、ConSan 追踪新线程类、LLVM lowering、Gluon API 与测试）；(3) Pipeliner 将 async load ring 由双游标改为单循环携带游标，配合 BufferIndexAnalysis 新增 andi 掩码识别，使 Membar 能证明同迭代内读写槽位不相交；(4) AMD 后端将 LDS 从动态分配改为静态分配（global_smem 按 ttg.shared 定长），launcher 一律请求 0 字节动态共享内存；(5) 前端新增 clmul 算子（Triton + Gluon + interpreter + NVPTX clmad lowering），以及 fp16/bf16 常量单次舍入修复和 LLVM SDK 版本更新。整体上以 NVIDIA 高端特性演进和通用编译器/前端基础设施改进为主。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 影响有限但有两处需关注：#12778 修改了 python/src/ir.cc 中 get_fp16/get_bf16 的签名（float→double）与舍入行为，会改变 Ascend fork 所依赖的 libtriton 绑定接口与常量生成结果；#12756 在 tt 方言新增 TT_ClMulOp 与 create_clmul 绑定、在 python/triton/language/math.py 新增 clmul，属于 Ascend 消费的 TTIR 输入契约与前端 DSL 扩展，Ascend 的 lowering（自有的 TTIR→Linalg/HIVM）若遇到 tt.clmul 需有处理或明确不支持。其余 commit（NVIDIA tcgen05/Rubin、AMD 静态 LDS、Pipeliner 游标重构、Gluon GDC、LLVM SDK 版本）均位于 Ascend 不使用的平台特定路径或 GPU-only 分析/lowering 路径。",
+  "commits": [
+    {
+      "sha": "c590e26174098075360fbe67bf251f9c408c7d89",
+      "comment": "修复两处 host 内存泄漏。(1) python/src/ir.cc 引入 OwningModuleOp 子类，在析构时 erase 无父 Block 的顶层 ModuleOp，并持有 py::object 形式的 MLIRContext 引用，保证 context 在 erase 之后才销毁；parse_mlir_module 改用 module.release() 而非 clone()，create_module 返回 OwningModuleOp。这修正了此前 'ModuleOp 非拥有句柄 + OwningOpRef 被丢弃' 导致顶层 Operation* 泄漏的问题，同时避免用 py::keep_alive 穿过 builder.__dict__ 造成 nanobind 泄漏报告。(2) code_generator.py 删除 visit_FunctionDef 中 '# initialize defaults' 死循环及 visiting_arg_default_value，因为调用点已通过 bound_args.apply_defaults() 应用默认值且每个参数都有签名条目，旧逻辑在插入点未设置前生成的 detached arith.constant 会脱离 ModuleOp 泄漏。行为变化明确：从 module 派生的非拥有句柄在 module 被 GC 后失效。测试覆盖了 GC 生命周期、异常路径与解释器关闭时无 nanobind 泄漏。风险在于任何依赖旧有的 'ModuleOp 永不释放' 语义的下游代码；但语义变化已在 PR 中显式声明，且新增测试直接覆盖。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "python-bindings",
+        "memory",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": true,
+        "functionality": "python/src/ir.cc 是 triton-ascend fork 构建并依赖的 pybind11 绑定（ir 子模块）。本次将 create_module 的返回类型从 ModuleOp 改为新的 _owning_module 子类、parse_mlir_module 改为 release 并返回 OwningModuleOp，且顶层 module 在 Python GC 时会被真正 erase、从 module 派生的非拥有句柄随之失效。AscendBackend 的 make_ir/ttir_to_linalg 等流水线在持有 ir.module 与从中 walk/get_function 取得的 operation/block/value 句柄时，若在 module 释放后继续使用将触发悬垂访问；同时 code_generator.py 删除默认参数初始化循环会改变 make_ir 输出的 TTIR（去掉 detached 常量）——语义等价但 IR 文本可能不同，可能影响 Ascend 基于 IR 文本的正则抽取（如 _parse_linalg_metadata 的 kernel_name/mix_mode 抽取通常不受影响，但任何依赖默认参数常量出现的检查需复核）。该文件同时被 triton-ascend-3.6.0.patch 覆盖，需检查补丁上下文是否冲突。",
+        "testing": "Ascend 的 python 侧测试（third_party/ascend/unittest/pytest_ut、tla_ut）与上游 test_compile_only 类似路径可能受 module 生命周期语义影响；若存在跨 module GC 复用 ir.function/ir.operation 句柄的代码会暴露问题。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/patch/triton-ascend-3.6.0.patch（检查 ir.cc/code_generator.py 补丁上下文）",
+          "third_party/ascend/unittest/pytest_ut（make_ir/parse_mlir_module 生命周期）",
+          "python/triton/compiler/code_generator.py 相关 Ascend 前端测试"
+        ]
+      },
+      "message": "[PYTHON] Fix MLIR ModuleOp and detached default-arg ConstantIntOp leaks (#12437)\n\n### Summary\n\nIn short words - there are small memory leaks that accumulate during AST\ncompilation and MLIR module parsing due to forgotten objects . That\nresult in failing ASAN/LSAN tests and may result in larger memory leak\nover time.\nThe PR fixes that by tying ModuleOp cleanup to Python object lifetime\nand dropping dead default-arg op creation.\n\n\nLong and detailed: \n\nFixes two host-memory leaks during Python AST compilation and MLIR\nmodule parsing:\n\n1. **Unowned top-level `mlir::ModuleOp` handles in Python bindings\n(`python/src/ir.cc`):**\n- `mlir::ModuleOp` is a non-owning handle around `mlir::Operation*`.\nNeither `TritonOpBuilder::create_module()` nor `parse_mlir_module()`\n(where `OwningOpRef<ModuleOp>` erased the parsed module while returning\nan unowned `module->clone()` copy) erased the underlying top-level\n`Operation*` when the Python `ir.module` was garbage-collected.\n- Wrap top-level modules returned to Python in an `OwningModuleOp`\nsubclass that erases the unparented `ModuleOp` in `~OwningModuleOp()`\nand holds a `py::object` reference to the Python `ir.context`\n(`py::find(&context)` / `py::find(self.getContext())`), which is\ndestroyed after `erase()` completes. Holding the context directly rather\nthan `py::keep_alive` through `TritonOpBuilder` avoids GC-invisible\nedges into `builder.__dict__` and prevents nanobind leak reports when a\nmodule remains alive until interpreter shutdown.\n\n2. **Detached constant ops from dead default-argument initialization\n(`python/triton/compiler/code_generator.py`):**\n- In `CodeGenerator.visit_FunctionDef`, the legacy `# initialize\ndefaults` loop visited default argument AST nodes before the function\nentry block insertion point was set, allocating detached\n`arith.constant` operations with no parent `Block` that leaked even\nafter erasing the `ModuleOp`.\n- Call sites already apply defaults (`bound_args.apply_defaults()`),\nevery parameter has a signature entry, and `zip(arg_names, arg_values)`\nimmediately rebinds all parameters. Remove the dead `# initialize\ndefaults` loop (and the now-unused\n`CodeGenerator.visiting_arg_default_value`), eliminating the detached\nconstant allocations while keeping raw `make_ir` output identical.\n\n### Behavior change\nNon-owning IR handles derived from a module (such as `ir.function` from\n`get_function`, or `ir.operation`, `ir.block`, and `ir.value` handles\ncaptured from `walk()` callbacks) are now invalid once the owning Python\n`ir.module` object is garbage-collected; previously, they stayed valid\nfor the lifetime of the `MLIRContext` only because the `ModuleOp` was\nleaked.\n\n### Reproduction (no GPU required)\n\n**1. LeakSanitizer (`TRITON_BUILD_WITH_ASAN=1 pip install -e .`):**\n```bash\nASAN_OPTIONS=detect_leaks=1 python3 -c '\nimport triton, triton.language as tl\nfrom triton.backends.compiler import GPUTarget\nfrom triton.compiler import ASTSource\n\n@triton.jit\ndef k(x_ptr, scale=1, BLOCK: tl.constexpr = 128):\n    offs = tl.arange(0, BLOCK)\n    tl.store(x_ptr + offs, tl.load(x_ptr + offs) * scale)\n\nsrc = ASTSource(fn=k, signature={\"x_ptr\": \"*fp32\", \"scale\": \"i32\", \"BLOCK\": \"constexpr\"}, constexprs={\"BLOCK\": 128})\ntriton.compile(src, target=GPUTarget(\"cuda\", 90, 32))\n'\n```\n- **Before:** LSan reports leaked `mlir::Operation::create` allocations\nfrom `ModuleOp::build` and detached `arith::ConstantIntOp::build`.\n- **After:** 0 MLIR leaks.\n\n**2. Standard build RSS growth (2,000 `make_ir` + `parse_mlir_module`\niterations):**\n- **Before:** Linear RSS growth (~`+25–48 MB` over 2,000 iterations\ndepending on allocator, ~`11–24 KB`/iteration).\n- **After:** Flat steady-state RSS (`0` leaked ops).\n```python\nimport gc, os, tempfile\nfrom pathlib import Path\nimport triton\nimport triton.language as tl\nfrom triton._C.libtriton import ir\nfrom triton.backends.compiler import GPUTarget\nfrom triton.compiler import ASTSource, make_backend\n\n@triton.jit\ndef reduce_kernel(x_ptr, out_ptr, scale=1, BLOCK: tl.constexpr = 128):\n    x = tl.load(x_ptr + tl.arange(0, BLOCK))\n    tl.store(out_ptr, tl.sum(x, axis=0) * scale)\n\ndef rss_kb() -> int:\n    return int(Path(\"/proc/self/statm\").read_text().split()[1]) * (os.sysconf(\"SC_PAGE_SIZE\") // 1024)\n\ntarget = GPUTarget(\"cuda\", 90, 32)\nbackend = make_backend(target)\noptions = backend.parse_options({})\ncodegen_fns = backend.get_codegen_implementation(options)\nmodule_map = backend.get_module_map()\nsrc = ASTSource(\n    fn=reduce_kernel,\n    signature={\"x_ptr\": \"*fp32\", \"out_ptr\": \"*fp32\", \"scale\": \"i32\", \"BLOCK\": \"constexpr\"},\n    constexprs={\"BLOCK\": 128},\n)\nwith tempfile.TemporaryDirectory() as tmp:\n    ttir_path = Path(tmp) / \"reduce.ttir\"\n    def step(write_file=False):\n        ctx = ir.context()\n        ir.load_dialects(ctx)\n        backend.load_dialects(ctx)\n        mod = src.make_ir(target, options, codegen_fns, module_map, ctx)\n        if write_file:\n            ttir_path.write_text(str(mod))\n        parsed = ir.parse_mlir_module(str(ttir_path), ctx)\n        del mod, parsed, ctx\n    for i in range(100):\n        step(write_file=(i == 0))\n    gc.collect()\n    base = rss_kb()\n    for iters in (500, 1000, 1500, 2000):\n        for _ in range(500):\n            step()\n        gc.collect()\n        print(f\"iter={iters:4d}: delta_rss = +{rss_kb() - base} KB\")\n```\n\n# New contributor declaration\n- [X] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [X] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [X] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [X] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [X] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/compiler/code_generator.py"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": true,
+        "affected_interfaces": [
+          "third_party/ascend/patch/triton-ascend-3.6.0.patch (hunks on python/src/ir.cc: HF32 InputPrecision enum + create_auto_overflow_assert; and python/triton/compiler/code_generator.py: imports, CodeGenerator.__init__, visit_With, etc.)",
+          "third_party/ascend/backend/__init__.py::_patched_parse (monkey-patches compiler.parse; calls ir.parse_mlir_module then sets module.context)",
+          "third_party/ascend/backend/__init__.py::_apply_ascend_patch / _patched_cg_init (monkey-patches CodeGenerator.__init__; calls self.module.set_attr('hacc.target', ...) after init)"
+        ],
+        "adaptation_effort": "low",
+        "adaptation_guide": "This commit changes the return type of triton._C.libtriton.ir create_module() and parse_mlir_module() from `ir.module` to a new `_owning_module` subclass (OwningModuleOp in python/src/ir.cc) whose destructor erases the unparented ModuleOp, and removes the dead `# initialize defaults` loop plus the `CodeGenerator.visiting_arg_default_value` attribute in python/triton/compiler/code_generator.py. For triton-ascend the required adaptation is minimal and mostly maintenance/verification: (1) Regenerate/refresh third_party/ascend/patch/triton-ascend-3.6.0.patch so its ir.cc and code_generator.py hunks apply cleanly against the post-commit source (line numbers shifted by ~+30 lines in ir.cc due to the OwningModuleOp struct and by ~-22 lines in code_generator.py due to the removed defaults loop/attribute); the patch hunks themselves (HF32 enum near old line 332, create_auto_overflow_assert near old line 1790, and the code_generator __init__/imports hunks) are contextually disjoint from the changed regions, so `git apply` will still succeed with an offset but the patch should be re-generated for cleanliness. (2) Verify third_party/ascend/backend/__init__.py::_patched_parse still works: it calls ir.parse_mlir_module(full_name, context) and then sets module.context = context; this remains valid because _owning_module subclasses ir.module and is declared with py::dynamic_attr(), so setting/reading module.context still works. (3) Verify _apply_ascend_patch's _patched_cg_init still works: it wraps CodeGenerator.__init__ and does self.module.set_attr('hacc.target', ...) after _original_cg_init; since builder.create_module() now returns _owning_module (a module subclass), set_attr and all downstream mod.context usages in third_party/ascend/backend/compiler.py and language/tla/compiler.py are unaffected. (4) Confirm the removal of visiting_arg_default_value and the initialize-defaults loop does not break the Ascend patch or monkey-patches: neither the patch hunks nor _apply_ascend_patch reference these symbols, so no source change is needed. (5) Note the behavior change (non-owning handles from get_function/walk/block/value are invalid once the owning module is GC'd): Ascend's module.walk() callbacks and parse_mlir_module consumers only use op/handle objects while the owning module is still referenced, so no code change is required; run the Ascend pytest/tla_ut suites (e.g. third_party/ascend/unittest/tla_ut/scalar/scalar_frontend_contract.py, test_bishengir_export.py) that call create_module/parse_mlir_module to confirm.",
+        "risk": "Low. The OwningModuleOp/ModuleOp and _owning_module/module subclassing keeps all Ascend-consumed APIs (module.context, module.set_attr, module.walk, module.verify, parse_mlir_module) source-compatible. The only concrete risks are (a) a git apply conflict when the stale triton-ascend-3.6.0.patch hunks no longer match shifted context during the next round-up, and (b) the semantic change from parse_mlir_module returning module->clone() to returning the original parsed module (module.release()) — a correctness improvement but one that could subtly alter Ascend's ir_override / TRITON_KERNEL_OVERRIDE path (_patched_parse) if any code depended on clone isolation. No Ascend code relies on the removed default-arg machinery or on the previously leaked ModuleOp, so regression risk is low."
+      }
+    },
+    {
+      "sha": "c2774dc0bc9121d15a2ed0b38ab885179ccae3ad",
+      "comment": "为 NVIDIA Rubin（compute capability 107）新增 tcgen05.commit 的 early_a_release 功能，跟踪 A 操作数从共享内存读取完成（而非 MMA 整体完成）。改动横跨 IR（TTNG_TCGen5CommitOp 新增 UnitAttr early_a_release 并更新语义描述）、verify（TargetFeatures::supportsEarlyARelease 要求 cc==107）、TargetFeatures、ConSan（新增 tcAReadThreadOffset 线程类与 isTensorCoreARead 效果标记、getThreadLayout 由 assert 改为返回 FailureOr 并在超过 64 线程槽时报错）、MMALowering（early A release 的 commit 不参与合并/重排）、NVGPU→LLVM lowering（拼接 .sync_restrict::shared::read::mma::a，并新增 targetFeatures 校验）以及 Gluon API（tcgen05_commit 新增 completion 参数）。测试覆盖 lit 与 Gluon 端到端及 PTX 断言。整体为强平台绑定特性，接口演进一致性较好（C++ verify 与 lowering 双重校验），并把 ConSan 的 i64 位集容量限制从 assert 升级为可诊断错误。",
+      "tags": [
+        "feature",
+        "nvidia",
+        "rubin",
+        "tcgen05",
+        "consan",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更全部位于 NVIDIA 专属路径：include/lib/Dialect/TritonNvidiaGPU、TritonInstrument（仅 NVIDIA ConSan 使用）、third_party/nvidia/lib/TritonNVIDIAGPUToLLVM、python/triton/experimental/gluon/language/nvidia/*，以及 NVIDIA 专属 lit 测试。Ascend 不经 TritonGPU/TritonNvidiaGPU lowering，也不使用 ConSan。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Rubin] Add functional Early A Release to tcgen05_commit (#12696)\n\nAdd optional early_a_release to tcgen05_commit on Rubin for\nshared-memory A-read completion. Prevent merging or reordering these\ncommits during MMA lowering. Reject non-Rubin targets and ConSan use.\nRely on Rubin’s existing PTX 9.4 minimum for feature support. Cover\nlowering and Early A release in LIT and Gluon tests.\n\nSee the updated description on `tcgen05.commit` for more details.\nhttps://docs.nvidia.com/cuda/parallel-thread-execution/index.html#tcgen-async-sync-operations-commit\n\n> The tcgen05.commit operation with .sync_restrict::shared::read::mma::a\nperforms an\n[arrive-on](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#parallel-synchronization-and-communication-instructions-mbarrier-arrive-on)\noperation on the barrier upon completion of read of A matrix from shared\nmemory for all prior tcgen05.mma operations. This does not signal the\noverall completion of any prior tcgen05.mma operations."
+    },
+    {
+      "sha": "a059bc039d8f1fc86d5b17934561077b585551d7",
+      "comment": "重构 TritonGPU 软件流水线中异步加载环形缓冲（load ring）的游标管理。变更前 lowerLoads 为每个 load group 创建 insertIdx 与 extractIdx 两个 loop-carried 游标（各自 -1 起始、各自取模递增），insert 游标在 pipeline 展开后作为独立 loop 参数携带，导致 WGMMA 读槽 `t % 3` 与 TMA 写槽 `(t + 2) % 3` 的 SSA base 不同，Membar 无法证明两者在同一 iteration 内不重叠，从而保守插入 barrier。本次改动：(1) 在 Schedule.h 引入 LoadRing{insertArg, numBuffers, refillOffset} 与 LoadRings 映射，lowerLoops 返回该映射；(2) LowerLoops.cpp 的 lowerLoads 在 scheduleDependencies 之后依据 insertStage/extractStage 计算 refillOffset = 1 + mod(extractStage - insertStage, numBuffers)，记录每个 ring 的 insertArg、buffer 数与偏移；(3) SoftwarePipeliner.cpp 的 expandLoops 在 pipelineForLoop 之后，用 readCursor（regionIterArg(insertArg+1)）+ refillOffset 重新推导 refill slot —— numBuffers 为 2 的幂时用 `andi(mask)` 避免有符号余数的符号修正，否则用 remsi —— 替换原 insert 值，并把原 insert 参数与读游标统一，最后用 eraseLoopCarriedValues 删除失效的 iter_arg；(4) BufferIndexAnalysis.cpp 扩展 analyzeBufferIndex，识别 `arith.andi(x, 2^k-1)` 作为模 2^k 的 wrap，用 lambda 统一 remsi/andi 的 modulus 记录逻辑，并新增 llvm/Support/MathExtras.h 依赖以用 isPowerOf2_64；(5) 更新多处 lit 测试（loop-pipeline*.mlir、descriptor-matmul-pipeline.mlir）以匹配新的 iter_args 数量与 andi/remsi 形态，并在 test-membar.mlir 新增 masked_buffer_indices 用例验证掩码索引下的 barrier 消除/保留行为。风险点：refillOffset 依赖 schedule 中 insert/extract op 的阶段编号，若 scheduleDependencies 未把这些新 op 正确归入阶段，refillOffset 计算会错位导致读写同一槽位（正确性风险）；eraseLoopCarriedValues 需要确保原 insert 参数除死增量外无其他使用者，注释虽声称如此，但依赖 schedule 的强不变量；mask 分支假设 numBuffers 为 2 的幂才用 andi，非幂次走 remsi 路径，两条路径行为需一致。整体是正确的性能/IR 简化改进，且以新增 Membar lit 用例做了正向验证。",
+      "tags": [
+        "performance",
+        "refactor",
+        "medium-risk",
+        "tritongpu-pipeliner",
+        "analysis-membar"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Pipeliner] Use one loop-carried cursor per async load ring (#12791)\n\nSchedule the insert and extract updates independently. After pipeline\nexpansion, derive the refill slot from the read cursor and the\ndifference between their scheduled stages, then remove the insert cursor\nfrom the loop arguments.\n\nIn a three-slot ring with a two-iteration lead, WGMMA reads `t % 3`\nwhile TMA refills `(t + 2) % 3`. Both slots now have the same SSA base,\nso Membar can prove they are disjoint within the iteration. The next\nrefill can overwrite the slot just read, so the cross-iteration\nsynchronization still matters."
+    },
+    {
+      "sha": "4b346ae4c225f75299cb9d9bea4238a2b6ef8276",
+      "comment": "AMD 后端将 LDS 从动态分配改为静态分配：TritonGPUToLLVM.cpp 中 global_smem 由 external zero-length array 改为 internal、长度取自 ttg.shared 的 array 并带 undef 初始化 region，使 LLVM 在做 occupancy/寄存器预算时能看到实际 LDS 占用（尤其影响 waves_per_eu 的选择与 AGPR 使用）。配套把 driver.c 三处 launch 的 sharedMemBytes 全部传 0、compile.c AOT launcher 同样传 0，并在 test_launch 中新增 OutOfResources 路径测试（利用 CompiledKernel._init_handles 的既有容量检查）。测试还覆盖 amdgcn 中断言 .amdhsa_group_segment_fixed_size。风险：失去动态 LDS 能力后，超过设备上限的 kernel 只能靠 launch-time 检查而非 driver 侧分配失败，且 LLVM 会报 'local memory exceeds limit' 但不退出——已由测试覆盖；另 test_tdm_copy.py 中 BLOCK_N_B 从 2048 改为 1024 疑似因静态 LDS 超限而调整，需确认该变化不是掩盖真实回归。",
+      "tags": [
+        "performance",
+        "amd",
+        "codegen",
+        "runtime",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。全部位于 third_party/amd/（driver.c、tools/hip/compile.c、TritonAMDGPUToLLVM）及 AMD 专属测试。Ascend 由 bishengir 完成最终 codegen，不使用 AMD 的 global_smem 生成与 HIP launcher。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Expose AMD LDS allocation to LLVM with static shared memory (#12715)\n\n## Summary\n\nThe AMD backend currently lowers the compiled shared-memory requirement\nto an external zero-sized LDS global and supplies the bytes at launch.\nLLVM cannot account for that allocation when choosing occupancy and\nregister budgets.\n\nDefine `global_smem` as an internal array sized from `ttg.shared`, so\nall AMD shared memory is allocated statically in the kernel binary.\nTriton no longer supports dynamic LDS on AMD: `shared` metadata still\ncomes from `ttg.shared` and is packed for the launcher unchanged, but\nthe HIP runtime launcher and the AOT launcher both request zero bytes of\ndynamic shared memory.\n\nAllocations beyond the device's shared-memory limit raise\n`OutOfResources` at launch, through the existing check in\n`CompiledKernel._init_handles`, before the binary is loaded. With static\nLDS, LLVM now sees the oversized allocation and reports a `local memory\nexceeds limit` error, but it does not exit the process, so compilation\ncompletes and the launch-time check handles it.\n`test_launch_shared_memory_out_of_resources` covers this path.\n\nThis matters for register allocation: with `waves_per_eu=0`, LLVM will\nattempt to schedule registers for best performance. However, with high\nLDS usage there may be no advantage to using fewer registers. For\nexample, if LDS usage were high enough we could determine that we must\nuse `waves_per_eu=1` and therefore allow AGPR usage."
+    },
+    {
+      "sha": "459a62be445a746099aad7bd4b76f18f64916e59",
+      "comment": "前端新增 clmul（carry-less multiplication）：在 TT 方言新增 TT_ClMulOp（Elementwise/Commutative/SameOperandsAndResultType/Pure，操作数与结果均为 TT_IntLike），TritonToTritonGPU 注册 GenericOpPattern，TritonGPUToLLVM 用 POPULATE_BINARY_OP 映射到 LLVM::ClmulOp；python/src/ir.cc 新增 create_clmul；python/triton/language/math.py 实现 clmul（binary_op_type_legalization 后校验整数，非整数抛 'clmul requires integer operands'）；Gluon 以 builtin 包装复用；interpreter 新增 create_clmul（int1 退化为 bitwise_and，其余按位循环 XOR 累加并截断）。测试覆盖类型提升、广播、边角值、非法 dtype、lit lowering 与 NVPTX clmad 融合断言。属于干净的跨层新增接口，无既有行为变更；注意 ClMulOp 仅约束 TT_IntLike，dtype 合法性由前端保证，若其他前端（含 Ascend 复用语言层）绕过 math.clmul 直接构造 op 需自行保证。",
+      "tags": [
+        "feature",
+        "frontend",
+        "ttir",
+        "lowering",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": true,
+        "functionality": "两处影响：(1) include/triton/Dialect/Triton/IR/TritonOps.td 新增 tt.clmul，属于 Ascend 消费的 TTIR 输入契约扩展——ttir 中若出现 tt.clmul，Ascend 自有的 TTIR→Linalg/HIVM lowering（third_party/ascend/lib/TritonToLinalg 等）没有对应 pattern，会出现未转换 op 或 pass 失败；由于 python/triton/language/math.py 的 clmul 是纯 Python 前端 builtin，Ascend 用户 kernel 调用 tl.clmul 时会在 TTIR 阶段产生该 op，需要 Ascend 侧给出实现或显式拒绝。(2) python/src/ir.cc 新增 create_clmul 绑定与 python/triton/language/__init__.py 导出 clmul，属于 Ascend 复用的 libtriton 绑定与前端 API 面（新增而非修改，不破坏现有调用）。",
+        "testing": "Ascend 的 pytest_ut 若复用上游 test_core 的算子覆盖会自然带入 clmul 用例并以 Ascend codegen 失败；需要显式决定 Ascend 是否支持该 op 并补充对应测试。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/lib/TritonToLinalg（tt.clmul lowering 或拒绝策略）",
+          "third_party/ascend/unittest/pytest_ut（tl.clmul 端到端/告警用例）"
+        ]
+      },
+      "message": "[Frontend] Expose carry-less multiplication in Triton and Gluon (#12756)\n\nAdd `clmul(x, y)` to the Triton and Gluon math APIs for elementwise\ncarry-less multiplication. It returns the low N bits after normal\ninteger promotion and broadcasting, interpreting signed operands by\ntheir bit patterns.\n\nLower `tt.clmul` to `llvm.clmul`, allowing LLVM to select NVPTX `clmad`\nand fuse XOR accumulation when supported. Include interpreter support,\nAPI documentation, and coverage for integer widths, promotion, invalid\noperands, broadcasting, and native/fallback NVPTX lowering.\n\nValidation:\n- 68 focused frontend, codegen, and GPU correctness cases passed on a\nGB300 devbox.\n- 9 interpreter cases passed; 9 Gluon interpreter cases skipped as\nunsupported.\n- `make test-lit`: 308 passed, 2 unsupported.\n- All commit-time pre-commit hooks passed, including Ruff, YAPF,\nclang-format, and mypy.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "include/triton/Dialect/Triton/"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": true,
+        "affected_interfaces": [
+          "python/triton/language/math.py::clmul (new @core.builtin API, emits tt.clmul via _semantic.builder.create_clmul)",
+          "python/triton/language/__init__.py (exports clmul; __all__ entry)",
+          "include/triton/Dialect/Triton/IR/TritonOps.td::TT_ClMulOp (new platform-independent tt.clmul op with Elementwise/Commutative/SameOperandsAndResultType/Pure traits)",
+          "python/src/ir.cc::TritonOpBuilder.create_clmul (new pybind11 builder method)",
+          "python/triton/runtime/interpreter.py::InterpreterBuilder.create_clmul (new interpreter op)",
+          "python/triton/experimental/gluon/language/_math.py::clmul (new Gluon API)"
+        ],
+        "adaptation_effort": "low",
+        "adaptation_guide": "This commit is purely additive: it introduces a new TTIR op `tt.clmul`, a new frontend API `tl.clmul`/Gluon `clmul`, interpreter support, and GPU lowering to `llvm.clmul`. It does not change any existing op, verifier, or interface that Ascend inherits/overrides (BaseBackend/DriverBase/TritonSemantic are untouched), so existing Ascend kernels are unaffected.\n\nAdaptation needed in triton-ascend:\n1. Feature support (optional but required for parity): Ascend's lowering chain (third_party/ascend/lib/ — TritonToStructured, TritonToLinalg, TritonToHIVM, TritonToHFusion, TritonToUnstructure) consumes tt.* ops as input and has no pattern for the new `tt.clmul` (mlir::triton::ClMulOp). A kernel using `tl.clmul` on NPU will currently fail to lower. Add a pattern to lower `tt.clmul` to software emulation via existing integer ops (shift + XOR / bitwise AND, mirroring the interpreter implementation) or to a CANN/libdevice intrinsic, propagating it through each lowering stage.\n2. Patch rebase: `python/triton/language/math.py`, `python/triton/runtime/interpreter.py`, and `python/src/ir.cc` are all modified both by this commit and by triton-ascend's `triton-ascend-3.6.0.patch` (math.py +7/-3, interpreter.py +54/-8, ir.cc +13). Re-applying the patch on top of the new upstream may produce context conflicts that need manual reconciliation during the round-trip.\n3. Optional: add a feature test in third_party/ascend/unittest/ (e.g. pytest_ut) once lowering is in place.\n\nThe GPU-side changes (lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp, lib/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.cpp) are in the not_used_by_ascend category and require no action.",
+        "risk": "Low. The commit is additive and does not alter any existing op semantics, verifier, or abstract interface, so it cannot break existing Ascend compilation or runtime behavior. The only risks are (a) a feature gap: `tl.clmul` fails to lower on NPU until Ascend adds a `tt.clmul` pattern, and (b) patch-application friction in math.py/interpreter.py/ir.cc during the upstream round-trip, which is mechanical (context rebase) rather than semantic."
+      }
+    },
+    {
+      "sha": "ea5722944bf5229aa4a0b89333caf2f2177b0395",
+      "comment": "在 Gluon 中暴露 programmatic dependent launch 的 grid dependency control：新增 python/triton/experimental/gluon/language/nvidia/hopper/gdc.py，提供 gdc.wait() 与 gdc.launch_dependents() 两个 builtin，分别调用 _semantic.grid_dependency_wait()/grid_dependency_launch_dependents()（对应 TT 方言已有的 tt.grid_dependency_wait/tt.grid_dependency_launch_dependents）。在 hopper 中导出并从 blackwell、rubin 重导出，更新三份文档与一个 FileCheck 前端测试（无需 GPU）。改动纯粹是 Gluon NVIDIA 命名空间的 API 暴露，无底层语义变更，风险极低。",
+      "tags": [
+        "feature",
+        "gluon",
+        "nvidia",
+        "docs",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。全部位于 python/triton/experimental/gluon/language/nvidia/*、docs/gluon/api/nvidia*.rst 与 python/test/gluon/test_frontend.py；Ascend 不使用 Gluon 的 NVIDIA 前端。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Gluon] Expose grid dependency control for Hopper and newer (#12750)\n\nExpose grid dependency control directly in Gluon as `gdc.wait()` and\n`gdc.launch_dependents()`, so kernels can use programmatic dependent\nlaunch through the Gluon API. Add the `gdc` module under\n`gluon.language.nvidia.hopper` and re-export it from Blackwell and\nRubin.\n\nDocument the module and add a frontend FileCheck test covering all three\nnamespaces. The test checks that each namespace emits\n`tt.grid_dependency_wait` and `tt.grid_dependency_launch_dependents`,\nwithout requiring GPU execution.\n\nValidation:\n- `pytest -s --tb=short --maxfail=1\npython/test/gluon/test_frontend.py::test_gdc_arch_exports`: 1 passed on\na CPU-only machine using an existing native build.\n- All pre-commit hooks passed, including Ruff, YAPF, and mypy."
+    },
+    {
+      "sha": "521e477746b43a27415be7430e64aa623d4e8619",
+      "comment": "仅更新 cmake/llvm-build-info.json 中的 LLVM 哈希至 293a85c048f7（build 1），用于请求包含 staged rocdl.asyncmark/rocdl.wait.asyncmark 操作数的核心 MLIR/LLVM SDK。该 PR 是发布步骤：合并后由上游 LLVM Build workflow 产出归档，而实际消费的 SDK 仍是 cmake/llvm-info.json 中的旧版本，普通 CI 构建不受影响。对 Triton C++ 源码无任何变更，风险极低；后续真正切换 llvm-info.json 时才会引入 API 兼容检查。",
+      "tags": [
+        "chore",
+        "ci",
+        "build",
+        "llvm",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。仅改 build-info 元数据，未变更源码 API；Ascend 的 LLVM 依赖由其自有 llvm_patch_f6ded0b.patch 与构建配置管理。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[LLVM] Build core LLVM SDK at 293a85c048f7 (AsyncMark Stages) (#12679)\n\nUpdate only `cmake/llvm-build-info.json` to\n`llvm/llvm-project@293a85c048f754b849829c7920846e4fbe5ab980`, build 1.\nThis requests the core MLIR/LLVM SDK needed for staged `rocdl.asyncmark`\nand `rocdl.wait.asyncmark` operands from llvm-project#220442. The\nindependent AMD codegen SDK already uses this LLVM revision (#12656).\n\nThis is the publication step of the LLVM update. Merging it triggers the\nupstream `LLVM Build` workflow to publish\n`llvm-293a85c0-<platform>-1.tar.gz` archives. The consumed SDK remains\nthe existing revision in `cmake/llvm-info.json`, so normal Triton CI\ncontinues to build against its matching source APIs."
+    },
+    {
+      "sha": "735d1b531eea03cdd32eccc1c475358b0b16b75f",
+      "comment": "修复 fp16/bf16 常量双重舍入（#12242）：python/src/ir.cc 的 get_bf16 与 get_fp16 由接受 float 改为接受 double，get_fp16 从 getF16FloatAttr(v) 改为 getFloatAttr(f16, v)，使 Python float 直接一次性舍入到目标 16 位类型而非先经 fp32（例如 1 + 2^-11 + 2^-30 此前在 fp16 下错误地舍入为 1.0）。interpreter 的 get_bf16 从 get_fp32 改为 get_fp64 再截断，保持一致。新增前端 FileCheck 测试与解释器位模式测试。属于 [BC Breaking] 的语义修正：常量数值可能变化，且绑定签名变化。风险在于依赖旧舍入结果的既有 kernel 数值会有微小差异（这是修正方向），以及任何以 float 形参调用这些绑定方法的 C++/绑定层调用方。",
+      "tags": [
+        "bugfix",
+        "frontend",
+        "python-bindings",
+        "bc-breaking",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "python/src/ir.cc 的 get_bf16/get_fp16 是 Ascend fork 构建并使用的 libtriton 绑定（TritonOpBuilder 方法），签名由 float→double、get_fp16 的实现由 getF16FloatAttr 改为 getFloatAttr 属于接口与行为双变更：Ascend 前端经 code_generator 生成 16 位浮点常量时，同一 Python 常量会产生不同的 arith.constant 数值（更精确），影响 Ascend kernel 的数值结果与可能依赖特定常量文本的 IR 匹配；若 Ascend 侧存在直接以 float 调用这两个绑定或对签名做静态假设的原生扩展/补丁，需要同步。python/triton/runtime/interpreter.py 的 get_bf16 改动也会影响 Ascend 解释执行路径的数值。该文件同时被 triton-ascend-3.6.0.patch 覆盖，需检查补丁冲突。",
+        "testing": "Ascend pytest_ut 中的常量/精度相关用例（尤其 bf16/fp16 参与计算且对结果做严格比较的算子测试）可能出现数值差异；建议补充常量单次舍入的等价用例或复核现有阈值。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/patch/triton-ascend-3.6.0.patch（ir.cc/interpreter.py 补丁上下文）",
+          "third_party/ascend/unittest/pytest_ut（fp16/bf16 常量与精度用例）",
+          "python/triton/runtime/interpreter.py 相关 Ascend 解释器测试"
+        ]
+      },
+      "message": "[FRONTEND][BC Breaking] Round fp16 and bf16 constants once (#12778)\n\nFixes #12242\n\nWas able to reproduce on main with CPU and A10. `get_fp16` and\n`get_bf16` take a C++ `float`, so a Python float is rounded to fp32\nbefore it is converted to the 16-bit type. A value just above a 16-bit\nrounding tie loses the bits that break the tie, and the tie then rounds\nto even, for example: `1 + 2**-11 + 2**-30` becomes 1.0 in fp16 instead\nof 1.0009765625. The interpreter's `get_bf16` also went through fp32.\nBoth bindings now take a double and round once, to the target type.\n\nThis carries forward the change in #12249 , which was closed without\ncomment, the issue has had no PR since. Code is manually reviewed and\nexplainable.\n\nTesting\n- Added `test_16bit_float_constant_rounded_once` in\n`python/test/unit/language/test_frontend.py` (FileCheck on the generated\nconstants) and in `python/test/unit/runtime/test_interpreter.py`\n(interpreter builder). Both fail on main and pass with this change.\n- `test_frontend.py` (1136 passed), `test_interpreter.py` (73 passed)\nand `python/test/gluon/test_frontend.py` (630 passed).\n\n<!---\nThe core Triton is a small number of people, and we receive many PRs\n(thank\nyou!).  To help us review your code more quickly, **if you are a new\ncontributor (less than 3 PRs merged) we ask that you complete the\nfollowing\ntasks and include the filled-out checklist in your PR description.**\n\nComplete the following tasks before sending your PR, and replace `[ ]`\nwith\n`[x]` to indicate you have done them.\n-->\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)",
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    }
+  ],
+  "architecture_based_on_sha": "1c53e566ef8f719ff9b69132a72ad943e5409492",
+  "architecture_generated_at": "2026-11-15T21:06:50.425498+08:00"
+}

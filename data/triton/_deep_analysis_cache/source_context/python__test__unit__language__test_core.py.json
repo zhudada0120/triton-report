@@ -1,12 +1,12 @@
 {
-  "content_hash": "b74a32808716b3be",
+  "content_hash": "9cb72a88d2f08124",
   "analysis": {
-    "interface_summary": "定义 1 个类；定义 562 个函数",
+    "interface_summary": "定义 1 个类；定义 564 个函数",
     "key_interfaces": [
       "AccumulateInFp32",
       "AccumulateInFp32.__enter__",
       "AccumulateInFp32.__exit__"
     ]
   },
-  "cached_at": "2026-11-07T06:31:02.844204+08:00"
+  "cached_at": "2026-11-18T08:09:41.626955+08:00"
 }
