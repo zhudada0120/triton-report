@@ -1,0 +1,247 @@
+{
+  "date": "2026-11-18",
+  "repo": "triton-lang/triton",
+  "branch": "main",
+  "commits": [
+    {
+      "sha": "441eb1c63bc4c4e58975019a20b5bc61cd54d978",
+      "author": {
+        "name": "Pengzhan Zhao",
+        "email": "borontion@gmail.com"
+      },
+      "date": "2026-11-18T13:03:29+08:00",
+      "message": "[AMD] Drop the workaround for swizzle reorder (#12810)\n\nRevert https://github.com/triton-lang/triton/pull/11169. This workaround\nis no longer needed after LLVM PR\nhttps://github.com/llvm/llvm-project/pull/232016. The convert can still\nsafely use `ds_read_b64`, tested on MI355X.\n\nSigned-off-by: Pengzhan Zhao <borontion@gmail.com>",
+      "parents": [
+        "fe1cce630af8b43d28fb77ba6915dbbbb4f28d0f"
+      ],
+      "stats": {
+        "total_additions": 1,
+        "total_deletions": 28,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "lib/Tools/GenericSwizzling.cpp",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -637,7 +637,7 @@ LinearLayout optimalSwizzlingLdSt(const LinearLayout &src,\n   // e.g for fp32\n   // src = {reg = [], lane = [1, 2, 4, 8, 16], warp = [32]}\n   // dst = {reg = [8, 32], lane = [0, 0, 1, 2, 4], warp = [16]}\n-  if (log2Vec < 2 && numBanks <= 32) {\n+  if (log2Vec < 2) {\n     auto smemFlat = smem.flattenOuts();\n     // For every bank line, find if it is in regSrc or regDst\n     // and if so, store the index in the vector"
+        },
+        {
+          "filename": "unittest/Dialect/TritonGPU/SwizzleTest.cpp",
+          "status": "modified",
+          "additions": 0,
+          "deletions": 27,
+          "patch": "@@ -20,7 +20,6 @@ using namespace mlir::triton;\n \n using mlir::triton::actionAdditiveStrides;\n using mlir::triton::gpu::bankConflictsLdSt;\n-using mlir::triton::gpu::getVecBitwidthLdSt;\n using mlir::triton::gpu::LocalMemOpTile;\n using mlir::triton::gpu::optimalSwizzling;\n using mlir::triton::gpu::optimalSwizzlingLdSt;\n@@ -759,32 +758,6 @@ TEST_F(BankConflictTest, bankConflictsWavefront64) {\n   }\n }\n \n-TEST_F(BankConflictTest, LowVectorF32MmaConvertKeeps64BankRegisterBasisHigh) {\n-  auto S = [&](StringRef str) { return StringAttr::get(&ctx, str); };\n-  auto src = mfma(4, {4, 1}, {32, 32, 16}, true);\n-  auto dst = mfma(4, {4, 1}, {16, 16, 32}, true);\n-  SmallVector<int64_t> shape = {128, 1};\n-  auto srcLLRaw = toLL(shape, src);\n-  auto dstLLRaw = toLL(shape, dst);\n-  auto srcLL = actionRemoveBroadcastedRegs(srcLLRaw).apply(srcLLRaw);\n-  auto dstLL = actionRemoveBroadcastedRegs(dstLLRaw).apply(dstLLRaw);\n-\n-  EXPECT_EQ(getVecBitwidthLdSt(srcLL, dstLL, /*bitwidth=*/32), 32);\n-\n-  auto smem = optimalSwizzlingLdSt(srcLL, dstLL, /*bitwidth=*/32,\n-                                   /*numBanks=*/64);\n-  auto [readConflicts, writeConflicts] =\n-      bankConflictsLdSt(srcLL, dstLL, smem, /*bitwidth=*/32, /*numBanks=*/64);\n-  EXPECT_EQ(readConflicts, 0);\n-  EXPECT_EQ(writeConflicts, 0);\n-  EXPECT_EQ(smem.getInDimSize(S(\"bank\")), 64);\n-  EXPECT_EQ(smem.getInDimSize(S(\"segment\")), 2);\n-\n-  auto dstToSmem = dstLL.invertAndCompose(smem);\n-  EXPECT_EQ(dstToSmem.getBasis(S(\"register\"), /*pos=*/0, S(\"bank\")), 32);\n-  EXPECT_EQ(dstToSmem.getBasis(S(\"register\"), /*pos=*/0, S(\"segment\")), 0);\n-}\n-\n } // namespace\n \n int main(int argc, char *argv[]) {\n"
+        }
+      ]
+    },
+    {
+      "sha": "fe1cce630af8b43d28fb77ba6915dbbbb4f28d0f",
+      "author": {
+        "name": "Liyang Ling",
+        "email": "leon.ling@amd.com"
+      },
+      "date": "2026-11-18T12:03:40+08:00",
+      "message": "[AMD] Preserve store coalescing when bypassing epilogue relayouts (#12714)\n\nThis change aims to address a performance drop since #11704.\nAITER’s BF16 RMSNorm benchmark bench_fused_rmsnorm_add\nat **8192 × 4095** on gfx950 got bandwidth dropped by 27%.\n\nIn that case (similar to added lit), the computation layout holds\n`sizePerThread = [8]`, while the coalesced store layout holds\n`sizePerThread = [1]`. Removing the relayout keeps scalar\n`buffer_store_short` instructions but spaces adjacent lanes’ writes 16\nbytes apart instead of 2 bytes. The resulting increase in memory\nrequests outweighs the saved LDS accesses and barriers.\n\nSo this change try to preserve the store coalescing for some out stride\nunaligned situation(store layout with sizePerThread=[1]).\n\nFor BF16/FP16, the maxElems = 8. the other profitability checks would\nbe:\n\n| Source run | Destination run | Main check | New check |\n|---:|---:|---|---|\n| 8 | 1 | Bypass | Keep relayout |\n| 1 | 8 | Keep relayout | Keep relayout |\n| 8 | 8 | Bypass | Bypass |\n| 8 | 16 | Bypass | Bypass |\n| 16 | 8 | Bypass | Bypass |",
+      "parents": [
+        "cc64e25bd5b087f3281c230ddf6bf157a99f57b0"
+      ],
+      "stats": {
+        "total_additions": 37,
+        "total_deletions": 7,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "test/TritonGPU/amd/amd-optimize-epilogue.mlir",
+          "status": "modified",
+          "additions": 26,
+          "deletions": 0,
+          "patch": "@@ -230,6 +230,32 @@ module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 2 : i32, ttg.targ\n \n // -----\n \n+// An unaligned row requires scalar stores. With eight elements per thread,\n+// consecutive lanes would store sixteen bytes apart instead of two.\n+// CHECK-LABEL: rmsnorm_unaligned_row\n+// CHECK:       %[[VAL:.+]] = ttg.convert_layout %{{.*}} : tensor<4096xbf16, #blocked> -> tensor<4096xbf16, #blocked1>\n+// CHECK:       tt.store %{{.*}}, %[[VAL]], %{{.*}} : tensor<4096x!tt.ptr<bf16>, #blocked1>\n+#blocked = #ttg.blocked<{sizePerThread = [8], threadsPerWarp = [64], warpsPerCTA = [4], order = [0]}>\n+#blocked1 = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [64], warpsPerCTA = [4], order = [0]}>\n+module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32, ttg.target = \"hip:gfx950\", \"ttg.threads-per-warp\" = 64 : i32} {\n+  tt.func public @rmsnorm_unaligned_row(%arg0: !tt.ptr<bf16> {tt.divisibility = 16 : i32}, %stride: i32, %n: i32) {\n+    %value = arith.constant dense<1.0> : tensor<4096xbf16, #blocked>\n+    %row = tt.get_program_id x : i32\n+    %base = arith.muli %row, %stride : i32\n+    %row_ptr = tt.addptr %arg0, %base : !tt.ptr<bf16>, i32\n+    %ptrs = tt.splat %row_ptr : !tt.ptr<bf16> -> tensor<4096x!tt.ptr<bf16>, #blocked1>\n+    %offsets = tt.make_range {start = 0 : i32, end = 4096 : i32} : tensor<4096xi32, #blocked1>\n+    %ptr = tt.addptr %ptrs, %offsets : tensor<4096x!tt.ptr<bf16>, #blocked1>, tensor<4096xi32, #blocked1>\n+    %bound = tt.splat %n : i32 -> tensor<4096xi32, #blocked1>\n+    %mask = arith.cmpi slt, %offsets, %bound : tensor<4096xi32, #blocked1>\n+    %converted = ttg.convert_layout %value : tensor<4096xbf16, #blocked> -> tensor<4096xbf16, #blocked1>\n+    tt.store %ptr, %converted, %mask : tensor<4096x!tt.ptr<bf16>, #blocked1>\n+    tt.return\n+  }\n+}\n+\n+// -----\n+\n // The two layouts disagree on the order, so bypass is not profitable.\n // CHECK-LABEL: fma_blocked_order_mismatch\n // CHECK:       %[[VAL:.+]] = ttg.convert_layout %{{.*}} : tensor<64x128xf32, #blocked> -> tensor<64x128xf32, #blocked1>"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUTransforms/OptimizeEpilogue.cpp",
+          "status": "modified",
+          "additions": 11,
+          "deletions": 7,
+          "patch": "@@ -142,12 +142,16 @@ static bool isProfitableBypassSource(RankedTensorType srcType,\n   if (triton::gpu::getThreadOrder(srcType)[0] != contigDim)\n     return false;\n \n-  // Make sure that using the src layout would not increase the store count.\n-  // A store is at most 128 bits wide, so we cap the dst run at the number of\n-  // elements that fit in it (4 for f32, 8 for f16): a src run of 8 f16 against\n-  // a dst run of 16 needs no more stores, since neither can write more than 8\n-  // elements at a time, and rejecting it would keep the LDS round trip for a\n-  // penalty the hardware does not have.\n+  // Bypassing the relayout makes the store use the src layout, so compare\n+  // each thread's contiguous run, which bounds the store width. Both runs are\n+  // capped at what a 128-bit store holds (4 for f32, 8 for f16), since no\n+  // store can write more than that, and rejecting it would keep the LDS round\n+  // trip for a penalty the hardware does not have.\n+  //\n+  // We must check for equality. dstContig is already the widest store the\n+  // pointer alignment allows, so a longer src run would not widen the stores;\n+  // it would only spread neighbouring lanes apart and hurt coalescing (e.g.\n+  // 16 bytes apart instead of 2 for an unaligned bf16 row).\n   Type elemType = dstType.getElementType();\n   if (!elemType.isIntOrFloat())\n     return false;\n@@ -158,7 +162,7 @@ static bool isProfitableBypassSource(RankedTensorType srcType,\n       triton::gpu::getContigPerThread(srcType)[contigDim];\n   const unsigned dstContig =\n       triton::gpu::getContigPerThread(dstType)[contigDim];\n-  return srcContig >= std::min(dstContig, maxElems);\n+  return std::min(srcContig, maxElems) == std::min(dstContig, maxElems);\n }\n \n // convert(val) : xmma -> blocked\n"
+        }
+      ]
+    },
+    {
+      "sha": "cc64e25bd5b087f3281c230ddf6bf157a99f57b0",
+      "author": {
+        "name": "pawelszczerbuk",
+        "email": "153013546+pawelszczerbuk@users.noreply.github.com"
+      },
+      "date": "2026-11-18T09:57:53+08:00",
+      "message": "[NVIDIA] Share identical terminal ConSan assertion reports (#12792)\n\nConSan-instrumented NVIDIA kernels can contain hundreds of identical\nterminal `__assertfail` blocks after LLVM optimization. Share terminal\nblocks only when the complete assertion calls, ABI, debug locations, and\nterminal behavior match. Preserve every original check and distinct\ndiagnostic. Enable the pass only for CUDA ConSan compilation.\n\nGB300, eight representative numerical cases, two fresh-cache runs per\ncompiler against main (alternating order after first-use\ninitialization):\n- Mean cold test time: 4.969 → 4.612 s (7.17% faster).\n- ConSan compilation, total over 11 instrumented kernels: 26.718 →\n23.930 s (10.43% faster).\n- All compilation, 47 kernels: 34.039 → 31.225 s (8.27% faster).\n- All 32 numerical cases passed; each run compiled the same 47 kernels,\nincluding 11 with ConSan. Two runs per arm are an estimate, not a\nstatistical confidence bound.\n\nHistorical isolated GPU replay on an older base: 37.329 → 37.390 ms for\n17 ConSan launches (effectively flat, +0.16%; two measured replays after\none warmup). Fresh paired measurements above cover cold tests and\ncompilation, not GPU events.\n\nValidation: native `make`; `lit -v test/LLVMIR/break-phi-struct.ll`\n(passed). The regression checks sharing, distinct diagnostics,\nobservable effects, and distinct debug locations. Full stacked ConSan\ndiagnostic suite on GB300: 504 passed, 75 skipped.\n\nActive review and landing order: this PR → #12795 (concurrent file-cache\nbuilds) → #12796 (single-CTA shadow locks). #12795 and #12796 are\nindependent siblings based directly on this PR.\n\n#12793 (liveness analysis) and #12794 (masked tracking stores) are on\nhold and are not part of the active landing stack.",
+      "parents": [
+        "ba80650b18fa3d93419a61c6fd2c78118dd28096"
+      ],
+      "stats": {
+        "total_additions": 142,
+        "total_deletions": 1,
+        "files_changed": 7
+      },
+      "files": [
+        {
+          "filename": "bin/triton-llvm-opt.cpp",
+          "status": "modified",
+          "additions": 6,
+          "deletions": 0,
+          "patch": "@@ -42,6 +42,10 @@ static cl::opt<bool>\n                         llvm::cl::desc(\"run pass to break phi struct\"),\n                         cl::init(false));\n \n+static cl::opt<bool> MergeNVPTXAssertBlocks(\n+    \"merge-nvptx-assert-blocks\",\n+    cl::desc(\"share identical NVPTX assertion failure blocks\"));\n+\n static cl::opt<bool> NVPTXVectorize(\n     \"nvptx-vectorize\",\n     llvm::cl::desc(\"run hardware-aware NVPTX arithmetic vectorization\"),\n@@ -72,6 +76,8 @@ static std::function<Error(Module *)> makeOptimizingPipeline() {\n     llvm::FunctionPassManager fpm;\n     if (BreakStructPhiNodes)\n       fpm.addPass(BreakStructPhiNodesPass());\n+    if (MergeNVPTXAssertBlocks)\n+      fpm.addPass(MergeNVPTXAssertBlocksPass());\n     if (NVPTXVectorize)\n       fpm.addPass(NVPTXVectorizerPass(NVPTXComputeCapability));\n     mpm.addPass(createModuleToFunctionPassAdaptor(std::move(fpm)));"
+        },
+        {
+          "filename": "lib/Target/LLVMIR/CMakeLists.txt",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 0,
+          "patch": "@@ -1,6 +1,7 @@\n add_triton_library(TritonLLVMIR\n         LLVMDIScope.cpp\n         LLVMDILocalVariable.cpp\n+        LLVMIRMergeNVPTXAssertBlocks.cpp\n         LLVMIRBreakPhiStruct.cpp\n         LLVMIRNVPTXVectorizer.cpp\n         LLVMIRNVPTXTargetInfo.cpp"
+        },
+        {
+          "filename": "lib/Target/LLVMIR/LLVMIRMergeNVPTXAssertBlocks.cpp",
+          "status": "added",
+          "additions": 55,
+          "deletions": 0,
+          "patch": "new file mode 100644\n@@ -0,0 +1,55 @@\n+#include \"LLVMPasses.h\"\n+#include \"llvm/ADT/DenseMap.h\"\n+#include \"llvm/ADT/Hashing.h\"\n+#include \"llvm/ADT/STLExtras.h\"\n+#include \"llvm/ADT/SmallVector.h\"\n+#include \"llvm/IR/Instructions.h\"\n+#include \"llvm/IR/Module.h\"\n+\n+namespace llvm {\n+PreservedAnalyses MergeNVPTXAssertBlocksPass::run(Function &function,\n+                                                  FunctionAnalysisManager &) {\n+  const Function *report = function.getParent()->getFunction(\"__assertfail\");\n+  if (!report || !report->isDeclaration() || !report->doesNotReturn())\n+    return PreservedAnalyses::all();\n+\n+  // A statically unrolled or pipelined kernel can check the same assertion\n+  // hundreds of times. Share its terminal reporting block across those edges.\n+  // Matching the complete call preserves the message, file, line and ABI.\n+  DenseMap<size_t, SmallVector<CallInst *, 1>> seen;\n+  SmallVector<BasicBlock *> redundant;\n+  for (BasicBlock &block : function) {\n+    if (block.isEntryBlock() || block.hasAddressTaken() || block.size() != 2)\n+      continue;\n+    auto *call = dyn_cast<CallInst>(&block.front());\n+    auto *end = dyn_cast<UnreachableInst>(block.getTerminator());\n+    if (!end || !call || call->getCalledFunction() != report ||\n+        call->hasOperandBundles() || call->isConvergent() ||\n+        call->hasMetadataOtherThanDebugLoc() ||\n+        end->hasMetadataOtherThanDebugLoc() || call->hasDbgRecords() ||\n+        end->hasDbgRecords())\n+      continue;\n+    hash_code key =\n+        hash_combine(call->getDebugLoc().get(), end->getDebugLoc().get());\n+    for (const Use &arg : call->args())\n+      key = hash_combine(key, arg.get());\n+    auto &candidates = seen[static_cast<size_t>(key)];\n+    auto found = llvm::find_if(candidates, [&](const CallInst *other) {\n+      return call->isIdenticalTo(other) &&\n+             call->getDebugLoc() == other->getDebugLoc() &&\n+             end->getDebugLoc() ==\n+                 other->getParent()->getTerminator()->getDebugLoc();\n+    });\n+    if (found == candidates.end()) {\n+      candidates.push_back(call);\n+      continue;\n+    }\n+    block.replaceAllUsesWith((*found)->getParent());\n+    redundant.push_back(&block);\n+  }\n+  for (BasicBlock *block : redundant)\n+    block->eraseFromParent();\n+  return redundant.empty() ? PreservedAnalyses::all()\n+                           : PreservedAnalyses::none();\n+}\n+} // namespace llvm"
+        },
+        {
+          "filename": "lib/Target/LLVMIR/LLVMPasses.h",
+          "status": "modified",
+          "additions": 5,
+          "deletions": 0,
+          "patch": "@@ -6,6 +6,11 @@ namespace llvm {\n \n class TargetIRAnalysis;\n \n+struct MergeNVPTXAssertBlocksPass\n+    : OptionalPassInfoMixin<MergeNVPTXAssertBlocksPass> {\n+  PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);\n+};\n+\n // Use generic optimization defaults with selectively validated NVIDIA hooks.\n TargetIRAnalysis createTritonNVPTXTargetIRAnalysis();\n "
+        },
+        {
+          "filename": "python/src/llvm.cc",
+          "status": "modified",
+          "additions": 6,
+          "deletions": 1,
+          "patch": "@@ -615,7 +615,8 @@ void init_triton_llvm(py::module_ &m) {\n          std::string arch, std::string features, std::vector<std::string> flags,\n          bool enable_fp_fusion, bool disable_slp_vectorizer,\n          bool disable_vector_combine, bool expand_masked_div_rem,\n-         unsigned nvptx_compute_capability, bool enable_nvptx_tti) {\n+         unsigned nvptx_compute_capability, bool enable_nvptx_tti,\n+         bool merge_nvptx_assert_blocks) {\n         if (mlir::triton::tools::getBoolEnv(\"DISABLE_LLVM_OPT\"))\n           return;\n         // Declare the same flags as codegen even though IR optimization does\n@@ -730,6 +731,9 @@ void init_triton_llvm(py::module_ &m) {\n         mpm.addPass(pb.buildPerModuleDefaultPipeline(opt));\n         if (expand_masked_div_rem)\n           mpm.addPass(ExpandMaskedDivRemPass());\n+        if (merge_nvptx_assert_blocks)\n+          mpm.addPass(\n+              createModuleToFunctionPassAdaptor(MergeNVPTXAssertBlocksPass()));\n         mpm.run(*mod, mam);\n       },\n       // Mandatory parameters\n@@ -744,6 +748,7 @@ void init_triton_llvm(py::module_ &m) {\n       py::arg(\"expand_masked_div_rem\") = false,\n       py::arg(\"nvptx_compute_capability\") = 0,\n       py::arg(\"enable_nvptx_tti\") = false,\n+      py::arg(\"merge_nvptx_assert_blocks\") = false,\n       py::call_guard<py::gil_scoped_release>());\n \n   m.def("
+        },
+        {
+          "filename": "test/LLVMIR/break-phi-struct.ll",
+          "status": "modified",
+          "additions": 68,
+          "deletions": 0,
+          "patch": "@@ -1,4 +1,5 @@\n ; RUN: triton-llvm-opt -break-struct-phi-nodes %s | FileCheck %s\n+; RUN: triton-llvm-opt -merge-nvptx-assert-blocks %s | FileCheck %s --check-prefix=ASSERT\n \n ; CHECK-LABEL: struct\n define {i32, i32} @struct(i1 %c) {\n@@ -31,3 +32,70 @@ exit:\n   %r = phi {i32, i32} [ %s.2, %true], [ %s.4, %false ]\n   ret {i32, i32} %r\n }\n+\n+; Preserve distinct source diagnostics and observable failure-side effects.\n+declare void @__assertfail(ptr, ptr, i32, ptr, i64) noreturn\n+declare void @observe()\n+\n+; ASSERT-LABEL: define void @checks(\n+; ASSERT: br i1 %a, label %failure, label %second\n+; ASSERT: br i1 %b, label %failure, label %third\n+; ASSERT: br i1 %c, label %different_line, label %observable\n+; ASSERT: failure:\n+; ASSERT-NEXT: call void @__assertfail(ptr %msg, ptr %file, i32 12, ptr %fn, i64 1)\n+; ASSERT-NEXT: unreachable\n+; ASSERT-NOT: repeated:\n+; ASSERT: different_line:\n+; ASSERT-NEXT: call void @__assertfail(ptr %msg, ptr %file, i32 13, ptr %fn, i64 1)\n+; ASSERT: observable:\n+; ASSERT-NEXT: call void @observe()\n+; ASSERT-NEXT: call void @__assertfail(ptr %msg, ptr %file, i32 12, ptr %fn, i64 1)\n+define void @checks(i1 %a, i1 %b, i1 %c, ptr %msg, ptr %file, ptr %fn) {\n+entry:\n+  br i1 %a, label %failure, label %second\n+second:\n+  br i1 %b, label %repeated, label %third\n+third:\n+  br i1 %c, label %different_line, label %observable\n+failure:\n+  call void @__assertfail(ptr %msg, ptr %file, i32 12, ptr %fn, i64 1)\n+  unreachable\n+repeated:\n+  call void @__assertfail(ptr %msg, ptr %file, i32 12, ptr %fn, i64 1)\n+  unreachable\n+different_line:\n+  call void @__assertfail(ptr %msg, ptr %file, i32 13, ptr %fn, i64 1)\n+  unreachable\n+observable:\n+  call void @observe()\n+  call void @__assertfail(ptr %msg, ptr %file, i32 12, ptr %fn, i64 1)\n+  unreachable\n+}\n+\n+; The same diagnostic operands can occur at independently debuggable call sites.\n+; ASSERT-LABEL: define void @different_debug_locations(\n+; ASSERT: br i1 %cond, label %first, label %second\n+; ASSERT: first:\n+; ASSERT: call void @__assertfail\n+; ASSERT: second:\n+; ASSERT: call void @__assertfail\n+define void @different_debug_locations(i1 %cond, ptr %msg, ptr %file, ptr %fn) !dbg !4 {\n+entry:\n+  br i1 %cond, label %first, label %second\n+first:\n+  call void @__assertfail(ptr %msg, ptr %file, i32 12, ptr %fn, i64 1), !dbg !6\n+  unreachable\n+second:\n+  call void @__assertfail(ptr %msg, ptr %file, i32 12, ptr %fn, i64 1), !dbg !7\n+  unreachable\n+}\n+\n+!llvm.dbg.cu = !{!0}\n+!llvm.module.flags = !{!3}\n+!0 = distinct !DICompileUnit(language: DW_LANG_C, file: !1, producer: \"triton\", isOptimized: true, runtimeVersion: 0, emissionKind: FullDebug)\n+!1 = !DIFile(filename: \"kernel.py\", directory: \"/\")\n+!2 = !DISubroutineType(types: !{})\n+!3 = !{i32 2, !\"Debug Info Version\", i32 3}\n+!4 = distinct !DISubprogram(name: \"different_debug_locations\", scope: !1, file: !1, line: 10, type: !2, scopeLine: 10, spFlags: DISPFlagDefinition, unit: !0)\n+!6 = !DILocation(line: 20, column: 2, scope: !4)\n+!7 = !DILocation(line: 21, column: 2, scope: !4)"
+        },
+        {
+          "filename": "third_party/nvidia/backend/compiler.py",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 0,
+          "patch": "@@ -522,6 +522,7 @@ class CUDABackend(BaseBackend):\n             expand_masked_div_rem=True,\n             nvptx_compute_capability=0 if use_slp_vectorizer else capability,\n             enable_nvptx_tti=True,\n+            merge_nvptx_assert_blocks=is_enabled(options, \"consan\"),\n         )\n \n         # Get some metadata\n"
+        }
+      ]
+    },
+    {
+      "sha": "ba80650b18fa3d93419a61c6fd2c78118dd28096",
+      "author": {
+        "name": "Keren Zhou",
+        "email": "kerenzhou@openai.com"
+      },
+      "date": "2026-11-18T04:27:32+08:00",
+      "message": "[Pipeliner] Predicate conditionals through a pure branch (#12773)\n\nPrevent inactive pipeline stages from executing effectful branches by\nselecting a pure branch when available or guarding the entire\nconditional otherwise.",
+      "parents": [
+        "a3218d403217f0abc806a1214dd3d32faae5cb06"
+      ],
+      "stats": {
+        "total_additions": 141,
+        "total_deletions": 5,
+        "files_changed": 3
+      },
+      "files": [
+        {
+          "filename": "lib/Dialect/TritonGPU/Transforms/Pipeliner/PipeliningUtility.cpp",
+          "status": "modified",
+          "additions": 23,
+          "deletions": 5,
+          "patch": "@@ -190,11 +190,29 @@ Operation *mlir::triton::predicateOp(RewriterBase &rewriter, Operation *op,\n   if (isa<ttng::TMEMAllocOp, ttng::TMEMLoadOp>(op))\n     return op;\n   if (auto ifOp = dyn_cast<scf::IfOp>(op)) {\n-    rewriter.setInsertionPoint(op);\n-    Value cnd = getPredMask(rewriter, ifOp.getCondition().getType(),\n-                            ifOp.getCondition(), pred);\n-    ifOp.getConditionMutable().assign(cnd);\n-    return op;\n+    auto isPureRegion = [](Region &region) {\n+      return region.empty() ||\n+             llvm::all_of(region.front().without_terminator(),\n+                          [](Operation &op) { return isPure(&op); });\n+    };\n+    bool elseIsPure = isPureRegion(ifOp.getElseRegion());\n+    if (elseIsPure || isPureRegion(ifOp.getThenRegion())) {\n+      rewriter.setInsertionPoint(op);\n+      Value cnd = ifOp.getCondition();\n+      if (elseIsPure) {\n+        // We can execute the else branch whenever cond && pred is false\n+        cnd = getPredMask(rewriter, cnd.getType(), cnd, pred);\n+      } else {\n+        // We can execute the then branch whenever cond || !pred is true\n+        Value vTrue =\n+            arith::ConstantIntOp::create(rewriter, op->getLoc(), 1, 1);\n+        Value inactivePred =\n+            arith::XOrIOp::create(rewriter, op->getLoc(), pred, vTrue);\n+        cnd = arith::OrIOp::create(rewriter, op->getLoc(), cnd, inactivePred);\n+      }\n+      ifOp.getConditionMutable().assign(cnd);\n+      return op;\n+    }\n   }\n   if (auto predicatedOp = dyn_cast<tt::PredicatedOpInterface>(op)) {\n     rewriter.setInsertionPoint(op);"
+        },
+        {
+          "filename": "python/test/unit/language/test_matmul.py",
+          "status": "modified",
+          "additions": 35,
+          "deletions": 0,
+          "patch": "@@ -357,6 +357,41 @@ def test_tma_matmul_two_ctas(use_loop, num_stages, transpose_b, num_ctas, device\n     assert \"scf.for\" in ttgir\n \n \n+@pytest.mark.parametrize(\"then_pure, else_pure\", [(True, False), (False, True), (False, False)])\n+def test_matmul_pipelined_if_else_side_effects(then_pure, else_pure, device):\n+\n+    @triton.jit(do_not_specialize=[\"N\"])\n+    def kernel(A, B, C, marker, N, THEN_PURE: tl.constexpr, ELSE_PURE: tl.constexpr):\n+        rows = tl.arange(0, 64)\n+        cols = tl.arange(0, 32)\n+        ks = tl.arange(0, 32)\n+        acc = tl.zeros((64, 32), tl.float32)\n+        for k in tl.range(N, num_stages=3):\n+            a = tl.load(A + rows[:, None] * 64 + k * 32 + ks[None, :])\n+            b = tl.load(B + (k * 32 + ks[:, None]) * 32 + cols[None, :])\n+            acc = tl.dot(a, b, acc)\n+            if k % 2 == 0:\n+                if not THEN_PURE:\n+                    tl.store(marker, 7)\n+                value = k + 1\n+            else:\n+                if not ELSE_PURE:\n+                    tl.store(marker + 1, 9)\n+                value = k + 2\n+            tl.store(marker + 2, value)\n+        tl.store(C + rows[:, None] * 32 + cols[None, :], acc)\n+\n+    a = torch.ones((64, 64), device=device, dtype=torch.float16)\n+    b = torch.ones((64, 32), device=device, dtype=torch.float16)\n+    c = torch.full((64, 32), -1.0, device=device)\n+    marker = torch.full((3, ), -1, device=device, dtype=torch.int32)\n+    kernel[(1, )](a, b, c, marker, 0, then_pure, else_pure, num_stages=3, num_warps=4)\n+    if is_compile_warmup():\n+        return\n+    assert marker.tolist() == [-1, -1, -1]\n+    assert torch.all(c == 0)\n+\n+\n def test_i4_m_minor_join_bk16_matmul(device):\n     if not is_cuda():\n         pytest.skip(\"i4 M-minor join regression is CUDA-specific\")"
+        },
+        {
+          "filename": "test/TritonGPU/loop-pipeline-expand.mlir",
+          "status": "modified",
+          "additions": 83,
+          "deletions": 0,
+          "patch": "@@ -96,3 +96,86 @@ module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 8 : i32, ttg.targ\n     tt.return\n   }\n }\n+\n+// -----\n+\n+module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32} {\n+  // Inactive stages force the pure then branch, skipping the effectful else.\n+  // CHECK-LABEL: @predicate_pure_then(\n+  // CHECK-SAME: %[[PRED:.*]]: i1, %[[COND:.*]]: i1,\n+  // CHECK: %[[TRUE:.*]] = arith.constant true\n+  // CHECK: %[[INACTIVE:.*]] = arith.xori %[[PRED]], %[[TRUE]] : i1\n+  // CHECK: %[[MASK:.*]] = arith.ori %[[COND]], %[[INACTIVE]] : i1\n+  // CHECK-NEXT: %[[RESULT:.*]] = scf.if %[[MASK]]\n+  // CHECK: arith.addi\n+  // CHECK: } else {\n+  // CHECK: tt.store\n+  // CHECK: tt.return %[[RESULT]]\n+  tt.func @predicate_pure_then(%pred: i1, %cond: i1, %ptr: !tt.ptr<i32>, %x: i32) -> i32 {\n+    %one = arith.constant 1 : i32\n+    %masked = \"ttg.mask\"(%pred) ({\n+      %result = scf.if %cond -> i32 {\n+        %next = arith.addi %x, %one : i32\n+        scf.yield %next : i32\n+      } else {\n+        tt.store %ptr, %x : !tt.ptr<i32>\n+        scf.yield %x : i32\n+      }\n+      ttg.mask.return %result : i32\n+    }) : (i1) -> i32\n+    tt.return %masked : i32\n+  }\n+\n+  // A pure else branch allows masking the condition without an outer guard.\n+  // CHECK-LABEL: @predicate_pure_else(\n+  // CHECK-SAME: %[[PRED:.*]]: i1, %[[COND:.*]]: i1,\n+  // CHECK: %[[MASK:.*]] = arith.andi %[[PRED]], %[[COND]] : i1\n+  // CHECK-NEXT: %[[RESULT:.*]] = scf.if %[[MASK]]\n+  // CHECK: tt.store\n+  // CHECK: } else {\n+  // CHECK: arith.addi\n+  // CHECK: tt.return %[[RESULT]]\n+  tt.func @predicate_pure_else(%pred: i1, %cond: i1, %ptr: !tt.ptr<i32>, %x: i32) -> i32 {\n+    %one = arith.constant 1 : i32\n+    %masked = \"ttg.mask\"(%pred) ({\n+      %result = scf.if %cond -> i32 {\n+        tt.store %ptr, %x : !tt.ptr<i32>\n+        scf.yield %x : i32\n+      } else {\n+        %next = arith.addi %x, %one : i32\n+        scf.yield %next : i32\n+      }\n+      ttg.mask.return %result : i32\n+    }) : (i1) -> i32\n+    tt.return %masked : i32\n+  }\n+\n+  // With effects in both branches, gate the entire conditional.\n+  // CHECK-LABEL: @predicate_effectful_branches(\n+  // CHECK-SAME: %[[PRED:.*]]: i1, %[[COND:.*]]: i1,\n+  // CHECK: %[[POISON:.*]] = ub.poison : i32\n+  // CHECK: %[[OUTER:.*]] = scf.if %[[PRED]]\n+  // CHECK-NEXT: %[[INNER:.*]] = scf.if %[[COND]]\n+  // CHECK: tt.store\n+  // CHECK: } else {\n+  // CHECK: tt.store\n+  // CHECK: scf.yield %[[INNER]]\n+  // CHECK: } else {\n+  // CHECK-NEXT: scf.yield %[[POISON]]\n+  // CHECK: tt.return %[[OUTER]]\n+  tt.func @predicate_effectful_branches(%pred: i1, %cond: i1, %ptr: !tt.ptr<i32>, %x: i32) -> i32 {\n+    %one = arith.constant 1 : i32\n+    %masked = \"ttg.mask\"(%pred) ({\n+      %result = scf.if %cond -> i32 {\n+        tt.store %ptr, %x : !tt.ptr<i32>\n+        scf.yield %x : i32\n+      } else {\n+        %next = arith.addi %x, %one : i32\n+        tt.store %ptr, %next : !tt.ptr<i32>\n+        scf.yield %next : i32\n+      }\n+      ttg.mask.return %result : i32\n+    }) : (i1) -> i32\n+    tt.return %masked : i32\n+  }\n+}\n"
+        }
+      ]
+    },
+    {
+      "sha": "a3218d403217f0abc806a1214dd3d32faae5cb06",
+      "author": {
+        "name": "kazhang2",
+        "email": "Kai.Zhang22@amd.com"
+      },
+      "date": "2026-11-18T01:22:42+08:00",
+      "message": "[PIPELINER] Check the op's cluster against clusters.end(), not Cluster{} (#12801)\n\n`CoarseSchedule::getOpsInOrder`([Schedule.cpp#L168](https://github.com/triton-lang/triton/blob/459a62be445a746099aad7bd4b76f18f64916e59/lib/Dialect/TritonGPU/Transforms/Pipeliner/Schedule.cpp#L168))\nasserts\n```cpp\nassert(cluster != Cluster{} && \"Op with invalid cluster!\");\n```\n\n`Cluster` is a `std::list<int>::iterator`\n([Schedule.h#L94](https://github.com/triton-lang/triton/blob/459a62be445a746099aad7bd4b76f18f64916e59/include/triton/Dialect/TritonGPU/Transforms/Schedule.h#L94)),\nso this compares an iterator into `clusters` with a value-initialized\niterator that belongs to no list. The standard only defines comparing\nvalue-initialized\niterators with each other, so this comparison is undefined. libstdc++\nand libc++ in their default modes happen to accept it, but checked STL\niterators reject the comparison itself:\n\n- MSVC Debug (`_ITERATOR_DEBUG_LEVEL=2`): \"list iterators incompatible\".\n- libstdc++ `_GLIBCXX_DEBUG` (enabled by\n`LLVM_ENABLE_EXPENSIVE_CHECKS`):\n\"attempt to compare a dereferenceable (start-of-sequence) iterator to a\n  singular (value-initialized) iterator\".\n\nBecause the comparison is rejected regardless of the iterator's value,\nthe assert fires for every scheduled op, even on a valid schedule.\n`serialize()`\n\n([Schedule.cpp#L256](https://github.com/triton-lang/triton/blob/459a62be445a746099aad7bd4b76f18f64916e59/lib/Dialect/TritonGPU/Transforms/Pipeliner/Schedule.cpp#L256))\ncalls `getOpsInOrder()`, so any software-pipelined loop aborts on such\nbuilds. We hit it compiling a pipelined dot loop for gfx1150 through\n\n[rocmlirTriton](https://github.com/ROCm/rocmlirTriton/blob/32481957048683dc12a1a75f8a502599c0bb844b/cmake/triton.cmake#L22-L25)\nin an MSVC Debug build.\n\nCompare against `clusters.end()`, which is what \"no cluster\" means for\nan iterator into this list. Release builds are unaffected: the assert is\ncompiled\nout under `NDEBUG`.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [ ] I have added tests.\n  - [x] This PR does not need a test because it only changes an assert\n    condition; the failure is only observable with checked STL iterators\n(MSVC Debug / `_GLIBCXX_DEBUG`), which no CI configuration uses.\nExisting\npipeliner lit tests exercise `getOpsInOrder` through `serialize()` in\n    assert-enabled builds.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)",
+      "parents": [
+        "0c7996383d37e05fa531ba1e825448c5cbb4016e"
+      ],
+      "stats": {
+        "total_additions": 1,
+        "total_deletions": 1,
+        "files_changed": 1
+      },
+      "files": [
+        {
+          "filename": "lib/Dialect/TritonGPU/Transforms/Pipeliner/Schedule.cpp",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -165,7 +165,7 @@ tt::CoarseSchedule::getOpsInOrder(scf::ForOp forOp) const {\n       continue;\n     }\n     auto [stage, cluster] = it->second;\n-    assert(cluster != Cluster{} && \"Op with invalid cluster!\");\n+    assert(cluster != clusters.end() && \"Op with invalid cluster!\");\n     assert(stage < numStages && \"Op with invalid stage!\");\n     int clusterId = *cluster;\n     assert(clusterId == std::distance(clusters.begin(),\n"
+        }
+      ]
+    },
+    {
+      "sha": "0c7996383d37e05fa531ba1e825448c5cbb4016e",
+      "author": {
+        "name": "Keren Zhou",
+        "email": "kerenzhou@openai.com"
+      },
+      "date": "2026-11-18T00:41:14+08:00",
+      "message": "[Pipeliner] Wait before single-buffer MMAv5 accumulator resets (#12797)\n\nA conditional nonzero reset can overwrite a single-buffer MMAv5\naccumulator before the preceding asynchronous MMA completes.\n\n```python\nacc = tl.zeros((256, 16), tl.float32)\nfor k in range(6):\n    acc = tl.dot(A.load([0, k * 128]), B.load([k * 128, 0]), acc)\n    if k % 2 == 0:\n        C.store([0, 0], acc)\n    if k % 4 == 3:\n        acc = tl.full((256, 16), 1.0, tl.float32)\n```",
+      "parents": [
+        "c590e26174098075360fbe67bf251f9c408c7d89"
+      ],
+      "stats": {
+        "total_additions": 83,
+        "total_deletions": 30,
+        "files_changed": 3
+      },
+      "files": [
+        {
+          "filename": "lib/Dialect/TritonGPU/Transforms/Pipeliner/LowerLoops.cpp",
+          "status": "modified",
+          "additions": 13,
+          "deletions": 11,
+          "patch": "@@ -741,8 +741,8 @@ Operation *hoistBufferOutOfLoop(scf::ForOp forOp, Operation *op,\n \n void createBarrierAndWaitOps(scf::ForOp forOp, CoarseSchedule &schedule,\n                              ttng::MMAv5OpInterface mma, int mmaSelfLatency,\n-                             Value alloc, int phaseArgIdx,\n-                             int barrierIdxArgIdx) {\n+                             Value alloc, int phaseArgIdx, int barrierIdxArgIdx,\n+                             bool multibufferAccumulator) {\n   auto isLoadToBePipelined = [&](Operation *op) {\n     return schedule[mma].first > schedule[op].first;\n   };\n@@ -750,12 +750,12 @@ void createBarrierAndWaitOps(scf::ForOp forOp, CoarseSchedule &schedule,\n   llvm::SmallDenseSet<Operation *> syncCandidates;\n \n   for (auto user : alloc.getUsers()) {\n-    if (auto load = dyn_cast<ttng::TMEMLoadOp>(user)) {\n-      if (load->getBlock() != mma->getBlock()) {\n-        continue;\n-      }\n-      syncCandidates.insert(load);\n-    }\n+    // A multibuffered reset switches to another buffer. A single-buffer reset\n+    // must wait for the outstanding MMA, just like a read of its result.\n+    if ((isa<ttng::TMEMLoadOp>(user) ||\n+         (!multibufferAccumulator && isa<ttng::TMEMStoreOp>(user))) &&\n+        user->getBlock() == mma->getBlock())\n+      syncCandidates.insert(user);\n   }\n \n   ttng::MMAv5PipelineableOperandsHelper mmaPipeHelper(mma, forOp,\n@@ -845,7 +845,8 @@ void createBarrierAndWaitOps(scf::ForOp forOp, CoarseSchedule &schedule,\n \n   builder.setInsertionPointAfter(mma);\n   builder.setStageCluster({mainWaitStage, mainWaitCluster});\n-  ttng::WaitBarrierOp::create(builder, barrierSlice, phase, waitBuffers);\n+  auto mainWait =\n+      ttng::WaitBarrierOp::create(builder, barrierSlice, phase, waitBuffers);\n \n   // Add waits before loads in conditional blocks\n   for (auto user : alloc.getUsers()) {\n@@ -858,7 +859,7 @@ void createBarrierAndWaitOps(scf::ForOp forOp, CoarseSchedule &schedule,\n         continue;\n       }\n       auto [loadStage, loadCluster] = schedule[topLevelUser];\n-      if (loadStage < mainWaitStage) {\n+      if (schedule.isOpBefore(topLevelUser, mainWait)) {\n         builder.setStageCluster({loadStage, loadCluster});\n         builder.setInsertionPoint(load);\n         ttng::WaitBarrierOp::create(builder, barrierSlice, phase, waitBuffers);\n@@ -1181,7 +1182,8 @@ scf::ForOp lowerMMA(ttng::MMAv5OpInterface mma, scf::ForOp forOp,\n       .append(newYieldOperands);\n \n   createBarrierAndWaitOps(forOp, schedule, mma, mmaSelfLatency, alloc,\n-                          phaseArgIdx, barrierIdxArgIdx);\n+                          phaseArgIdx, barrierIdxArgIdx,\n+                          /*multibufferAccumulator=*/tmemUseNumStages > 1);\n \n   if (mma.getTwoCtas())\n     forOp = protectTwoCTAAccumulatorReuse(forOp, schedule, mma, alloc,"
+        },
+        {
+          "filename": "python/test/unit/language/test_matmul.py",
+          "status": "modified",
+          "additions": 33,
+          "deletions": 19,
+          "patch": "@@ -253,37 +253,51 @@ def test_tma_matmul_mixed_consumers(num_ctas, num_stages, K, warp_specialize, de\n \n @pytest.mark.skipif(not is_blackwell(), reason=\"Requires Blackwell\")\n @pytest.mark.parametrize(\"reset_period\", [0, 2, 4])\n-def test_tma_matmul_accumulator_intermediate_read(device, reset_period):\n+@pytest.mark.parametrize(\"reset_value\", [0, 1])\n+@pytest.mark.parametrize(\"snapshot\", [False, True])\n+def test_tma_matmul_accumulator_intermediate_read(device, reset_period, reset_value, snapshot):\n     from triton.tools.tensor_descriptor import TensorDescriptor\n \n     @triton.jit\n-    def kernel(A, B, C, RESET_PERIOD: tl.constexpr):\n+    def kernel(A, B, C, RESET_PERIOD: tl.constexpr, RESET_VALUE: tl.constexpr, SNAPSHOT: tl.constexpr):\n         acc = tl.zeros((256, 16), tl.float32)\n-        for k in range(8):\n-            a = A.load([0, k * 16])\n-            b = B.load([k * 16, 0])\n+        for k in range(6):\n+            a = A.load([0, k * 128])\n+            b = B.load([k * 128, 0])\n             acc = tl.dot(a, b, acc)\n-            # Some snapshots are followed by accumulation into the same buffer.\n-            if k % 2 == 0:\n-                C.store([(k // 2) * 256, 0], acc)\n+            # Snapshots and resets use different conditions, so the reset must\n+            # wait for the MMA even when no snapshot is taken.\n+            if SNAPSHOT:\n+                if k % 2 == 0:\n+                    C.store([(k // 2) * 256, 0], acc)\n+            elif k == 5:\n+                # Observe accumulation before the last reset, without taking\n+                # intermediate snapshots or reading the post-loop reset value.\n+                C.store([0, 0], acc)\n             if RESET_PERIOD:\n-                if k % RESET_PERIOD == 0:\n-                    acc = tl.zeros((256, 16), tl.float32)\n-\n-    a = torch.ones((256, 128), device=device, dtype=torch.float16)\n-    b = torch.ones((128, 16), device=device, dtype=torch.float16)\n-    c = torch.empty((1024, 16), device=device, dtype=torch.float32)\n-    a_desc = TensorDescriptor.from_tensor(a, [256, 16])\n-    b_desc = TensorDescriptor.from_tensor(b, [16, 16])\n+                if k % RESET_PERIOD == RESET_PERIOD - 1:\n+                    acc = tl.full((256, 16), RESET_VALUE, tl.float32)\n+\n+    a = torch.ones((256, 768), device=device, dtype=torch.float16)\n+    b = torch.ones((768, 16), device=device, dtype=torch.float16)\n+    c = torch.empty(((3 if snapshot else 1) * 256, 16), device=device, dtype=torch.float32)\n+    a_desc = TensorDescriptor.from_tensor(a, [256, 128])\n+    b_desc = TensorDescriptor.from_tensor(b, [128, 16])\n     c_desc = TensorDescriptor.from_tensor(c, [256, 16])\n-    compiled = kernel[(1, )](a_desc, b_desc, c_desc, reset_period, num_stages=3, num_warps=4)\n+    compiled = kernel[(1, )](a_desc, b_desc, c_desc, reset_period, reset_value, snapshot, num_stages=3, num_warps=4)\n     if is_compile_warmup():\n         return\n     assert \"tcgen05.mma.cta_group::1\" in compiled.asm[\"ptx\"]\n \n-    values = {0: [16, 48, 80, 112], 2: [16, 32, 32, 32], 4: [16, 32, 64, 32]}[reset_period]\n+    values = {\n+        0: [128, 384, 640, 768],\n+        2: [128, 128 + reset_value, 128 + reset_value, 256 + reset_value],\n+        4: [128, 384, 128 + reset_value, 256 + reset_value],\n+    }[reset_period]\n+    values = values[:3] if snapshot else values[-1:]\n     expected = torch.tensor(values, device=device, dtype=torch.float32)\n-    torch.testing.assert_close(c.view(4, 256, 16), expected[:, None, None].expand(4, 256, 16), atol=0, rtol=0)\n+    expected = expected[:, None, None].expand(len(values), 256, 16).reshape_as(c)\n+    torch.testing.assert_close(c, expected, atol=0, rtol=0)\n \n \n @pytest.mark.skipif(not is_blackwell(), reason=\"Requires Blackwell\")"
+        },
+        {
+          "filename": "test/TritonGPU/pipeline-lower-loop.mlir",
+          "status": "modified",
+          "additions": 37,
+          "deletions": 0,
+          "patch": "@@ -2276,3 +2276,40 @@ module attributes {\"ttng.two-ctas\" = true, \"ttg.num-ctas\" = 4 : i32, \"ttg.num-wa\n     tt.return\n   }\n }\n+\n+// -----\n+\n+#blocked = #ttg.blocked<{sizePerThread = [1, 128], threadsPerWarp = [32, 1], warpsPerCTA = [4, 1], order = [1, 0]}>\n+#shared = #ttg.nvmma_shared<{swizzlingByteWidth = 128, transposed = false, elementBitWidth = 16}>\n+#smem = #ttg.shared_memory\n+#tmem = #ttng.tensor_memory_encoding<blockM = 128, blockN = 128, colStride = 1>\n+module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32, ttg.target = \"cuda:100\", \"ttg.threads-per-warp\" = 32 : i32} {\n+  // A predicated reset of a single-buffer accumulator waits for the current\n+  // MMA, rather than only waiting for the previous iteration's MMA.\n+  // CHECK-LABEL: @mma_wait_before_predicated_reset\n+  // CHECK: scf.for\n+  // CHECK: ttng.tc_gen5_mma\n+  // CHECK-NEXT: ttng.wait_barrier {{.*}}loop.stage = 2 : i32\n+  // CHECK-NEXT: {{.*}}ttng.tmem_store {{.*}}loop.stage = 2 : i32\n+  // CHECK: tt.return\n+  tt.func public @mma_wait_before_predicated_reset(%arg0: tensor<128x128x!tt.ptr<f16>, #blocked> {tt.contiguity = dense<[1, 16]> : tensor<2xi32>, tt.divisibility = dense<[16, 16]> : tensor<2xi32>}, %arg1: tensor<128x128x!tt.ptr<f16>, #blocked> {tt.contiguity = dense<[1, 16]> : tensor<2xi32>, tt.divisibility = dense<[16, 16]> : tensor<2xi32>}, %arg2: i32, %arg3: tensor<128x128x!tt.ptr<f32>, #blocked> {tt.contiguity = dense<[1, 16]> : tensor<2xi32>, tt.divisibility = dense<[16, 16]> : tensor<2xi32>}, %arg4: i1) -> tensor<128x128xf16, #blocked> {\n+    %true = arith.constant true\n+    %cst = arith.constant dense<0.000000e+00> : tensor<128x128xf32, #blocked>\n+    %c0_i32 = arith.constant 0 : i32\n+    %c1_i32 = arith.constant 1 : i32\n+    %0, %acc_tok = ttng.tmem_alloc : () -> (!ttg.memdesc<128x128xf32, #tmem, #ttng.tensor_memory, mutable>, !ttg.async.token)\n+    %init_tok = ttng.tmem_store %cst, %0[%acc_tok], %true : tensor<128x128xf32, #blocked> -> !ttg.memdesc<128x128xf32, #tmem, #ttng.tensor_memory, mutable>\n+    %last_tok = scf.for %arg5 = %c0_i32 to %arg2 step %c1_i32 iter_args(%tok = %init_tok) -> !ttg.async.token : i32 {\n+      %3 = tt.load %arg0 {loop.cluster = 2 : i32, loop.stage = 0 : i32} : tensor<128x128x!tt.ptr<f16>, #blocked>\n+      %4 = ttg.local_alloc %3 {loop.cluster = 0 : i32, loop.stage = 2 : i32} : (tensor<128x128xf16, #blocked>) -> !ttg.memdesc<128x128xf16, #shared, #smem, mutable>\n+      %5 = tt.load %arg1 {loop.cluster = 2 : i32, loop.stage = 0 : i32} : tensor<128x128x!tt.ptr<f16>, #blocked>\n+      %6 = ttg.local_alloc %5 {loop.cluster = 0 : i32, loop.stage = 2 : i32} : (tensor<128x128xf16, #blocked>) -> !ttg.memdesc<128x128xf16, #shared, #smem, mutable>\n+      %mma_tok = ttng.tc_gen5_mma %4, %6, %0[%tok], %true, %true {loop.cluster = 0 : i32, loop.stage = 2 : i32, tt.self_latency = 1 : i32} : !ttg.memdesc<128x128xf16, #shared, #smem, mutable>, !ttg.memdesc<128x128xf16, #shared, #smem, mutable>, !ttg.memdesc<128x128xf32, #tmem, #ttng.tensor_memory, mutable>\n+      %reset_tok = ttng.tmem_store %cst, %0[%mma_tok], %arg4 {loop.cluster = 3 : i32, loop.stage = 2 : i32} : tensor<128x128xf32, #blocked> -> !ttg.memdesc<128x128xf32, #tmem, #ttng.tensor_memory, mutable>\n+      scf.yield %reset_tok : !ttg.async.token\n+    } {tt.scheduled_max_stage = 2 : i32}\n+    %1, %res_tok = ttng.tmem_load %0[%last_tok] : !ttg.memdesc<128x128xf32, #tmem, #ttng.tensor_memory, mutable> -> tensor<128x128xf32, #blocked>\n+    %2 = arith.truncf %1 : tensor<128x128xf32, #blocked> to tensor<128x128xf16, #blocked>\n+    tt.return %2 : tensor<128x128xf16, #blocked>\n+  }\n+}\n"
+        }
+      ]
+    }
+  ]
+}

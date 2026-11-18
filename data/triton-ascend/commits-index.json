@@ -1,4 +1,8 @@
 {
+  "f199751866ba4c1a2369b8ed640ca3b59f412fd6": {
+    "date": "2026-11-18",
+    "msg": "[docs](fix) delete the duplicate desc of logical_and and logical_or (#3235)"
+  },
   "f058c6a367dcd688534237b7960ea94eaba7f830": {
     "date": "2026-11-17",
     "msg": "[ascend](revert) Revert FP8 saturation from #3139 (#3259)"

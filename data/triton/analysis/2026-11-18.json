@@ -1,0 +1,121 @@
+{
+  "date": "2026-11-18",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-11-19T07:40:02.561185+08:00",
+  "daily_summary": "当日变更集中在 Pipeliner（软件流水线）与 AMD/NVIDIA 后端细节优化：修复 Pipeliner 对条件分支的谓词化（纯分支掩码 vs 整体守卫）、修复单缓冲 MMAv5 累加器重置前缺少 wait 的竞态、修正 CoarseSchedule 迭代器比较的未定义行为；AMD 侧移除已验证不再需要的 swizzle reorder workaround，并在 OptimizeEpilogue 中收紧 epilogue relayout 绕过的收益判断以保住 store 合并；NVIDIA 侧新增仅用于 ConSan 编译的 NVPTX assert 块合并 LLVM pass。整体是稳定性修复 + 局部性能回归修复 + 编译期优化，无新增公共接口。",
+  "ascend_impact_summary": "当日 5 个 commit 中，3 个（pipeliner 谓词化、pipeliner 迭代器断言修复、MMAv5 累加器 wait）落在 lib/Dialect/TritonGPU/Transforms/Pipeliner/ 下，属于 Ascend 明确不使用的 TritonGPU 布局/流水线路径；1 个是 AMD 专属（GenericSwizzling 的 ds_read 相关 + third_party/amd OptimizeEpilogue）；1 个是 NVIDIA 专属（lib/Target/LLVMIR 新 LLVM pass、third_party/nvidia compiler.py、python/src/llvm.cc 的 load_llvm_ir pybind 新增参数）。均未命中 Ascend 的必然影响路径（backends/compiler.py、backends/driver.py、backends/__init__.py、include/lib/Dialect/Triton、code_generator.py），也未命中可能影响路径。因此当日变更对 triton-ascend 无功能与测试影响。",
+  "commits": [
+    {
+      "sha": "441eb1c63bc4c4e58975019a20b5bc61cd54d978",
+      "comment": "回滚 PR #11169 引入的 swizzle reorder workaround：在 GenericSwizzling.cpp 的 optimalSwizzlingLdSt 中把判定条件从 `log2Vec < 2 && numBanks <= 32` 放宽为 `log2Vec < 2`，并删除 SwizzleTest.cpp 中对应的 `LowVectorF32MmaConvertKeeps64BankRegisterBasisHigh` 单测。动机是 LLVM PR 232016 已解决底层问题，低向量宽度的 convert 仍可安全使用 ds_read_b64（已在 MI355X 上验证），因此不再需要为 64 bank 场景做特判。GenericSwizzling 是 TritonGPU 共享内存 swizzle 的通用工具（lib/Tools 下，被 TritonGPU 的 layout 转换与 AMD 相关路径使用），属于 GPU 共享内存优化范畴。风险较低：仅放宽一段启发式分支并移除单测，但若某些 target（尤其非 AMD）确实依赖 numBanks<=32 的限定，可能带来 swizzle 选择上的行为变化——不过该函数仅在 GPU 布局路径被消费。",
+      "tags": [
+        "refactor",
+        "low-risk",
+        "tritongpu",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Tools/GenericSwizzling.cpp 的 GPU swizzle 计算与 unittest/Dialect/TritonGPU/SwizzleTest.cpp，两者均属 TritonGPU 共享内存布局路径；Ascend 后端不经 TritonGPU 布局阶段（直接 TTIR→Linalg/HIVM），也不使用 GenericSwizzling。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Drop the workaround for swizzle reorder (#12810)\n\nRevert https://github.com/triton-lang/triton/pull/11169. This workaround\nis no longer needed after LLVM PR\nhttps://github.com/llvm/llvm-project/pull/232016. The convert can still\nsafely use `ds_read_b64`, tested on MI355X.\n\nSigned-off-by: Pengzhan Zhao <borontion@gmail.com>"
+    },
+    {
+      "sha": "fe1cce630af8b43d28fb77ba6915dbbbb4f28d0f",
+      "comment": "修复 #11704 引入的 AMD epilogue 性能回归（AITER BF16 RMSNorm at 8192×4095 on gfx950 带宽下降 27%）。OptimizeEpilogue 的 isProfitableBypassSource 原先用 `srcContig >= min(dstContig, maxElems)` 判断绕过 relayout 是否划算：当 src sizePerThread=[8]、dst=[1]（未对齐行导致标量 store）时会错误地绕过，导致相邻 lane 的写间隔从 2 字节扩大到 16 字节，内存请求数上升的代价超过省下的 LDS/barrier。改为 `min(srcContig, maxElems) == min(dstContig, maxElems)`，要求两者按 128-bit 上限截断后相等，即保留 dst 的合并粒度；并在 amd-optimize-epilogue.mlir 增加 rmsnorm_unaligned_row 用例。这是 AMD 专属 pass 的启发式收紧，逻辑自洽（注释也解释了为何 src 更长不应放宽）。风险低，但变更了绕过决策边界，可能影响其他 AMD kernel 的 epilogue codegen。",
+      "tags": [
+        "performance",
+        "bugfix",
+        "low-risk",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/amd/lib/TritonAMDGPUTransforms/OptimizeEpilogue.cpp（AMD 专属 epilogue 优化 pass），Ascend 后端不使用该 pass。",
+        "testing": "无影响。新增/修改的 lit 测试位于 test/TritonGPU/amd/amd-optimize-epilogue.mlir，属 AMD 专属测试目录，Ascend 不参与。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Preserve store coalescing when bypassing epilogue relayouts (#12714)\n\nThis change aims to address a performance drop since #11704.\nAITER’s BF16 RMSNorm benchmark bench_fused_rmsnorm_add\nat **8192 × 4095** on gfx950 got bandwidth dropped by 27%.\n\nIn that case (similar to added lit), the computation layout holds\n`sizePerThread = [8]`, while the coalesced store layout holds\n`sizePerThread = [1]`. Removing the relayout keeps scalar\n`buffer_store_short` instructions but spaces adjacent lanes’ writes 16\nbytes apart instead of 2 bytes. The resulting increase in memory\nrequests outweighs the saved LDS accesses and barriers.\n\nSo this change try to preserve the store coalescing for some out stride\nunaligned situation(store layout with sizePerThread=[1]).\n\nFor BF16/FP16, the maxElems = 8. the other profitability checks would\nbe:\n\n| Source run | Destination run | Main check | New check |\n|---:|---:|---|---|\n| 8 | 1 | Bypass | Keep relayout |\n| 1 | 8 | Keep relayout | Keep relayout |\n| 8 | 8 | Bypass | Bypass |\n| 8 | 16 | Bypass | Bypass |\n| 16 | 8 | Bypass | Bypass |"
+    },
+    {
+      "sha": "cc64e25bd5b087f3281c230ddf6bf157a99f57b0",
+      "comment": "为 ConSan（并发安全检查）编译的 NVIDIA kernel 新增 LLVM 层优化：新增 MergeNVPTXAssertBlocksPass（lib/Target/LLVMIR/LLVMIRMergeNVPTXAssertBlocks.cpp），把完全相同的 `__assertfail` 终结块（调用参数、ABI、debug location、终结指令一致）合并共享，删除冗余块。pass 仅在 CUDA ConSan 编译时启用（third_party/nvidia/backend/compiler.py 中 merge_nvptx_assert_blocks=is_enabled(options,'consan')），并在 python/src/llvm.cc 的 load_llvm_ir 增加同名 bool 参数（默认 false）、bin/triton-llvm-opt 增加 -merge-nvptx-assert-blocks 选项。实现中做了较严格的保守匹配（hasOperandBundles/isConvergent/hasMetadataOtherThanDebugLoc/hasDbgRecords 均要求不成立），避免误合并导致诊断丢失。性能数据：ConSan 编译 11 个 kernel 从 26.718s 降到 23.930s。风险点在于 python/src/llvm.cc 修改了 pybind 函数签名（新增关键字参数，默认值保持兼容，凡是按位置传参的旧调用者会受影响，但上游各后端均按关键字传参）。",
+      "tags": [
+        "performance",
+        "feature",
+        "low-risk",
+        "nvidia",
+        "llvmir",
+        "python-bindings"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更集中在 lib/Target/LLVMIR/（NVPTX/LLVM IR 目标工具，Ascend 由 bishengir 完成最终 codegen，不使用该路径）、third_party/nvidia/backend/compiler.py（CUDA 后端专属）、bin/triton-llvm-opt.cpp。python/src/llvm.cc 的 load_llvm_ir 新增参数虽有默认值 false、不影响既有以关键字方式调用者，但 Ascend 后端不调用 load_llvm_ir（不走 LLVM IR 优化路径），故无实际影响。",
+        "testing": "无影响。新增测试位于 test/LLVMIR/break-phi-struct.ll（LLVMIR 专属 lit 测试，Ascend 不参与）。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Share identical terminal ConSan assertion reports (#12792)\n\nConSan-instrumented NVIDIA kernels can contain hundreds of identical\nterminal `__assertfail` blocks after LLVM optimization. Share terminal\nblocks only when the complete assertion calls, ABI, debug locations, and\nterminal behavior match. Preserve every original check and distinct\ndiagnostic. Enable the pass only for CUDA ConSan compilation.\n\nGB300, eight representative numerical cases, two fresh-cache runs per\ncompiler against main (alternating order after first-use\ninitialization):\n- Mean cold test time: 4.969 → 4.612 s (7.17% faster).\n- ConSan compilation, total over 11 instrumented kernels: 26.718 →\n23.930 s (10.43% faster).\n- All compilation, 47 kernels: 34.039 → 31.225 s (8.27% faster).\n- All 32 numerical cases passed; each run compiled the same 47 kernels,\nincluding 11 with ConSan. Two runs per arm are an estimate, not a\nstatistical confidence bound.\n\nHistorical isolated GPU replay on an older base: 37.329 → 37.390 ms for\n17 ConSan launches (effectively flat, +0.16%; two measured replays after\none warmup). Fresh paired measurements above cover cold tests and\ncompilation, not GPU events.\n\nValidation: native `make`; `lit -v test/LLVMIR/break-phi-struct.ll`\n(passed). The regression checks sharing, distinct diagnostics,\nobservable effects, and distinct debug locations. Full stacked ConSan\ndiagnostic suite on GB300: 504 passed, 75 skipped.\n\nActive review and landing order: this PR → #12795 (concurrent file-cache\nbuilds) → #12796 (single-CTA shadow locks). #12795 and #12796 are\nindependent siblings based directly on this PR.\n\n#12793 (liveness analysis) and #12794 (masked tracking stores) are on\nhold and are not part of the active landing stack."
+    },
+    {
+      "sha": "ba80650b18fa3d93419a61c6fd2c78118dd28096",
+      "comment": "修复 Pipeliner 谓词化 scf.if 时的正确性问题：原实现对 if 仅把 condition 与 pred 做 getPredMask 后改写，会允许「inactive stage 执行效果性分支」。新实现区分三种情形：(1) else 区域纯 → 掩码 condition（cond && pred），仅在 cond&&pred 时执行 then；(2) then 纯、else 有副作用 → 用 `cond || !pred` 选择 then 分支，使 inactive 时走纯 then（用 arith::ConstantIntOp + XOrIOp + OrIOp 构造，避免执行效果性 else）；(3) 两个分支均有副作用 → 回退到外层 scf.if 整体守卫（外层 pred，内层 cond，否则 yield poison）。新增 test/TritonGPU/loop-pipeline-expand.mlir 三个用例和 python/test/unit/language/test_matmul.py 的 test_matmul_pipelined_if_else_side_effects。实现依赖 isPure，对 ttng::TMEMAllocOp/TMEMLoadOp 的提前返回逻辑保持不变。风险点：谓词化改写逻辑复杂度上升，poison 值的引入需下游能正确忽略；另外 `!pred` 用 1-bit 常量 xor 实现，需保证 pred 为 i1。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "pipeliner",
+        "tritongpu"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Dialect/TritonGPU/Transforms/Pipeliner/PipeliningUtility.cpp，属 TritonGPU 流水线（software pipelining）路径；Ascend 后端不走 TritonGPU 阶段，其流水线由 third_party/ascend 的 DynamicCVPipeline 等自有 pass 实现，不消费 predicateOp。",
+        "testing": "无影响。新增用例在 test/TritonGPU/loop-pipeline-expand.mlir 与 python/test/unit/language/test_matmul.py（GPU/CUDA 相关路径），Ascend 不参与。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Pipeliner] Predicate conditionals through a pure branch (#12773)\n\nPrevent inactive pipeline stages from executing effectful branches by\nselecting a pure branch when available or guarding the entire\nconditional otherwise."
+    },
+    {
+      "sha": "a3218d403217f0abc806a1214dd3d32faae5cb06",
+      "comment": "修正 CoarseSchedule::getOpsInOrder 中的断言：`assert(cluster != Cluster{})` 把指向 clusters 列表的迭代器与值初始化（singular）迭代器比较，属标准未定义行为——libstdc++/libc++ 默认模式碰巧接受，但在 _GLIBCXX_DEBUG 或 MSVC Debug（_ITERATOR_DEBUG_LEVEL=2）下断言会对每个已调度 op 触发，导致任何软件流水线循环 abort。改为与 `clusters.end()` 比较，语义正确（迭代器属于同一容器）。因 serialize() 调用 getOpsInOrder，该修复让 assert-enabled 构建下 pipeliner lit 测试可通过。纯断言修正，Release 构建（NDEBUG 下断言被编译掉）无行为变化；无新增测试（作者说明原因合理）。风险极低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "pipeliner"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Dialect/TritonGPU/Transforms/Pipeliner/Schedule.cpp，属 TritonGPU 流水线调度，Ascend 后端不使用该调度器。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[PIPELINER] Check the op's cluster against clusters.end(), not Cluster{} (#12801)\n\n`CoarseSchedule::getOpsInOrder`([Schedule.cpp#L168](https://github.com/triton-lang/triton/blob/459a62be445a746099aad7bd4b76f18f64916e59/lib/Dialect/TritonGPU/Transforms/Pipeliner/Schedule.cpp#L168))\nasserts\n```cpp\nassert(cluster != Cluster{} && \"Op with invalid cluster!\");\n```\n\n`Cluster` is a `std::list<int>::iterator`\n([Schedule.h#L94](https://github.com/triton-lang/triton/blob/459a62be445a746099aad7bd4b76f18f64916e59/include/triton/Dialect/TritonGPU/Transforms/Schedule.h#L94)),\nso this compares an iterator into `clusters` with a value-initialized\niterator that belongs to no list. The standard only defines comparing\nvalue-initialized\niterators with each other, so this comparison is undefined. libstdc++\nand libc++ in their default modes happen to accept it, but checked STL\niterators reject the comparison itself:\n\n- MSVC Debug (`_ITERATOR_DEBUG_LEVEL=2`): \"list iterators incompatible\".\n- libstdc++ `_GLIBCXX_DEBUG` (enabled by\n`LLVM_ENABLE_EXPENSIVE_CHECKS`):\n\"attempt to compare a dereferenceable (start-of-sequence) iterator to a\n  singular (value-initialized) iterator\".\n\nBecause the comparison is rejected regardless of the iterator's value,\nthe assert fires for every scheduled op, even on a valid schedule.\n`serialize()`\n\n([Schedule.cpp#L256](https://github.com/triton-lang/triton/blob/459a62be445a746099aad7bd4b76f18f64916e59/lib/Dialect/TritonGPU/Transforms/Pipeliner/Schedule.cpp#L256))\ncalls `getOpsInOrder()`, so any software-pipelined loop aborts on such\nbuilds. We hit it compiling a pipelined dot loop for gfx1150 through\n\n[rocmlirTriton](https://github.com/ROCm/rocmlirTriton/blob/32481957048683dc12a1a75f8a502599c0bb844b/cmake/triton.cmake#L22-L25)\nin an MSVC Debug build.\n\nCompare against `clusters.end()`, which is what \"no cluster\" means for\nan iterator into this list. Release builds are unaffected: the assert is\ncompiled\nout under `NDEBUG`.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [ ] I have added tests.\n  - [x] This PR does not need a test because it only changes an assert\n    condition; the failure is only observable with checked STL iterators\n(MSVC Debug / `_GLIBCXX_DEBUG`), which no CI configuration uses.\nExisting\npipeliner lit tests exercise `getOpsInOrder` through `serialize()` in\n    assert-enabled builds.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)"
+    },
+    {
+      "sha": "0c7996383d37e05fa531ba1e825448c5cbb4016e",
+      "comment": "修复单缓冲 MMAv5 累加器的竞态：当累加器为单缓冲（tmemUseNumStages <= 1）且存在条件性 reset（ttng.tmem_store）时，reset 可能在先前异步 MMA 完成前覆盖累加器。createBarrierAndWaitOps 新增 multibufferAccumulator 参数：多缓冲 reset 切换到另一缓冲无需等待，单缓冲则必须等待未完成 MMA。实现上把 tmem_store 纳入 syncCandidates（原仅 TMEMLoadOp），并把条件等待判定从 `loadStage < mainWaitStage` 改为 `schedule.isOpBefore(topLevelUser, mainWait)`（更精确的相对位置比较），并保存 mainWait 供比较。测试侧重构了 test_tma_matmul_accumulator_intermediate_read，增加 reset_value/snapshot 参数化并把循环改为 range(6)、tile 128，覆盖「reset 与 snapshot 条件不同」的场景；新增 pipeline-lower-loop.mlir 用例 mma_wait_before_predicated_reset 断言 wait_barrier 后紧跟 tmem_store。风险中等：改动的是异步 MMA/barrier 同步的正确性路径，若等待插入过多可能损失性能，过少则竞态；且 isOpBefore 语义需与 stage/cluster 一致性吻合。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "pipeliner",
+        "tritongpu",
+        "nvidia"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Dialect/TritonGPU/Transforms/Pipeliner/LowerLoops.cpp，涉及 TTNG（TritonNvidiaGPU）的 tc_gen5_mma / tmem_store / wait_barrier，属 NVIDIA 专属方言与流水线路径；Ascend 不消费 TritonNvidiaGPU 方言，也不用该 pipeliner。",
+        "testing": "无影响。新增 lit 用例在 test/TritonGPU/pipeline-lower-loop.mlir（依赖 ttng.tc_gen5_mma、#ttng.tensor_memory_encoding、ttg.target=cuda:100），Python 测试为 Blackwell 专属；Ascend 不参与。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Pipeliner] Wait before single-buffer MMAv5 accumulator resets (#12797)\n\nA conditional nonzero reset can overwrite a single-buffer MMAv5\naccumulator before the preceding asynchronous MMA completes.\n\n```python\nacc = tl.zeros((256, 16), tl.float32)\nfor k in range(6):\n    acc = tl.dot(A.load([0, k * 128]), B.load([k * 128, 0]), acc)\n    if k % 2 == 0:\n        C.store([0, 0], acc)\n    if k % 4 == 3:\n        acc = tl.full((256, 16), 1.0, tl.float32)\n```"
+    }
+  ],
+  "architecture_based_on_sha": "1c53e566ef8f719ff9b69132a72ad943e5409492",
+  "architecture_generated_at": "2026-11-15T21:06:50.425498+08:00"
+}

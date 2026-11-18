@@ -1,0 +1,28 @@
+{
+  "date": "2026-11-18",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-11-19T07:40:09.610755+08:00",
+  "daily_summary": "当日仅有一处文档修复：从 docs/zh/python-api/_ascend_constraints.py 中删除 logical_and / logical_or 等重复的约束条目（共 106 行删除，无新增）。该文件是 Ascend 后端 Python API 约束文档的生成脚本/数据源，本次变更是纯粹的文档去重清理，不涉及编译器、运行时或 lowering 逻辑，也不改变任何对外行为。",
+  "test_impact_summary": "本次变更仅删除文档数据源中重复的 dtype 约束表格条目，不影响任何代码路径、接口签名或 IR 形态，因此不需要新增或更新测试用例。唯一潜在的看护点是：如果仓库存在根据 _ascend_constraints.py 生成 API 文档的一致性校验（如文档构建或数据 key 唯一性检查），需确认删除后仍能正常生成，这属于文档构建冒烟测试范畴而非功能测试。整体对测试策略无实质影响。",
+  "commits": [
+    {
+      "sha": "f199751866ba4c1a2369b8ed640ca3b59f412fd6",
+      "comment": "文档修复：删除 docs/zh/python-api/_ascend_constraints.py 中 triton.language.core.__rshift__、triton.language.equal、triton.language.greater_than、triton.language.greater_equal、triton.language.less_equal、triton.language.less_than、triton.language.tensor.logical_and 与 triton.language.tensor.logical_or 共 8 个重复的 CONSTRAINTS 条目（-106 行），仅保留各自的唯一描述。这消除了逻辑运算/比较运算 dtype 支持表格在中文 API 文档中的重复展示。该文件属于文档数据源，不参与编译流水线（AscendBackend.add_stages 等）或运行时（NPUDriver/NPULauncher）逻辑，因此无功能风险；唯一需要注意的是若有文档生成/一致性检查脚本依赖这些 key 的数量或顺序，需验证文档仍能正常构建。属于低风险的 docs 类变更。",
+      "tags": [
+        "docs",
+        "low-risk",
+        "docs"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "变更仅删除中文 API 文档数据源中的重复约束条目，不涉及任何 Python 后端、C++ lowering、编译器流水线或运行时接口，现有功能测试无需调整；也不存在以该字典为断言的单测。可选的看护仅为文档构建冒烟检查。",
+        "suggested_test_areas": [
+          "docs/zh/python-api 文档构建校验"
+        ]
+      },
+      "message": "[docs](fix) delete the duplicate desc of logical_and and logical_or (#3235)"
+    }
+  ],
+  "architecture_based_on_sha": "ee15e295649ccf85b4e4b78316c736d00365c1a5",
+  "architecture_generated_at": "2026-11-15T21:06:50.427270+08:00"
+}

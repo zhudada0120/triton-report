@@ -1,4 +1,28 @@
 {
+  "441eb1c63bc4c4e58975019a20b5bc61cd54d978": {
+    "date": "2026-11-18",
+    "msg": "[AMD] Drop the workaround for swizzle reorder (#12810)"
+  },
+  "fe1cce630af8b43d28fb77ba6915dbbbb4f28d0f": {
+    "date": "2026-11-18",
+    "msg": "[AMD] Preserve store coalescing when bypassing epilogue relayouts (#12714)"
+  },
+  "cc64e25bd5b087f3281c230ddf6bf157a99f57b0": {
+    "date": "2026-11-18",
+    "msg": "[NVIDIA] Share identical terminal ConSan assertion reports (#12792)"
+  },
+  "ba80650b18fa3d93419a61c6fd2c78118dd28096": {
+    "date": "2026-11-18",
+    "msg": "[Pipeliner] Predicate conditionals through a pure branch (#12773)"
+  },
+  "a3218d403217f0abc806a1214dd3d32faae5cb06": {
+    "date": "2026-11-18",
+    "msg": "[PIPELINER] Check the op's cluster against clusters.end(), not Cluster{} (#12801)"
+  },
+  "0c7996383d37e05fa531ba1e825448c5cbb4016e": {
+    "date": "2026-11-18",
+    "msg": "[Pipeliner] Wait before single-buffer MMAv5 accumulator resets (#12797)"
+  },
   "c590e26174098075360fbe67bf251f9c408c7d89": {
     "date": "2026-11-17",
     "msg": "[PYTHON] Fix MLIR ModuleOp and detached default-arg ConstantIntOp leaks (#12437)"
