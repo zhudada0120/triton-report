@@ -1,0 +1,270 @@
+{
+  "date": "2026-11-19",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-11-20T07:58:26.980381+08:00",
+  "daily_summary": "今日变更主要围绕 NVIDIA Blackwell/Hopper 相关的正确性修复与测试补充（ConSan 死锁修复、两 CTA MMA 完成屏障同步、累加器初始化回归修复、AllocateWarpGroups 稳定性排序）、Gluon 新增 cp.async.bulk 线性 bulk copy 能力（含 ConSan/GSan/IISan 支持）、GSan 张量描述符高位 stride 解码与区间访问插桩、ConSan 单 CTA 场景锁特化优化、以及构建时间优化（macOS CI 共享 CLI 注册对象、裁剪传递 include）。此外包含一次 Pipeliner 变更回滚（内部回归）和若干运行时缓存并发编译合并优化。",
+  "ascend_impact_summary": "当日变更对 triton-ascend 直接影响有限。最相关的是 [Runtime] 并发编译合并（修改 python/triton/compiler/compiler.py，属于 patch 影响映射中的文件，且被 triton-ascend 3.6.0 patch 修改），需要关注其与 Ascend patch 的兼容性；[BUILD] include 裁剪涉及 include/triton/Analysis/Utility.h、TargetInfoBase.h 等可能影响 ascend 复用的分析层头文件（如 isZeroFillConst 从 inline 头文件移到 .cpp），若 Ascend 自有 C++ lowering 依赖该 inline 定义则需适配；Gluon bulk copy 与 ConSan/GSan 均属 NVIDIA 专有路径，不影响 Ascend；Pipeliner 回滚涉及 TTGIR pipeliner，Ascend 不走 TritonGPU 路径。",
+  "commits": [
+    {
+      "sha": "1d3df3d403ae133edd01d45d1719ae0a09ce133f",
+      "comment": "ConSan 死锁检测正确性修复：在 global scratch 中等待标志由一个 lane 写入，但归约检查会从多个 lane 重读，存在脏读导致最后一个 group 误判为可运行而进入等待、最终挂死而非报死锁。修复方式是在 createCheckAllActiveWaitingCall 中、调用 check_all_active_waiting 之前插入 ttg.barrier global_write，确保所有 lane 看到最新的 waiting flag / active mask。改动位于 lib/Dialect/TritonInstrument/IR/FunctionBuilder.cpp，属 ConSan 插桩 IR 构造逻辑，同时更新了 lit 测试。风险低，属于局部同步语义补强。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "concurrency-sanitizer"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ConSan] Publish waiting flags before checking for deadlock (#12824)\n\nConSan holds a lock while a warp group updates its waiting flags and\nchecks whether every active group is blocked. The lock serializes\ngroups, but the update and the check both run inside the same critical\nsection. Each flag in global scratch has one writing lane, and the\nreduction can reload that flag from several lanes. A stale read can make\nthe last group appear runnable, so it enters the wait and the kernel\nhangs instead of reporting the deadlock.\n\nInsert `ttg.barrier global_write` immediately before\n`check_all_active_waiting` so every lane sees the preceding update to\nthe waiting flags or active mask."
+    },
+    {
+      "sha": "458c1a257c026a24c6aa7937f75f186e9bdf8353",
+      "comment": "将 AllocateWarpGroups 中按 num_warps 降序排序的 llvm::sort 改为 llvm::stable_sort，使等大小分区保持原始相对顺序，避免在不同 C++ 标准库/EXPENSIVE_CHECKS 下 warpGroupStartIds 分配不确定，进而影响 4-warp warpgroup 打包与 setmaxnreg 预算。这是确定性修复，仅 3 行变更，位于 lib/Conversion/TritonGPUToLLVM/AllocateWarpGroups.cpp（NVIDIA/AMD 风格的 warp specialization 分配）。风险低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "warp-specialization"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BACKEND] Use llvm::stable_sort in AllocateWarpGroups (#12826)\n\nSwitch to `llvm::stable_sort` so equal-sized partitions\ndeterministically keep their original relative order.\n\n### Why\n`AllocateWarpGroups` sorts `(partitionIndex, numWarps)` by descending\nwarp count using unstable `llvm::sort` (`std::sort`). When partitions\ntie in `num_warps`, their `warpGroupStartIds` depend on the C++ stdlib\nimplementation and debug/hardening flags:\n\n- Fails `test/Conversion/allocate_warp_groups.mlir` under LLVM\n`EXPENSIVE_CHECKS` or `libc++`\n`-D_LIBCPP_DEBUG_RANDOMIZE_UNSPECIFIED_STABILITY`.\n- Can change 4-warp warpgroup packing (`startId % 4 == 0`) and\n`actualRegisters` / `setmaxnreg` budgets when equal-sized partitions\nhave different `requestedRegisters`.\n\nSwitch to `llvm::stable_sort` for deterministic ordering, matching other\nTriton passes (`lib/Analysis/Utility.cpp`,\n`lib/Analysis/Allocation.cpp`).\n\n### Reproduction (no GPU required)\nBuild with LLVM `EXPENSIVE_CHECKS` (or Clang + `libc++` with\n`-D_LIBCPP_DEBUG_RANDOMIZE_UNSPECIFIED_STABILITY`) and run the existing\nlit test:\n\n```bash\nTRITON_APPEND_CMAKE_ARGS='-DCMAKE_CXX_FLAGS=-DEXPENSIVE_CHECKS' pip install --no-build-isolation --no-deps -e .\nBUILD_DIR=$(PYTHONPATH=\"./python\" python3 -c 'from build_helpers import get_cmake_dir; print(get_cmake_dir())')\nfor i in $(seq 1 10); do lit -v \"$BUILD_DIR/test/Conversion/allocate_warp_groups.mlir\" || break; done\n```\n\nObserved failure before this fix:\n```text\nallocate_warp_groups.mlir:41:12: error: CHECK: expected string not found in input\n // CHECK: ttg.warp_specialize() attributes {warpGroupStartIds = array<i32: 12, 14, 4, 15>}\n<stdin>:33:2: note: possible intended match here\n ttg.warp_specialize() attributes {warpGroupStartIds = array<i32: 12, 15, 4, 14>}\n```\n\n### Testing\n- `test/Conversion/allocate_warp_groups.mlir` and\n`test/Conversion/allocate_warp_groups_then_lower.mlir` pass with\n`libc++` + `-D_LIBCPP_DEBUG_RANDOMIZE_UNSPECIFIED_STABILITY`.\n- `pre-commit run --from-ref HEAD~1 --to-ref HEAD` passes.\n\n\n# New contributor declaration\n- [X] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [X] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [X] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [ ] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n- [X] This PR does not need a test because\ntest/Conversion/allocate_warp_groups.mlir already checks the exact\nwarpGroupStartIds order for equal-sized partitions and fails without\nthis fix under -DEXPENSIVE_CHECKS or libc++\n-D_LIBCPP_DEBUG_RANDOMIZE_UNSPECIFIED_STABILITY.\n\n- Select one of the following.\n  - [ ] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)"
+    },
+    {
+      "sha": "22459e3dbcef2b403aab7ff2a3981309a3537e39",
+      "comment": "修复 OptimizeAccumulatorInit 优化在循环最后一次迭代上丢弃零重置导致循环后 store 读到上一轮 MMA 结果的问题。修复方式：当累加器使用是 BlockArgument 且其对应 forOp 结果（循环外）仍被使用时，放弃 zeroInitOp 优化机会，从而保留条件重置。同步修改了 test_matmul.py 增加 store_after_loop 参数化用例，并把 accumulator-init.mlir 的期望 IR 从 select/if 的 use_acc 形态改为显式 scf.if/scf.select 返回归零结果的形态。属于 TritonGPU 优化 pass 正确性修复，涉及 Hopper/Blackwell MMAv5 路径。风险中等（优化语义变更，可能影响其它依赖该优化的性能模式）。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "optimizer",
+        "tritongpu"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[GPU] Preserve accumulator resets observed after loops (#12798)\n\nAccumulator initialization optimization can drop a zero reset on the\nlast loop iteration, causing a post-loop store to read the previous MMA\nresult.\n\n```python\nacc = tl.zeros((256, 16), tl.float32)\nfor k in range(6):\n    acc = tl.dot(A.load([0, k * 128]), B.load([k * 128, 0]), acc)\n    if k % 2 == 1:\n        acc = tl.zeros((256, 16), tl.float32)\nC.store([0, 0], acc)  # Must store zero.\n```\n\nStacked on #12797."
+    },
+    {
+      "sha": "cd16072f075f9898bebc90f4d6807ae291155cf2",
+      "comment": "NVIDIA 两 CTA MMA 完成屏障复用同步修复：当没有可流水化的 TMA 操作数 load 时，两 CTA MMA 可能在 peer 观察到上一次完成前就复用 completion-barrier slot，导致 parity 等待挂死。修复在 LowerLoops.cpp 的 createBarrierAndWaitOps 中检测 hasTMAOperandPipeline，若 mma.getTwoCtas() 且无 TMA 操作数流水，则在 mainWait 后插入 ttng.ClusterBarrierOp；同时在 MMALowering.cpp 的同步两 CTA MMA lowering 中在 wait_barrier 后、inval_barrier 前插入 cluster barrier。新增对应 lit 测试和两个 test_matmul.py 用例。属 NVIDIA 专有（TCGen5/tcgen05）路径，风险中等（涉及 cluster 同步语义，可能影响两 CTA 性能）。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "nvidia",
+        "tcgen05"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Synchronize two-CTA MMA completion-barrier reuse when there's no tma load (#12760)\n\nIf there's no paired TMA mbarrier, a two-CTA MMA can reuse a\ncompletion-barrier slot before the peer observes its previous\ncompletion, causing a parity wait to hang.\n\nAdd a cluster barrier after the MMA completion wait when there is no\npipelineable TMA operand load feeding shared memory. Add the same\nsynchronization to synchronous two-CTA MMA lowering."
+    },
+    {
+      "sha": "5ceff0f3529b30dabee60e64ba43cab9937071fe",
+      "comment": "GSan 修复张量描述符 stride 高位解码：TMA descriptor 的 stride 高位存放在 words[7] 的 nibble 中，原 byteStride 只读低位 words，超过 2^32 的 byte stride 被截断。修改 TMA.cuh 的 byteStride 组合 low word 与 words[7] 中的高 4 位，并在 gsan_testing.cc 暴露 tensor_desc_byte_strides 测试辅助接口，新增 CUDA 张量描述符测试。属 GSan 实验性 sanitizer 路径。风险低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "gsan"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[GSan] Decode high bits of tensor descriptor strides (#12808)"
+    },
+    {
+      "sha": "bc33ace0b53f735a796dd3bc2f0e2ba19c9da6c7",
+      "comment": "macOS CI 构建时间优化（60min→40min）：将 triton-opt/triton-reduce/triton-lsp/triton-tensor-layout 共用的方言/pass 注册编译为单个 OBJECT 库 TritonToolRegistration 复用；裁掉传递 include（用具体 pass header 替代 mlir/Conversion/Passes.h，用 LLVMTypes.h 替代 LLVMDialect.h，将 slice-analysis 与 backend dialect 头文件移到调用方）；把 NVIDIA MMA descriptor 辅助、通用分析辅助、AMD barrier 构造等从 header/binding 移到 .cpp 编译。涉及大量文件（63 个），包括 include/triton/Analysis/Utility.h（isZeroFillConst 从 inline 改为声明、ReduceOpHelper 构造移到 .cpp）、include/triton/Conversion/MLIRTypes.h、TargetInfoBase.h 前置声明化、bin/RegisterTritonDialects 拆分、NVIDIA/AMD/Proton 侧头文件整理。主要风险是 header/声明变更可能影响下游复用这些头文件的代码（如 Ascend 的 C++ lowering 复用 Analysis/Utility.h 的 isZeroFillConst 或 MLIRTypes.h 的 include）。风险中等。",
+      "tags": [
+        "performance",
+        "refactor",
+        "medium-risk",
+        "build"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "include/triton/Analysis/Utility.h 中 isZeroFillConst 由 inline 函数改为外部声明（实现在 lib/Analysis/Utility.cpp），ReduceOpHelper 构造函数也移到 .cpp；include/triton/Conversion/MLIRTypes.h 不再 include mlir/Transforms/DialectConversion.h 与 TritonGPU Dialect.h；TargetInfoBase.h 改为前置声明 mlir::ModuleOp/RewriterBase/ValueRange/triton::ReduceOp/MemSyncScope/gpu::AddrSpace。triton-ascend 的 C++ lowering 若在头文件中间接依赖这些 include 或 inline 定义（如使用 isZeroFillConst 但只 include Utility.h 而未链接 lib/Analysis 的实现，或在仅 include MLIRTypes.h 处使用 DialectConversion/TritonGPU 类型），会出现编译期缺少符号或类型可见性问题。",
+        "testing": "triton-ascend 的 C++ 单元测试（third_party/ascend/unittest 中依赖上游 Analysis/Conversion 头文件的用例）在重新构建时可能因 include 收敛而编译失败或需要补齐 include。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/lib/（依赖 Analysis/Utility.h、MLIRTypes.h 的 lowering 源文件）",
+          "third_party/ascend/unittest/（涉及 Analysis 的 C++ 测试）"
+        ]
+      },
+      "message": "[BUILD] Reduce Triton build time on macos CI (#12816)\n\nReduces macos CI triton build time from over 60 minutes to ~40 minutes.\n \n- Compile CLI registration once. triton-opt, triton-reduce, triton-lsp,\nand triton-tensor-layout now share one compiled registration object.\nNVVM and ROCDL registration lives in the existing backend .cpp files\nthat already include those dialects.\n- Trim transitive includes. Replaced MLIR’s all-conversion header with\nthe specific pass headers, used LLVMTypes.h where only LLVM types were\nneeded, and moved slice-analysis and backend dialect includes to their\ncallers. The full LLVMDialect.h dependency dropped from 182 to 120 C++\nobjects in the header audit.\n- Move shared implementations out of headers and bindings. NVIDIA MMA\ndescriptor helpers, common analysis helpers, and AMD barrier\nconstruction now compile in existing .cpp files.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "include/triton/Dialect/Triton/"
+        ],
+        "recommend_refresh": true
+      },
+      "deep_analysis": {
+        "ascend_affected_confirmed": false,
+        "affected_interfaces": [],
+        "adaptation_effort": "low",
+        "adaptation_guide": "",
+        "risk": ""
+      }
+    },
+    {
+      "sha": "4256cd01d38dd541516ae6510838f46e89e7fa03",
+      "message": "Meetup notes for Triton Community Meetup (2026-11-18) (#12831)\n\nAdding meetup notes for the 2026-11-18 Triton Community Meetup.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [ ] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n- [x] This PR does not need a test because `documentation only change`.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)",
+      "comment": "（自动判定）仅涉及 tests / docs / CI / 平台特化代码变更，不影响 triton-ascend。",
+      "tags": [
+        "chore"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      }
+    },
+    {
+      "sha": "359c5be728f73c4cbdf51d71e516f6502f8e29a8",
+      "comment": "Gluon 新增 cp.async.bulk（非 TMA）能力：新增 TTNG_AsyncBulkCopyGlobalToLocalOp / TTNG_AsyncBulkCopyLocalToGlobalOp 及验证器（16 字节对齐、按 CTA tile 等分、不支持 padded/partitioned/holes、多 CTA 必须填满视图等）、canonicalize（false 谓词消除）、getBulkCopyLayout 布局推断；将 TMAOpInterface 家族拆为 AsyncLoadOpInterface / AsyncStoreOpInterface（原 TMALoadLikeOpInterface/TMAStoreLikeOpInterface 继承它们），更新 ConSan、MBarrierUtilities、ProxyFenceInsertion、Membar 等处对应 dyn_cast；新增 GSan 区间访问 op（ExperimentalGSanLoadRangeOp/StoreRangeOp）及运行时函数与插桩；新增 Python 层 hopper.bulk API（async_load/async_store/store_wait）并在 blackwell/rubin 导出；配套大量 lit 与 pytest 测试。范围广（40 文件），但主要落在 NVIDIA 专有 IR/lowering 与 Gluon 前端。风险中等（新增接口/改变 interface 继承关系，可能影响依赖旧 interface 的外部代码，但均属 NVIDIA 专有路径）。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "nvidia",
+        "gluon",
+        "gsan",
+        "consan"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Gluon] Expose cp.async.bulk (non-TMA) (#12806)\n\nExpose linear global-to-shared and shared-to-global bulk copies as\nfirst-class Gluon operations, so the compiler and sanitizers can track\ntheir memory dependencies. The `hopper.bulk` API, also exported from\nBlackwell and Rubin, provides:\n\n- `async_load(smem, pointer, num_elements, barrier, pred=True,\nmulticast=False)` for global-to-shared copies completed through an\nmbarrier.\n- `async_store(pointer, smem, num_elements, pred=True)` for\nshared-to-global copies. Each enabled store commits one bulk group; a\nfalse predicate neither copies nor commits.\n- `store_wait(pendings, read_only=True)` for the queue shared by bulk\nand TMA stores. Read-only waits permit shared-source reuse;\n`store_wait(0, read_only=False)` completes global writes before\naccessing or publishing the destination. Issue and wait must execute in\nthe same warp-specialized region.\n\nTransfers require SM90+, 16-byte-aligned addresses, and a positive\ncompile-time element count with a per-CTA byte count divisible by 16.\nLoads require PTX 8.6+; stores require PTX 8.0+. Split CTA tiles occupy\npacked global ranges. Replicated tiles use one store issuer, and loads\nsupport multicast. Multi-CTA copies must fill the shared-memory view,\nincluding replicated layouts; single-CTA partial copies and complete\nsubviews remain supported. Copies preserve raw physical byte order\nwithout swizzling or unswizzling.\n\nNative IR memory effects expose dependencies to synchronization passes,\nincluding the shared async-proxy fence before stores. ConSan tracks\nmbarrier completion and the shared bulk/TMA store queue, conservatively\ncovering the shared-memory view. GSan records exact predicated global\nread/write ranges, including allocation profiling, and IISan checks\nglobal-pointer alignment. GSan records accesses at issue time and does\nnot track the pending transfer through completion.\n\nBased on #11826, preserving its original commits and subsequent review\nfixes.\n\nValidation carried over from #12758 (GB300):\n\n- Rebuilt Triton; `make test-lit`: 308 passed, 2 unsupported.\n- 341 targeted pytest cases passed: 35 frontend/codegen, 176\ncopy/cluster/warp-specialization, 13 ConSan, 109 GSan range/race, and 8\nallocation-profile cases. Coverage includes mixed bulk/TMA queues,\npartial waits and source reuse, false predicates, swizzled layouts,\nalignment failures, and exact destination ranges.\n- Pre-commit hooks and `git diff --check` passed.\n\nRuntime testing used GB300; Hopper was covered by codegen tests.\n\nReplaces #12758; the earlier review discussion remains available there.\n\nStacked on #12805, which removes the intermittently timing-out GSan\nbyte-pool capacity test.\n\n---------\n\nCo-authored-by: jeffniu-openai <jeffniu@openai.com>"
+    },
+    {
+      "sha": "f812fa8e91597506d4baf5b594f11fe858bab342",
+      "comment": "删除 test_byte_pool_import_capacity 及其私有 helper：该测试在 GB200 CI 上多次超过 90s 子进程超时（导入/释放 1023 个别名以填满 128GiB 虚拟 byte pool）。其余导入与 shadow 映射测试仍保留。纯测试删除，风险无。",
+      "tags": [
+        "test",
+        "low-risk",
+        "gsan"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[GSan] Drop the byte-pool import capacity test (#12805)\n\n`test_byte_pool_import_capacity` intermittently exceeds the 90-second\nsubprocess timeout on GB200 CI. It imports and frees 1,023 aliases of a\nsingle allocation to fill the 128 GiB virtual byte pool. Three\nindependent PR jobs recorded the same timeout. [GB200 failure on\n#12758](https://github.com/triton-lang/triton/actions/runs/44102206345/job/134105031259)\n· [Concurrent failure on\n#12798](https://github.com/triton-lang/triton/actions/runs/44102128987/job/134104947981)\n· [Earlier GB200\nfailure](https://github.com/triton-lang/triton/actions/runs/43941213196/job/133625189099)\n\nRemove the full-pool stress test and its private helper.\n`test_export_import_allocation_handles_maps_real_and_shadow` still\nexercises imported data and shadow mappings.\n\nPre-commit checks passed. An AST comparison verified that every\nremaining test definition and decorator matches `main`."
+    },
+    {
+      "sha": "e765124bedffe7191e054a8dbf54a15e48bb1d47",
+      "comment": "ConSan 单 CTA 场景锁特化：TritonInstrumentOps.td 为 LockAcquire/LockRelease 增加 uncontended 与 ctaLocal UnitAttr；ConcurrencySanitizer.cpp 新增 markSingleCTALocks，在 num_ctas==1 时，若只有默认 thread（threadLayout.numBaseThreads==1）或锁在入口函数中且不在 warp_specialize 内，则标记 uncontended，否则标记 ctaLocal；InstrumentationToLLVM.cpp 在 CUDA target 下对 uncontended 锁省略 cmpxchg/atom 并改为 barrier，对 ctaLocal 使用 CTA scope 的 atom。Utility.h 新增 lockInitialization 指针用于保持启动初始化。性能上报告称 instrumented GPU replay 快 53%。风险中等（锁所有权/scope 分类错误会破坏同步正确性）。",
+      "tags": [
+        "performance",
+        "medium-risk",
+        "consan"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ConSan] Specialize shadow locks for single-CTA programs (#12796)\n\nConSan uses GPU-scope atomic shadow locks even when a program has a\nsingle CTA. This change removes acquire/release atomics when the\ninstrumentation pass proves a single software owner, retaining the\ncollective barriers that order shadow-memory accesses. When\nwarp-specialized groups in one CTA can contend, it uses CTA-scope\nacquire/release atomics. Multi-CTA programs and non-CUDA lowering retain\ntheir existing path.\n\nThe ConSan transformation records ownership on lock operations; lowering\nuses those attributes without cross-operation analysis. Startup lock\ninitialization remains explicit whenever a worker may acquire the lock.\nThe regression uses a nonzero profile allocator to check that\ninitialization. The checks and program synchronization remain in place.\n\nReview order: #12792 (merged) → #12795 → this PR. This PR and #12795 are\nindependent siblings based on `main`, which includes #12792.\n\nPaired GB300 measurement against #12792 used ABBA after a discarded\ninitialization run, with two independent fresh-cache trials per arm over\neight numerical cases. Every trial passed 8/8 and compiled the same 47\ndistinct kernels, including 11 with ConSan. Four separately started\nwarm-cache CUDA-event profiles used the matching caches; each passed\n40/40 cases, had zero compile misses, discarded one replay, and measured\nfour replays of 17 instrumented launches. The two process profiles per\narm are the experimental units.\n\n| Metric | #12792 | This PR | Observed change | Temporal pairs |\n|---|---:|---:|---|---|\n| Mean cold pytest time per case | 4.476 s | 4.571 s | 2.13% slower |\n3.29%, 0.96% slower |\n| ConSan compilation, 11 kernels | 23.651 s | 23.049 s | 2.55% faster |\n2.94%, 2.15% faster |\n| All compilation, 47 kernels | 30.954 s | 31.090 s | 0.44% slower |\n0.06%, 0.82% slower |\n| Warm instrumented GPU replay | 37.452 ms | 17.591 ms | 53.03% faster |\n53.00%, 53.07% faster |\n\nCold test time includes setup, call, and teardown. GPU replay sums only\nthe 17 instrumented launches; its 53% reduction is not a whole-test\nspeedup. Two trials per arm describe observations rather than\nstatistical confidence.\n\nValidation:\n- Native `make`, then `ninja triton-opt` and `lit -v\ntest/Conversion/tritoninstrument_to_llvm.mlir\ntest/TritonGPU/consan.mlir`: 2 passed.\n- Focused GB300 join/visibility (including nonzero lock storage), async\npublication, cluster barrier, and deadlock diagnostics: 21 passed, 5\nskipped.\n- Complete GB300 ConSan diagnostic suite: 504 passed, 75 skipped.\n\nThe main review risk is synchronization correctness when classifying\nlock owners or scope; the startup regression, scope/barrier lit checks,\nand complete diagnostic suite target that risk."
+    },
+    {
+      "sha": "c4895fe25050e3e3fa110ad00392e4e17684bc78",
+      "comment": "运行时缓存并发编译合并：在 FileCacheManager 上新增 _lock_compile（基于 (cache_dir, filename) 的弱引用锁表 + 线程本地重入标记以避免嵌套编译死锁），compile() 改为 _compile() 包装并在 metadata 未命中且非 always_compile、非 override/dump、无 add_stages_inspection_hook 时进入该锁，锁内重查 group，命中即提前关闭 build_stack 返回；发布后再 build_stack.close()。新增三个并发/嵌套测试。这对 JIT 缓存命中路径是语义相关变更（重启后含 lock 获取），且 compiler.py 是 triton-ascend 3.6.0 patch 修改过的文件，patch 需重新对齐。风险中等。",
+      "tags": [
+        "performance",
+        "bugfix",
+        "medium-risk",
+        "runtime-cache"
+      ],
+      "ascend_impact": {
+        "ascend_affected": true,
+        "functionality": "python/triton/compiler/compiler.py 被 triton-ascend-3.6.0.patch 修改（patch 影响映射明确列出），本次将 compile() 拆为 compile() + _compile(... build_stack) 并在缓存未命中路径加入 FileCacheManager._lock_compile 上下文；AscendBackend 的 add_stages 逻辑本身不受影响，但 Ascend 侧的 release patch / dev patch 若在 compile/compiler 阶段有插入点（如日志、stage 注入、选项处理），需要对照新结构重新应用。另外 python/triton/runtime/cache.py 新增 _lock_compile 接口，Ascend 若在缓存层有自定义 manager 或 override 逻辑需确认路径选择（新锁仅在 type(fn_cache_manager) is FileCacheManager 且无 override/dump 时生效）。",
+        "testing": "triton-ascend 的编译缓存相关测试（缓存命中、并发编译、patch 应用后的编译路径）需重新验证；上游新增的并发测试可作为参照。",
+        "needs_test_update": true,
+        "suggested_test_areas": [
+          "third_party/ascend/patch/triton-ascend-3.6.0.patch（重新对齐 compiler.py 上下文）",
+          "third_party/ascend/unittest/pytest_ut/（编译缓存/JIT 路径测试）"
+        ]
+      },
+      "message": "[Runtime] Coalesce concurrent compilation of the same file cache group (#12795)\n\nConcurrent threads can miss the same Triton file-cache group before\npublication and compile it more than once. This change coalesces those\nbuilds within a process and rechecks the published group before a\nwaiting thread compiles. Different groups can still build concurrently.\n\nCoalescing is restricted to the default `FileCacheManager` when forced\ncompilation, overrides, dumps, and stage-inspection hooks are inactive.\nNested compilation bypasses waiting to prevent deadlocks. Publication\nreleases the lock before listener callbacks, and a failed builder allows\nanother caller to retry.\n\nReview order: #12792 (merged) → this PR → #12796. This PR and #12796 are\nindependent siblings based on `main`, which includes #12792.\n\nThe performance numbers below were measured on revision `25e9d2359d`,\nbefore the fork handling and its test were removed. Performance was not\nremeasured after that removal or the later identifier-only rename.\n\nGB300 paired measurement against #12792: two discarded initialization\ntrials followed by ABBA, with two independent trials per arm. Each trial\nused a fresh cache for the same seven CI warmup cases, then reused it\nfor eight numerical cases. Both arms used the identical native compiler\nand compiled the same distinct kernel/mode combinations.\n\n| Metric | #12792 | Measured revision | Observed reduction |\n|---|---:|---:|---:|\n| Warmup sum of test durations | 25.59 s | 22.37 s | 12.6% |\n| Warmup pytest process wall | 76.78 s | 76.63 s | 0.2% |\n| Numerical pytest process wall | 61.98 s | 60.29 s | 2.7% |\n| Combined sum of test durations | 32.79 s | 28.64 s | 12.6% |\n| Combined pytest process wall | 138.76 s | 136.92 s | 1.3% |\n| Warmup aggregate compilation work | 85.36 s | 46.88 s | 45.1% |\n| Warmup compile misses | 73, 74 | 55, 55 | 25.2% mean |\n\nEvery warmup compiled 55 distinct groups (45 plain and 10 ConSan);\nduplicate builds fell from 18–19 to zero. Every numerical run passed 8/8\nand compiled the same two remaining groups (one ConSan). Aggregate\ncompilation work sums overlapping compilations and is not elapsed time.\nCombined process-wall changes in the temporal pairs were -1.3% and\n+4.1%; the 1.3% mean difference is small relative to variation and does\nnot establish a reliable process-level speedup. Both arms include the\nsame observation callback overhead.\n\nPre-rebase head `6f7b1d9696`: Python syntax check and all four focused\nconcurrent/retry, independent-key, and nested-build tests passed using\nan explicit offline CUDA sm80 target. This revision differs from\n`8945e13c0a` only by renaming the `ExitStack` variable and parameter\nfrom `build_lock` to `build_stack`.\n\nGB300 validation on revision `8945e13c0a`, using the installed Triton\n3.9.0 native library (Python-only change; no native rebuild):\n- Focused concurrent miss/retry, independent keys, and nested\ncompilation: 4 passed.\n- Complete runtime cache suite: 76 passed, 1 skipped.\n- Compilation listener, cache determinism, and compile-error\ncompatibility suites: 41 passed.\n- Existing subprocess-compilation tests, including compilation after a\ncompleted parent compile: 3 passed.\n\nEarlier revision `25e9d2359d`: complete ConSan diagnostic suite from the\n#12792 source, 504 passed, 75 skipped.",
+      "deep_analysis": {
+        "ascend_affected_confirmed": true,
+        "affected_interfaces": [
+          "python/triton/compiler/compiler.py::compile (triton-ascend 通过 triton-ascend-3.6.0.patch 直接修改该函数及其顶部 import，本 commit 将其拆分为 compile+_compile 并新增 ExitStack/build_stack 参数，导致 patch 的多个 hunk 上下文失效)",
+          "python/triton/compiler/compiler.py::top-level import (from ..runtime.cache import ... 行新增 FileCacheManager，与 patch 首个 hunk 的上下文行冲突)",
+          "python/triton/runtime/cache.py::FileCacheManager (新增 _lock_compile 私有方法；triton-ascend 未 patch 该文件、生产代码也未子类化 FileCacheManager，此接口为透明增量，无需适配)"
+        ],
+        "adaptation_effort": "medium",
+        "adaptation_guide": "需重打/重新生成 third_party/ascend/patch/triton-ascend-3.6.0.patch 中针对 python/triton/compiler/compiler.py 的全部 hunk。具体：(1) 顶部 import hunk：上下文行已由 `from ..runtime.cache import get_cache_manager, get_dump_manager, get_override_manager, get_cache_key` 变为 `from ..runtime.cache import FileCacheManager, get_cache_manager, get_dump_manager, get_override_manager, get_cache_key`，需同步更新并删除 patch 在异常处理分支内局部 `from ..runtime.cache import FileCacheManager` 的冗余引入（顶层层级已有）。(2) compile 函数体 hunk（cache-hit 分支的 _notify_compilation_listener 改写、stage 循环的 MLIRCompilationError try/except 包装、store_only_binary 的 backend.binary_ext 改写、末尾 listener 通知）原本锚定在 `def compile(...)` 内，现需整体迁移到新的 `def _compile(src, target, options, _env_vars, build_stack)` 内，并保持 `_compilation_listener_observer`/`_notify_compilation_listener`/`_compilation_listener_scope` 等 patch 自增符号相对 `def compile` 的正确插入位置（commit 在 `def compile` 与函数体之间插入了 `with ExitStack() as build_stack:` 包装，原 patch 在 `def compile` 前插入 _compilation_listener_observer 的 hunk 上下文需顺延）。(3) 语义核对：listener 回调需继续发生在 `build_stack.close()`（成功/命中路径）之后，与 commit 的释放时序一致；MLIRCompilationError 包装仍在 `_compile` 内 `compile_ir` 调用处，异常经 ExitStack 自动释放 _lock_compile 锁，无死锁风险。FileCacheManager._lock_compile 无需任何改动（triton-ascend 走默认 FileCacheManager；compiler.py 中 `type(fn_cache_manager) is FileCacheManager` 守卫确保自定义 knobs.cache.manager_class 不会触发该方法）。",
+        "risk": "medium"
+      }
+    },
+    {
+      "sha": "ffb0a7e78d160536912ae2027c6e9cbf0c46b080",
+      "comment": "为 RS WGMMA 无效 code motion（#9433）新增回归测试：Hopper 上构造 RS WGMMA（A 通过寄存器经 ldmatrix 加载）、追踪循环两次迭代的物理 A 寄存器生命周期，解析 SASS 检查 LDSM.16.M88.4 存在、WARPGROUP.DEPBAR.LE 等待指令、以及 HGMMA 输入寄存器在被等待前不被覆盖。纯测试新增（test_pipeliner.py），依赖 Hopper 与新版 ptxas。风险无。",
+      "tags": [
+        "test",
+        "low-risk",
+        "nvidia",
+        "pipeliner"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Hopper] Add a regression test for the RS WGMMA invalid code motion issue (#12822)\n\nSee https://github.com/triton-lang/triton/issues/9433 for the context.\nGiven the number of bug reports from other projects linked in 9433, I\nthink it'd be good to have an evidence that we have fixed this issue.\n\nNow that Hopper uses new-enough ptxas, we can run a regression test in\nCI validating the generated SASS."
+    },
+    {
+      "sha": "60d8a4b9d53a2bcfd08ce410cf9b18336d0944c8",
+      "comment": "回滚 #12791（Pipeliner 使用单一 loop-carried cursor per async load ring），原因是内部回归。回滚恢复为 insert/extract 双计数器形态，删除 LoadRing/LoadRings 结构与 SoftwarePipeliner.cpp 中基于读游标派生 refill 的逻辑，BufferIndexAnalysis 移除对 arith.andi 低比特掩码的模分析（只保留 remsi 与 select/cmpi 形态），并回退相关 lit 测试（loop-pipeline*.mlir、test-membar.mlir 删除 masked_buffer_indices 用例）。属 TritonGPU pipeliner 路径，Ascend 不走该路径。风险中等（回滚本身恢复旧行为，但删除了 masked index 分析能力）。",
+      "tags": [
+        "refactor",
+        "medium-risk",
+        "pipeliner",
+        "tritongpu"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "Revert \"[Pipeliner] Use one loop-carried cursor per async load ring\" (#12830)\n\nReverts #12791 due to internal regressions."
+    }
+  ],
+  "architecture_based_on_sha": "1c53e566ef8f719ff9b69132a72ad943e5409492",
+  "architecture_generated_at": "2026-11-15T21:06:50.425498+08:00"
+}

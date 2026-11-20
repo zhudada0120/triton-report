@@ -1,0 +1,256 @@
+{
+  "date": "2026-11-19",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-11-20T08:00:59.156696+08:00",
+  "daily_summary": "当日变更集中在 Ascend 后端的 DynamicCVPipeline（cube-vector 流水线）与 Proton 性能分析两条主线：DynamicCVPipeline 方面新增 C8V16 NZ softmax 融合（新增 FuseNZSoftmaxPass、FIXPIPE pre-quant 折叠、NZ→NZ 跨核传输复用、loop state read 下沉）、修复 CustomOp 内存依赖误判、I1 producer sinking 的 memref 效应与重复克隆问题、FIXPIPE scale 标量化，并补充大量 MLIR lit 测试；Proton 方面将 A5 的 intra-kernel 采集从依赖 MSPTI 改为直接读取 CANN perf monitor 通道（新增 ascend_perf_monitor.py，替代 mspti_instrumentation.py），并在编译期通过新增的 get_kernel_profile_metadata C++ 绑定显式导出 profiling scratch 元数据。此外还有 compiler 接受 block_batching_factor 兼容选项、构建期恢复 cache.py 再打 patch、bool AND load mask 前端修复、dot_scaled FP8 K 对齐校验、libdevice gamma 支持 A6 等小修复。",
+  "test_impact_summary": "当日变更对测试看护影响较大且方向明确：DynamicCVPipeline 一侧新增/重写了十余个 MLIR lit 测试（FuseNZSoftmax、fixpipe prequant c2v、nz_transfer、sink_i1_producers、plan_vector_block scf backedge 等），并修改了既有用例的 RUN 行加入 --split-input-file；Proton 侧 A5 instrumentation 测试改断言 proton_collection == \"perf_monitor\" 并新增 PROTON_MSPTI_LIBRARY_PATH 指向不存在库以确认不再依赖 MSPTI，同时补充 profile_scratch_align 断言；bool load mask 修复新增前端编译测试与设备端回归（覆盖操作数顺序、dtype 保持、非 1024 对齐 size）。风险点在于：Proton 采集从 MSPTI 切到直接 HAL 通道读取，新实现的 _decode 协议解析、通道读取线程与清理逻辑缺乏细粒度单测，主要依赖设备端集成测试；profiling scratch 元数据从正则抽取改为 C++ 绑定导出，属于编译产物 metadata 契约变更，需要确认已有的 metadata 断言覆盖到位。",
+  "commits": [
+    {
+      "sha": "6c5bb75ac8a8161a8d7cd4fbdc9db41ded3e0c57",
+      "comment": "将 A5 intra-kernel instrumentation 的采集方式从 MSPTI PoC 库切换为直接通过 CANN HAL/runtime/libprofapi 读取硬件 perf monitor 通道：新增 third_party/proton/proton/ascend_perf_monitor.py（PerfMonitorCollector，包含 prof_drv_start/prof_channel_read/halProfDataFlush/prof_stop 绑定、后台读取线程、自定义 <HH delta/info 协议解码、时钟域频率查询与 raw dump），删除 mspti_instrumentation.py；instrumentation hook 中相关字段由 _mspti_* 改名为 _perf_monitor_*/_warmup_remaining/_skipping_warmup，metadata 判定从 'mspti' 改为 'perf_monitor'（且兼容读取旧的 a5_perf_monitor/mspti）。compiler.py 中 ttir_to_linalg 对 A5 设置 proton_collection='perf_monitor'，linalg_to_bin_enable_npu_compile_910_95 据此追加 --proton-metadata-output。该变更是 Proton 后端的一次实现替换，绕开了对外部 MSPTI 库的依赖，但新增了大量与 CANN 驱动 ABI 强耦合的 ctypes 结构与通道协议解码逻辑，属高风险区域：结构体布局（_Command/_Start）与通道号范围(11..28)一旦与 CANN 版本不匹配会静默采集错误或崩溃；_decode 中 clock 域选择依据 channel 偏移，逻辑脆弱；全局 lock 只支持串行采集。测试已同步调整。",
+      "tags": [
+        "feature",
+        "refactor",
+        "proton",
+        "high-risk",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "测试已在该 commit 中被更新：test_ascend_instrumentation_a5.py 中 metadata 断言由 'mspti' 改为 'perf_monitor' 并设置 PROTON_MSPTI_LIBRARY_PATH 指向不存在的库以验证不再依赖 MSPTI。但新 PerfMonitorCollector 的协议解码、通道读取循环、错误清理路径缺乏单元级测试，目前只靠设备端集成测试覆盖。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/proton_ut/test_ascend_instrumentation_a5.py",
+          "third_party/ascend/unittest/proton_ut/test_ascend_proton_backends.py",
+          "third_party/proton/proton/ascend_perf_monitor.py（新增解码/异常路径单测）"
+        ]
+      },
+      "message": "[Proton](feat) collect A5 intra-kernel scope records without MSPTI (#3229)\n\n* [Proton](feat) collect A5 instrumentation records directly in Triton Ascend\n\n* [Proton](test) keep the existing A5 instrumentation test entry point"
+    },
+    {
+      "sha": "0934f6dc693ce557011e0a0cbb9bfaae098150a0",
+      "comment": "修复 DynamicCVPipeline 中对 hivm.hir.custom 的内存依赖误判：在 MemoryEffectsTracker::collectOuterEffects 中为 CustomOp 增加专门 Case——当 op 带 no_side_effect、具备 pure tensor semantics 且 tempBuffers 为空时，若 GMAddrArgsIndices 为空则视为无副作用（返回空 Effects），否则回退到默认收集。配合 FuseNZSoftmax.cpp 中新创建的 NZ softmax CustomOp 显式 setNoSideEffect(true)，使这些纯计算 custom op 不再产生虚假的 buffer 写依赖，避免插入不必要的 sync_block。测试通过 --split-input-file 追加 @tensor_custom_unrelated_buffer 用例，验证 unrelated buffer 场景下不插入 sync。属于针对新引入 NZ softmax 定制算子的配套修复，逻辑上依赖 getGMAddrArgsIndices 的语义（无 GM 参数才认为纯），若某些 custom op 该属性未设置可能被误判。",
+      "tags": [
+        "bugfix",
+        "DynamicCVPipeline",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "已修改 test_assume_memdep.mlir，新增 tensor_custom_unrelated_buffer 场景验证 CustomOp 无副作用时不插入 sync_block。现有用例覆盖了 GMArgs 为空的情形，但未覆盖 getGMAddrArgsIndices 非空时的回退路径。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow/test_assume_memdep.mlir"
+        ]
+      },
+      "message": "[DynamicCVPipeline](fix) Avoid spurious CustomOp memory dependencies (#3255)\n\nCo-authored-by: Sky_miner <liuyichen23@huawei.com>"
+    },
+    {
+      "sha": "70cf831e3dd663a709a034b6086006a3cd2f76ff",
+      "comment": "将 'parallel_nsa_bwd_kernel_dkv' 加入 AnalyzeName.cpp 的 interceptrFunc 白名单，使该 kernel 在名字分析阶段被识别为需要拦截/特殊处理的函数（与已有的 parallel_nsa_fwd_kernel、fused_chunk_bwd_kernel 等并列）。这是对既有 kernel 名称枚举的纯增量补充，风险极低，但依赖该枚举在 verifyFuncNames 中判断 intercepted 的逻辑（若有匹配则走特定分支），名字变更不会影响其它路径。",
+      "tags": [
+        "bugfix",
+        "DynamicCVPipeline",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅向字符串白名单追加一个内核名，属于配置性变更；现有 lit 测试难以针对单一函数名列表做覆盖，但如后续新增针对该 kernel 的端到端流水线用例可更好看护。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/"
+        ]
+      },
+      "message": "[ssbuffer](fix) fixpr3228 (#3271)\n\nCo-authored-by: shaoyiyang <shaoyiyang1@huawei.com>"
+    },
+    {
+      "sha": "f9ea1e686a4ddbc5528a5f28bee8ebbf415fb292",
+      "comment": "修复 SinkI1ProducersIntoUsersPass 的两个问题：(1) 移除对 HasRecursiveMemoryEffects trait 的一刀切拒绝，改为通过 MemoryEffectOpInterface.getEffects() 判定，使 scope.scope 这类携带递归副作用 trait 但 region 体纯净的 op 也能作为 i1 producer 被下沉；(2) 在把一个 producer 移到第一个 consumer block 后补上 seenBlockIds.insert(consumerBlockId)，避免同 block 内多个 consumer 重复克隆。同时在 AnalyzeName.cpp 增加 parallel_nsa_fwd_kernel/fused_chunk_bwd_kernel 白名单，并调整 ComputeBlockIdManager 初始化顺序。新增 sink_i1_producers_into_users.mlir 覆盖四种场景（scope 下沉、同 block 不克隆、组合、不同 block 仍克隆）。修复合理，但去掉 HasRecursiveMemoryEffects 的早拒绝后，纯度判定完全依赖 getEffects()——对自定义 op 若未正确实现副作用接口，可能误判为纯而被错误下沉，存在一定风险。",
+      "tags": [
+        "bugfix",
+        "DynamicCVPipeline",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "已新增 101 行 sink_i1_producers_into_users.mlir，覆盖 scope.scope 下沉、同 block 去重、组合以及跨 block 克隆四种情形，测试覆盖较完备。但未覆盖“带 region 但实际有副作用”的 op 防止误下沉的负向用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/sink_i1_producers_into_users.mlir"
+        ]
+      },
+      "message": "[ssbuffer](fix) Handle memref effects in I1 producer sinking (#3228)\n\nCo-authored-by: shaoyiyang <shaoyiyang1@huawei.com>"
+    },
+    {
+      "sha": "deac90c5cb0076d61efc0d3e3d2890bc4dcaf423",
+      "comment": "在 NPUOptions 中新增 block_batching_factor: Union[int, str] = 1 字段，注释明确为“保留的兼容选项，不会启用 block batching”。目的在于让上层（可能来自自动调优或用户配置）传入的该字段在 parse_options 时被接受而不报错，从而避免上游接口差异带来的失败。作为 dataclass 字段其会被纳入缓存键的序列化，但因为类型同时允许 int/str，若调用侧传入不同表示（如 1 vs \"1\"）可能产生不同的缓存键，存在轻微缓存碎片风险；可考虑统一强转。整体属低风险兼容性改动。",
+      "tags": [
+        "feature",
+        "compiler",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯选项兼容字段，不改变编译行为；可通过简单选项解析测试（parse_options 接受该键）做正向看护，但现有测试策略下不强制。",
+        "suggested_test_areas": [
+          "third_party/ascend/backend/compiler.py（NPUOptions 解析相关测试）"
+        ]
+      },
+      "message": "[compiler](feat) Accept the block_batching_factor option (#3254)\n\n* [compiler](feat) Accept the block_batching_factor option\n\nSigned-off-by: zhaojingkai <zhaojingkai4@huawei.com>\n\n* [compiler](NFC) Keep the factor interface change production-only\n\nSigned-off-by: zhaojingkai <zhaojingkai4@huawei.com>\n\n---------\n\nSigned-off-by: zhaojingkai <zhaojingkai4@huawei.com>"
+    },
+    {
+      "sha": "4dcf0f84f4e6e896049bc639fc8b84b95b6d6caa",
+      "comment": "在 setup_patch.py 的 restore 文件清单中补入 python/triton/runtime/cache.py，使构建期在 git apply Ascend 整体 patch 之前先 checkout 还原 cache.py，避免上次构建残留的 patch 状态导致 apply 失败或重复应用。这是构建可靠性修复，与 patch 机制（triton-ascend-3.6.0.patch）配套；注意清单中 runtime/autotuner.py 已出现两次，属既有冗余（幂等无害），可顺手去重。变更本身风险极低。",
+      "tags": [
+        "bugfix",
+        "chore",
+        "build",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "构建脚本路径修正，不影响运行时或编译产物的语义；验证方式为重复执行构建（setup_patch 幂等性），无需新增功能测试。",
+        "suggested_test_areas": [
+          "third_party/ascend/build/setup_patch.py"
+        ]
+      },
+      "message": "[Build](fix) Restore cache.py before reapplying Ascend patch (#3225)"
+    },
+    {
+      "sha": "474778c855752811c1b29896a58b597eee2bff46",
+      "comment": "新增 ScalarizeFixpipeScale 模式：在 PatternMatchRewritePass 中，对于被 matchFixpipeOutputCast 识别出的 FIXPIPE 输出 cast（f32 matmul -> ND2NZ -> linalg.fill(scale) -> mulf -> truncf 链），把作为 tensor 的 quantScale 沿 linalg.fill/tensor.insert/from_elements/splat 常量及纯 elementwise 链递归标量化为 f32 标量，并替换 fill 的输入（按 use 数选择原地修改或克隆）。目的是让 cube/vector 分块规划阶段看到的 scale 是标量而非 tensor 生产者，从而避免错误的 block 划分。配合 TritonToLinalgPass 重新启用 ScalarMathCanonicalizer<arith::MulFOp>（此前被注释），二者呼应：MulFOp 标量化可能在其它路径带来行为变化，需关注。scalarizeScale 的 elementwise 克隆依赖纯函数与 int/index/float 操作数约束，整体实现谨慎，但仍属对 IR 重写的功能改动，中低风险。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "DynamicCVPipeline",
+        "TritonToLinalg",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "该 commit 新增了 pattern（ScalarizeFixpipeScale）但未直接附带该 pattern 的 lit 测试（测试加在后续 6a41252 的 fixpipe-scaled-prequant-c2v.mlir 等用例中）。同时重新启用了 MulFOp 标量化，可能影响既有 TritonToLinalg 测试输出，建议回归 check。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/StandardizeOp/",
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/"
+        ]
+      },
+      "message": "[ssbuffer](fix) Scalarize FIXPIPE scales before block planning (#3281)\n\nCo-authored-by: Sky_miner <liuyichen23@huawei.com>"
+    },
+    {
+      "sha": "6a41252a14bcf8bb71eed30634d5cdf4207e4645",
+      "comment": "本日最大的变更，为 DynamicCVPipeline 增加 C8V16 NZ softmax 支持（1230+ 行，24 文件）。核心：(1) 新增 FuseNZSoftmaxPass（587 行），在 StandardizeOp 阶段把 matmul→ND2NZ→trunc→unpack→score→online softmax（sub/exp/可选±448 clamp/trunc fp8/pack)→row sum 的模式识别并替换为单个 hivm.hir.custom \"__builtin_online_softmax_nz\"，同时产出 fp8 probability、新 max、sum 三结果；匹配器严格校验 reshape/transpose perm、round_mode、fp8 bound、dominance 等，并对 no_side_effect 设置（配合 0934f6d）；通过 hasStridedInplaceOutputs 模板探测兼容旧 NPUIR 的 inplace_outs 接口。(2) 在 Common/Utils 中新增 matchFixpipeOutputCast，用于识别 f32 matmul→(ND2NZ 与标量 scale 的两种顺序)→f16 truncf 链，产出 FixpipeOutputCastInfo。(3) OpClassifier 增加 matchFixpipeOutputCastPatterns 将折叠链钉在 CUBE，并阻止 Vector 上游传播越过该 cast。(4) InterCoreTransferAndSync 在 C→V 传输中将匹配链折叠为带 pre_quant/quant_scale 的 FIXPIPE 并支持 NZ2NZ DMA 模式；C→C 的 trunc 删除改为延迟到全部依赖处理完后按 use_empty 清理，避免共享 cast 被提前删除；Nd2NzNormalize 复用已有 fractal 源避免 NZ→ND→NZ。(5) DataDependencyAnalysis 增加 isFixpipeOutputCastValue 允许非 ND tensor 作为依赖。(6) PlanVectorBlock 新增 placeLoopStateReads 将循环状态读（extf）移入更新所在 block。(7) DotConverter 为 linalg.matmul 累加器补 linalg.fill(0) 初始化（因子图可能把 acc add 拆出）。(8) TritonToLinalgPass 关掉 MulFOp 的标量 canonicalizer（与前一 commit 相反方向，最终由后续 474778c 重新开启，存在短时来回调整）。测试新增大量 lit 用例（fixpipe-prequant-c2v、fixpipe-scaled-prequant-c2v、nz_transfer、test_fixpipe_output_cast、online-softmax-nz-recurrence、custom_loop_yield 等）。风险：新 Pass 的模式匹配高度依赖具体 IR 形态（固定 blocks∈{2,4,8}、512 维度、fp8e4m3），误匹配或漏匹配均可能导致功能缺失或错误替换；NZ2NZ/FIXPIPE prequant 涉及硬件语义，错误折叠会静默产出错误数值；loop state 移动需谨慎处理支配关系。整体高风险。",
+      "tags": [
+        "feature",
+        "DynamicCVPipeline",
+        "TritonToLinalg",
+        "attention",
+        "high-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "已随 commit 新增/修改大量 lit 测试与用例，覆盖面较广。但仍存在若干建议补强点：FuseNZSoftmax 的负向匹配用例（perm 不匹配、非 fp8e4m3、round_mode 非 RINT、dominance 失败）、旧 NPUIR inplace_outs 兼容分支、NZ2NZ 传输在真实设备上的数值正确性（目前多为 lit diff 层面）。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow/fixpipe-prequant-c2v.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow/fixpipe-scaled-prequant-c2v.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/PlanComputeBlock/test_fixpipe_output_cast.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/PlanComputeBlock/plan_vector_block_scf_backedge.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/online-softmax-nz-recurrence.mlir",
+          "third_party/ascend/unittest/pytest_ut/（NZ softmax 端到端数值用例）"
+        ]
+      },
+      "message": "[DynamicCVPipeline](feat) support C8V16 NZ softmax (#3215)\n\nCo-authored-by: Sky_miner <liuyichen23@huawei.com>"
+    },
+    {
+      "sha": "64656266a1ce9bb8c7d7f6c48a90f4e896eee3cf",
+      "comment": "修复 Ascend 上 bool 数据在 byte-valued tensor 中由 AND 组合后丢失布尔来源、作为 tl.load mask 时触发 TTIR 校验失败（mask 为 i8）的问题。做法是在 triton-ascend-3.6.0.patch 中修改语义层：TritonSemantic.and_ 检测两侧输入是否均为 bool/布尔来源的 int8（通过 was_bool_to_int8 / _bool_mask 标记），若是则在结果 int8 tensor 上打 _bool_mask 标记；load 前若 mask 为 int8 且带 _bool_mask 则 cast 到 int1，普通 int8 mask 仍被拒绝。属于 patch 化对上游 semantic.py 的修改，逻辑依赖实例属性标记（_bool_mask）在 AST 翻译过程中的传播——该标记只在本层 op 结果上保留，经过其它算子（如算术运算）后会丢失，这是有意为之（保持数据语义）。新增 test_bool_load_mask.py，覆盖 i1/i8 两种指针掩码类型×操作数顺序×两种 arch 的前端验证，以及 4 种尺寸（含非 1024 对齐的 510）的设备端数值回归，测试设计较好。注意 patch 文件 hash 变更是上游同步时的脆弱点。",
+      "tags": [
+        "bugfix",
+        "language",
+        "frontend",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "已新增 test_bool_load_mask.py，覆盖前端（i1 通过验证、i8 报错）与设备端（操作数顺序、多尺寸含部分块）场景。建议补充：AND 结果经其他算子中转后再作 mask 的行为（应保持 int8 且不被隐式转换）、以及 store 的 mask 是否同样需要处理。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_bool_load_mask.py",
+          "third_party/ascend/patch/triton-ascend-3.6.0.patch"
+        ]
+      },
+      "message": "[ascend](fix) Fix bool AND results used as load masks (#3153)\n\nBool loads retain byte-valued tensors on Ascend, but combining them with\na boundary condition loses their boolean provenance. Passing that AND\nresult to tl.load then fails TTIR verification because its mask is i8.\n\nTrack known boolean AND results with a dedicated marker and convert them\nto i1 only when consumed as load masks. Preserve their existing data\noperations and reject ordinary int8 masks. Add frontend and device\nregressions for operand order, dtype preservation and partial blocks.\n\nSigned-off-by: lichangdongtw <68023558+lichangdongtw@users.noreply.github.com>"
+    },
+    {
+      "sha": "3490564de47a0bfc40bc3fe0dff42d35504ed439",
+      "comment": "修复 PackMemref 在 CustomOpAnalysis::get 失败时完全不处理 core type 的问题。将返回类型由 FailureOr<CustomOpAnalysis> 改为 std::variant<CustomOpAnalysis, CoreType>：当 collectBuffers 失败时返回已确定的 coreType；packCustomOpUnit 用 makeVisitor 分派，前者在 customOp 本身上打 core type，后者在成功 packScopeOp 后打在 scopeOp 上（pack 失败时回退到 customOp）。这样即便 buffer 分析失败也至少给 op 标注 core type，避免下游 OpClassifier 误判。设计上利用 variant 表达“可分析/仅知 core type”两种结果，是合理的小重构；风险在于若 coreType 为 UNDETERMINED 仍不标注（与原来一致），行为对既有路径基本等价。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "DynamicCVPipeline",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "属于失败路径的健壮性增强，现有 lit 测试主要覆盖成功路径；建议增加一个使 collectBuffers 失败的 custom op 用例，验证 op 上被标注 core_type 且后续分类正确。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/StandardizeOp/（PackMemref 相关）"
+        ]
+      },
+      "message": "[ssbuffer](fix) at least mark the coretype when failed to analyze customOp... (#3152)"
+    },
+    {
+      "sha": "aa689fe3fe2b4a44396ff8ea5c2f30b5e5b996b0",
+      "comment": "为 dot_scaled 的 FP8/FP4 native MatMulMx 路径增加显式 K 维度校验：引入 nativeMxKAlignment=64（FP8 为 64 元素、FP4 为 64 packed bytes，即一个 E8M0 scale block 组），在 useNativeMx 时静态检查 lhsK==rhsK 且 lhsK % 64 == 0，否则 emitError 给出清晰报错（此前会在更下游以难以理解的 hfusion TruncFOp 崩溃形式失败）。同时修正 dot_scaled_optional_rhs.mlir 中 fp8_missing_rhs 用例，原用例 K=32 不满足新对齐要求，改为 K=64、scale 形状 16x2/64x2 以继续走 native 路径。新增 test_fp8_error_input_only，用多种非法 shape 验证触发 MatMulMx 报错或可接受的 hfusion 崩溃。改进方向正确（错误信息前置），但要注意 nativeMxKAlignment 同时用于 FP4/FP8 是否在语义上都稳妥（FP4 K 以 packed byte 计、FP8 以元素计，数值上恰好都是 64，属于巧合性一致，如未来硬件参数变化需拆开）。测试中将 hfusion_crash 也视作 PASS，掩盖了一部分错误信息质量目标。",
+      "tags": [
+        "bugfix",
+        "TritonToLinalg",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "已修改 dot_scaled_optional_rhs.mlir 以适配新约束，并新增 test_fp8_error_input_only 覆盖多种非法 shape。建议补充：仅 lhsK != rhsK 的报错分支（与 K%64 分支区分）、动态 K（ShapedType::isDynamic）跳过校验的路径。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/dot_scaled_optional_rhs.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_dot_scaled_fp4_fp8.py"
+        ]
+      },
+      "message": "[DotScaled](fix) Add error info on dotScaled fp8 case (#3173)"
+    },
+    {
+      "sha": "4965c9c26a6d8907ba72d2d3505bef47b9360f00",
+      "comment": "将 libdevice gamma 的硬件实现路径条件从 A5/A3 扩展到 A6（_is_a6_target），使 fp32 gamma 在 A6 上使用 __hmf_tgamma_fp32 硬件函数而非回退实现；同时更新 libdevice.9201.bc 二进制。改动极小（2 行），但依赖 A6 硬件确实提供 tgamma 实现且语义与 fp32 的浮点结果一致；libdevice.9201.bc 是二进制更新，diff 不可见，无法审阅其内容，建议通过设备端数值对比测试看护。",
+      "tags": [
+        "bugfix",
+        "language",
+        "libdevice",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "libdevice 二进制更新与 A6 gamma 分支变更缺少显式测试；建议在 pytest_ut 中增加 A6 目标下 tl.math.gamma 的数值对比用例（含负值/边界），以及 asin 的 A6 路径（commit 消息提到 fix asin）。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/（libdevice 数值测试）",
+          "third_party/ascend/language/cann/libdevice.py"
+        ]
+      },
+      "message": "[Libdevice](fix) Fix asin/gamma (#3202)\n\n* fix libdevice A6 asin\n\n* add libdevice A6 gamma\n\n---------\n\nCo-authored-by: lijiarong <lijiarong17@huawei.com>"
+    },
+    {
+      "sha": "2f0cda5a6bc5ac17b3b079073db45c59ba9f7855",
+      "comment": "Proton 相关的一轮修正：(1) 将 proton_patch.patch 中 mspti_instrumentation.py 的 C API 符号名从 msptiInstrumentation* 统一为 msptiPerfMonitor*，以对齐 MSPTI 实际 PerfMonitor 接口（修复后续 6c5bb75 之前的调用错误）。(2) 在 ascend_ir.cc 新增 get_kernel_profile_metadata 绑定，从带 global_kernel 属性的 func 中读取 profile_scratch_size/align/num_units/sections_per_block/sample_every_n 五个属性并返回 dict。(3) compiler.py 新增 _export_profile_metadata，在 tla_to_ttadapter 与 ttir_to_linalg 中统一导出 metadata（instrumentation 开启时才从 IR 读取，否则置 0/1），替代此前用正则从 ttadapter 文本中抓取属性、以及 _parse_linalg_metadata 中硬编码 0/1 的做法。这是将 profiling scratch 元数据来源从“文本正则”迁移到“C++ 绑定读取 IR 属性”，更可靠且支持 TLA 路径，属于 metadata 契约的实现方式变更：需确认下游 launcher/cache 依赖的键名与语义不变（均沿用既有键名）。测试补充 profile_scratch_align 断言（0 时 align=1，instrumentation 开启时 >=64）。整体风险中等偏低，但作为 metadata 导出路径的重构，若绑定与 IR 属性名不一致会导致 scratch 元数据静默为 0。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "proton",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "已更新 test_ascend_instrumentation_a5.py（新增 align 断言）与 test_ascend_proton_backends.py（off/on/off 三态下 scratch size/align 断言）。建议补充：get_kernel_profile_metadata 在无 global_kernel func 或属性缺失时返回空的单测，以及 TLA 前端路径下 scratch 元数据导出的断言。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/proton_ut/test_ascend_instrumentation_a5.py",
+          "third_party/ascend/unittest/proton_ut/test_ascend_proton_backends.py",
+          "third_party/ascend/unittest/tla_ut/"
+        ]
+      },
+      "message": "[Proton](fix) align Mspti APIs and preserve profiling scratch metadata (#3111)\n\n* [Proton](fix) align A5 collector with MSPTI PerfMonitor APIs\n\n* [Proton](fix) preserve TTAdapter profiling scratch metadata\n\n* [Proton](refactor) export scratch size and alignment explicitly\n\n* [Proton](refactor) keep scratch lookup inside the export helper\n\n* [Proton](revert) restore the original scratch metadata export"
+    }
+  ],
+  "architecture_based_on_sha": "ee15e295649ccf85b4e4b78316c736d00365c1a5",
+  "architecture_generated_at": "2026-11-15T21:06:50.427270+08:00"
+}

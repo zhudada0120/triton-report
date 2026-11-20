@@ -1,10 +1,15 @@
 {
-  "content_hash": "e436f617d1e4de7e",
+  "content_hash": "bed572d6f4fdecc8",
   "analysis": {
-    "interface_summary": "定义 2 个类；定义 132 个函数",
+    "interface_summary": "定义 6 个类；定义 151 个函数",
     "key_interfaces": [
+      "_PreloadClass",
+      "_PreloadAggregate",
       "MockThreadPool",
       "DictRemoteCacheBackend",
+      "Nested",
+      "Local",
+      "_PreloadClass.__init__",
       "MockThreadPool.__init__",
       "MockThreadPool.submit",
       "MockThreadPool.run_one",
@@ -12,8 +17,9 @@
       "MockThreadPool.shutdown",
       "DictRemoteCacheBackend.__init__",
       "DictRemoteCacheBackend.get",
-      "DictRemoteCacheBackend.put"
+      "DictRemoteCacheBackend.put",
+      "Nested.__init__"
     ]
   },
-  "cached_at": "2026-10-23T04:55:57.397121+08:00"
+  "cached_at": "2026-11-20T07:59:05.904618+08:00"
 }

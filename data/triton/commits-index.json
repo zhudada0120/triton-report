@@ -1,4 +1,56 @@
 {
+  "1d3df3d403ae133edd01d45d1719ae0a09ce133f": {
+    "date": "2026-11-19",
+    "msg": "[ConSan] Publish waiting flags before checking for deadlock (#12824)"
+  },
+  "458c1a257c026a24c6aa7937f75f186e9bdf8353": {
+    "date": "2026-11-19",
+    "msg": "[BACKEND] Use llvm::stable_sort in AllocateWarpGroups (#12826)"
+  },
+  "22459e3dbcef2b403aab7ff2a3981309a3537e39": {
+    "date": "2026-11-19",
+    "msg": "[GPU] Preserve accumulator resets observed after loops (#12798)"
+  },
+  "cd16072f075f9898bebc90f4d6807ae291155cf2": {
+    "date": "2026-11-19",
+    "msg": "[NVIDIA] Synchronize two-CTA MMA completion-barrier reuse when there's no tma load (#12760)"
+  },
+  "5ceff0f3529b30dabee60e64ba43cab9937071fe": {
+    "date": "2026-11-19",
+    "msg": "[GSan] Decode high bits of tensor descriptor strides (#12808)"
+  },
+  "bc33ace0b53f735a796dd3bc2f0e2ba19c9da6c7": {
+    "date": "2026-11-19",
+    "msg": "[BUILD] Reduce Triton build time on macos CI (#12816)"
+  },
+  "4256cd01d38dd541516ae6510838f46e89e7fa03": {
+    "date": "2026-11-19",
+    "msg": "Meetup notes for Triton Community Meetup (2026-11-18) (#12831)"
+  },
+  "359c5be728f73c4cbdf51d71e516f6502f8e29a8": {
+    "date": "2026-11-19",
+    "msg": "[Gluon] Expose cp.async.bulk (non-TMA) (#12806)"
+  },
+  "f812fa8e91597506d4baf5b594f11fe858bab342": {
+    "date": "2026-11-19",
+    "msg": "[GSan] Drop the byte-pool import capacity test (#12805)"
+  },
+  "e765124bedffe7191e054a8dbf54a15e48bb1d47": {
+    "date": "2026-11-19",
+    "msg": "[ConSan] Specialize shadow locks for single-CTA programs (#12796)"
+  },
+  "c4895fe25050e3e3fa110ad00392e4e17684bc78": {
+    "date": "2026-11-19",
+    "msg": "[Runtime] Coalesce concurrent compilation of the same file cache group (#12795)"
+  },
+  "ffb0a7e78d160536912ae2027c6e9cbf0c46b080": {
+    "date": "2026-11-19",
+    "msg": "[Hopper] Add a regression test for the RS WGMMA invalid code motion issue (#12822)"
+  },
+  "60d8a4b9d53a2bcfd08ce410cf9b18336d0944c8": {
+    "date": "2026-11-19",
+    "msg": "Revert \"[Pipeliner] Use one loop-carried cursor per async load ring\" (#12830)"
+  },
   "441eb1c63bc4c4e58975019a20b5bc61cd54d978": {
     "date": "2026-11-18",
     "msg": "[AMD] Drop the workaround for swizzle reorder (#12810)"

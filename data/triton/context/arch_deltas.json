@@ -37,6 +37,30 @@
       "interface_changes": "修复 fp16/bf16 常量双重舍入（#12242）：python/src/ir.cc 的 get_bf16 与 get_fp16 由接受 float 改为接受 double，get_fp16 从 getF16FloatAttr(v) 改为 getFloatAttr(f16, v)，使 Python float 直接一次性舍入到目标 16 位类型而非先经 fp32（例如 1 + 2^-11 + 2^-30 此前在 fp16 下错误地舍入为 1.0）。interpreter 的 get_bf16 从 get_fp32 改为 get_fp64 再截断，保持一致。新增前端 FileCheck 测试与解释器位模式测试。属于 [BC Breaking] 的语义修正：常量数值可能变化，且绑定签名变化。风险在于依赖旧舍入结果的既有 kernel 数值会有微小差异（这是修正方向），以及任何以 float 形参调用这些绑定方法的 C++/绑定层调用方。",
       "change_summary": "[FRONTEND][BC Breaking] Round fp16 and bf16 constants once (#12778)",
       "ascend_impact": false
+    },
+    "bc33ace0b53f735a796dd3bc2f0e2ba19c9da6c7": {
+      "date": "2026-11-19",
+      "affected_modules": [
+        "include/triton/Dialect/Triton/"
+      ],
+      "affected_interfaces": [
+        "include/triton/Dialect/Triton/"
+      ],
+      "interface_changes": "macOS CI 构建时间优化（60min→40min）：将 triton-opt/triton-reduce/triton-lsp/triton-tensor-layout 共用的方言/pass 注册编译为单个 OBJECT 库 TritonToolRegistration 复用；裁掉传递 include（用具体 pass header 替代 mlir/Conversion/Passes.h，用 LLVMTypes.h 替代 LLVMDialect.h，将 slice-analysis 与 backend dialect 头文件移到调用方）；把 NVIDIA MMA descriptor 辅助、通用分析辅助、AMD barrier 构造等从 header/binding 移到 .cpp 编译。涉及大量文件（63 个），包括 include/triton/Analysis/Utility.h（isZeroFillConst 从 inline 改为声明、ReduceOpHelper 构造移到 .cpp）、include/triton/Conversion/MLIRTypes.h、Targ",
+      "change_summary": "[BUILD] Reduce Triton build time on macos CI (#12816)",
+      "ascend_impact": false
+    },
+    "c4895fe25050e3e3fa110ad00392e4e17684bc78": {
+      "date": "2026-11-19",
+      "affected_modules": [
+        "ascend_affected"
+      ],
+      "affected_interfaces": [
+        "ascend_affected"
+      ],
+      "interface_changes": "运行时缓存并发编译合并：在 FileCacheManager 上新增 _lock_compile（基于 (cache_dir, filename) 的弱引用锁表 + 线程本地重入标记以避免嵌套编译死锁），compile() 改为 _compile() 包装并在 metadata 未命中且非 always_compile、非 override/dump、无 add_stages_inspection_hook 时进入该锁，锁内重查 group，命中即提前关闭 build_stack 返回；发布后再 build_stack.close()。新增三个并发/嵌套测试。这对 JIT 缓存命中路径是语义相关变更（重启后含 lock 获取），且 compiler.py 是 triton-ascend 3.6.0 patch 修改过的文件，patch 需重新对齐。风险中等。",
+      "change_summary": "[Runtime] Coalesce concurrent compilation of the same file cache group (#12795)",
+      "ascend_impact": true
     }
   }
 }

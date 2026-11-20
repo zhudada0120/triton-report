@@ -1,4 +1,56 @@
 {
+  "6c5bb75ac8a8161a8d7cd4fbdc9db41ded3e0c57": {
+    "date": "2026-11-19",
+    "msg": "[Proton](feat) collect A5 intra-kernel scope records without MSPTI (#3229)"
+  },
+  "0934f6dc693ce557011e0a0cbb9bfaae098150a0": {
+    "date": "2026-11-19",
+    "msg": "[DynamicCVPipeline](fix) Avoid spurious CustomOp memory dependencies (#3255)"
+  },
+  "70cf831e3dd663a709a034b6086006a3cd2f76ff": {
+    "date": "2026-11-19",
+    "msg": "[ssbuffer](fix) fixpr3228 (#3271)"
+  },
+  "f9ea1e686a4ddbc5528a5f28bee8ebbf415fb292": {
+    "date": "2026-11-19",
+    "msg": "[ssbuffer](fix) Handle memref effects in I1 producer sinking (#3228)"
+  },
+  "deac90c5cb0076d61efc0d3e3d2890bc4dcaf423": {
+    "date": "2026-11-19",
+    "msg": "[compiler](feat) Accept the block_batching_factor option (#3254)"
+  },
+  "4dcf0f84f4e6e896049bc639fc8b84b95b6d6caa": {
+    "date": "2026-11-19",
+    "msg": "[Build](fix) Restore cache.py before reapplying Ascend patch (#3225)"
+  },
+  "474778c855752811c1b29896a58b597eee2bff46": {
+    "date": "2026-11-19",
+    "msg": "[ssbuffer](fix) Scalarize FIXPIPE scales before block planning (#3281)"
+  },
+  "6a41252a14bcf8bb71eed30634d5cdf4207e4645": {
+    "date": "2026-11-19",
+    "msg": "[DynamicCVPipeline](feat) support C8V16 NZ softmax (#3215)"
+  },
+  "64656266a1ce9bb8c7d7f6c48a90f4e896eee3cf": {
+    "date": "2026-11-19",
+    "msg": "[ascend](fix) Fix bool AND results used as load masks (#3153)"
+  },
+  "3490564de47a0bfc40bc3fe0dff42d35504ed439": {
+    "date": "2026-11-19",
+    "msg": "[ssbuffer](fix) at least mark the coretype when failed to analyze customOp... (#3152)"
+  },
+  "aa689fe3fe2b4a44396ff8ea5c2f30b5e5b996b0": {
+    "date": "2026-11-19",
+    "msg": "[DotScaled](fix) Add error info on dotScaled fp8 case (#3173)"
+  },
+  "4965c9c26a6d8907ba72d2d3505bef47b9360f00": {
+    "date": "2026-11-19",
+    "msg": "[Libdevice](fix) Fix asin/gamma (#3202)"
+  },
+  "2f0cda5a6bc5ac17b3b079073db45c59ba9f7855": {
+    "date": "2026-11-19",
+    "msg": "[Proton](fix) align Mspti APIs and preserve profiling scratch metadata (#3111)"
+  },
   "f199751866ba4c1a2369b8ed640ca3b59f412fd6": {
     "date": "2026-11-18",
     "msg": "[docs](fix) delete the duplicate desc of logical_and and logical_or (#3235)"
