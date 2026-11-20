@@ -1,0 +1,217 @@
+{
+  "date": "2026-11-20",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-11-21T07:28:52.606111+08:00",
+  "daily_summary": "当日变更集中在 Ascend 的 DynamicCVPipeline（ssbuffer）与 TLA 前端两条主线：DynamicCVPipeline 侧把 per-block 的 flag 链门控整体删除（改为各 block 仅依赖自身 counter/handshake 条件），新增 ProtectTcbReuse 系列 pass 在 VF 计算与输出 store 之后插入 VECTOR->FIX handshake 以保护 TCB 复用，并将 block 重排从 program order 改为拓扑序、UB usage opt 增加 core-type 过滤、isTensorComputeOp 下沉到 Common/Utils 并扩展 fill 消除判定；TLA 侧则是较大规模的功能扩展与 API 收敛：新增 tla.pipeline 分阶段流水线 + experimental 装饰器、tla.jit 改走专属 _TLABackend（npuir_extra_options 透传、sync 选项自动推断）、新增 cube.mmad_l0 前端与 builder 绑定、GM/UB DMA API 对齐 A5（L2CachePolicy 取代 EvictionPolicy、去掉 padding 与 StoreUB2GMParams）、view/subview 角色拆分并支持动态维度、copy 分发器与 alloc_buffer/versions 被移除、scalar API 增加 SIMD VF 与 fp64 narrowing 约束。CI 侧同步更新 bisheng 包格式（.run/.tar.gz）与 1113 版本 pin，并将 AscendNPU-IR submodule 推进到 e02c692a6 以修复 VFTruncF/VFExtF 的 vcvt mode 参数。整体是围绕 A5 regbase 动态 CV 流水线正确性/性能与 TLA 可用性的一次密集迭代，接口面变化较大，多处为不兼容 API 变更。",
+  "test_impact_summary": "当日变更对测试看护影响显著：DynamicCVPipeline 删除了 flag 链语义，多个 AddControlFlowCondition/ComputeBlockOpt 的 FileCheck 用例必须重写期望（本次 commit 已同步更新），同时新增 ProtectTcbReuse、merge_small_block、core-type 隔离、UBUsageOpt block_id 等新 lit 用例，测试面从“语义等价”转向“拓扑序 + TCB 保护 + core type 不变式”，看护点更细但也更脆弱（CHECK 顺序敏感）。TLA 侧变更最大：tla.view 不再接受 buffer、tla.copy/alloc_buffer/versions/StoreUB2GMParams/EvictionPolicy 被移除，所有 tla_ut 调用点已批量迁移，若遗漏将直接编译失败；新增 tla.pipeline、mmad_l0、experimental、npuir_extra_options 等新能力需要 IR/compile/run 三段测试，本次已补充大量用例，但部分（如 view_dynamic run、pipeline run、MMAD L0 run）依赖真实 A5 设备，CI 无 NPU 时仅覆盖 IR 阶段，run 阶段看护存在缺口。mmad_l0_sync 通过 npuir_extra_options 替代 subprocess patch 是测试基础设施的改进，但两份 mmad_l0_sync 文件并存且行为不同，需留意重复/漂移。整体建议：对 TLA 公共 API 增加前端契约级单测以锁住签名，对 DynamicCVPipeline 的 FileCheck 用例避免过度依赖指令顺序，并补充无 NPU 环境下 pipeline/MMAD L0 的 CLI 参数构造测试（已有 test_jit.py 覆盖部分）。",
+  "commits": [
+    {
+      "sha": "afc683eb80e60e05aa88e792a85e40706a274328",
+      "comment": "在 DynamicCVPipeline/AnalyzeDataFlow/AnalyzeName.cpp 的拦截函数白名单中追加 flash_varlen_fwd_kernel。该白名单用于 verifyFuncNames 判定哪些 kernel 走 DynamicCVPipeline 的拦截/改写路径，属于按 kernel 名硬编码的兼容开关。改动极小（1 行），意图明确：让 flash_varlen_fwd_kernel 参与到该分析流程中，修复此前该 kernel 未被识别导致的 pipeline 问题。风险在于白名单机制本身是字符串匹配、易随 kernel 重命名而失效，且只影响该 kernel 的处理路径，不会波及其他模块。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅向 kernel 名白名单追加一项，不改变 pass 逻辑或其他 kernel 行为，现有 DynamicCVPipeline 测试用例无需调整；该 kernel 的端到端正确性依赖 pytest_ut 中对应算子用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AnalyzeDataFlow"
+        ]
+      },
+      "message": "[ssbuffer](fix) fix flash_varlen_fwd_kernel"
+    },
+    {
+      "sha": "7b27a03d925b1500e250726b6d083831c7ab5a11",
+      "comment": "在 AddControlFlowCondition.cpp 的 legacyKernel 列表中加入 fwd_kernel，使其不走 normal preload scheme 的控制流条件重写，以修复前向性能回退。该 commit 与后续 3be450e2 对同一列表的清理方向相反（后者移除了 fwd_kernel 等条目），说明此处是一次临时性的按 kernel 关闭优化。风险较低但存在语义耦合：legacyKernel 是字符串白名单，kernel 命名变化会静默失效；且该改动与后续 commit 在同一文件同一列表上叠加，需关注合并后最终白名单是否与预期一致。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "low-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "只改 legacyKernel 白名单，不改变 pass 的生成逻辑，pattern-kernel-conditions 等 FileCheck 用例的期望不依赖 fwd_kernel 是否在该列表中；但若后续有 fwd_kernel 的专属用例，需确认其期望与最终白名单一致。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AddControlFlowCondition"
+        ]
+      },
+      "message": "[ssbuffer](fix) fix fwd perf regression"
+    },
+    {
+      "sha": "3be450e2b1b74601746778a34c14e6d3a29c12fe",
+      "comment": "移除 UpdateConditionInfo 中“每轮最多一个 compute block 执行”的 flag 链机制：UpdateConditionInfo.h 删去 combineConditions 的 blockFlag/isLastBlock/isFirstBlock/isPureScalar 参数，.cpp 删除 flag 常量、cumulative select、chainIdx 计算及相关逻辑，AddControlFlowCondition 的 legacyKernel 收敛为仅 _sdpa_infer_kernel，并同步大幅删减 5 个 lit 测试的 CHECK 行以匹配新 IR（不再有 arith.select/arith.cmpi eq 的 flag 门控）。这是为了让 scf.while 中支持多次执行（multi exec in while），从“每 iteration 至多一个 block”改为各 block 仅依赖自身 counter/handshake 条件。语义上放宽了互斥保证，正确性依赖 ssbuffer 的 counter/handshake 本身，需确认对纯标量 block 与跨核心依赖的影响；测试改动虽同步，但 CHECK 顺序敏感度提高。",
+      "tags": [
+        "feature",
+        "refactor",
+        "medium-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "pass 输出的 IR 结构发生实质变化（删除 flag constant/select/cmpi），AddControlFlowCondition 下 5 个 lit 用例已同步改写；后续若恢复或调整多执行语义，测试需再次对齐，且现有用例对 CHECK 顺序较敏感。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AddControlFlowCondition/*.mlir",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut"
+        ]
+      },
+      "message": "[ssbuffer](fix) [ssbuffer](fix) enable multi exec in while (#3232)\n\nStage3-Profile: b8b8e96550e073ffb0ab017b9c98e7bf0131f9bc585b41a33ae047f334c61c7e\n\nStage3-Original: 3cc90469286ae63704df845317180478354264e4\nStage3-Main: 6c5bb75ac8a8161a8d7cd4fbdc9db41ded3e0c57"
+    },
+    {
+      "sha": "f0b62cff29b2dc2e058936303c248f3854f084b3",
+      "comment": "本次为 DynamicCVPipeline 的大规模重构与保护性修复（41 文件，+2535/-301）。要点：(1) 新增 ProtectTcbReuse pass 及 VF/ST 两个子 pass，通过 collectProtectionPlans 在 VECTOR/CUBE main loop 前插入 hivm.hir.sync_block_set/wait（PIPE_V/PIPE_MTE3 -> PIPE_FIX）保护 TCB 复用，并在 ProtectTcbReuse.cpp 中组合；策略要求 outer loop 恰有 2 个 main loop pair、所有 flag 资源可静态分配，否则跳过（skip 而非失败）。(2) UBUsageOptPass 在 collectRecordChange 中过滤非 VECTOR_ONLY 依赖，修复 CUBE op 被拖入 VECTOR block 导致 block_id/core_type 混用。(3) MergeSmallBlockPass 用 BlockDependencyGraph 拓扑序替换 program order，检测到环时 setFallbackAttr；同时调用上移到 Common/Utils 的 isTensorComputeOp（并新增 fill 可被 InlineBrc 消除的判定与 pcb10_tc01_kernel legacy 分支）。(4) MergeCubeBlock/MergeComputeBlock 删除 kMergeComputeBlockApplied 标记与 mergedAny 跟踪，ReorderOpsByBlockId 不再据此跳过，改为 always 重排且引入“首个 CUBE 组运行前优先小 VECTOR 组”的排序策略。(5) PlanVectorBlock 的 isTensorOperation 改为 walk 嵌套区域，并新增 hasEarlierCubeUser 避免不必要的 deferred。(6) SplittedIfWrapSsbufIf 跳过 scf.while。(7) 删除 InterCoreTransferAndSync 的 hasStartEndSyncWhitelistKernel、Utils.cpp 的 outline 黑名单被 return false 短路（注释保留）。风险点：插入的 handshake 若 flag 资源不足会静默跳过（仅日志），correctness 依赖 npuir 自身；拓扑序在含环时会 fallback 整个 pipeline；黑名单被短路意味着 outline reuse 对所有 kernel 开放，需注意回归。",
+      "tags": [
+        "feature",
+        "refactor",
+        "bugfix",
+        "medium-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 ProtectTcbReuse 三个 pass 及 8 个 lit 用例（combined/cloned-bounds/main-loop-count/store-tail-count/vf-matching/vf-shared-tensor-compute/marked-main-loops-without-fix），新增 merge_small_block、merge_small_block_region_core_type、ub_usage_opt_block_id_core_type、plan_vector_block_region_tensor、test_view_memory_effects；同时 merge_cube_block_multiple_loops、test_plan_compute_block_shared_load_scope/subview_memory_deps、splitted-if-wrap 用例期望被改写。新增矩阵较大，需看护 pass 顺序（ProtectTcbReuse 插在 AnalyzeDataFlow 之后、AllocMultiCache 之前）。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ProtectTcbReuse/",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/PlanComputeBlock/",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AddControlFlowCondition/splitted-if-wrap-*.mlir"
+        ]
+      },
+      "message": "[ssbuffer](feat) Refactor && Protect tcb reuse in some scenario (#3261)\n\n* [ssbuffer](fix) UB usage opt must not move CUBE ops into a VECTOR block\n\ncollectRecordChange pulls every transitive dependency of the chain nodes\ninto the target block. For a chain node that depends on a CUBE op, that\nCUBE op was picked up too and had its ssbuffer.block_id rewritten from the\ncube block to the VECTOR optBlockId, breaking the CUBE/VECTOR split that\nlater passes rely on. On a kernel with a matmul feeding VECTOR arithmetic,\nthe matmul ended up tagged with a VECTOR block_id.\n\nGate the dependency move on a pure VECTOR_ONLY core type. Read it through\ngetCoreTypeOfSimpleOpOrCf rather than the graph snapshot, because control\nflow ops carry a per-operand comma list (\"CUBE, CUBE, ...\") on their\nattribute while their real core type comes from aggregating the ops inside\ntheir region.\n\n* [ssbuffer](fix) topologically sort block\n\n* init\n\n* unify\n\n* [ssbuffer](fix) Protect tcb reuse in some scenario\n\n* [ssbuffer](fix) Better reorder and loop-carried value planning.\n\n* [ssbuffer](fix) Small VECTOR block without CUBE should come first\n\n* [ssbuffer](fix) while/if keep ssbuffer is outter than mne\n\n---------\n\nCo-authored-by: suzuko <linzirui1@huawei.com>\nCo-authored-by: lichengfeng497 <1309837013@qq.com>\nCo-authored-by: kcanamgal <732270473@qq.com>\nCo-authored-by: shaoyiyang <shaoyiyang1@huawei.com>\n\nStage3-Profile: b8b8e96550e073ffb0ab017b9c98e7bf0131f9bc585b41a33ae047f334c61c7e\n\nStage3-Original: 5e85df6f5af1681739792a1b3d1cbcae7ef29dff\nStage3-Main: 6c5bb75ac8a8161a8d7cd4fbdc9db41ded3e0c57"
+    },
+    {
+      "sha": "531e954c8ca36fe2639d828fe31238456c20461b",
+      "comment": "TLA 语言扩展的一次成体系功能提交，可拆为五条主线：（1）实验性 API 治理：新增 tla/_decorator.py 的 experimental 装饰器，在 kernel 编译的调用点用 warnings.warn_explicit 发出 UserWarning，并通过包装 __signature__ 注入 _generator 关键字以获取 CodeGenerator 的源码位置，用于提示 TLA 实验性接口；（2）声明式流水线：新增 tla.pipeline(num_iters)（scope.py 中 @experimental @builtin），在 code_generator.py 中以 TLACodeGenerator 重写 _visit_pipeline 生成 create_tla_pipeline（scf.for + hivm.cv_pipelined_loop 属性），并在每个 stage 生成 create_tla_stage 与 hivm.preload_num/max_preload_num 标记，同时校验 stage 非递减、禁止嵌套/break/continue/return/loop-carried、禁止在 scope 或 while 中嵌套；（3）编译选项透传：新增 tla/_options.py 的 npuir_extra_options 校验与归一化，_backend.py 中以 FunctionType 重新绑定 ascend.subprocess.run/shlex.join 的 shim 在 bishengir-compile 的 -o 之前插入额外 argv，且要求 argv[0] 必须是 bishengir-compile；（4）同步策略推断：C++ 侧 tla_builder.cc 新增 get_tla_kernel_features 扫描 hivm set/wait/barrier/getbuf/rlsbuf（intra）、sync_block_*（cross）、annotation multi_buffer、cv_pipelined_loop、UnitFlag 接口，Python 侧 infer_sync_options 据此校验“手写同步 vs 自动注入同步”的互斥关系，并对 tla.pipeline 情形禁止任何手写同步/多 buffer/disable 标志；（5）缓存与 JIT 路径：jit.py 移除原有 TLASTSource.parse_options 返回 _frontend_kind 的注入，改为 hash() 加 'tla:' 前缀（隔离 TLA 与非 TLA 缓存），create_binder 用 make_backend 构造 TLA backend 的 binder，_pack_args 与 run 中剥离/归一化 npuir_extra_options，_TLABackend 关闭 get_jit_reuse_handler 并覆写 add_stages 注入 ttadapter 与自定义 npubin stage。C++ 侧另有 create_tla_stage（把多个 task scope 合并为单一 scope.scope）、create_tla_pipeline 返回值由 pair 改为 tuple 并多返回 can_preload（batch=1 时不 preload）、GM view 的 make_tensor_ptr 在形性/stride 动态时打 tla.gm_view 属性，TLAToLinalgPass.cpp 新增 TLAMakeTensorPtrConverter 将带 tla.gm_view 的 make_tensor_ptr 转为 memref.reinterpret_cast（要求 offsets 全为 0、复用基底指针、保留负偏移），以正确支持动态 GM view。潜在风险：缓存键由 ASTSource.hash 加前缀，会改变 TLA kernel 的磁盘缓存命中行为；infer_sync_options 的互斥规则较严格，可能误拒用户合法的组合（如 tla.pipeline 内一切手写同步都报错）；_compile_binary 通过替换 ascend.subprocess/shlex 实现 argv 注入，依赖 stage 中以关键字调用 ascend.subprocess.run/shlex.join 的实现细节，若上游改动调用方式会失效；experimental 装饰器依赖 Trition CodeGenerator 传 _generator 的内部约定；create_tla_pipeline 的 can_preload 仅依据 stop 是否为常量 IntOp 判断，动态 stop 恒为 True。整体是 TLA 从“脚本式 scope”向“可调度流水线 DSL”的能力升级，属于实验性 API 的引入，符合提交中对 experimental 的标注预期。",
+      "tags": [
+        "feature",
+        "refactor",
+        "medium-risk",
+        "tla-frontend",
+        "code-generator",
+        "triton-to-linalg",
+        "compiler-options"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "提交本身新增/修改了大量测试，且行为变更需要看护：新增 test_jit.py 覆盖 npuir_extra_options 的缓存键、argv 注入、并发编译、launch 与 preload、参数校验、被同名 kernel 参数遮蔽、同步选项推断、unit flag 特征、同步所有权冲突、多 buffer 约束与 pipeline 选项；新增 test_experimental.py 覆盖告警位置与过滤；新增 scope/pipeline.py 覆盖 pipeline 的 IR/非法用法/编译/运行；mmad_l0_sync.py 被重写为使用启动参数而非 subprocess 代理，view_dynamic.py 因动态 GM view 解禁并更新断言；blacklist.py 移除 view_dynamic、test_dsa.py 取消 skip。这些测试是对新行为的直接看护，需纳入 CI 并在 A5 与 A2/A3 两类 target 上执行。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/test_jit.py",
+          "third_party/ascend/unittest/tla_ut/decorators/test_experimental.py",
+          "third_party/ascend/unittest/tla_ut/scope/pipeline.py",
+          "third_party/ascend/unittest/tla_ut/cube/mmad_l0_sync.py",
+          "third_party/ascend/unittest/tla_ut/vector/view_dynamic.py",
+          "third_party/ascend/unittest/tla_ut/kernels/dsa/test_dsa.py",
+          "third_party/ascend/unittest/tla_ut/blacklist.py"
+        ]
+      },
+      "message": "[TLA](feat) Infer sync options and improve gm view adapter (#3285)\n\n* [TLA](fix) Lower dynamic GM views in the TLA adapter\n\nSigned-off-by: liupengcheng2012 <liupengcheng38@huawei.com>\n\n* [TLA](feat) Warn on experimental API calls\n\nSigned-off-by: liupengcheng2012 <liupengcheng38@huawei.com>\n\n* [TLA](test) Re-enable DSA accuracy tests\n\nSigned-off-by: liupengcheng2012 <liupengcheng38@huawei.com>\n\n* [TLA] Infer NPU-IR compiler options from TLA kernel IR\n\nAssisted-by: AI\nSigned-off-by: liupengcheng2012 <liupengcheng38@huawei.com>\n\n* [TLA] Support experimental staged pipeline loops\n\nAssisted-by: AI\nSigned-off-by: liupengcheng2012 <liupengcheng38@huawei.com>\n\n* [TLA] Exercise MMAD L0 sync through NPU-IR launch options\n\nAssisted-by: AI\nSigned-off-by: liupengcheng2012 <liupengcheng38@huawei.com>\n\n---------\n\nSigned-off-by: liupengcheng2012 <liupengcheng38@huawei.com>\nCo-authored-by: liupengcheng2012 <liupengcheng38@huawei.com>\n\nStage3-Profile: b8b8e96550e073ffb0ab017b9c98e7bf0131f9bc585b41a33ae047f334c61c7e\n\nStage3-Original: 38776660c8798fdc8cd9b7d5809aaa237d0f3ca2\nStage3-Main: 6c5bb75ac8a8161a8d7cd4fbdc9db41ded3e0c57"
+    },
+    {
+      "sha": "dd0eabab5824721b5f086a652b43c2ad3a77310f",
+      "comment": "新增 TLA MMAD L0 前端 API（12 文件，+1503/-25）。cube.py 新增 mmad_l0 builtin：校验 a(l0a, (k//16,m//16,16,16), fp16/bf16, 64KiB, 512B 对齐)、b(l0b, (k//16,n//16,16,16))、acc(l0c, (n//16,m//16,16,16), fp32, 256KiB, 1024B)、bias(bt, (n,), fp32, 4KiB, 64B)，m/n/k 为 [16,2048] 的 16 倍数，a/b dtype 必须一致，clear_accum 支持 bool 或 runtime i1（有 bias 时必须 False），disable_gemv 必须 True，unit_flag_ctrl 仅 None/DISABLED；底层调用 create_hivm_mmadl0。tla_builder.cc 新增 create_hivm_mmadl0 绑定，构造 MmadL0Op 并支持 bias/unit flag。builder.py 注册新方法。CI 侧 ascend-wheels/DynamicCVPipeline-ci/tla-tests/sync-upstream 四个 workflow 统一支持 .run 与 .tar.gz 两种 bisheng 包格式并显式校验 bishengir-compile 存在，cmake/bisheng-version.txt 切到 1113 tar.gz 版本。新增 mmad_l0.py/mmad_l0_frontend_contract.py/mmad_l0_plain_extended.py 三套测试（IR/compile/run，ping-pong slot、动态 clear、subview offset、容量边界、dtype 校验等）。风险：mmad_l0 对物理布局/容量/对齐要求严格，错误信息需与测试匹配；run 阶段依赖 A5 与 CATLASS wrapper，CI 无 NPU 时只覆盖 IR。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "TLA",
+        "ci"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增前端 API 与 builder 绑定，必须新增用例覆盖参数校验、IR 形态与设备精度；本次已加 3 个文件共 900+ 行测试，并改动 tla_test_utils.compile_offline 支持 options 覆盖。CI workflow 的包格式分支也需在 CI 上实际验证。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/cube/mmad_l0.py",
+          "third_party/ascend/unittest/tla_ut/cube/mmad_l0_frontend_contract.py",
+          "third_party/ascend/unittest/tla_ut/cube/mmad_l0_plain_extended.py",
+          "third_party/ascend/unittest/tla_ut/utils/tla_test_utils.py",
+          ".github/workflows/ascend-wheels.yml / tla-tests.yml / DynamicCVPipeline-ci.yml / sync-upstream.yml"
+        ]
+      },
+      "message": "[ascend](feat) Add TLA MMAD L0 API (#2982)\n\nExpose the TLA MMAD L0 frontend API and builder bindings with frontend contract and cube tests.\n\nUpdate CI compiler package handling, pin the NPUIR optional-header fix, and use the 1113 compiler packages.\n\nCo-authored-by: qq_52736072 <qq_52736072@noreply.gitcode.com>\n\nStage3-Profile: b8b8e96550e073ffb0ab017b9c98e7bf0131f9bc585b41a33ae047f334c61c7e\n\nStage3-Original: a6e51bbfdcafdd93e642a004c92a373667ca5d0b\nStage3-Main: 6c5bb75ac8a8161a8d7cd4fbdc9db41ded3e0c57"
+    },
+    {
+      "sha": "3df25e2fbcfc68c66906d14c1c38d317b9a77d35",
+      "comment": "TLA DMA API 对齐 A5（6 文件，+59/-163）。EvictionPolicy 被 L2CachePolicy 取代（NORMAL_FV=EvictFirst、NORMAL_LV=EvictLast，删除 EvictNormal），LoadGM2UBParams 仅保留 l2_cache_ctrl 且 None 解析为 NORMAL_FV；删除全部 padding 配置与 native padding 操作数（create_tla_load 签名简化为 (src,dst,l2_cache_ctrl)），并明确 32 字节对齐填充由 intrinsic 负责。删除 StoreUB2GMParams 与 store_ub_to_gm 的 params 参数（原子性改由独立 set_atomic 控制，需显式 reset）；create_tla_store 签名简化。AtomicKind 收缩为 NONE/ADD/MAX/MIN，删除 AND/OR/XOR/UMAX/UMIN。测试侧 load_store.py 删除 eviction/padding/atomic 用例并改为 l2 cache 用例（断言 eviction_policy = <EvictFirst/EvictLast>），nd2nz/set_atomic 同步迁移。风险：这是破坏性 API 变更（公共名移除），依赖旧名的用户代码会失败；测试中删除的 padding 用例原本是 skip 的，等于承认该能力不支持。",
+      "tags": [
+        "refactor",
+        "bugfix",
+        "medium-risk",
+        "TLA"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "公共 API 名与签名变化（EvictionPolicy->L2CachePolicy、StoreUB2GMParams 删除、store_ub_to_gm 去掉 params、AtomicKind 收缩、load_gm_to_ub 去掉 padding），dma/load_store.py、nd2nz.py、set_atomic.py 已同步改写；任何仍使用旧 API 的用例会直接失败，需全量搜索。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/dma/load_store.py",
+          "third_party/ascend/unittest/tla_ut/dma/nd2nz.py",
+          "third_party/ascend/unittest/tla_ut/dma/set_atomic.py"
+        ]
+      },
+      "message": "[TLA](fix) Align GM/UB DMA APIs with A5 support (#3279)\n\nExpose LoadGM2UBParams.l2_cache_ctrl with L2CachePolicy.NORMAL_FV and\nNORMAL_LV. Resolve omitted or None configuration explicitly to NORMAL_FV.\nKeep existing member names and meanings stable as future L2 modes are added.\nBridge to the existing HIVM EvictFirst/EvictLast attributes; NPUIR retains\nthe hardware-value conversion. Remove the old public names and EvictNormal.\n\nRemove all load_gm_to_ub padding configuration and native padding operands.\nDocument the intrinsic 32-byte alignment fill: Normal mode fills each burst,\nwhile Ascend 950 Compact mode fills the combined region. Callers must reserve\nand synchronize the full physical UB write footprint.\n\nRemove StoreUB2GMParams, the store_ub_to_gm params argument and native\nattribute forwarding. Adapt copy dispatch and DMA callers while preserving\nindependent set_atomic control and explicit reset. Delete unsupported\npadding and per-store atomic test configurations without adding negatives.\n\nValidation: matching wheel passed 5228 frontend/IR tests with 113 stage\nskips and 32 DMA/copy tests on physical NPU0 (load/store 15, ND2NZ 15,\ncopy-only 2). Six direct-load/copy target-compilation and disassembly probes\nconfirmed None/NORMAL_FV/NORMAL_LV cache values 0/0/1; these extra probes\ndid not launch kernels. Cache hit rate and performance were not measured.\n\nCo-authored-by: lbqg <songyaofei2@huawei.com>\n\nStage3-Profile: b8b8e96550e073ffb0ab017b9c98e7bf0131f9bc585b41a33ae047f334c61c7e\n\nStage3-Original: 0227cdebc7940f38cbe67007110a44fe2434ec94\nStage3-Main: 6c5bb75ac8a8161a8d7cd4fbdc9db41ded3e0c57"
+    },
+    {
+      "sha": "cc69e27cec1ffab209fad4a7be58b05699b88f07",
+      "comment": "TLA scalar API 增加两类约束（6 文件，+244/-31）。其一：tla.cast 拒绝 fp64 到更窄浮点（fp16/fp32/fp8 系列）的数值转换（bitcast 与同类型转换保留），通过 _semantic.to_tensor 后再判定，故字面量与 JIT helper 路径同样生效；测试新增 cast 矩阵、rounding 组合、fp64 字面量、helper 链错误。其二：select/abs/maximum/minimum/cast/cdiv/clamp 在 SIMD VF 内被拒绝（max_value/infinity 常量构造除外），新增 scope.py 的 _check_not_in_simd，通过 _TLACallerContext 携带 core/vf mode 并 mangle/initialize_callee 传递到 JIT helper 特化与 callee，scope 退出恢复上下文；scalar_frontend_contract 新增 76+ 条执行域用例（直接/字面量/helper/helper_after_outside_call、控制流、常量例外、scope 退出恢复）。clamp.py 移除了 in_vf 分支。风险：_TLACallerContext 依赖 builder._tla_context 与 code_generator 的 caller_context 机制，若上游 CodeGenerator 的 helper 特化路径变化会影响传递；错误类型为 ValueError 而非 TritonError，测试中做了 cause 链解包。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "low-risk",
+        "TLA"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增执行域与 fp64 narrowing 约束，scalar_frontend_contract.py 已新增大量用例，clamp.py 用例被改写（去掉 in_vf 参数化）；需看护 helper 传参与 scope 恢复路径。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/scalar/scalar_frontend_contract.py",
+          "third_party/ascend/unittest/tla_ut/scalar/clamp.py",
+          "third_party/ascend/unittest/tla_ut/README.md"
+        ]
+      },
+      "message": "[TLA](fix) Add additional constraints (#3149)\n\n* [TLA](fix) Enforce explicit resources for scalar conversions\n\nReject numeric fp64 conversions to narrower floating-point types in the\nPython tla.cast frontend, including literal inputs and calls through JIT\nhelpers. Keep same-type casts and legal bitcasts, and retain the existing\nBF16 source and destination restrictions at the scalar API boundary.\n\nCover the scalar type matrix, floating formats, rounding modes, FP64\nliterals and helper diagnostics without changing other TLA interfaces or\nthe shared adapter pipeline.\n\nValidation: local scalar frontend checks passed in an isolated runtime\nusing an existing native build and compatible builder bindings. Python\nsyntax and git diff whitespace checks passed. No wheel rebuild, target\ncompilation or device execution was performed.\n\nAssisted-by: AI\nSigned-off-by: lbqg <songyaofei2@huawei.com>\n\n* [TLA](fix) Reject scalar operations inside SIMD VFs\n\nReject select, abs, maximum, minimum, cast, cdiv and clamp inside SIMD\nVFs, including literal inputs. Preserve max_value and infinity as typed\nconstant constructors allowed in either execution domain. Share the\nexecution-domain guard through scope.py for reuse by other TLA modules.\n\nRecord effective core and VF modes in the TLA caller context and carry\nthem into JIT helper specializations and callee initialization. SIMD\nretains Vector ownership when a pure VV kernel omits the explicit Vector\nscope. Restore the previous caller and builder contexts on scope exit.\n\nCover direct calls, helper reuse, control flow and constant exceptions.\nKeep scalar clamp computation outside SIMD VFs.\n\nValidation: 76 existing frontend contracts passed locally in an isolated\nruntime using an existing native build and compatible builder bindings.\nPython syntax and git diff whitespace checks passed. No wheel rebuild,\ntarget compilation or device execution was performed.\n\nAssisted-by: AI\nSigned-off-by: lbqg <songyaofei2@huawei.com>\n\n---------\n\nSigned-off-by: lbqg <songyaofei2@huawei.com>\nCo-authored-by: lbqg <songyaofei2@huawei.com>\n\nStage3-Profile: b8b8e96550e073ffb0ab017b9c98e7bf0131f9bc585b41a33ae047f334c61c7e\n\nStage3-Original: b9b28c0741006f956bd7666ad7d695bfdddf287b\nStage3-Main: 6c5bb75ac8a8161a8d7cd4fbdc9db41ded3e0c57"
+    },
+    {
+      "sha": "9726699d5b30074c6ef051c098941189ece5eacf",
+      "comment": "TLA copy/alloc/view/subview 大规模重构（89 文件，+1312/-1112）。移除 tla.copy 分发器与 alloc_buffer 别名，统一为显式 DMA 路由 API；alloc 去掉 versions/scope 参数，多 buffer 改由 tla.annotate_multi_buffer(buf,n) 显式标注（原 annotate_buffer_versions 重命名）。view/subview 职责拆分：view 仅接受标量 GM 指针并支持运行时 shape/stride/offset（经 tt.make_tensor_ptr + memref.reinterpret_cast 桥接，动态维映射 ShapedType::kDynamic=-2^63 而非 -1），subview 支持任意 space 的 buffer 且大小/步长/偏移可混合静态与动态（memref.subview + OpFoldResult），GM subview 保持 gm space；删除 create_tla_bind/create_tla_reinterpret_cast，create_tla_pointer_view/subview 改为接受 py::object 维度；core.py 引入 _maybe_shape/_DYNAMIC 与动态 row-major 步长推导，reshape 拒绝动态 buffer；TLAToLinalg 适配。同步迁移 22 处 unittest 的 buffer-source view 到 subview，新增 vector/view_dynamic.py（entry_dyn/gm_subview/ub_dyn 三模式，IR 断言 ? 与 reinterpret_cast，run 阶段多组 rows/off 共享一个特化）。风险：这是破坏性 API 变更，仓库外用户代码与遗留调用会失败；动态 GM subview 走桥接路径，其健壮性依赖 TLAMakeTensorPtrConverter，测试中已覆盖但 run 阶段需 NPU。",
+      "tags": [
+        "refactor",
+        "feature",
+        "high-risk",
+        "TLA"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "API 面大幅变更（copy/alloc_buffer/versions/scope/view(buffer) 全部移除或改写），tla_ut 下数十个用例被机械迁移；新增 view_dynamic.py 与 view_frontend_contract 多组契约用例；blacklist 再次加入 view_dynamic（与 531e954 的取消 blacklist 相反，说明该用例在无 NPU 环境不稳定），需关注 blacklist 状态。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/vector/view_dynamic.py",
+          "third_party/ascend/unittest/tla_ut/vector/view_frontend_contract.py",
+          "third_party/ascend/unittest/tla_ut/cube/allocation.py",
+          "third_party/ascend/unittest/tla_ut/kernels/dsa/dsa_kernel.py",
+          "third_party/ascend/unittest/tla_ut/**/*.py"
+        ]
+      },
+      "message": "[TLA](feat) refactor copy&alloc_buffer&view&subview (#3224)\n\n* [TLA](feat) refactor copy and alloc_buffer\n\nReapply #3143 on top of main-dev after its revert.\n\nRemove the generic tla.copy dispatcher and the alloc_buffer alias;\ncallers use the explicit DMA route APIs (load_gm_to_ub,\nstore_ub_to_gm, load_gm_to_l1, ...) and tla.alloc with space=.\n\nAssisted-by: AI\n\n* [TLA](refactor) drop alloc versions and scope kwargs\n\nMotivation: slim the alloc surface; versions and scope were redundant\nspellings that can be expressed with existing public APIs.\nDesign: alloc now takes only shape/dtype/space. Multi-buffering is\nrequested explicitly via tla.annotate_buffer_versions(buf, n), which\nemits the same hivm.multi_buffer annotation the old versions kwarg\nforwarded to; N=1 remains a no-op. scope= callers switch to space=.\nTests updated accordingly, and the invalid-argument case now covers\nannotate_buffer_versions directly.\nRisks: behavioral parity is static (same callee, same value, same\nemission point); error message wording changes slightly for the\npositive-integer check.\n\nAssisted-by: AI\n\n* [TLA](feat) split view/subview roles and support dynamic dims\n\nMotivation: tla.view previously accepted non-GM buffer sources while\nsubview only supported dynamic offsets. Users need a clear split (view\nwraps GM kernel pointers only, subview slices buffers in any address\nspace) plus mixed static/dynamic sizes and strides end to end.\n\nDesign: view() now takes a scalar GM pointer only and forwards mixed\nstatic/dynamic shape/strides/offsets through create_tla_pointer_view\n(tt.make_tensor_ptr bridge, lowered to memref.reinterpret_cast), with\nruntime row-major products as default strides. subview() lowers to\nmemref.subview with mixed OpFoldResult offsets/sizes/strides; dynamic\ndims map to None in buffer_type and -1 in IR types. Remove the unused\ncreate_tla_bind/create_tla_reinterpret_cast entries and the buffer\nsource path of view(); migrate the non-GM reshape case to subview and\nalign the frontend contract tests.\n\nRisks: the C++ extension must be rebuilt; subview on GM buffers relies\non the bridge conversion without dedicated coverage.\n\nAssisted-by: AI\n\n* [TLA](test) migrate buffer view calls to subview, add dynamic UT\n\nMotivation: after the view/subview role split, unittest still carried\nthe legacy buffer-source tla.view calls that the new frontend rejects,\nand the dynamic-dimension capabilities plus subview-on-GM had no\ndedicated coverage (flagged as a risk in the split commit).\n\nDesign: migrate all 22 buffer-source view calls in dsa_kernel.py plus\nthe expand.py UB row view to tla.subview with the new keyword\nsignature, and fix the stale positional subview call in reshape.py.\nAdd vector/view_dynamic.py, a 3-in-1 case covering runtime shape/\nstride/offset on the GM pointer entry, subview on a GM view, and\ndynamic pitched subview out of a UB allocation, each asserting the\nmixed static/dynamic memref types and runtime operands at the IR stage\nand exact-window accuracy at run stage. Extend view_frontend_contract\nwith GM-space preservation, dynamic-extent default strides, and\ndynamic-entry bounds-check skip contracts.\n\nRisks: IR/compile/run stages of the new tests were syntax-checked\nonly and still need execution on a Linux/NPU test machine.\n\nAssisted-by: AI\n\n* [TLA](refactor) rename annotate_buffer_versions to annotate_multi_buffer\n\nMotivation: the old name required knowing that \"buffer versions\" means\nmulti-buffering; the new name states the intent directly and matches\nthe hivm.multi_buffer IR attribute it emits.\nDesign: mechanical rename of the definition, exports, docstrings and\nall call sites in the TLA UTs; no behavior change.\nRisks: None.\n\nAssisted-by: AI\n\n* [TLA] chore: fix yapf and clang-format violations\n\nMotivation: files touched by the recent view/subview and rename commits\nviolated the repo yapf (column_limit=120) and clang-format rules, which\nmade the pre-commit hooks fail and block commits.\nDesign: run yapf -i on the affected Python files and clang-format -i on\ntla_builder.cc; pure reformatting with no behavior change.\nRisks: None.\n\nAssisted-by: AI\n\n---------\n\nCo-authored-by: cathychan0027 <chenhan31@huawei.com>\n\nStage3-Profile: b8b8e96550e073ffb0ab017b9c98e7bf0131f9bc585b41a33ae047f334c61c7e\n\nStage3-Original: 3d4a3fa0d35e97863cec0076ca350dce3265206a\nStage3-Main: 6c5bb75ac8a8161a8d7cd4fbdc9db41ded3e0c57"
+    },
+    {
+      "sha": "99e3264bfb92e181aee6fcaf72020fa4e4232ca5",
+      "comment": "AscendNPU-IR submodule 从 bd228faec 推进到 e02c692a6（stable tip，含 019bcd228 为 VFTruncFOp/VFExtFOp 追加 OptionalAttr<AVE_VCVT_ModeTypeAttr>:$mode），导致 tla_builder.cc 两处 create 调用参数个数不足，补传 hivmave::VCVT_ModeTypeAttr{}（未设置），行为与 bump 前一致（lowering 缺省 MERGING，TLA 自身通过 applySimdMode 的 vsel 实现 zeroing/merging）。同时删除 ascend-wheels.yml 中昂贵的 Build-Pinned-Wheels job 及其 pinned_wheel 输入和 submodule path 触发。风险：submodule 跨越 11.16->11.19 两个 stable sync，需重建 libtriton 并重新验证 TLA 离线 IR；移除 pinned wheel 后 PR 移动 pin 不再有端到端打包验证。",
+      "tags": [
+        "chore",
+        "ci",
+        "low-risk",
+        "TLA"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "修复的是编译期参数个数，不改变生成代码语义；tla_ut 的 IR/compile 测试可在新 submodule 下继续验证。CI 删除的是 pinned wheel job，不影响现有测试矩阵。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/simd/vcvt*.py",
+          ".github/workflows/ascend-wheels.yml"
+        ]
+      },
+      "message": "[TLA](fix) Pass empty vcvt mode attr to VFTruncF/VFExtF (#3301)\n\n* [build](chore) Update AscendNPU-IR submodule to stable e02c692a6\n\nMotivation: triton-ascend should track the latest origin/stable tip of\nAscendNPU-IR instead of a stale gitlink. The index pinned bd228faec while\nthe working tree had drifted to 1389120d7 (legacy-interface line), and both\npredate the 11.19 stable sync.\n\nDesign: move the AscendNPU-IR gitlink to e02c692a6 (!5318 merge\nsync1119/ab81b53f into stable), the current tip of origin/stable, which\nsupersedes the legacy-interface line.\n\nRisks: the diff spans the 11.16 -> 11.19 stable syncs; libtriton must be\nrebuilt against the new submodule and TLA offline IR re-validated.\n\nAssisted-by: AI\nSigned-off-by: liupengcheng2012 <liupengcheng38@huawei.com>\n\n* [TLA](fix) Pass empty vcvt mode attr to VFTruncF/VFExtF\n\nMotivation: the AscendNPU-IR stable bump to e02c692a6 pulled in 019bcd228\n(\"support more vcvtff type conversions\"), which appended\nOptionalAttr<AVE_VCVT_ModeTypeAttr>:$mode to AVE_VFTruncFOp and\nAVE_VFExtFOp. ODS emits optional attributes as positional create()\narguments without C++ defaults, so the two TLA builder call sites stopped\ncompiling (\"requires 9 arguments, but 8 were provided\").\n\nDesign: pass hivmave::VCVT_ModeTypeAttr{} (unset) at both call sites. TLA\nalready implements zeroing/merging through applySimdMode's vsel, and the\nHIVMAVE-to-AVE lowering falls back to MERGING when the attribute is\nabsent, so the emitted code is unchanged.\n\nRisks: None; the new attribute stays unset, matching the pre-bump behavior.\n\nAssisted-by: AI\nSigned-off-by: liupengcheng2012 <liupengcheng38@huawei.com>\n\n* [CI](chore) Remove Build-Pinned-Wheels job from the Wheels workflow\n\nMotivation: the job compiled AscendNPU-IR in-image on both x86_64 and\naarch64 (480-minute timeout each) to produce a verification wheel for the\npinned submodule revision, which is too expensive for PRs. Drop it along\nwith the plumbing that existed only for it: the pinned_wheel\nworkflow_dispatch input and the third_party/ascend/AscendNPU-IR path\ntrigger.\n\nDesign: delete the job block and its two inputs from ascend-wheels.yml.\nBuild-Wheels keeps tracking the AscendNPU-IR stable branch through the\nprebuilt payload, and no other job consumed the pinned wheel artifact.\n\nRisks: PRs that move the submodule pin no longer get an end-to-end wheel\nbundling that exact revision; the pinned combination is still compiled by\nthe regular CI build jobs.\n\nAssisted-by: AI\nSigned-off-by: liupengcheng2012 <liupengcheng38@huawei.com>\n\n---------\n\nSigned-off-by: liupengcheng2012 <liupengcheng38@huawei.com>\nCo-authored-by: liupengcheng2012 <liupengcheng38@huawei.com>"
+    }
+  ],
+  "architecture_based_on_sha": "ee15e295649ccf85b4e4b78316c736d00365c1a5",
+  "architecture_generated_at": "2026-11-15T21:06:50.427270+08:00"
+}

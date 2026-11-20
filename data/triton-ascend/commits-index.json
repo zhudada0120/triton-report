@@ -1,4 +1,44 @@
 {
+  "afc683eb80e60e05aa88e792a85e40706a274328": {
+    "date": "2026-11-20",
+    "msg": "[ssbuffer](fix) fix flash_varlen_fwd_kernel"
+  },
+  "7b27a03d925b1500e250726b6d083831c7ab5a11": {
+    "date": "2026-11-20",
+    "msg": "[ssbuffer](fix) fix fwd perf regression"
+  },
+  "3be450e2b1b74601746778a34c14e6d3a29c12fe": {
+    "date": "2026-11-20",
+    "msg": "[ssbuffer](fix) [ssbuffer](fix) enable multi exec in while (#3232)"
+  },
+  "f0b62cff29b2dc2e058936303c248f3854f084b3": {
+    "date": "2026-11-20",
+    "msg": "[ssbuffer](feat) Refactor && Protect tcb reuse in some scenario (#3261)"
+  },
+  "531e954c8ca36fe2639d828fe31238456c20461b": {
+    "date": "2026-11-20",
+    "msg": "[TLA](feat) Infer sync options and improve gm view adapter (#3285)"
+  },
+  "dd0eabab5824721b5f086a652b43c2ad3a77310f": {
+    "date": "2026-11-20",
+    "msg": "[ascend](feat) Add TLA MMAD L0 API (#2982)"
+  },
+  "3df25e2fbcfc68c66906d14c1c38d317b9a77d35": {
+    "date": "2026-11-20",
+    "msg": "[TLA](fix) Align GM/UB DMA APIs with A5 support (#3279)"
+  },
+  "cc69e27cec1ffab209fad4a7be58b05699b88f07": {
+    "date": "2026-11-20",
+    "msg": "[TLA](fix) Add additional constraints (#3149)"
+  },
+  "9726699d5b30074c6ef051c098941189ece5eacf": {
+    "date": "2026-11-20",
+    "msg": "[TLA](feat) refactor copy&alloc_buffer&view&subview (#3224)"
+  },
+  "99e3264bfb92e181aee6fcaf72020fa4e4232ca5": {
+    "date": "2026-11-20",
+    "msg": "[TLA](fix) Pass empty vcvt mode attr to VFTruncF/VFExtF (#3301)"
+  },
   "6c5bb75ac8a8161a8d7cd4fbdc9db41ded3e0c57": {
     "date": "2026-11-19",
     "msg": "[Proton](feat) collect A5 intra-kernel scope records without MSPTI (#3229)"

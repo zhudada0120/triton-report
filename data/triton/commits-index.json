@@ -1,4 +1,84 @@
 {
+  "e005ef309ebd42821f15994d4813476dcc379541": {
+    "date": "2026-11-20",
+    "msg": "[NVIDIA] Fix f64 to bf16 RTZ cast before SM90 (#12761)"
+  },
+  "ec7a9f37aa1ab7e261d7550c932cd2e588ff42c4": {
+    "date": "2026-11-20",
+    "msg": "[FPSan] Use a maximal-period base for exp2 across payload widths (#12851)"
+  },
+  "5d79c0bf138904deb55c7fcf00841d6beb850bbe": {
+    "date": "2026-11-20",
+    "msg": "[AMD] Scope the CDNA5 WMMA FileCheck assertion (#12852)"
+  },
+  "83c92283294543e12a2e1ea8980b0a34b66dedd2": {
+    "date": "2026-11-20",
+    "msg": "[FPSan] Make division invariant under common odd scaling (#12849)"
+  },
+  "5556aa8f96cc857f79efc4fe6553e96b6523d827": {
+    "date": "2026-11-20",
+    "msg": "[FPSan] Replace the sin/cos loop with exact integer polynomials (#12850)"
+  },
+  "a688ded9aaa350593fd10dab98ed64736f0c5d18": {
+    "date": "2026-11-20",
+    "msg": "[NVIDIA] Use small-allocation TMA mode for ragged descriptors (#12700)"
+  },
+  "37482ef518a4254498d88a695cafaf4832e69ed5": {
+    "date": "2026-11-20",
+    "msg": "[AMD] Fix MN packed scaled case in DecomposeAMDScaledBlocked (#12841)"
+  },
+  "64f8337438a608c420e75cb18221b8a679d90147": {
+    "date": "2026-11-20",
+    "msg": "[Build] Fix TRITON_AMD_CODEGEN_PATH to copy codegen library into wheel (#12835)"
+  },
+  "b590019890cce19dfa5b442761b67e122acf253b": {
+    "date": "2026-11-20",
+    "msg": "[AMD][gfx1250] Give AsyncTDMIntrinsicWait's token a replacement value (#12800)"
+  },
+  "a97f1077d1f56d2b93ce64e57c373a2eaa0bba75": {
+    "date": "2026-11-20",
+    "msg": "[AMD] [gfx1250-strict] Fix WMMA Fallback + Allow Now-Supported Instructions (#12833)"
+  },
+  "d96b429e77c6700fc5139dea26ea7d5e38c46c25": {
+    "date": "2026-11-20",
+    "msg": "[MEMBAR] Move per-warp assignment into the graph solver (#12840)"
+  },
+  "0aa99fbe2b54976c4645485ec2ad785278d74c4b": {
+    "date": "2026-11-20",
+    "msg": "[Analysis] Prefer fewer expected cross-warp rendezvous at equal Membar cost (#12829)"
+  },
+  "7a4b3e2784b46e34fa8f2dc576c1aea3631fdfac": {
+    "date": "2026-11-20",
+    "msg": "[ANALYSIS] Place cluster barriers with the Membar cut solver (#12827)"
+  },
+  "1f67eaea1e42cf7a49338933408d741ed4722477": {
+    "date": "2026-11-20",
+    "msg": "[ANALYSIS] Weight Membar sites by uniform branch frequency (#12823)"
+  },
+  "b13d89fae4b1aee184dd41f9a50e4085f27ace09": {
+    "date": "2026-11-20",
+    "msg": "[ANALYSIS] Place async proxy fences with the Membar cut solver (#12811)"
+  },
+  "fd924064beaf9e68bc67a6a3c3214c2af8b85d52": {
+    "date": "2026-11-20",
+    "msg": "[Analysis] Connect noinline calls in the SMEM/TMEM placement graph (#12803)"
+  },
+  "c421e6dbb897dee3d8c25378b82cef5cb74f4b12": {
+    "date": "2026-11-20",
+    "msg": "[Analysis] Place barriers and TMEM waits on the program CFG (#12752)"
+  },
+  "ccda1a71d99c51ccbdafc88092e30133c3a57109": {
+    "date": "2026-11-20",
+    "msg": "[Analysis] Classify peer notifications after mbarrier waits (#12745)"
+  },
+  "21a672776a876daad40197d706aae868e49ad4f8": {
+    "date": "2026-11-20",
+    "msg": "[AMD] Avoid importing torch for pointer range specialization (#12836)"
+  },
+  "94efac2feff0907be550bcc1925142b09506fd53": {
+    "date": "2026-11-20",
+    "msg": "[BUILD] Trim transitive MLIR dialect includes (#12817)"
+  },
   "1d3df3d403ae133edd01d45d1719ae0a09ce133f": {
     "date": "2026-11-19",
     "msg": "[ConSan] Publish waiting flags before checking for deadlock (#12824)"

@@ -1,0 +1,408 @@
+{
+  "date": "2026-11-20",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-11-21T07:28:07.246696+08:00",
+  "daily_summary": "当日变更集中在 NVIDIA 后端修复与 Membar/FPSan 分析基础设施重构。NVIDIA 侧修复了 SM90 以下 f64→bf16 RTZ 转换（经 f32 两步截断）以及 ragged TMA descriptor 的小分配模式（allow_small_alloc + backing window 检测）；AMD 侧修复了 CDNA5 WMMA 的 MN-packed 分解、TDM wait token 替换值、gfx1250-strict WMMA 限制放宽与 coexec 调度器 base_arch 判断，并修复了 TRITON_AMD_CODEGEN_PATH 打包问题。最重头的是 Membar 系列重构：把 per-warp arrival 决策移入图求解器（#12840）、按分支频率加权站点成本（#12823）、用 cut solver 放置 async proxy fence（#12811）、用同一求解器放置 cluster barrier（#12827），并在等代价时偏好更少跨 warp rendezvous（#12829）。FPSan 侧把 exp2 改为极大周期底数、把 div 改为对公共奇缩放的等变形式、把 sin/cos 改为精确整数多项式，属于可观测语义变更。",
+  "ascend_impact_summary": "当日绝大多数 commit 属于 NVIDIA/AMD 平台特定实现（TMA、WMMA、TDM、NVGPU lowering、FPSan/ConSan 仪器化、Membar NVIDIA 图求解器），或纯测试/文档/AMD 构建，不对 triton-ascend 产生影响。唯一需要关注的是 FPSan 的三个 commit（#12851、#12849、#12850）：它们修改了 python/triton/language 之外的 TritonInstrument 方言与公共转换层（lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp 中新增 CountTrailingZerosOp 的 lowering），其中 lib/Conversion/TritonGPUToLLVM 属于 Ascend 不使用的路径，TritonInstrument 方言与 FpSan 不属于 Ascend 后端流水线，因此 Ascend 编译与运行时行为不受影响；但若 Ascend 复用的通用 lit/pytest 测试套件或 Gluon FPSan 测试在 Ascend CI 中被执行，则相关期望值需同步。Membar 重构中 include/triton/Analysis/Membar 与 lib/Analysis/Membar 属于 Ascend 可能复用的通用分析层，但其改动集中在 NVIDIA 专用 model（ClusterBarrierModel/AsyncFenceModel/TmemModel/MBarrierArrivals），Ascend 若有自有 membar 实现则不受影响；Ascend 若引用 include/triton/Analysis/Membar.h 的符号（MembarAnalysis 构造签名、MembarSliceFilterFn 删除）需检查。总体结论：当日 triton 变更对 triton-ascend 基本无功能影响。",
+  "commits": [
+    {
+      "sha": "e005ef309ebd42821f15994d4813476dcc379541",
+      "comment": "修复 SM90 以下 f64→bf16 RTZ 转换的错误 codegen（#12741）。源因是 #12237 后该转换被 lowered 到 llvm.fptrunc.round.bf16.f64 + round.towardzero，而 PTX 仅 SM90 起才有 cvt.rz.bf16.f64，NVPTX 对低版本报错且不生成指令，导致 kernel 存垃圾值。实现上在 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/ElementwiseOpToLLVM.cpp 的 FpToFpOpConversion 中增加判断：computeCapability<90 && f64→bf16 && rounding==RTZ 时先 convertFpTrunc 到 f32 再截断到 bf16（两段 toward-zero 与一次截断等价，因 bf16 在 f32 中精确）。RTNE 不受影响，因为 NVPTX 自会展开。测试在 test/Conversion/tritongpu_to_ptx.mlir 新增 SM80 run line 并检查 cvt.rz.f32.f64 + cvt.rz.bf16.f32。风险面很小，属 NVIDIA 后端专有 lowering，逻辑有清晰数学依据；仅需注意未来若 SM90 以下 bf16 精度语义变化需重审两步截断假设。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "nvidia-backend",
+        "codegen"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Fix f64 to bf16 RTZ cast before SM90 (#12761)\n\nFixes #12741.\n\nCasting float64 to bfloat16 with `fp_downcast_rounding=\"rtz\"` on a\ntarget below SM90 compiled to PTX with no conversion in it, and the\nkernel stored garbage. With this change the cast is lowered through\nfloat32 and gives the right values.\n\nThe cast compiled for `cuda:80` and `cuda:89`, with the resulting PTX\nloaded and run on an RTX 5080:\n\nBefore (main at cc3d5aef):\n\n```\nerror: in function cast_rtz void (ptr addrspace(1), ptr addrspace(1), ptr addrspace(1), ptr addrspace(1)): unsupported conversion or rounding mode for llvm.fptrunc.round\nsm_80: .target sm_80 | no cvt in PTX\n    f64 -> bf16 rtz: WRONG 16/16  (first values [-1.9938419936773738e+36, -1.9938419936773738e+36, -1.9938419936773738e+36])\nsm_89: .target sm_89 | no cvt in PTX\n    f64 -> bf16 rtz: WRONG 16/16\n```\n\nAfter:\n\n```\nsm_80: .target sm_80 | cvt.rz.bf16.f32; cvt.rz.f32.f64\n    f64 -> bf16 rtz: OK 16/16  (first values [1.0, 1.0, -1.0])\nsm_89: .target sm_89 | cvt.rz.bf16.f32; cvt.rz.f32.f64\n    f64 -> bf16 rtz: OK 16/16\nsm_90: .target sm_90a | cvt.rz.bf16.f64\n```\n\nSM90 and newer still use the direct `cvt.rz.bf16.f64`.\n\n## Why\n\nSince #12237 the cast is lowered to `llvm.fptrunc.round.bf16.f64` with\n`round.towardzero`. PTX has `cvt.rz.bf16.f64` only from SM90, so below\nthat NVPTX reports an error for the call and emits nothing for it.\nRound-to-nearest is not affected, because NVPTX expands that case\nitself.\n\n`FpToFpOpConversion` now emits f64 -> f32 and then f32 -> bf16, both\ntoward zero, when the target is below SM90. Every bf16 value is exact in\nf32, so truncating in two steps gives the same result as truncating\nonce.\n\n## Testing\n\n- `test/Conversion/tritongpu_to_ptx.mlir`: the existing `f64_bf16.mlir`\nmodule now also runs for SM80 and checks for `cvt.rz.f32.f64` followed\nby `cvt.rz.bf16.f32`. The new run line fails on main with the LLVM error\nabove.\n- All lit tests pass (308 passed, 2 unsupported).\n- `python/test/unit/language/test_core.py -k \"cast or downcast or\nfp_to_fp\"` passes on an RTX 5080 (188 passed, 2 skipped).\n\n## Limits\n\n- I have no SM8x GPU. The SM80 and SM89 results above come from\ncompiling for those targets and letting the CUDA driver JIT that PTX on\nan SM120 device, so the conversion instructions are the ones selected\nfor the older target but the machine code is not.\n- This does not make Triton fail when LLVM reports a codegen error.\n#12083 does that and is independent of this change.\n- #12276 proposed the same two-step lowering for #12260 before #12237\nchanged this code. It no longer applies to main.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n[rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [ ] I have not added any `lit` tests.\n- [x] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode and using the instructions it generates is not minimal.)"
+    },
+    {
+      "sha": "ec7a9f37aa1ab7e261d7550c932cd2e588ff42c4",
+      "comment": "FPSan exp2 的指纹生成从 257^x mod 2^32 改为 3^x mod 2^w（#12851）。原实现所有结果 ≡1 mod 256，导致 attention 中 homomorphic_cast(exp2(score), fp8) 后所有 key 权重相同，无法检测 score 在 key 间的移动。新实现取极大周期的奇底数 3，将 FP32 周期从 2^24 提升到 2^30，FP32→FP8 cast 后不同权数从 1 增到 64；同一底数在各宽度下使低 v 位截断与在低 v 位上计算等价。实现把 FpSanitizer.cpp 中原二次/三次项闭式改为 host 端生成 Newton 基系数再展开为 Horner 形式，s=2（≤FP32）或 s=6（FP64）保证多项式次数 1/3/7/7；对 r 的每个置位乘 3^(2^i)。这是有意的语义变更，会改变 exp2/exp 指纹，需注意与其他 identity 的碰撞性质变化。测试更新 test_fpsan.py 的参考实现并新增 homomorphic FP8 cast 回归、更新 fpsan.rst 文档。该变更涉及 lib/Dialect/TritonInstrument（不在 Ascend 使用的 lowering 路径内）。",
+      "tags": [
+        "feature",
+        "refactor",
+        "medium-risk",
+        "fpsan",
+        "instrumentation"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。FpSanitizer 属于 TritonInstrument 方言的仪器化 pass，triton-ascend 后端流水线（TTIR→ttadapter→npubin）不包含该类 instrumentation pass，且 Ascend 不消费 TritonGPUToLLVM 路径。",
+        "testing": "无影响。python/test/gluon/test_fpsan.py 依赖 CUDA 后端与 gluon FPSan，Ascend 不参与。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[FPSan] Use a maximal-period base for exp2 across payload widths (#12851)\n\nFpSan's FP32 `exp2` computes $257^x$ modulo $2^{32}$ for input payload\n$x$. Every result is 1 modulo 256. In an attention kernel that uses\n`tl.fpsan.homomorphic_cast(tl.exp2(score), fp8)`, the cast therefore\ngives every live key the same weight. Moving scores between keys can go\nundetected in the weighted sum.\n\nUse $E_w(x)=3^x \\bmod 2^w$ at each width. This raises the FP32 period\nfrom $2^{24}$ to $2^{30}$ and the number of distinct weights after a\nhomomorphic FP32→FP8 cast from **1 to 64**. Using the same generator at\nevery width makes taking the low $v$ bits of $E_w(x)$ equivalent to\ncomputing $E_v$ on the low $v$ bits of $x$. [Previous generator and\nperiod\ndiscussion](https://github.com/triton-lang/triton/pull/10561#pullrequestreview-4515175084)\n\nThis intentionally changes FpSan fingerprints for `exp2` and for `exp`,\nwhich scales the input before calling the same lowering. The exponential\naddition and reciprocal identities still hold. The choice of base also\ndetermines which expressions collide. For example, $E_w(x+1)$ now has\nthe same payload as three copies of $E_w(x)$ added together.\n\n### Lowering\n\nSplit the exponent into $u+r$, where $r$ contains the low $s$ bits and\n$u$ is a multiple of $m=2^s$. For $s\\ge 1$, $3^m-1$ has exactly $s+2$\ntrailing zero bits. This follows from $3^2-1=8$ and the fact that each\nsubsequent squaring adds one trailing zero. It gives the maximal period\n$2^{w-2}$ and makes term $k$ of the binomial expansion of $(3^m)^{u/m}$\nvanish once $k(s+2)\\ge w$.\n\nTake $s=2$ up to FP32 and $s=6$ for FP64. The resulting polynomial has\ndegree 1, 3, 7 or 7 at 8, 16, 32 or 64 bits respectively. The compiler\nderives the coefficients on the host and emits Horner evaluation\ndirectly in $u$. For each set bit $i$ of $r$, multiply by $3^{2^i}$.\nThis uses portable integer IR. On `sm_103a` the two FP32 selects lower\nto predicated integer multiplies by 3 and 9.\n\n### An FP32 softmax collision\n\nI also tested a max-subtracted, 512-key `exp2` softmax entirely in FP32\non GB300. There are 127 scores of +1 and 385 scores of −1. Moving the\nsingle nonzero value (1) from a positive-score key to a negative-score\nkey changes the mathematical output from $4/893$ to $1/893$. Both\noutputs have payload `0xff800000` on the baseline. With this patch the\npayloads are `0x6943ca08` and `0xef406bc8`, respectively.\n\n### GB300 measurements\n\nI compared `64f8337438` with the patch using\n`instrumentation_mode=\"fpsan\"`, four warps, `sm_103a` and `ptxas`\n13.5.37. The elementwise kernels load one value per thread and store one\nresult, with 128 elements per CTA. The softmax kernel reduces one row of\n512 scores and values per CTA.\n\n| Kernel | SASS instructions through `EXIT` | Registers/thread | Median\ntime per launch |\n|---|---:|---:|---:|\n| FP32 `exp2` | 43 → 41 | 9 → 10 | 4.98 → 4.98 µs |\n| FP64 `exp2` | 78 → 120 | 13 → 12 | 5.13 → 5.81 µs |\n| FP32 `exp2` with homomorphic cast to FP8 E4M3 | 13 → 47 | 7 → 10 |\n4.75 → 4.94 µs |\n| FP32 weighted softmax | 731 → 722 | 23 → 23 | 8.59 → 8.39 µs |\n\nThe FP64 kernel takes 13% longer at this size. In the FP8 cast kernel\nthe baseline compiles to a constant store. I timed 1,048,576 input\nelements on one GB300 with CUDA events around 128-launch CUDA graphs,\nreusing the buffers after warmup and alternating replay order over 80\npairs.\n\n### Validation\n\n- Updated the FP32 and FP64 references to use unsigned modular powers.\nAdded a Gluon regression that checks all 256 exponent residues through\nFP32 `exp2` and a homomorphic FP8 E5M2 cast. It fails on the baseline\nwith payload 1 at every index.\n- Checked the GPU results against independent integer powers for\n1,048,576 inputs per width for FP32 and FP64, including boundary cases.\nFor a pass-level check I supplied `math.exp2` in TTIR and verified every\nFP8 E4M3FN and FP16 input. Truncating the wide outputs agreed with the\ncorresponding byte powers.\n- Ran `python/test/gluon/test_fpsan.py` on GB300 with 257 passes, 118\nskips and one expected failure. All 48 FpSan top-k cases passed. All 308\nsupported lit tests passed, with two plugin tests marked unsupported.\n- Checked reciprocals of `exp` and `exp2` against modular powers in 144\nGluon configurations per assembler version on GB300 with `ptxas`\n13.0.88, 13.4.59 and 13.5.37. Also compiled the elementwise kernels\noffline for AMD `gfx942`, `gfx950` and `gfx1250`.\n\n### New contributor declaration\n\n- [x] This change addresses a collision in instrumented kernels.\n- [x] I have described the motivation and implementation. [PR\ndescription guidelines](https://cbea.ms/git-commit/#why-not-how)\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n- [x] I have added an end-to-end regression in the Gluon suite."
+    },
+    {
+      "sha": "5d79c0bf138904deb55c7fcf00841d6beb850bbe",
+      "comment": "AMD CDNA5 WMMA lit 测试的 FileCheck 作用域修复（#12852）。gfx1250-strict run 跳过了包新增的 packed-MN 用例的 CHECK-LABEL，使之前 STRICT-NOT: arith.truncf 断言错误地作用到 packed-MN fallback（该 fallback 恰会 emit truncf）而失败。改用 COMMON-LABEL 让两种 run 都识别函数边界。仅一行测试修改，无功能变更。",
+      "tags": [
+        "test",
+        "low-risk",
+        "amd-backend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Scope the CDNA5 WMMA FileCheck assertion (#12852)\n\nThe `gfx1250-strict` run skips the `CHECK-LABEL` for the packed-MN case\nadded in #12841. FileCheck then applies the earlier `STRICT-NOT:\narith.truncf` assertion to the packed-MN fallback, which emits a\ntruncation. [Failing lit\nrun](https://github.com/triton-lang/triton/actions/runs/44650135625/job/136002733746)\n\nUse `COMMON-LABEL` so both runs recognize the function boundary and the\nstrict assertion stops at the end of the preceding case.\n\n### Validation\n\n- Replayed the affected FileCheck directives with the relevant IR from\nthe failing job. The old label reproduced the failure, the common label\npassed, and a negative control still rejected a truncation inside the\noriginal function.\n- `pre-commit run --from-ref origin/main --to-ref HEAD` passed.\n\n### New contributor declaration\n\n- [x] This restores the scope of a compiler regression assertion.\n- [x] I have described the failure and its cause.\n- [x] I ran the repository's pre-commit checks.\n- [x] The existing lit case exercises the fix. This changes its check\nprefix."
+    },
+    {
+      "sha": "83c92283294543e12a2e1ea8980b0a34b66dedd2",
+      "comment": "FPSan 除法改为对公共奇缩放等变（#12849）。原实现对偶数分母采用保奇偶的对合而非真正模逆，导致 softmax 中减去行最大值（公共奇指数因子）无法在归一化时抵消，例如 logits [1,1] 归一化 payload 从 0x9e12e2aa 变为 0xaaaaaaaa。新实现对 d=2^k*t（t 奇）返回 2^k * t^{-1} mod 2^w，J(0)=0，从而 J(ud)=u^{-1}J(d)，(uN)J(uD)=NJ(D)。实现上 FpSanitizer.cpp 的 fpsanIntInv 改为：置高位后 countTrailingZeros 求 k、右移得 t、Newton 迭代求 t^{-1}（自 3 位正确起）、左移 k 恢复。为此在通用 lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp 新增 math::CountTrailingZerosOp → math::CountTrailingZerosOp 的 POPULATE_UNARY_OP 注册，这是本次唯一触及共享 lowering 层的改动。文档更新 fpsan.rst，新增 softmax shift invariance 回归（FP32/FP64）。属于有意的指纹语义变更。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "fpsan",
+        "instrumentation",
+        "gpu-to-llvm"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动集中在 lib/Dialect/TritonInstrument（FPSan pass）与 lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp。后者属于 Ascend 明确不使用的 GPU→LLVM lowering 路径（Ascend 由 bishengir 完成最终 codegen，不经过 TritonGPUToLLVM）。新增的 CountTrailingZerosOp 一元 op 注册仅在 TritonGPU IR 下降时生效。",
+        "testing": "无影响。新增 test 为 python/test/gluon/test_fpsan.py 中的 CUDA 后端用例。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[FPSan] Make division invariant under common odd scaling (#12849)\n\nWith logits `[1, 1]` and base-2 exponential weights, subtracting the row\nmaximum changes the FPSan payload of the first normalized weight from\n`0x9e12e2aa` to `0xaaaaaaaa`. Both weights are odd in payload space, so\ntheir sum is even. The reciprocal for even denominators prevents the\ncommon exponential factor from cancelling.\n\nFor a nonzero denominator payload $d = 2^k t$ with $t$ odd, use $J(d) =\n2^k t^{-1} \\pmod{2^w}$ and set $J(0) = 0$. For any odd scale $u$, $ud$\nhas the same power of two as $d$ and its odd part gains a factor of $u$.\nThis gives $J(ud) = u^{-1} J(d)$, so $(uN)J(uD) = NJ(D)$ for any\ndenominator. Both paths in the two-key example now give `0x00000002`.\n\nThe lowering counts trailing zeros, shifts out the power of two, applies\nNewton iteration to the odd part, and shifts the result back. Setting\nthe high bit in the input to the count keeps both shifts in range for\nzero. Seeding the iteration with the shifted payload gives three correct\nbits for odd inputs and keeps zero fixed.\n\nThe regression compares `tl.softmax` with unshifted normalization bit\nfor bit on two-key rows in FP32 and FP64. The division tests use\nPython’s modular `pow` as an independent reference.\n\n### Validation\n\n- On an NVIDIA GB300, both softmax regressions failed with the compiler\nfrom `main` and passed after rebuilding with this patch. The full\n`python/test/gluon/test_fpsan.py` run had 258 passed, 118 skipped, and 1\nexpected failure.\n- Ran the full lit suite with assertions enabled on macOS arm64 (308\npassed, 2 unsupported) and pre-commit on the changed files.\n- Executed the lowered LLVM IR on the host. Exhausting all 32,768\nbyte-sized pairs of odd scale and denominator gave 12,544 rescaling\nfailures on `main` and zero with this change.\n- Checked the compiled reciprocal against modular `pow` for every 8- and\n16-bit denominator and samples at every trailing-zero count for 32- and\n64-bit denominators.\n\nthanks to @bartek-openai for the suggestion"
+    },
+    {
+      "sha": "5556aa8f96cc857f79efc4fe6553e96b6523d827",
+      "comment": "FPSan cos/sin 从 square-and-multiply 循环改为精确整数多项式（#12850）。原实现以 z=(-3+4i)/5 的 z^x 实部虚部逐 bit 迭代（每 payload bit 一轮，即使只用一半结果）；新实现由编译器 host 端生成 Newton 基多项式系数，cos 求 P(x^2)（FP32 次数 8）、sin 求 x·Q(x^2)（次数 7），同时用两者可共享 x^2，FP32 15 次整数乘加 + 2 次乘。正确性依据 z+z^{-1}-2=-16/5 使各分量满足 f(x+1)-2f(x)+f(x-1)=t f(x)，Pascal 恒等式保证二项式和在 0/1 处与 z^x 一致，项 k 在 4k-1≥w（cos）/4k+2≥w（sin）后模 2^w 消失；展开时对每个阶乘先约去 2 的幂再对奇部取模逆。GB300 实测 FP32 快 4.34×、FP64 快 9.41×。新增 lit 检查（test/TritonGPU/fpsan.mlir 断言无 scf.for / math.sin / math.cos），Gluon 测试参考改为复数平方乘。变更在 TritonInstrument pass 内，不触及公共 lowering。",
+      "tags": [
+        "performance",
+        "refactor",
+        "medium-risk",
+        "fpsan",
+        "instrumentation"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动完全在 lib/Dialect/TritonInstrument/Transforms/FpSanitizer.cpp，属于 FPSan 仪器化 pass，Ascend 后端不启用。",
+        "testing": "无影响。新增 lit 测试为 test/TritonGPU/fpsan.mlir（TritonGPU 方言，Ascend 不参与）；Gluon 测试为 CUDA 专属。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[FPSan] Replace the sin/cos loop with exact integer polynomials (#12850)\n\nFpSan computes cosine and sine as the real and imaginary parts of $z^x$\nfor $z=(-3+4i)/5$ and integer payload $x$. The square-and-multiply loop\ntracks both parts for one round per payload bit, even when the kernel\nuses only one result. [Original\nlowering](https://github.com/triton-lang/triton/pull/10005)\n\nGenerate the coefficients on the compiler host and emit Horner\nevaluation of $P(x^2)$ for cosine or $x Q(x^2)$ for sine. For FP32, $P$\nhas degree 8 and $Q$ has degree 7. A kernel using both can share $x^2$\nand evaluate the two payloads with 15 integer multiply-adds and two\nmultiplies.\n\n### Why the polynomials are exact\n\nLet $t=z+z^{-1}-2=-16/5$. Both components of $z^x$ satisfy\n$f(x+1)-2f(x)+f(x-1)=t f(x)$. By Pascal's identity, the binomial sums in\n`getTrigCoefficients` satisfy that recurrence with the same values at 0\nand 1. The term indexed by $k$ is an integer multiple of $t^k/2$ for\ncosine and of $(4/5)t^k$ for sine. These terms vanish modulo $2^w$ once\n$4k-1\\ge w$ and $4k+2\\ge w$, respectively.\n\nFactoring the surviving binomials gives polynomials in the Newton basis\nat consecutive squares. The pass cancels the powers of two in each\nfactorial before taking the modular inverse of its odd part, then\nexpands the basis into powers of $x^2$. This reproduces the existing\nfingerprints at every input.\n\n### GB300 measurements\n\nI compiled the following kernel at `4256cd01d3` and with the patch,\nusing `instrumentation_mode=\"fpsan\"`, four warps, `sm_103a` and `ptxas`\n13.5.37.\n\n```python\n@triton.jit\ndef pair(X, S, C):\n    offsets = tl.program_id(0) * 128 + tl.arange(0, 128)\n    x = tl.load(X + offsets)\n    tl.store(S + offsets, tl.sin(x))\n    tl.store(C + offsets, tl.cos(x))\n```\n\n| Input | Dynamic SASS instructions | Registers/thread | Median time per\nlaunch | Speedup |\n|---|---:|---:|---:|---:|\n| FP32 | 531 → 62 | 13 → 11 | 21.86 → 5.04 µs | 4.34× |\n| FP64 | 2,575 → 258 | 24 → 16 | 110.81 → 11.78 µs | 9.41× |\n\nI counted instructions through `EXIT`, accounting for all trips of the\nshared baseline loop. I timed 1,048,576 elements on one GB300 with CUDA\nevents around 128-launch CUDA graphs. I used the same buffers after\nwarmup and alternated replay order over 80 pairs.\n\n### Validation\n\n- The new lit check fails on the baseline at `scf.for`. The local lit\nsuite passed all 308 supported tests, with two plugin tests marked\nunsupported.\n- The Gluon tests compare FP32 and FP64 outputs against the complex\nsquare-and-multiply reference. The full\n`python/test/gluon/test_fpsan.py` run on GB300 had 258 passes, 118 skips\nand one expected failure.\n- I compared baseline and patched cubins on GB300. The outputs agreed\nbit-for-bit on 1,048,576 random inputs per width for FP32 and FP64 with\nsine alone, cosine alone, and both together. For a separate pass-level\ncheck I supplied `math.sin` and `math.cos` in TTIR and checked every FP8\nE4M3FN and FP16 bit pattern.\n\n### New contributor declaration\n\n- [x] This change improves the generated code for instrumented kernels.\n- [x] I have described the motivation and implementation. [PR\ndescription guidelines](https://cbea.ms/git-commit/#why-not-how)\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n- [x] I have added lit and end-to-end tests.\n- [x] The lit test follows the minimal test guidelines. [MLIR testing\nguide](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices)"
+    },
+    {
+      "sha": "a688ded9aaa350593fd10dab98ed64736f0c5d18",
+      "comment": "为 ragged TMA descriptor 请求 small-allocation 模式（#12700）。ragged descriptor 用 virtual 维度会误导 Blackwell 为小于 128 KiB 的 buffer 选择 LARGE allocation 模式，导致 64 KiB 守卫 buffer 即使越界行应被零填充也会 fault。实现链路：(1) Python 侧 TensorDescriptor 新增 allow_small_alloc 字段，tools/ragged_tma.py 创建 ragged descriptor 时置 True；(2) driver.py 的 make_tensordesc_arg 透传该标志与 _contiguous_bytes_at_base 计算的连续字节数；(3) third_party/nvidia/backend/driver.c 中 fillTMADescriptorTiled 增加 check_tma_allocation/contiguous_bytes 参数，新增 tensorMapSpanIsSmall（防 64 位溢出）、tensorMapHasBackingWindow（经 CU_TENSOR_MAP_LARGE_TENSOR_MIN_SIZE 与 VMM/legacy 分配判定）、setSmallTensorMapAllocationClass（优先 dlsym cuTensorMapSetAllocationClass，否则对 Blackwell major 10/11/12 做文档化 bit-85 清除 workaround），同时把旧 driver_version<=13010 的 CUTLASS workaround 用同一路径统一。测试新增 ctypes 直接调 libcuda 构造紧邻未映射页的 tensor、以及 contiguous_bytes 计算回归；另有 Python/tools 与 runtime C 扩展变更。风险点：C 扩展 ABI 新增两个可选参数（向后兼容）、bit-85 workaround 依赖 NVIDIA 文档、VMM 检测在无 libcuda 环境需 skip。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "medium-risk",
+        "nvidia-backend",
+        "tma",
+        "runtime"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动集中在 third_party/nvidia/backend/driver.c、third_party/nvidia/backend/driver.py、python/triton/tools/ragged_tma.py、python/triton/tools/tensor_descriptor.py 与 NVIDIA TMA 测试。TensorDescriptor 新增 allow_small_alloc 字段为默认 False 的纯增量 dataclass 字段，不改变 Ascend 使用方式；ragged_tma.py 为 NVIDIA TMA 工具。Ascend 使用自有 TensorDesc 与 CANN 路径，不经由 fill_tma_descriptor_tiled。",
+        "testing": "无影响。新增测试均在 python/test/unit/cuda/test_tma_descriptor.py（CUDA 专属）。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Use small-allocation TMA mode for ragged descriptors (#12700)\n\nRagged TMA descriptors use virtual dimensions that can cause Blackwell\nto select LARGE allocation mode for a buffer smaller than its required\n128 KiB backing window. A guarded 64 KiB buffer then faults even when\nout-of-bounds rows should be zero-filled.\n\nRequest SMALL allocation mode for ragged descriptors and apply the\ndocumented NVIDIA workaround during descriptor construction. Add eight\nguarded load-only regression cases and retain the matmul boundary tests.\n\nValidation on GB200:\n- Isolated load reproducer: 64 KiB/LARGE fails; 64 KiB/SMALL and 128\nKiB/LARGE pass.\n- All 32 descriptor tests pass, including under Compute Sanitizer with\nzero errors.\n- Six ragged matmul regression cases and a Gluon compatibility test\npass.\n- Four paired kernel benchmarks produce identical outputs, with timing\nchanges within approximately 0.22%.\n\nThe modified runtime C extension was rebuilt for testing. A full\ncheckout build and full two-rank model rerun remain outstanding.\n\nNVIDIA reference:\n\nhttps://docs.nvidia.com/datacenter/tesla/tesla-release-notes-595-91-07/index.html#known-issues\n\n---------\n\nCo-authored-by: Codex <codex@openai.com>\nCo-authored-by: Thomas Raoux <thomas.raoux@openai.com>"
+    },
+    {
+      "sha": "37482ef518a4254498d88a695cafaf4832e69ed5",
+      "comment": "修复 DecomposeAMDScaledBlocked 中 MN-packed 的 scaled dot 分解（#12841）。amdg.scaled_upcast_fp4 只支持 k-packed fp4 输入（其 unpack 与 scale group 共用单一 axis），对 MN-packed 操作数会生成错误代码。新实现在 AccelerateAMDMatmul.cpp 的分解逻辑中，当 isFp4 且 kPack==false 时回退到通用 fp4_to_fp + multiply 路径（scaleArg），保留 M/N 与 K 轴分离。附带 lit 测试新增 packed-MN 用例，断言无 amdg.scaled_upcast_fp4 且出现 ttg.fp4_to_fp {axis=0}。纯 AMD 专有 lowering。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "amd-backend",
+        "matmul"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 third_party/amd/lib/TritonAMDGPUTransforms 与 AMD 专属 lit 测试。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Fix MN packed scaled case in DecomposeAMDScaledBlocked (#12841)\n\nThis PR fixes decomposition of scaled dot with MN packed arguments.\namdg.scaled_upcast_fp4 supports only k-packed fp4 inputs,\nfallback to default upscaling if dot_scaled has MN-packed operands.\n\nCo-authored-by: Alexander Efimov <efimov.alexander@gmail.com>"
+    },
+    {
+      "sha": "64f8337438a608c420e75cb18221b8a679d90147",
+      "comment": "修复 TRITON_AMD_CODEGEN_PATH 时 AMD codegen 库未被打包进 wheel 的问题（#12832）。当用户提供 amd_codegen_path 时，download_and_copy_amd_codegen 直接 return，导致 third_party/amd/backend/lib 中缺库，运行时 dlopen 失败。实现上在该分支中解析 source_path（支持目录或完整 .so 路径），若为文件则 copy2 到 wheel 打包目录，并做 realpath 去重避免拷贝自身。属构建脚本修复，仅影响使用该环境变量构建 AMD 后端的流程。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "build",
+        "amd-backend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动在 python/build_helpers.py 的 AMD 专属构建路径。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Build] Fix TRITON_AMD_CODEGEN_PATH to copy codegen library into wheel (#12835)\n\nFixes https://github.com/triton-lang/triton/issues/12832\n\nWhen `TRITON_AMD_CODEGEN_PATH` is set, the codegen library is silently\nomitted from the wheel, causing runtime `dlopen` failures. This fix\ncopies the library from the user-provided path into the wheel packaging\ndirectory, matching the behavior of the download path."
+    },
+    {
+      "sha": "b590019890cce19dfa5b442761b67e122acf253b",
+      "comment": "修复 AMD AsyncTDMIntrinsicWait 的 token 结果无替换值（#12800）。lowering 在生成 rocdl.s.wait.tensorcnt 后 eraseOp，使 AsyncToken 结果没有 replacement；当该结果被转换无法消除的使用（如 block argument）引用时，conversion 会从自身 uses materialize unrealized_conversion_casts 互相引用，形成非法 IR。修复改为 rewriter.replaceOp(op, b.i32_val(0))，与同类的 AsyncWaitOpConversion 处理一致。新增 lit 测试用 block argument 承载 token 并断言无 unrealized_conversion_cast。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "amd-backend",
+        "codegen"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 third_party/amd/lib/TritonAMDGPUToLLVM/LoadStoreOpToLLVM.cpp 与 AMD 专属转换测试。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][gfx1250] Give AsyncTDMIntrinsicWait's token a replacement value (#12800)\n\nThe lowering of AsyncTDMIntrinsicWait erased the op after generating\nrocdl.s.wait.tensorcnt, leaving its AsyncToken result with no\nreplacement. This is a problem when the result has a use the conversion\ncannot elide, such as a block argument. The conversion then materializes\nit from its own uses, producing unrealized_conversion_casts that\nreference each other.\n\nReplace the result with a dummy i32, as AsyncWaitOpConversion already\ndoes.\n\nAsyncWaitOpConversion handles the identical situation for the equally\nresult-less ROCDL::WaitAsynccntOp; the TDM path diverging looks like an\noversight rather than a deliberate choice."
+    },
+    {
+      "sha": "a97f1077d1f56d2b93ce64e57c373a2eaa0bba75",
+      "comment": "修复 gfx1250-strict 下 WMMA 指令被过度限制的问题并放宽已支持指令（#12833）。背景是更新 LLVM 后 WMMA 指令在 gfx1250-strict 被错误禁止，造成性能大幅下降与无法使用 exec scheduling。变更：(1) WmmaGroup.cpp 数据库中去掉多项 kWmmaRestrictedInstsFeature 标记（f16/bf16 16x16x32、iu8 16x16x64、fp8/bf8 的 x64 变体等），x128 fp8 仍受限但 x64 放行；(2) AccelerateAMDMatmul.cpp 新增 shouldUseUnitScaledWmma：当大 K fp8 dot 的 unrestricted 选择落在受限 x128 而 scaled x128 不受限时，回退为带单位 scale 的 tt.dot_scaled；(3) 错误信息改为 “wmma layout chosen invokes intrinsic ... not supported on this architecture”；(4) HIPBackend 的 is_coexec_scheduler_enabled 改用 base_arch（修复 gfx1250-strict 比较失效导致 coexec 未启用）；(5) 大量 lit/Gluon 测试移除 skip_if_gfx1250_strict_wmma 并新增 strict 期望。属 AMD 平台专有逻辑，功能与性能影响均在 AMD 后端。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "medium-risk",
+        "amd-backend",
+        "wmma"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 third_party/amd/（compiler.py、WMMA.cpp、AccelerateAMDMatmul.cpp、WmmaGroup.cpp）及 AMD 专属测试与 Gluon AMD 示例。",
+        "testing": "无影响。新增/修改测试均为 AMD 专属或 CDNA5 条件跳过。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] [gfx1250-strict] Fix WMMA Fallback + Allow Now-Supported Instructions (#12833)\n\n# Description\n\nBugs were identified with updated LLVM for WMMA instructions being\nincorrectly restricted on gfx1250-strict. This caused a vast number of\nperformance drops across kernel libraries or overly restrictive\ninstructions, as well as the inability to use exec scheduling. Updated\nrestrictions to match documentation for hardware rather than working\naround LLVM limitations, and fixed coexec scheduler bug on Triton side.\nAlso implemented a workaround to fallback to more efficient wmma\ninstructions rather than keep the blanket catch-all.\nAlso made adjustments for tests to remove stale messages, skips, and\ncompilation errors after these changes."
+    },
+    {
+      "sha": "d96b429e77c6700fc5139dea26ea7d5e38c46c25",
+      "comment": "Membar 大重构：把 per-warp arrival 决策移入图求解器（#12840）。原 OptimizeMBarrierArrivals pass（基于 legacy MembarAnalysis 后处理）与 FenceInsertion pass 被删除，逻辑合并进 lib/Analysis/Membar。新算法：把每个 eligible arrive/expect 标记为 ArrivalMode::Either；先用仅必需需求（每 warp 发布自身效果所需的 ordering）求解并剪枝，把 perWarp=false（thread zero 代表发布）所需更强 ordering 记为 optional；placement 固定后检查 optional，若所有路径都足够则保持 scalar，否则置 perWarp=true 并按 warp 数缩放计数。新增 MBarrierArrivals.{h,cpp}（placeBarriersAndArrivals：collectGroups 收集 barrier uses、getDistributionScale 校验计数可除、finalizeGroup 缩放），Dependencies 引入 MembarDemands（required/optional）与 addDemand（Either→optional，PerWarp 时 RegionBarrier→WarpBarrier 并令 Path::Any），Solver 新增 findUncoveredSinks 复用 BFS；SyncKind 增加 CTAProxyFence/ClusterProxyFence/ClusterBarrier/ClusterFenceMbarInit，WarpConvergence 改为仅 demand；OpModel.needsWarp 改为 arrivalMode；ThreadIssuer 新增 WarpLeaders。legacy MembarAnalysis/ModuleMembarAnalysis 被整体迁到 third_party/amd/include/Analysis/Membar.h 与 third_party/amd/lib/Analysis/Membar.cpp（命名空间 mlir::triton::AMD），python/src/passes.cc 移除 analysis.membar 绑定，AMD 的 AMDMembarAnalysis 与 TestAMDGPUMembar 改引用新位置；NVIDIA 侧 CUDABackend 移除 add_fence_insertion 与 add_optimize_mbarrier_arrivals，Membar.cpp 改用 placeBarriersAndArrivals；ClusterBarrierOp 的 verifier 放宽为仅校验多 CTA。测试大规模更新（membar.mlir 大量期望值变化、删除 warp barrier subsumption 用例、新增 shared_arrival_helper 等）。这是本次最大、风险最高的变更，跨 NVIDIA 同步插入正确性与 AMD legacy 分析迁移。",
+      "tags": [
+        "refactor",
+        "high-risk",
+        "membar",
+        "nvidia-backend",
+        "amd-backend",
+        "analysis"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。核心改动在 include/triton/Analysis/Membar 与 lib/Analysis/Membar 的 NVIDIA 专用 model（MBarrierArrivals、TmemModel、ClusterBarrierModel、AsyncFenceModel）及 third_party/nvidia/、third_party/amd/。Ascend 后端由 bishengir 完成最终 codegen，不复用 TritonGPUToLLVM 与 NVIDIA 的 mbarrier/cluster barrier 插入。需注意 legacy MembarAnalysis 已移出 include/triton/Analysis/Membar.h（迁至 third_party/amd/include/Analysis/Membar.h，构造签名移除 sliceFilter/accessMode），若 Ascend 代码曾引用 include/triton/Analysis/Membar.h 的 MembarAnalysis 或 python passes.analysis.membar 绑定，需要相应调整；但按架构上下文 Ascend 不使用该路径。",
+        "testing": "无影响。lit/pytest 变更均为 TritonNvidiaGPU/TritonGPU/AMD 测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[MEMBAR] Move per-warp assignment into the graph solver (#12840)\n\nThe algorithm is as follows:\n- Mark each eligible arrive or expect as Either.\n- Solve and prune using only the required demands. For an eligible\nnotification, require the ordering sufficient for each warp to publish\nits own effects. Record the stronger ordering needed for perWarp = false\nas optional. Solving with perWarp = false forced would insert CTA\nbarriers that distribution could save.\n- With placement fixed, check the optional demands. If every path has\nsufficient ordering for thread zero to publish on behalf of the role,\nkeep the notification scalar. If any path falls short, set perWarp =\ntrue.\n\nWe clean-up a few membar-related passes, and we move the rest of the\nmembar pass under AMD as they are the only users."
+    },
+    {
+      "sha": "0aa99fbe2b54976c4645485ec2ad785278d74c4b",
+      "comment": "等 Membar 代价时偏好更少跨 warp rendezvous（#12829）。当 forward 与 reverse 放置总 cost 相同时，原实现仅比总 cost，可能选到 join 处的 CTA barrier（每个路径都跨 warp rendezvous）而非各 arm 内更廉价的 warp barrier。新增 CutSolver::score 计算 multiWarpCost（仅在 cfg.multiWarp 且 actions 含 RegionBarrier 时累加 RegionBarrier 站点权重），solveMembarCut 在 cost==lowerBound 且 multiWarpCost==0 时提前返回，否则求 reverse 放置并比较 score。MembarCFG 新增 multiWarp 标志（build 时用 maybeLookupNumWarps 判断，默认 true）。属求解器的 tie-break 改进，不改变同步正确性，但会改变生成的 barrier 位置（可能减少 CTA barrier、增多 warp barrier）。",
+      "tags": [
+        "performance",
+        "refactor",
+        "medium-risk",
+        "membar",
+        "nvidia-backend",
+        "analysis"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 include/triton/Analysis/Membar/{CFGBuilder.h,Solver.h}、lib/Analysis/Membar/{CFGBuilder.cpp,Solver.cpp} 与 unittest/Analysis/MembarCutTest.cpp。这些是 NVIDIA Membar 图求解器基础设施，Ascend 不使用。",
+        "testing": "无影响。新增单测在 unittest/Analysis/MembarCutTest.cpp（NVIDIA Membar 求解器测试）。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Analysis] Prefer fewer expected cross-warp rendezvous at equal Membar cost (#12829)\n\nWhen the forward and reverse Membar placements have the same total cost,\nprefer the one with the lower sum of site weights for barriers that\nsynchronize multiple warps. For example, one arm of a uniform branch may\nneed a CTA barrier while the other only needs a warp barrier. Placing\neach barrier in its arm costs the same as a CTA barrier at the join, and\nonly one path needs a cross-warp rendezvous.\n\nReaching the lower bound proves that the total cost is minimal. If the\nforward placement contains a multi-warp region barrier, evaluate the\nreverse placement to see whether it improves the second score. Keep the\nforward placement when both scores tie.\n\nStacked on #12827."
+    },
+    {
+      "sha": "7a4b3e2784b46e34fa8f2dc576c1aea3631fdfac",
+      "comment": "用 Membar cut solver 放置 cluster barrier（#12827）。删除 NVIDIA ClusterBarrierInsertion.{h,cpp}（runClusterBarrierInsertion / runCrossCTAMBarrierInitSyncInsertion），替换为新的 lib/Analysis/Membar/ClusterBarrierModel.{h,cpp}：以 SharedAccessModel 为基础，describe 采集 shared access、payloadWrite、async 标记、initDeadline（WarpSpecializeOp/ClusterBarrierOp/opaque sync/GSan multicast barrier arrive 需要 ClusterFenceMbarInit 或 ClusterBarrier）；recordCompletions 跟踪 async 访问的完成观测点（TMAStoreWait/WarpGroupDotWait/TCGen5Commit/async_wait/wait_barrier 等），使 rendezvous 能保护后续复用；discoverDemands 对外部 CTA 访问或跨 allocation 冲突、kernel exit、init deadline 发需求，并用 AllocationOrigin::{Any,Same,Different} 的 mayOverlap 区分是否同 allocation frame。Pass.cpp 的 placeClusterBarriers 对 two-CTA kernel 在 return 前预插 ClusterBarrierOp 让 solver 计入 freeTMAlloc 需求，pass 按 ({ClusterBarrier, ClusterFenceMbarInit}) actions 在 roles 间求解。emit 支持 ClusterFenceMbarInit（写 FenceMBarrierInitReleaseClusterOp，已有 barrier 则置 relaxed）与把已有 ClusterBarrierOp 改为 relaxed。ClusterBarrierMbarAllocator 改为按 warp role 分配 mbar slot 并支持 noinline callee 按调用角色索引（ClusterOpsToLLVM 的 getClusterBarrierMbarPtr 用 WarpGroupBarrierIdOp 选 slot）。MBarrierUtilities 新增 subview origin 跨 CTA 检测；Ops.cpp ClusterBarrierOp verifier 放宽。测试大量更新（membar-cluster.mlir、tritonnvidiagpu_to_llvm.mlir、gsan 等）。属高风险的正确性重构，跨 cluster barrier、mbarrier init、GSan、ConSan。",
+      "tags": [
+        "refactor",
+        "high-risk",
+        "membar",
+        "cluster-barrier",
+        "nvidia-backend",
+        "analysis"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动主要在 include/triton/Analysis/Membar/ClusterBarrierModel.h、lib/Analysis/Membar/{ClusterBarrierModel.cpp,Pass.cpp,CFGBuilder.cpp,AsyncFenceModel.cpp,SmemModel.cpp,Solver.cpp,TmemModel.cpp}、lib/Dialect/TritonNvidiaGPU/、third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/ 与 NVIDIA 测试。Cluster barrier 与 mbarrier 是 NVIDIA cluster 语义；Ascend 后端无 cluster 概念，由 bishengir codegen。include/triton/Analysis/Allocation.h 删除了 getAliasedArgumentIndices/isExplicitBuffer/argumentAliases、BufferRegion.h 的 mayOverlap 新增 AllocationOrigin 参数，这些是通用分析层变更，若 Ascend 代码引用这些符号需适配，但按架构上下文 Ascend 仅部分复用通用分析。",
+        "testing": "无影响。lit 测试均为 NVIDIA cluster/gsan/ConSan 专属。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ANALYSIS] Place cluster barriers with the Membar cut solver (#12827)\n\nUse the Membar CFG and cut solver to place cluster barriers for\nshared-memory reuse, mbarrier initialization, and kernel exit. Solve\nonce per multi-CTA kernel across warp-specialized roles and noinline\ncalls, using the same physical footprints, CTA routing, and site costs\nas proxy fence placement.\n\nFor example, a multicast TMA load can reuse the shared scratch of a\nlayout conversion. One full cluster barrier before the load can both\norder that reuse and publish the load’s completion counter. When only\nthe counter needs publication, the solver can use\n`fence.mbarrier_init.release.cluster` followed by a relaxed cluster\nbarrier. For asynchronous accesses, the model tracks where completion is\nobserved so the rendezvous can protect subsequent reuse.\n\nCluster barriers in noinline helpers use the calling warp role’s\nmbarrier slots. Each role must be able to make progress when its CTAs\nadvance together. The new model also orders GSan’s shadow counter\ninitialization before a matching peer arrival. This replaces the\ncluster-specific forward flow and its call-summary bookkeeping.\n\nStacked on #12823. The first commit carries #12824 because removing a\nredundant cluster rendezvous exposes a race in ConSan’s deadlock check."
+    },
+    {
+      "sha": "1f67eaea1e42cf7a49338933408d741ed4722477",
+      "comment": "Membar 站点成本改为按 uniform branch 频率加权（#12823）。原实现把每个站点按全代价计，当 block-uniform if/else 两臂都读同一 shared tile 时，solver 会偏好 fork 前一个 barrier 而非两臂各一个；实际上两臂互斥只执行一个，两臂 barrier 与 fork 前 barrier 代价应相同。新实现引入 presburger::Fraction 与 BlockWeight：对每 region 做 RPO，incoming weight 在互斥后继间均分、在 join 处求和，loop depth 单独记录并做 4^depth 缩放；normalizeCosts 用 GCD（gcd(numerators)/lcm(denominators)）归一整图成本为整数，溢出时统一丢弃低位、向上取整保持正。MembarCFGBuilder 构造改为持有 module 并自建 callers/blockWeights/insertionCosts，删除 getCalleeWeights 的 legacy 传递路径。Solver 的 tie-break 改为按 loopDepth 比较。测试更新 test-membar.mlir、test-membar-ttng.mlir、proxy_fence_insertion.mlir、membar.mlir 等多处期望（barrier 从 fork 前下沉到各 arm）。属求解器成本模型改进，会改变生成的 barrier 位置。",
+      "tags": [
+        "performance",
+        "refactor",
+        "medium-risk",
+        "membar",
+        "nvidia-backend",
+        "analysis"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 include/triton/Analysis/Membar/{CFGBuilder.h,Pass.h}、lib/Analysis/Membar/{CFGBuilder.cpp,Pass.cpp,Solver.cpp} 与 NVIDIA/AMD membar 测试。这些是 NVIDIA Membar 图求解器基础设施，Ascend 不使用。",
+        "testing": "无影响。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ANALYSIS] Weight Membar sites by uniform branch frequency (#12823)\n\nA block-uniform `if/else` executes exactly one arm. When both arms read\na shared tile written before the branch, a barrier immediately before\neach read costs one rendezvous per execution. The solver previously\ncounted both sites at full cost and favored a single barrier before the\nsplit.\n\nDivide the incoming weight equally among mutually exclusive successors\nand sum their shares at joins. The two arm-local barriers now tie the\nbarrier at the fork, so the solver can defer synchronization to each\nconsumer. The shared CFG builder applies this rule to CTA and warp\nbarriers, TMEM waits, and proxy fences.\n\nTrack loop depth separately so the solver can distinguish a loop exit\nfrom a cheaper arm within the loop. Normalize rational weights by their\ngreatest common divisor per graph to give the solver integer costs."
+    },
+    {
+      "sha": "b13d89fae4b1aee184dd41f9a50e4085f27ace09",
+      "comment": "用 Membar cut solver 放置 async proxy fence，替换原函数摘要式 ProxyFenceInsertion（#12811）。新增 lib/Analysis/Membar/AsyncFenceModel.{h,cpp}：跟踪 generic/async shared payload 的物理 footprint 与 crossCTA 属性（multicast TMA、two-CTA MMA、TMEMCopy、CLC、subview origin）；recordCompletedWrites 对 cp.async（任何 copy barrier）与 st.async（命名 barrier）沿 CFG 传播已提交写，在 async_wait/warp_yield/warp_return/wait_barrier 观测点记录，确保在 copy 完成前插入的 fence 不能满足后续对该 destination 的 TMA read；applyFixed 处理 ClusterProxyFence 全清、CTAProxyFence 仅在已 ClusterAcquire 后清除。ProxyFenceInsertion.cpp 从 ~140 行 frontier 状态机精简为调用 membar::placeProxyFences。同时删除 include/triton/Analysis/MemoryFrontier.h。SharedAccessModel 抽到 SmemModel.h 供 AsyncFenceModel/ClusterBarrierModel 共用，TMAUtils 新增 getTMASubviewCTAMask 统一 verifier 与 lowering 的 subview CTA mask（Lib 中 SharedMemoryObject::getMaskSpanOffsetsAndBlocks 改用之）。MembarCFGF 泛型化（MembarCFG<Facts>、Node<Facts>、WarpEdge 枚举与 worker 进入/退出语义、gap 概念）。测试大量新增（fence 在 callee/arm/role 间共享覆盖、warp-specialize 默认角色 fence 覆盖 parent store 等）。属高风险正确性重构。",
+      "tags": [
+        "refactor",
+        "high-risk",
+        "membar",
+        "proxy-fence",
+        "nvidia-backend",
+        "analysis"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 include/triton/Analysis/Membar/{AsyncFenceModel.h,CFGBuilder.h,Dependencies.h,Pass.h,SmemModel.h,Solver.h,TmemModel.h}、lib/Analysis/Membar/、lib/Dialect/TritonNvidiaGPU/ 与 third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/。async proxy fence 是 NVIDIA TMA/cp.async 语义；Ascend 不使用 TritonGPUToLLVM 与 TMA。include/triton/Analysis/MemoryFrontier.h 删除属通用分析层清理，若 Ascend 引用需适配，但按上下文 Ascend 不依赖该 frontier 头。",
+        "testing": "无影响。lit 测试为 NVIDIA proxy fence 专属。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ANALYSIS] Place async proxy fences with the Membar cut solver (#12811)\n\nReplace the function-summary pass for `ttng.fence_async_shared` with the\nCFG builder and cut solver used for SMEM barriers and TMEM waits. Fence\nplacement runs once per kernel across warp-specialized roles and\nreachable noinline callees. This lets one fence cover multiple\nconsumers. For example, when two workers read a tile written before\n`warp_specialize`, a single fence before the launch can cover both\nreads.\n\nThe fence model checks physical shared-memory overlap and tracks where\n`cp.async` and `st.async` writes may complete. A fence issued before a\ncopy completes cannot satisfy a later TMA read of its destination.\n\nFence placement, cluster barrier insertion, and TMA verification now\nshare the cross-CTA routing rules for subviews. For a peer write\nfollowed by a local TMA read, the solver can choose a cluster fence on\nthe writer side or a CTA fence after the owner’s cluster acquire."
+    },
+    {
+      "sha": "fd924064beaf9e68bc67a6a3c3214c2af8b85d52",
+      "comment": "在 #12752 引入的 CFG-based Membar placement 之上，进一步支持沿 tt.call 深入 noinline callee：新增 BufferRegionAnalysis::getKernelFootprint 合并同一 footprint 在 caller 分配帧中的多种物理放置；MembarCFGBuilder 改为接受一组 SMemModel 与 calleeWeights，通过 calleeWeights（由调用点 block weight 累加）为每个 callee 计算插入成本，并让每个 warp role 独立建图、每个可达 callee 一份拷贝、return 连回所有调用点续点；SMemModel 新增 followCalls 开关，getAllocationSlices 在 followCalls 时走 kernel footprint 路径；hasRegionLocalUses 改为可穿透 call 追踪 descriptor 参数/返回值；同时从 OptimizeThreadRegions.cpp 中把 getTensorCallbackOps 移入 tt::Utility（供 Membar 复用），并对 map/reduce/scan 回调（每元素标量执行）标记为无 collective 插入点。还清理了 Boundary::Clean 语义并调整多处依赖判定。该变更显著提升跨函数边界的同步精度（可在 helper 内部插入 barrier/wait，避免不必要的 call-site 屏障），但涉及 Place/CFG/Solver 多点耦合，逻辑复杂度较高，且依赖 Allocation/BufferRegionAnalysis 的 frame offset 与 predecessor 信息正确性；此外大量 lit 测试期望随之更新，说明行为变化面较广。",
+      "tags": [
+        "feature",
+        "refactor",
+        "high-risk",
+        "analysis",
+        "membar"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更集中在 include/triton/Analysis/Membar*、lib/Analysis/Membar*、lib/Analysis/BufferRegion.cpp、lib/Dialect/Triton/IR/Utility.cpp 的 callback 辅助，以及 NVIDIA TMEM/GPUMembar lowering。triton-ascend 不消费 Membar 分析，也不走 TritonGPU→LLVM 路径（由 bishengir 完成最终 codegen）。",
+        "testing": "无影响。相关 lit 测试位于 test/Analysis/、test/Conversion/tritongpu_to_llvm*.mlir、test/TritonNvidiaGPU/，Ascend 不参与。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Analysis] Connect noinline calls in the SMEM/TMEM placement graph (#12803)\n\nStacked on #12752.\n\nMembar currently treats a noinline call as a synchronization boundary.\nThis change follows `tt.call` into the callee and carries pending\nshared-memory and tensor-memory accesses back to the caller. A wait or\nbarrier can then land at the operation that needs it, including inside a\nhelper.\n\nEach warp role gets its own graph, with one copy of each reachable\ncallee. Returns connect to all call-site continuations in that graph.\nShared-memory footprints include the possible kernel-frame offsets of\neach callee, and helpers called per element have no collective insertion\nsites.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "include/triton/Dialect/Triton/",
+          "lib/Dialect/Triton/"
+        ],
+        "recommend_refresh": true
+      }
+    },
+    {
+      "sha": "c421e6dbb897dee3d8c25378b82cef5cb74f4b12",
+      "comment": "核心分析重构：#12752 将 Membar 从传统的 forward-flow 数据流分析（MembarAnalysis/ModuleMembarAnalysis）迁移到基于每个 function/WS role 的 CFG 建图 + 有向多重割求解。新增 include/triton/Analysis/Membar/{CFGBuilder,Dependencies,Pass,Solver,SmemModel,TmemModel}.h 与对应 .cpp；把原 Membar.h 中庞大的 AllocationSlice/BlockInfo/IssuerSummary 等迁到 SmemModel.h，把 TMEM 相关从 TMemBarrierInsertion.cpp 抽出为 TmemModel；Solver 实现 primal–dual 近似算法，插入成本为 4^loopDepth，可返回可行解与下界（一致即最优），并新增 302 行 gtest（MembarCutTest）。TritonGPU 的 ThreadPredicateOp 由带有保守 effects 改为 Pure；BufferIndexAnalysis 用 MLIR CFGLoopInfo/containsIrreducibleCFG 替换自实现的可归约性检测；TMemBarrierInsertionPass 精简为调用 membar::placeBarriers(TensorMemory)；NVIDIA 后端将 membar 与 tmem_barrier_insertion 两 pass 合并到 triton-nvidia-gpu-membar（compiler.py 移除 add_tmem_barrier_insertion），并根据 usesTensorMemory 选择 Shared/SharedAndTensorMemory 模式；AMD 后端改为调用 placeBarriers，但在检测到 CondBarrierOp 时回退到旧分析。这是一次架构级的大改动，显著提升插入点选择质量，但删除/迁移了大量公共头文件内容（AllocationSlice、BlockInfo 等仍在 SmemModel.h），对下游依赖这些头文件的 out-of-tree 代码（含 Ascend 若误用）属破坏性变更；同时 Pass 名称与管线顺序改变，需关注后端管线依赖。",
+      "tags": [
+        "refactor",
+        "feature",
+        "performance",
+        "high-risk",
+        "analysis",
+        "membar"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更主体在 include/triton/Analysis/Membar* 与 lib/Analysis/Membar*、TritonGPU 方言 ThreadPredicateOp 定义、NVIDIA/AMD 的 Membar lowering 及后端 compiler.py/pass 管线。虽然触及 include/triton/Dialect/TritonGPU/IR/TritonGPUOps.td 与 lib/Dialect/TritonGPU，但 Ascend 跳过 TritonGPU 布局阶段与 Membar，不消费这些 pass；亦不涉及 BaseBackend/DriverBase/entry_points/tt 方言契约。",
+        "testing": "无影响。变更的 lit/pytest 测试集中在 test/Analysis、test/TritonNvidiaGPU、test/Conversion/{amd,tritongpu*}、python/test/gluon/test_core.py、test/lib/Analysis/TestMembar.cpp 与 unittest/Analysis/MembarCutTest.cpp，均为 GPU 路径测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Analysis] Place barriers and TMEM waits on the program CFG (#12752)\n\n**For reviewers**\nDepends on #12745. This PR targets its branch so GitHub shows only the\nMembar changes.\n\nThe PR is split into 5 commits:\n- An NFC commit that splits Membar into SMemModel and TMemModel to\ncreate the graph\n- Two small commits with small placement changes to barriers/waits\n- The solver\n- The graph creation\n\n**Summary**\nWe build a CFG for each function / WS region. We will solve for these\nseparately.\nThis CFG has as vertices the ops that have some SMEM or TMEM effect, and\nas edges the execution order, together with backedges.\nWe mark edges by the cost of putting a barrier/tmem_wait there with the\nheuristic $\\mathrm{cost} = 4^{\\mathrm{loopDepth}}$ (i.e., assume every\nloop is executed 4 times).\n\nThen we iterate this graph, and find pairs of nodes that can have races.\nWe do this using a flow pass.\n\nWe model placement as a **weighted directed multicut**. A feasible\nplacement \\(S\\) inserts barriers and waits that satisfy every ordering\nrequirement, including a wait followed by a barrier for a cross-warp\nTMEM handoff. We minimize\n\n$$\n\\mathrm{OPT} = \\min_{S \\text{ feasible}} C(S),\n\\qquad\nC(S) = \\sum_{s \\in S} 4^{\\mathrm{loopDepth}(s)}.\n$$\n\nEach level of loop nesting makes an insertion four times as expensive,\nwithout requiring known trip counts. Directed multicut is NP-hard in\ngeneral, so we use a primal–dual heuristic that returns a feasible\nplacement \\(\\widehat S\\) and a lower bound \\(L\\) satisfying\n\n$$\nL \\le \\mathrm{OPT} \\le C(\\widehat S).\n$$\n\nWhen the bounds match, the placement is provably optimal under the\nloop-depth cost model. They matched for all 28 kernels in our\nevaluation."
+    },
+    {
+      "sha": "ccda1a71d99c51ccbdafc88092e30133c3a57109",
+      "comment": "将 MembarAnalysis::mayNotifyPeer 由基于递归 effects 的启发式判断改为按 op 类型精确分类（TypeSwitch）：ThreadPredicateOp、AtomicOpInterface/GridDependencyLaunchDependentsOp 视为可通知 peer；AtomicLoadOp/AtomicPollOp/GSanAtomicLoadOp 视为不可（避免因建模为写而消除）；LocalAtomicScatterRMWOp 仅在非 region-local dst 时可通知；MBarrierOpInterface 仅在其 barrier 类 shared 写非 region-local 时可通知；非 pure 的 ElementwiseInlineAsmOp/InlineAsmOp/ExternElementwiseOp 视为可通知；其余默认 false。同时 lib/Analysis/CMakeLists.txt 增加 TritonInstrumentIR 依赖。这样在 mbarrier wait 之后，普通 store 不再触发不必要的 CTA rendezvous，而对 peer 可见的原子/mbarrier/grid 通知和 opaque code 仍保留排序。变更小、方向明确（减少多余 barrier），属性能优化兼 bugfix 性质；新增测试覆盖 wait 后 store + atomic load/store 的组合与 peer shared atomic scatter 场景。",
+      "tags": [
+        "performance",
+        "bugfix",
+        "low-risk",
+        "analysis",
+        "membar"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅修改 lib/Analysis/Membar.cpp 的 mayNotifyPeer 分类与 CMake 依赖，以及 test/Analysis/test-membar-ttng.mlir。属 Membar 分析内部逻辑，Ascend 不参与。",
+        "testing": "无影响。新增/调整测试位于 test/Analysis/，Ascend 不参与。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Analysis] Classify peer notifications after mbarrier waits (#12745)\n\nClassify which operations can notify another warp-specialized partition\nafter an mbarrier wait. This avoids a rendezvous before ordinary stores\nwhile preserving ordering for peer-visible atomics, mbarrier signals,\ngrid notifications, and opaque code.\n\nStacked on #12744."
+    },
+    {
+      "sha": "21a672776a876daad40197d706aae868e49ad4f8",
+      "comment": "AMD 后端 HIPBackend.is_within_2gb 的优化：原先为检查 arg 是否为 torch.Tensor 而惰性 import torch（并用类变量缓存可用性），这会在每次全新编译 worker 中付出加载 PyTorch 的代价。改为通过遍历 type(arg).__mro__ 判断某基类的 (__module__, __qualname__) 是否为 ('torch','Tensor')，从而在不 import torch 的前提下识别 torch.Tensor 及其子类（如 Parameter），并保留 ptr_range() 与 untyped_storage().size() 检查；同时移除 _torch_available 状态。新增回归测试 test_hip_pointer_range_without_importing_torch，通过 monkeypatch builtins.__import__ 断言特化过程不得 import torch，并覆盖 32 位有符号大小边界（2^31-1 通过、storage 大小 2^31 的 view 不通过）。变更局限于 third_party/amd，属性能修复，风险低；但依赖 __qualname__/__module__ 字符串匹配，若 PyTorch 改变类元信息会失效（有测试兜底）。",
+      "tags": [
+        "performance",
+        "bugfix",
+        "low-risk",
+        "amd",
+        "runtime"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 third_party/amd/backend/compiler.py 的 HIPBackend.is_within_2gb 及 python/test/unit/runtime/test_specialize.py，属 AMD 平台特定实现，Ascend 不复用。",
+        "testing": "无影响。新增测试为 AMD HIP 专用，Ascend 不参与。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Avoid importing torch for pointer range specialization (#12836)\n\nHIP pointer specialization imports PyTorch to check whether an argument\nis a tensor. That pays the cost of loading PyTorch in every fresh\ncompiler worker, even for callers that pass their own pointer objects.\n\nRecognize `torch.Tensor` by its qualified name in the argument’s class\nhierarchy. This preserves the storage-size check for tensor subclasses\nand the existing `ptr_range()` handling for custom pointers. The\nregression test rejects any attempt to import PyTorch during\nspecialization and covers the signed 32-bit size boundary."
+    },
+    {
+      "sha": "94efac2feff0907be550bcc1925142b09506fd53",
+      "comment": "编译期优化：去除 Triton/TritonGPU/TritonNvidiaGPU/NVGPU/NVWS Gluon 等共享方言头文件中对 Func/Tensor/Math/GPU/Arith/SCF 的传递性 include，改为在真正使用其 op 定义的 .cpp 中显式 include，并用前向声明替代仅需类型名的共享 API（如 AxisInfo.h 前向声明 scf::ForOp，Triton/IR/Utility.h 前向声明 arith::CmpIOp/scf::ForOp，TritonGPU/Transforms/Utility.h 前向声明 scf::ForOp/IfOp/WhileOp 等）。同时在 bin/RegisterTritonDialects.cpp、python/src/ir.cc、各后端与 proton 的 .cpp 中补齐所需头文件。commit 称构建时间由约 40 分钟降至约 32 分钟。改动面广（78 个文件）但机械性强，属纯构建/头文件整理；主要风险是遗漏 include 或前向声明不足导致下游编译失败，尤其对依赖这些共享头文件传递性包含的 out-of-tree 代码（含 triton-ascend）可能暴露隐藏依赖——若 triton-ascend 的 C++ 源码此前依赖 Triton 方言头文件间接引入 Arith/SCF/Func 等，则需补 include。",
+      "tags": [
+        "chore",
+        "performance",
+        "medium-risk",
+        "build",
+        "dialect"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（不改变任何接口签名或 IR 语义）。但需注意：该 commit 移除了 include/triton/Dialect/Triton/IR/Dialect.h、TritonGPU/IR/Dialect.h、TritonNvidiaGPU/IR/Dialect.h、include/triton/Analysis/AxisInfo.h、include/triton/Dialect/Triton/IR/Utility.h、TritonGPU/Transforms/Utility.h 中对 Arith/SCF/Func/Math/GPU/Tensor 的传递性 include。triton-ascend 的 third_party/ascend C++ 代码若消费 tt 方言头文件（属必然影响路径 include/triton/Dialect/Triton/）并依赖这些被移除的间接包含，则编译时可能报缺失 op 类型定义，需要在自己的源文件中显式 include 相应 MLIR 头文件。此属编译期适配而非功能契约变更，且 Ascend 实际构建基于自身 patch/子模块，故按规则判为不影响功能。",
+        "testing": "无影响。变更测试均为上游 C++ 编译期，不改动任何 lit/pytest 期望。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BUILD] Trim transitive MLIR dialect includes (#12817)\n\nFollow-up to #12816.\n\nReduce compilation time from ~40 mins to ~32 mins.\n\n- Remove transitive Func, Tensor, Math, GPU, Arith, and SCF includes\nfrom shared Triton dialect headers. Include the standard headers where\ntheir operation definitions are used.\n- Use forward declarations for shared APIs that only name Arith and SCF\noperation types.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "include/triton/Dialect/Triton/",
+          "lib/Dialect/Triton/"
+        ],
+        "recommend_refresh": true
+      }
+    }
+  ],
+  "architecture_based_on_sha": "1c53e566ef8f719ff9b69132a72ad943e5409492",
+  "architecture_generated_at": "2026-11-15T21:06:50.425498+08:00"
+}
