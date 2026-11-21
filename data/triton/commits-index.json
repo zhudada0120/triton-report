@@ -1,4 +1,56 @@
 {
+  "59231e1093a6a66fed065821231d488cc881b123": {
+    "date": "2026-11-21",
+    "msg": "[GPU] Canonicalize ttg.warp_id in single-warp execution regions (#12885)"
+  },
+  "b19497e93da8fbd4d6291a7b5e6b639de3ab3d42": {
+    "date": "2026-11-21",
+    "msg": "[AMD] Build LLVM @1cc8189160e9 for CodeGen (#12884)"
+  },
+  "c7b5184dd6cd49ae8017471e6509bfe29d81a869": {
+    "date": "2026-11-21",
+    "msg": "[FPSAN] compact_exp2 and probability_cast for shard-invariant attention  (#12881)"
+  },
+  "fef6213461184038ccfeef34b9f5f956c777540e": {
+    "date": "2026-11-21",
+    "msg": "[NVIDIA] Use K96 automatically for eligible single-CTA scaled FP4 MMA (#12875)"
+  },
+  "08272053e7dd011e873a8bdb1ffaf13b313e9a53": {
+    "date": "2026-11-21",
+    "msg": "[ConSan] Model implicit cluster barriers during shared-memory reuse (#12868)"
+  },
+  "df114c39e0d0836a63bde23d8a0cfd7a409ae9f3": {
+    "date": "2026-11-21",
+    "msg": "[Analysis] Prove ring cursors with matching steps disjoint (#12866)"
+  },
+  "1434128f95031223ebfce4b91e761a83aad9bd91": {
+    "date": "2026-11-21",
+    "msg": "[ConSan] Only fence visible cp.async writes (#12812)"
+  },
+  "30770edf7b58a032f0d19788474a1c4c4bc02e65": {
+    "date": "2026-11-21",
+    "msg": "[NVIDIA] Elide the warp-zero predicate for single-warp tcgen05 MMA (#12876)"
+  },
+  "684bbe34303f5b4668aeddd7a8148725eb6ccdd1": {
+    "date": "2026-11-21",
+    "msg": "[BAKCEND] Expose bulk L2 prefetch in NVIDIA Gluon (#12867)"
+  },
+  "a251a5139587c97c78b38dccc8a8709134cbc106": {
+    "date": "2026-11-21",
+    "msg": "[Pipeliner] Derive power-of-two cp.async slots from the induction variable (#12848)"
+  },
+  "debc9aa7ad2469ff372a31357ea45bdb817a9b0b": {
+    "date": "2026-11-21",
+    "msg": "[NVIDIA] Keep TMA store sources live through the completion wait (#12865)"
+  },
+  "a81d69119886723fee958573ef5c7c6eb1b2bc4f": {
+    "date": "2026-11-21",
+    "msg": "[NVIDIA] Fix the axis order of transposed NVMMA shared layouts (#12864)"
+  },
+  "5d9e2653c93246ddc0ba7a2b3fee6742b265998d": {
+    "date": "2026-11-21",
+    "msg": "[NVIDIA] More comprehensive fix for the accumulator optimization (#12863)"
+  },
   "e005ef309ebd42821f15994d4813476dcc379541": {
     "date": "2026-11-20",
     "msg": "[NVIDIA] Fix f64 to bf16 RTZ cast before SM90 (#12761)"

@@ -1,0 +1,52 @@
+{
+  "date": "2026-11-21",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-11-22T06:31:49.173692+08:00",
+  "daily_summary": "当日两项变更集中在 Ascend 后端的设备打印（tt.print）与 CANN sort 测试维护上。commit 6c006e2 重构并大幅增强了 DevicePrint 的地址物化逻辑：将 DevicePrintOffsetRewrite 重命名为 DevicePrintRewrite，在 TritonToLinalg 之前新增 prepareDevicePrintOperands（在 addptr 仍携带 pointee 类型时把指针表达式展开为 i64 字节地址，覆盖 int_to_ptr/bitcast/addptr/lane 重排/tensor select 等，按逻辑行主序逐元素打印），并在 lowering 后由 postprocessDevicePrints 复用原有 offset 重写；同时把 isSigned 属性从 tt.print 透传到 device print 声明函数，修复有符号性丢失问题。commit ec259678 则从 CANN sort 单测中剔除不支持的 bool 输入，简化测试逻辑。整体方向是提升设备打印的正确性（完整 64 位地址、逻辑序、符号性）并收敛已知不支持的测试用例。",
+  "test_impact_summary": "两个 commit 的测试策略影响互补且明确：commit 6c006e2 属于功能正确性修复，改动核心 lowering 逻辑并新增了 test_device_print_pointer_addresses.mlir（覆盖动态 offset、指针参数 tensor offset、字节级 offset、bitcast 分支、多维度逻辑序、不同 base 的 select、混合指针/数值操作数的符号性分组）以及更新 test_device_print_offset_rewrite.mlir 断言 isSigned 属性，测试覆盖较为充分，但新增的 PrintAddressBuilder 失败路径（opaque 指针 tensor 无法物化）和极端数据类型（指针指针、非 int/float 的 pointee）尚无对应用例，建议补充失败路径与边界用例；commit ec259678 通过删除 bool 参数化简化已知不支持用例，属于测试维护，无需新增看护点，但需确认 bool sort 是暂不支持而非回归，避免后续误判覆盖率。总体而言，当日变更引入了需要重点看护的新 lowering 路径（设备打印地址物化），现有新增 MLIR 单测基本覆盖主路径，但失败诊断与更多指针表达式组合值得持续补充。",
+  "commits": [
+    {
+      "sha": "6c006e2bb9fab6f0d9328a7eacfa75de7dc93e61",
+      "comment": "重构并增强 Ascend 后端设备打印（tt.print）的指针地址物化与符号性传递。实现上分两阶段：1) 在 TritonToLinalgPass::runOnOperation 中，于内存转换（inlinePointerCarryingCallees 之后、归一化之前）调用 triton::prepareDevicePrintOperands，新增 PrintAddressBuilder 将每个指针操作数在 addptr 仍携带 pointee 类型时递归展开为 i64 字节地址——覆盖 int_to_ptr（取 src）、bitcast（穿透）、addptr（按各自 pointee 宽度缩放 offset，正确处理 i8 字节偏移与跨 bitcast 的不同宽度）、以及 Splat/Unsplat/Broadcast/ExpandDims/Reshape/Trans/Cat/Join/Split/Gather/arith.select/tensor 系列等 lane 重排算子（克隆原 op 的 indices/attrs/编码再改类型），并对 tensor 地址用 scf.buildLoopNest 按逻辑行主序逐元素 tensor.extract 后打印；对无法物化的 opaque 指针 tensor 明确 emitOpError 并中断 walk，进而 signalPassFailure。2) 在 lowering 后 finalizeLoweredModule 中由 postprocessDevicePrints 复用原有 offset 重写（重命名 rewriteOneFunc→rewriteOffsetPrints）。同时修改 TritonOpConverter 的 DevicePrintConverter，用 adaptor.getArgs() 取转换后类型，并把 op.getIsSignedAttr() 作为属性透传到生成的 device print 声明函数，修复此前有符号性在每个操作数上丢失的问题；打印被切分为连续数值组与指针组，各组 isSigned 用 slice 精确保留原始位置。潜在风险：preparePointerOperands 会改写 IR（erase 原 PrintOp 并重建多个 PrintOp/Call），其位置敏感（需在内存转换前）且克隆 lane 重排 op 时若 operand 中混有非指针值会被丢弃映射（仅映射指针 operand），对含非指针 operand 的 select/from_elements 等可能产生语义差异，需依赖验证器与后续测试确认；此外 number 类型 pointee 以外的指针（如 pointer-to-pointer）在 addOffset 中以 8 字节处理，假设 64 位指针，若目标平台指针宽度不同则有偏差。整体是面向正确性的功能增强，但触及核心 lowering 的 IR 改写，回归面较大。",
+      "tags": [
+        "bugfix",
+        "feature",
+        "refactor",
+        "medium-risk",
+        "TritonToLinalg",
+        "device-print"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "变更修改了 DevicePrintConverter 与 lowering 阶段的 IR 形态（新增属性透传、指针地址展开为 i64、按逻辑序逐元素打印），并新增/重命名了源文件，必须更新与新增 MLIR 单测：已有 test_device_print_offset_rewrite.mlir 补了 isSigned 断言，新增 test_device_print_pointer_addresses.mlir 覆盖主路径。但仍缺少失败路径（opaque 指针 tensor 导致 pass failure）与边界场景（pointer-to-pointer pointee、混合非指针 operand 的 lane 重排、Splat/Broadcast/Trans 等更多组合）的用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/test_device_print_pointer_addresses.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/test_device_print_offset_rewrite.mlir",
+          "third_party/ascend/lib/TritonToLinalg/DevicePrintRewrite.cpp",
+          "third_party/ascend/lib/TritonToLinalg/TritonOpConverter.cpp"
+        ]
+      },
+      "message": "Print full pointer addresses and preserve device print signedness (#3304)\n\nMaterialize i64 byte addresses before memory conversion and print pointer tensors in logical element order. Copy the signedness entry for each operand to every device print declaration.\n\nStage3-Profile: b8b8e96550e073ffb0ab017b9c98e7bf0131f9bc585b41a33ae047f334c61c7e\n\nStage3-Original: 20ebbba9c695d5353488d3516d54f1d5f3c43310\nStage3-Main: afc683eb80e60e05aa88e792a85e40706a274328"
+    },
+    {
+      "sha": "ec25967801058ea70b93782c7192af4d7c89ec6d",
+      "comment": "从 CANN sort 单测中剔除不支持的 bool 数据类型。此前 test_sort_2d / test_sort_3d 在 dtype 参数中包含 'bool'，并为此走特殊分支：用 test_common.generate_tensor 生成 numpy 数组，手动 np.sort（descending 时用 [:, ::-1].copy() 反转），再 torch.from_numpy(...).npu() 作为参考结果，绕开设备端 torch.sort（因为 CANN sort 不支持 bool）。本次直接删掉该分支与 numpy 依赖，参数化为 ['int8','int16','float16','float32','bfloat16']，测试逻辑统一为 generate_tensor(...).npu() + torch.sort(...)[0]。这是测试维护型改动，反映 CANN sort 对 bool 的已知不支持，避免测试掩盖真实能力边界并简化用例；风险很低。建议后续若 CANN 支持 bool sort，再恢复参数并在内核/后端侧补齐支持，同时可用 pytest.mark.skip 或 xfail 显式标注而非直接移除，以保留能力追踪。",
+      "tags": [
+        "test",
+        "low-risk",
+        "pytest_ut",
+        "sort"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "直接修改了 existing 测试的参数化集合（移除 bool）与实现分支，测试内容本身即变更对象；需确认移除符合 CANN 当前能力（无回归），并评估是否需要以 skip/xfail 形式显式记录 bool sort 不支持，避免覆盖率信息丢失。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_sort.py"
+        ]
+      },
+      "message": "[ascend](test) Exclude unsupported bool inputs from CANN sort tests (#3287)\n\nSigned-off-by: lichangdongtw <68023558+lichangdongtw@users.noreply.github.com>\n\nStage3-Profile: b8b8e96550e073ffb0ab017b9c98e7bf0131f9bc585b41a33ae047f334c61c7e\n\nStage3-Original: 408bd0b020773dbe19529cce3d1074354cb7e07d\nStage3-Main: afc683eb80e60e05aa88e792a85e40706a274328"
+    }
+  ],
+  "architecture_based_on_sha": "ee15e295649ccf85b4e4b78316c736d00365c1a5",
+  "architecture_generated_at": "2026-11-15T21:06:50.427270+08:00"
+}

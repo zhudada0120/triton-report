@@ -1,4 +1,12 @@
 {
+  "6c006e2bb9fab6f0d9328a7eacfa75de7dc93e61": {
+    "date": "2026-11-21",
+    "msg": "Print full pointer addresses and preserve device print signedness (#3304)"
+  },
+  "ec25967801058ea70b93782c7192af4d7c89ec6d": {
+    "date": "2026-11-21",
+    "msg": "[ascend](test) Exclude unsupported bool inputs from CANN sort tests (#3287)"
+  },
   "afc683eb80e60e05aa88e792a85e40706a274328": {
     "date": "2026-11-20",
     "msg": "[ssbuffer](fix) fix flash_varlen_fwd_kernel"

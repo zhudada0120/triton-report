@@ -1,0 +1,266 @@
+{
+  "date": "2026-11-21",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-11-22T06:31:36.973899+08:00",
+  "daily_summary": "当日变更主要集中在 NVIDIA Blackwell/Hopper 平台的 lowering 与 sanitizer 正确性：将 ttg.warp_id 的 canonicalization 下沉到方言并注册到 CanonicalizeLLVMIR 以修复单 warp 分区内的冗余 warp 谓词；为单 CTA scaled FP4 MMA 自动启用 K96；ConSan 建模隐式 cluster barrier 并只对可见的 cp.async 写做 proxy fence；Membar 通过环形游标与 power-of-two remui 证明 slot 不相交；TMA store 源存活期通过 wait deps 保证。另有 AMD LLVM pin 更新和 FPSan compact_exp2/probability_cast 新编码。",
+  "ascend_impact_summary": "当日全部变更均不触及 triton-ascend 的必影响路径（BaseBackend/DriverBase/后端发现/tt 方言定义/code_generator）。改动集中在 NVIDIA 专有 lowering（MMAv5、NVGPUToLLVM、TMA、ConSan/FPSan instrument 通过 NVIDIA hook 实现）、TritonGPU 的 NVMMA shared layout linear layout 转换、以及 pipeliner/Membar 的共享内存环形索引分析。其中 5 个 commit 修改了 lib/Analysis/Membar 与 BufferIndexAnalysis、Pipeliner LowerLoops、TritonGPU Dialect 与 LinearLayoutConversions，属于『可能影响』范围内 Ascend 部分复用的分析层，但由于 Ascend 不使用 TritonGPU 布局与 Membar 的 GPU shared-memory 模型（Ascend 走 TTIR→Linalg/HIVM），且改动均为通用行为增强而非破坏性签名变更，实际影响可忽略。",
+  "commits": [
+    {
+      "sha": "59231e1093a6a66fed065821231d488cc881b123",
+      "comment": "将 ttg.warp_id 在单 warp（含 num_warps=1 的 warp_specialize 分区）下折叠为 0 的能力，从 NVGPUToLLVM 的 lowering 里移到 WarpIdOp::canonicalize 中，并显式注册到 CanonicalizeLLVMIR pass。动机是 #9535 之后 partitions 先被 flatten，NVGPUToLLVM 的 canonicalizer 不再触发，导致 #12876 中 tcgen05 只对单 warp context 做特例。实现上用 maybeLookupNumWarps 判断 1 warp，通过 func dialect materializeConstant 生成 0 替换；CanonicalizeLLVMIR 现遍历 LLVM 与 NVGPU 两个方言的 canonicalization patterns 并额外注册 WarpIdOp 的。MMAv5 的 warp0 谓词相应变为无条件创建 WarpIdOp，由 canonicalizer 兜底。整体是干净的职责归位，风险低，但需注意与后端 NVGPUToLLVM 中已删除的 numWarps==1 分支的等价性，以及 WarpIdOpOffset 属性路径现在依赖 lookupNumWarps 而非无条件 nudiv。",
+      "tags": [
+        "refactor",
+        "bugfix",
+        "GPU",
+        "TritonGPU",
+        "NVGPUToLLVM",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[GPU] Canonicalize ttg.warp_id in single-warp execution regions (#12885)\n\n#12876 adds a special case to the `tcgen05` MMA lowering for contexts\nwith 1 warp. However, I would expect `WarpIdOp` to always canonicalize\naway in 1 warp partitions and shouldn't need a special case.\n\nIt turns out that `NVGPUToLLVM` has a canonicalization for this but\nsince #9535, it now runs after partitions have already been flattened so\nnever fires unless the entire kernel is single warp.\n\nThis PR moves the canonicalizer into `ttg.warp_id` itself, and also\nregisters that pattern to run during the `CanonicalizeLLVMIR` pass,\nwhich runs before warp specialization lowering when the partitions are\nstill distinct."
+    },
+    {
+      "sha": "b19497e93da8fbd4d6291a7b5e6b639de3ab3d42",
+      "comment": "仅更新 cmake/amd-llvm-build-info.json 的 LLVM pin：hash 换成 1cc8189160e9，仓库从 llvm/llvm-project 换成 triton-lang/llvm-project（CoExecScheduler 分支），用于 AMD CodeGen。属于构建配置变更，与 Ascend 的 LLVM 依赖无关。",
+      "tags": [
+        "chore",
+        "AMD",
+        "build",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Build LLVM @1cc8189160e9 for CodeGen (#12884)\n\nBump the LLVM build pin to llvm/llvm-project@293a85c048f7 with the\nCoExecScheduler."
+    },
+    {
+      "sha": "c7b5184dd6cd49ae8017471e6509bfe29d81a869",
+      "comment": "为 FPSan 引入 shard-invariant attention 所需的 compact_exp2 与 probability_cast：新增 tt.fpsan_compact_exp2 op（E(x)=(1+2^25)^x mod 2^32，128 个幂可编码进 FP8 一字节）与 tti.experimental_fpsan_probability_cast op（FP32↔FP8 打包/展开，携带奇数格式 marker 使 alpha 换算可交换）。FpSanitizer.cpp 中新增 CompactExp2Pattern、ProbabilityCastPattern，重构 emulateDotStep/loadScaledOperandK32 为 getMmaOperandPayload/getMmaScalePayload 并支持 TCGen5MMA(SCaled) 的 fpsan_probability 操作数属性（tti.fpsan_probability_a/b）。gluon_ir.cc 新增 create_fpsan_probability_cast 并让 create_tcgen05_mma(_scaled) 返回 result 以便打 attr。Gluon blackwell 前端新增 _mma_operand_format/_tag_probability_operands；Triton 前端 semantic 新增 fpsan_compact_exp2（非 fpsan 时退化为 exp2）。这是纯 FPSan instrumentation 的新功能，仅作用于 NVIDIA Blackwell 路径与 Gluon DSL；tt 方言新增 op 会改变 TTIR 契约，但 Ascend 不使用 FPSan 且该 op 不会由 Ascend 前端生成。",
+      "tags": [
+        "feature",
+        "FPSan",
+        "Gluon",
+        "TritonInstrument",
+        "NVIDIA",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。新增的 tt.fpsan_compact_exp2 仅在 FPSan instrumentation 开启且由 Triton/Gluon 前端显式调用时生成；Ascend 不启用 FPSan（fpsan 相关 lowering 位于 lib/Dialect/TritonInstrument + NVIDIA hook），semantic 中 fpsan_compact_exp2 在非 fpsan 下退化为 create_exp2，Ascend 复用上游 semantic 不受影响。",
+        "testing": "无影响。新增 python/test/gluon/test_fpsan.py 用例全部是 Blackwell 专有 Gluon 测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[FPSAN] compact_exp2 and probability_cast for shard-invariant attention  (#12881)\n\nOnline softmax can center the same score around different maxima when\nthe number of shards changes. The merge compensates with `alpha =\nexp2(local_max - global_max)`. An ordinary FPSan downcast mixes the\nweight before that correction, so equivalent FP8 implementations can\nproduce different signatures.\n\nThis adds an opt-in FPSan encoding that lets the correction commute with\nthe FP8 conversion. Call `fpsan.compact_exp2` for the centered\nprobabilities and their correction factors, then mark the cast and the\noperand that reads the probabilities.\n\n```python\nalpha = gl.fpsan.compact_exp2(old_max - m)\nweights = gl.fpsan.compact_exp2(scores - m[:, None])\np = gl.fpsan.probability_cast(weights, gl.float8e4nv, expect_zero=mask)\np_mem.store(p)\ntcgen05_mma(p_mem, v_mem, acc, a_type=\"fpsan_probability\", mbarriers=[done])\n```\n\nBoth `tcgen05_mma` and `tcgen05_mma_scaled` accept the tag. Use `b_type`\nfor a right operand, or `gl.fpsan.probability_cast(p, gl.float32)` to\nwiden in registers. The producer writes one byte per weight. The\nconsumer's static tag tells FPSan how to decode the byte it actually\nreads from SMEM or TMEM. This makes copies, aliases and intervening\nwrites observable through the existing memory operations and eliminates\nproducer tracing and probability shadow storage. In a separate Triton\nmerge kernel, compute the weight with `tl.fpsan.compact_exp2(local_max -\nglobal_max)`. Native execution uses the regular `exp2`, FP8 conversion\nand MMA.\n\n#### Encoding and limits\n\nThe compact FP32 exponential uses `E(x) = (1 + 2^25)^x mod 2^32`. Its\n128 distinct powers fit in a byte alongside a separate code for masked\nzero. Widening recovers the power multiplied by an odd format-specific\nmarker `t`. Thus `t E(s - m) E(m - M) = t E(s - M)`, and the signature\nrecords the FP8 cast. Other nonzero inputs map to a disjoint set of\nlossy codes. For a tagged block-scaled operand, FPSan applies the block\nscale to the expanded payload in the FP32 ring. Shard invariance assumes\neach token retains its scale across the comparison. Recomputing block\nscales from shard-dependent weights can change the quantization.\n\nEach `compact_exp2` call selects the compact algebra for that\nexpression. Exponent differences divisible by 128 hide a missing\ncorrection, and differences divisible by 64 hide a reversed correction.\nAccumulation can also cancel differences.\n\n#### Tests\n\n- Compare 1, 2 and 4 shards with an independent full-width integer\nreference for both SMEM operand positions and a reinterpreted TMEM score\nallocation, including a scaled MMA with alternating block scales. Check\nthe numerator and denominator, including masked tokens.\n- Check that missing and reversed corrections, ordinary `exp2` for the\nmerge correction, dropping a token, extra narrowing, overwriting the\ntile, omitting the consumer tag and using an ordinary cast change the\nresult for the test inputs. Compare against the uncast reference as\nwell.\n- Check E4M3 and E5M2 round trips across all 128 powers, masked zero and\nnative parity. Check ordinary `exp2` on the same input against its usual\nFPSan reference in the same kernel.\n- On GB300 the Gluon FPSan suite passed (267 passed, 118 skipped, 1\nexpected failure). Compute Sanitizer memcheck passed all six new cases\nwith zero errors. Four related lit tests and pre-commit passed.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "include/triton/Dialect/Triton/"
+        ],
+        "recommend_refresh": true
+      }
+    },
+    {
+      "sha": "fef6213461184038ccfeef34b9f5f956c777540e",
+      "comment": "在 MMAv5 lowering 中去除 useK96 需 twoCTAs 的限制，使 SM103 上单 CTA scaled FP4 MMA 也可自动选 K96；同时把单 CTA 情形的 B 侧 scale stride 校验从 min 2 提升为 min 4（因为单 CTA K96 需要 4 列 stride，packed 布局仍是 K64、padded 128 行 scale 布局可用 K96）。测试新增 single-CTA K96 的 NVFP4/MXFP4 用例并覆盖 64/128 scale rows 两种布局。属于 NVIDIA 专有 lowering 的性能/功能调整，改动面小且判定条件严格（只对 MXFP4、blockK%256==0、swizzle 128、tmem subslice 偏移精确匹配时启用）。",
+      "tags": [
+        "performance",
+        "NVIDIA",
+        "MMAv5",
+        "Blackwell",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Use K96 automatically for eligible single-CTA scaled FP4 MMA (#12875)\n\nEnable K96 for single-CTA scaled FP4 MMA on SM103 in the existing\nbackend lowering from #11438. With a K tile of 256, both CTA groups can\nissue 96 + 96 + 64. The decision belongs to the compiler and uses the\noperand descriptors and scale layout. The typed operation is identical\nunder FPSan. Reassociation can change floating-point rounding on\nhardware.\n\nA narrow RHS needs a different scale-stride check for the single-CTA\nform. With N=64, packing 64 scale rows into TMEM gives a two-column\nstride between successive scale words. Single-CTA K96 needs a\nfour-column stride. The packed layout uses K64, while a padded 128-row\nscale allocation can use K96. A regression exercises both layouts with\ndistinct powers of two for each scale group and checks both the product\nand the instruction count.\n\nThe GPU cases cover NVFP4 and MXFP4, K tiles of 128, 256 and 512, and N\ntiles of 64, 128 and 256. They compare eligible tiles bitwise with the\npaired-CTA result. GB200 uses K64 on the same source. A direct hardware\nprobe on GB200 raised an illegal instruction when forcing K96. [PTX\nISA](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#tcgen05-matrix-shape)"
+    },
+    {
+      "sha": "08272053e7dd011e873a8bdb1ffaf13b313e9a53",
+      "comment": "【变更意图】修复 ConSan（Concurrency Sanitizer）与 Membar 对共享内存复用顺序的不一致：Membar 依赖 atomic/reduce/layout conversion 等 op 在 lowering 时隐式发出的 cluster barrier 来保证共享内存复用的顺序，但 ConSan 只记录显式的 ttng::ClusterBarrierOp，因此在 lowering 已经同步过的情况下仍可能对后续复用同一段共享内存的访问报 outstanding access 误报。\n【实现方式】(1) 在 ConSanTargetHooks 新增虚方法 getClusterBarrierStages(Operation*) -> BarrierStages（默认返回空），由 ConSanNVIDIA 覆写为转发 ttng::getClusterBarrierStages（来自 Membar 分析）；(2) AuxDataMap 把原先的 internalClusterBarriers 列表替换为 operations 快照 SmallVector<pair<Operation*, BarrierStages>>，在 populateAndPassToWarpSpecialize 中遍历全部 op 记录其 barrier 阶段，并对有 barrier 或显式 ClusterBarrierOp 的 op 分配 cluster barrier slot；(3) instrumentMemoryOperations 从 entryPoint.walk 改为遍历快照，抽出 rendezvous lambda 在不同阶段插入 createClusterBarrierRendezvousCall：beforeMemoryEffects（或在显式 ClusterBarrierOp 时）在 op 前插入、betweenMemoryEffects 在 op 前（已发布本地 scratch 写之后）、afterMemoryEffects 在 op 之后插入，publishVisibility 取 stages.hasBarrier()；这同时消除了原来\"先收集 cluster barrier 再二次遍历插入\"的绕行做法。(4) PrepareConSanCaptures 在有 cluster barrier 的模块上，用 Analysis/CallGraph.h 的 CallGraph<int>::walk<PostOrder> 后序遍历调用链，若被调函数内部（含跨调用）存在显式或隐式 cluster barrier，则移除该函数的 noinline 属性，使 Gluon inliner 把私有 helper 内联、从而让 ConSan 沿执行流看到隐式 barrier。(5) CUDABackend 中把 gluon.add_inliner 调整到 add_prepare_consan_captures 之后，配合(4)的 noinline 移除生效。\n【潜在风险】(a) 依赖 CallGraph 遍历去 noinline 会改变函数的 inline 决策，可能影响 ConSan 模式下生成代码的形态（但仅在 consan 使能时）；(b) AuxDataMap 语义从\"仅记录 sanitizer 内部 barrier\"改为\"快照全部 op + barrier 阶段\"，getClusterBarrierSlot 之类按 op 查 slot 的调用点需与 operations 快照保持一致，否则可能拿不到 slot（此处对显式 ClusterBarrierOp 分支仍单独处理）；(c) BarrierStages 的字段语义（before/between/afterMemoryEffects 与 hasBarrier）与 Membar 分析强耦合，后续修改 Membar 阶段划分会同步影响 ConSan；(d) 仅 NVIDIA hook 实现了 getClusterBarrierStages，其他 target 默认为空，等价于保持旧行为，风险可控。\n【测试】新增 test_shared_reuse_after_implicit_cluster_barrier 覆盖 release/acquire/reduce 三种 atomic/reduction 隐式 barrier 下共享内存复用的场景，验证 ConSan 不再误报。",
+      "tags": [
+        "bugfix",
+        "test",
+        "low-risk",
+        "Analysis",
+        "TritonInstrument",
+        "consan"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更集中在 TritonInstrument 方言（ConSan/GSan 并发安全检测器）与 lib/Dialect/TritonNvidiaGPU/Transforms/ConSanNVIDIA.cpp、third_party/nvidia/backend/compiler.py，均不在 Ascend 后端的编译路径上：AscendBackend.add_stages 不走 prepare_consan_captures，NPU 后端不实现 ConSanTargetHooks。ConSanTargetHooks::getClusterBarrierStages 为带默认实现的虚方法（非纯虚），不会破坏 Ascend 侧任何子类编译；AuxDataMap.operations 为 ConSan 内部数据结构，Ascend 不消费。include/triton/Dialect/TritonInstrument/IR/Utility.h 新增 include triton/Analysis/Utility.h 仅在编译上游 C++ 时被引入，对 Ascend 无接口语义变化。",
+        "testing": "无影响。新增测试位于 python/test/gluon/test_consan.py，属于 Gluon/ConSan 测试，Ascend 不使用 Gluon/ConSan 路径。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ConSan] Model implicit cluster barriers during shared-memory reuse (#12868)\n\nMembar relies on cluster barriers emitted by atomics, reductions, and\nlayout conversions to order reuse of shared memory. ConSan only records\nexplicit cluster barriers, so it can report an outstanding access when a\nlater allocation reuses bytes that the lowering has already\nsynchronized.\n\nUse Membar's barrier stages to publish visibility at the corresponding\npoint in ConSan. When a private helper contains an implicit barrier, let\nthe existing Gluon inliner expose it so ConSan follows the executed\ncontrol flow."
+    },
+    {
+      "sha": "df114c39e0d0836a63bde23d8a0cfd7a409ae9f3",
+      "comment": "Membar/BufferIndexAnalysis 之前只按 baseValue + constantOffset 证明 slot 不相交，读到 read/refill 来自不同 SSA base 时无法证明不相交而多插 barrier。改动在 BufferIndexExpr 增加 loopPhase/loopStep，通过 allIncomingValues 分析循环 header blockarg：所有 entry 边给出相同 seed、所有 backedge 给出相同 step 时记录 loopPhase + iteration*loopStep mod N；isProvablyDifferentFrom 扩展为同 block 且同 step 时比较 loopPhase。matchModuloPattern 简化为返回 {base,1,mod} 或常量 seed。新增 test/Analysis/test-membar.mlir 的 lockstep_cursors 用例。属于分析层能力增强，不改变对外接口签名（BufferIndexExpr 是内部 struct），风险主要在 loopPhase 推导的正确性（已假定 i32 加法不溢出）。Ascend 部分复用 lib/Analysis/Membar，但不走 TritonGPU 的 shared ring 模型。",
+      "tags": [
+        "performance",
+        "Membar",
+        "Analysis",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更仅在 BufferIndexExpr 内部字段与 Membar 的共享内存环游标证明逻辑，属于 lib/Analysis 的通用增强；Ascend 的 lowering 不经过 TritonGPU shared-memory ring 模型，Membar 的主要消费方是 TritonGPUToLLVM 共享内存路径。",
+        "testing": "无影响。新增 test/Analysis/test-membar.mlir 属上游 MLIR lit，Ascend 不参与。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Analysis] Prove ring cursors with matching steps disjoint (#12866)\n\nThe pipeliner carries the read and refill indices of a shared-memory\nring in separate SSA values. In a three-slot ring with a two-iteration\nprefetch, the read visits slots `0, 1, 2` while the refill visits `2, 0,\n1`. Membar currently inserts a barrier between these accesses because\ntheir indices have different SSA bases.\n\nRecord a cursor's starting slot and step modulo the ring size when all\nentry edges agree on the seed and all backedges agree on the step.\nCursors of the same block with equal steps preserve their initial\nseparation. This lets Membar omit the barrier between the read and\nrefill within an iteration while still ordering the next iteration's\nrefill against the current read.\n\nThe proof assumes that signed `i32` additions in slot indices and cursor\nupdates fit in range."
+    },
+    {
+      "sha": "1434128f95031223ebfce4b91e761a83aad9bd91",
+      "comment": "ConSan 之前把 proxy fence 当作覆盖所有已登记的 cp.async 写，即使另一 tile 的 cp.async 尚未对发起 fence 的线程可见，导致 TMA 读被误判合法。改动在 FunctionBuilder::createFenceProxyAccessesCall 增加 writeVisibility 参数：fence 只覆盖 fencing thread 可见的写（取 writeVisibility 的对应位）与已见的读，gate 为 visible 的 select，从而 wait_group(N) 仍精确发布其 completed-group mask 选中的 buffer。ConcurrencySanitizer 中 AsyncCp 写发布条件由 hasAsyncCopyMbarriers 扩展为 OR hasAsyncProxyFenceTracking。文档与 consan.mlir lit 同步更新。局限在 TritonInstrument，风险中等。",
+      "tags": [
+        "bugfix",
+        "ConSan",
+        "TritonInstrument",
+        "NVIDIA",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动全在 lib/Dialect/TritonInstrument 的 ConSan 实现，Ascend 不启用 consan。",
+        "testing": "无影响。新增用例为 test/TritonGPU/consan.mlir 中的上游 lit 测试。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ConSan] Only fence visible cp.async writes (#12812)\n\nA proxy fence for one shared tile can execute while `cp.async` is still\nwriting another. ConSan previously credited the fence for both tiles and\naccepted a subsequent TMA read of the copied tile without a post-wait\nfence.\n\nMark a `cp.async` destination unpublished at issue when tracking proxy\nfences. At a fence, use the fencing thread’s write visibility to\ndetermine which generic writes it covers. `wait_group(N)` already\npublishes exactly the buffers selected by its completed-group mask.\nObserving the same copy again through a group wait also preserves a\nvalid fence after an earlier mbarrier wait."
+    },
+    {
+      "sha": "30770edf7b58a032f0d19788474a1c4c4bc02e65",
+      "comment": "在 MMAv5 的 convertDotImpl 中，用 lookupNumWarps 判断单 warp 分区时跳过 warpId==0 谓词（之前无条件加 WarpIdOp + icmp）。动机是 warp-specialized GEMM 内层循环里省掉一次 warp ID 计算与分支；单 warp 区内只有一个 issuing warp，caller pred、lead-CTA 检查与 lane elect 仍保留。测试把 tc_gen5_mma_block_scale_nvfp4 的模块 num-warps 从 4 改回 1 并检查 llvm.cond_br 直接基于 caller pred。该 patch 与 #12885 最终形态部分重叠——#12885 后续已把 WarpIdOp 无条件创建并靠 canonicalizer 折叠，因此本 commit 是过渡版本，但单独看仍自洽。",
+      "tags": [
+        "performance",
+        "NVIDIA",
+        "MMAv5",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Elide the warp-zero predicate for single-warp tcgen05 MMA (#12876)\n\nAn MMA in a single-warp execution region already has exactly one issuing\nwarp. The warp-zero predicate introduces a warp ID calculation and a\nbranch in the inner loop of a warp-specialized GEMM. Use the region's\nwarp count to elide the check there. The caller's predicate, lead-CTA\ncheck and lane election still control which thread issues the\ninstruction. This applies to scaled and unscaled tcgen05 MMA.\n\nThe lowering test checks that a one-warp NVFP4 MMA branches directly on\nthe caller's predicate. In a GB300 experiment with a one-warp MMA\npartition and K96 enabled, the generated kernel went from three shuffle\ninstructions to two. Across five projections with reused operands,\nthroughput relative to an inline-PTX implementation went from 0.980× to\n1.003× (geometric mean of paired CUDA graph timings). The benchmark uses\nthe opt-in K96 change in both compiler variants. This patch can be\nreviewed and applied independently."
+    },
+    {
+      "sha": "684bbe34303f5b4668aeddd7a8148725eb6ccdd1",
+      "comment": "在 Gluon NVIDIA 后端暴露 hopper.bulk.prefetch(pointer, num_bytes, pred=True)，调用 cp.async.bulk.prefetch.L2.global。新增 TTNG_PrefetchBulkOp（TT_PtrLike/TT_I32Like/TT_BoolLike，SameOperandsShape/Encoding，hasVerifier 校验 global/constant 地址空间与常量字节数为 16 倍数），gluon_ir.cc 增加 create_prefetch_bulk。op 故意留 opaque effects 以避免被当作只读无结果而 DCE。Membar 的 SmemModel/TmemModel 与 ConSan 均把 PrefetchBulkOp 特判为只读 global、不发布 TMEM、跳过 ConSan 状态。LoadStoreOpToLLVM 新增 PrefetchBulkOpConversion，要求 CC≥90 且 PTX≥80。bulk.py 加 prefetch builtin（含 iisan 下的对齐/大小断言，复用 tma.store_wait）。测试覆盖 Hopper/Blackwell codegen、动态字节数、谓词、无效常量。属于 NVIDIA 专有 feature，风险低。",
+      "tags": [
+        "feature",
+        "Gluon",
+        "NVIDIA",
+        "TritonNvidiaGPU",
+        "low-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。TTNG_PrefetchBulkOp 属 NVIDIA 方言，Ascend 不消费；Membar/ConSan 中的 isa<PrefetchBulkOp> 特判不影响 Ascend 路径。",
+        "testing": "无影响。新增用例全在 python/test/gluon/test_frontend.py 与 test/TritonNvidiaGPU/tmem_barrier_insertion.mlir，均为 NVIDIA 专有。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BAKCEND] Expose bulk L2 prefetch in NVIDIA Gluon (#12867)\n\nAdd `hopper.bulk.prefetch(pointer, num_bytes, pred=True)` so Gluon\nkernels can bring upcoming weight ranges into L2 on SM90 and newer. It\nemits `cp.async.bulk.prefetch.L2.global` once per enabled logical range\nand accepts both scalar and tensor inputs. The tests cover Hopper and\nBlackwell code generation, dynamic byte counts, predication, and invalid\nconstant sizes."
+    },
+    {
+      "sha": "a251a5139587c97c78b38dccc8a8709134cbc106",
+      "comment": "Pipeliner 的 cp.async 环形 buffer 索引改为在 power-of-two buffer 且 IV 为 i32、步长为奇数时直接用 arith.remui(iv, numBuffers) 分别生成 read/refill 的 slot，让 pipeline expansion 把每个操作移位到其 stage，remainder 降为位掩码；其余情况保留原 select/cmpi 计数器，且循环结构重构为按 loadGroup 逐个 addIterArgsToLoop（顺带修复了之前 argIdx 的潜在对齐问题）。BufferIndexAnalysis 扩展识别 arith.remui 的 power-of-two 模数（signedness 无关，低比特即 residue），使 Membar 能证明同迭代内不同 offset 的访问不相交。作者明确说明保守限制在 power-of-two 以避免小 matmul 性能回退。风险在于改变生成的循环 IR 形态（新约束是只对奇数步长生效），但 test/TritonGPU/pipeline-lower-loop.mlir 已更新覆盖。",
+      "tags": [
+        "performance",
+        "Pipeliner",
+        "Analysis",
+        "Membar",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。Pipeliner LowerLoops 属 TritonGPU 路径（Ascend 不走 TritonGPU 流水线）；BufferIndexAnalysis 的 remui 识别是通用增强，但只在 Membar 的 GPU 共享内存模型下被消费。",
+        "testing": "无影响。变更测试为上游 test/TritonGPU 与 test/Analysis lit。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Pipeliner] Derive power-of-two cp.async slots from the induction variable (#12848)\n\nFor a power-of-two `cp.async` load ring, an `i32` loop induction\nvariable with a constant odd step visits every slot from any starting\nindex. Compute the read and refill slots from that induction variable\nusing separate `arith.remui` operations. Pipeline expansion shifts each\noperation to its stage, and the remainder lowers to a bit mask.\n\nWe keep this conservatively to powers of two because it regresses perf\nfor other cases in small matmuls.\n\nTeach `BufferIndexAnalysis` to recognize unsigned remainders with a\npower-of-two modulus so Membar can prove that accesses with different\noffsets use different slots within an iteration."
+    },
+    {
+      "sha": "debc9aa7ad2469ff372a31357ea45bdb817a9b0b",
+      "comment": "修复 TMA store 的 shared-memory source 在其 completion wait 之前若 SSA 最后一次使用是 store 就会被分配器回收、与 layout conversion scratch 复用的正确性 bug：给 TTNG_TMAStoreWaitOp 增加 Variadic<TTG_MemDescType>:$deps 以及旧签名的 builder 重载，assemblyFormat 加可选 deps 段；TMALowering 的 lowerTMAStore 把 local_alloc 传入 wait 的 deps。Gluon 的 tma.store_wait / bulk.store_wait 增加 deps 参数并透传到 create_async_tma_store_wait；大量示例、tutorial、translator 与测试把 _keep_alive() 改为 deps=[...]。这是 API 扩展（新增可选参数，保留旧重载），但 Gluon store_wait 的签名新增关键字参数会要求用户迁移以正确保活，属于行为层面的半 breaking（旧的 store_wait(0) 仍可编译但不再自动保活）。改动面广但机械，风险中等；test_frontend 中的期望 IR 已更新为带 deps。",
+      "tags": [
+        "bugfix",
+        "NVIDIA",
+        "TMA",
+        "Gluon",
+        "TritonNvidiaGPU",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。TTNG_TMAStoreWaitOp 属 NVIDIA 方言，Gluon 的 tma/bulk store_wait 是 NVIDIA 专有前端；Ascend 不使用这些路径。",
+        "testing": "无影响。所有测试改动均在 python/test/gluon、python/tutorials/gluon、test/TritonNvidiaGPU 等 NVIDIA 路径。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Keep TMA store sources live through the completion wait (#12865)\n\nA TMA store can still be reading its shared-memory source when a layout\nconversion runs between the store and its wait. If the store is the\ndescriptor’s last use in SSA, the allocator can assign those same bytes\nto the conversion’s scratch buffer and corrupt the data written to\nglobal memory.\n\nPass the source descriptor to `ttng.async_tma_store_wait` when lowering\ndescriptor stores. The wait becomes a use of the allocation, keeping its\nstorage live through completion. Gluon callers can express the same\ndependency with `tma.store_wait(0, deps=[src])` or `bulk.store_wait(0,\ndeps=[src])`."
+    },
+    {
+      "sha": "a81d69119886723fee958573ef5c7c6eb1b2bc4f",
+      "comment": "修复 NVMMA shared layout 在 transposed 视图下 box 重复顺序不一致导致 tl.dot 读错行的问题：getOrder 对 NVMMASharedEncodingAttr 改为始终使用 rowMajor 的 getMatrixOrder(shape.size(), true)，transposed 时在 rank 范围内把第一个 layout 轴旋转到前面（跳过 pipeline stages）；buildNvmmaSharedLinearLayout 用 getOrder 推导 order，reverse 后对 outDimNames 与 tmaShape 统一 applyPermutation，去掉原本特鲁的 rotate/transposeLinearLayout/swap collapsedTmaShape 逻辑，末尾改为 LinearLayout(reshapedLayout.getBases(), boxNames)。单测 LeadingOffset_64x4x32 transposed 的基底期望值随之更新，并把 dim1 从 64 改为 512 以覆盖多 box 场景，test_lowerings 参数化新增 (512,64,32) 情形。属于 TritonGPU NVMMA layout 的通用修复，Ascend 不走 NVMMA shared layout。",
+      "tags": [
+        "bugfix",
+        "TritonGPU",
+        "NVMMA",
+        "layout",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。NVMMASharedEncodingAttr 与 LinearLayoutConversions 的服务对象是 NVIDIA/AMD 的 TTGIR 布局，Ascend 跳过 TritonGPU 布局阶段直接走 Linalg/HIVM。",
+        "testing": "无影响。单测在 unittest/Dialect/TritonGPU 与 python/test/gluon。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Fix the axis order of transposed NVMMA shared layouts (#12864)\n\nWhen both axes of an NVMMA shared tile span multiple TMA boxes, the\nplain layout and its transposed view can repeat the boxes in different\norders. This makes `tl.dot` read elements from the wrong rows.\n\nUse the physical axis order for both the box shape and its dimension\nnames. The boxes then repeat in the same order in both orientations, so\neach shared memory offset maps to the permuted coordinates of the source\nat every rank.\n\nThanks to @bhargavchintam for the reproducer and diagnosis.\n\nCloses #12672 and fixes #12671."
+    },
+    {
+      "sha": "5d9e2653c93246ddc0ba7a2b3fee6742b265998d",
+      "comment": "更彻底地修复 OptimizeAccumulatorInit 的累加器优化正确性：findZeroInitOp 现在要求 loop-carried arg 只有一个 use（即 MMA 的 use-accumulator 位置）且 for 的对应 result 在循环后无 use，否则放弃把 reset 折叠进 useAcc 标志；同时新增 yield 值只有一个 use 的要求，避免 reset 之后还有其它消费者。原先在 pass 顶层用 accArg + result 非空就整体放弃的粗略检查被移除。核心思想是显式刻画两种 folding 形态（reset 在 MMA 之后 vs 之前），注释给出了精确的 IR 形状。测试大幅重写 test_tma_matmul_accumulator_intermediate_read，新增 before_dot/after_reset/next_iteration 三种 snapshot 变体并参数化 reset_period/reset_value/snapshot/store_after_loop 组合，并按 num_stages 区分。属于 TritonGPU 优化 pass 的正确性修复，逻辑清晰但条件收紧可能损失部分优化机会。",
+      "tags": [
+        "bugfix",
+        "TritonGPU",
+        "OptimizeAccumulatorInit",
+        "Blackwell",
+        "medium-risk"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。OptimizeAccumulatorInit 属 lib/Dialect/TritonGPU/Transforms，作用于 Blackwell tcgen05 MMA 的 useAcc 折叠，Ascend 不走该路径。",
+        "testing": "无影响。测试在 python/test/unit/language/test_matmul.py 且 skipif 非 Blackwell。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] More comprehensive fix for the accumulator optimization (#12863)"
+    }
+  ],
+  "architecture_based_on_sha": "1c53e566ef8f719ff9b69132a72ad943e5409492",
+  "architecture_generated_at": "2026-11-15T21:06:50.425498+08:00"
+}
