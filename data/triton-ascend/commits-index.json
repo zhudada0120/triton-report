@@ -1,4 +1,36 @@
 {
+  "c569abdaccbf4d6b8024a5b8cd519123df46495c": {
+    "date": "2026-11-23",
+    "msg": "Revert \"[CustomOp] Validate and emit flatten implementation declarations (#2085)\" (#3387)"
+  },
+  "9995de76c4907cf7402f2a647e22fa51442c4cdd": {
+    "date": "2026-11-23",
+    "msg": "[CustomOp] Validate and emit flatten implementation declarations (#2085)"
+  },
+  "831b75ef277d145a5faaa910940c78f6a73992ba": {
+    "date": "2026-11-23",
+    "msg": "[ssbuffer](feat) Eliminate ub2ub copy  (#3342)"
+  },
+  "8c38eaca3a46aff016e23f638833e4e9c53b1dc8": {
+    "date": "2026-11-23",
+    "msg": "[TritonToGraph](feat) coalesce private atomic group reductions (#3326)"
+  },
+  "cc0ce314ddc7c84c16a61e7cfa95af55b71a86c3": {
+    "date": "2026-11-23",
+    "msg": "[TritonToLinalg](fix) Request native saturation for FP32 to FP8 casts (#3328)"
+  },
+  "b0221dce5c3d2a8383282dac3b06d96e4028625b": {
+    "date": "2026-11-23",
+    "msg": "[TritonToGraph](fix) register the selected block scan only when both rule bits are on (#3230)"
+  },
+  "931bb6b3be67ec2d504da623709b9ffbc483da2e": {
+    "date": "2026-11-23",
+    "msg": "[TritonToGraph](feat) restore block batching with TTIR selection"
+  },
+  "cf85803087878bedd7de12d9497c5664d5eddd9f": {
+    "date": "2026-11-23",
+    "msg": "[PtrAnalysis](fix) restore shared pointer lowering"
+  },
   "6c006e2bb9fab6f0d9328a7eacfa75de7dc93e61": {
     "date": "2026-11-21",
     "msg": "Print full pointer addresses and preserve device print signedness (#3304)"

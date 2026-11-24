@@ -1,4 +1,12 @@
 {
+  "7d4f88e3c7065f134b598b2832a46549babf4368": {
+    "date": "2026-11-23",
+    "msg": "[Interpreter] Convert float arguments the way compiled kernels do (#12620)"
+  },
+  "2e45f872f7307b16c4ed6ec21518f8cda524cbdf": {
+    "date": "2026-11-23",
+    "msg": "[FRONTEND] Reject zero step in tl.range (#11242)"
+  },
   "59231e1093a6a66fed065821231d488cc881b123": {
     "date": "2026-11-21",
     "msg": "[GPU] Canonicalize ttg.warp_id in single-warp execution regions (#12885)"

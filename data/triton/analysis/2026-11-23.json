@@ -1,0 +1,54 @@
+{
+  "date": "2026-11-23",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-11-24T11:32:23.007496+08:00",
+  "daily_summary": "当日两个 commit 均为前端/解释器层面的小型修复补丁，与硬件后端无关。其一修复解释器（TRITON_INTERPRET=1）在处理 Python float 实参时不遵循编译内核的类型语义：原先缺少 float 分支导致 Python float 保持 fp64，与编译内核（未标注时按 fp32、标注时按注解类型）行为不一致；补丁令 GridExecutor 保留归一化后的参数注解并传给 _implicit_cvt，使 float 参数按注解或默认 fp32 转换，bf16 采用与 launcher extractBF16 一致的截断语义。其二在 code_generator 中为 tl.range 增加零步长检查，避免生成导致 GPU 无限挂起的 scf.for。两者均附带测试，风险低，不触及 BaseBackend/DriverBase、TTIR 定义或后端 lowering 路径。",
+  "ascend_impact_summary": "当日两处变更对 triton-ascend 均无功能性影响：第一处仅修改 python/triton/runtime/interpreter.py（解释器执行路径，不进入 Ascend 的 TTIR→ttadapter→npubin 编译流水线）及其单测；第二处在 python/triton/compiler/code_generator.py 中新增 tl.range 零步长的编译期校验，该文件位于『必然影响』列表且被 triton-ascend-3.6.0.patch 修改，但本次仅是在现有 visit_For 逻辑中追加 3 行常量步长检查，未改变 CodeGenerator.__init__ 签名或 AST→TTIR 翻译契约，不破坏补丁上下文，Ascend 侧无需改动代码或测试。",
+  "commits": [
+    {
+      "sha": "7d4f88e3c7065f134b598b2832a46549babf4368",
+      "comment": "修复解释器模式（TRITON_INTERPRET=1）下 float 实参与编译内核类型语义不一致的问题（#12580）。原先 _implicit_cvt 只处理 bool/int/data_ptr，没有 float 分支，导致 Python float 保留为 fp64，可能与编译内核走不同分支（编译内核未标注时按 fp32 传入，标注了 tl.float64 时按 double）。实现上：_implicit_cvt 新增 annotation 参数，若注解属于 fp16/bf16/fp32/fp64 则用之，否则默认 fp32；fp16/fp32/fp64 通过 interpreter_builder 的 get_fp* 生成，bf16 按 launcher（NVIDIA/AMD 的 extractBF16）的做法——先转 fp32 再取高 16 位截断而非舍入。GridExecutor 将原本局部的 __annotations__ 提升为 self.annotations，并在调用 _implicit_cvt 时按参数名传入注解。改动范围局限在解释器执行路径，不影响真实编译/后端。测试覆盖较充分：fp32 舍入探针、注解跟随、bf16 截断语义以及端到端 1.00000001 在 fp32/fp64 下的分支差异，且报告未引入回归。潜在风险极低：仅 bf16 截断语义与 launcher 保持一致，若将来某个后端 launcher 改为舍入则此处会失配。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "interpreter",
+        "frontend"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Interpreter] Convert float arguments the way compiled kernels do (#12620)\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)\n\n---\n\n## Summary\n\n`_implicit_cvt` converts runtime Python scalars into `tl.tensor`\nwrappers so the\ninterpreter sees the same types as a compiled kernel. It had no `float`\nbranch, so\na Python `float` stayed an fp64 Python value and could take a different\nbranch\nfrom a compiled kernel that receives it as fp32 (#12580).\n\nCompiled kernels take a float argument's type from its parameter\nannotation when\nthere is one (`create_function_from_signature` in `jit.py`; the launcher\npasses\n`fp32` as `float` and `fp64` as `double`) and use fp32 otherwise. The\ninterpreter\nnow does the same:\n\n- `GridExecutor` keeps the normalized parameter annotations it already\ncomputes\n  and passes each one to `_implicit_cvt`.\n- A float argument becomes an fp16, bf16, fp32 or fp64 tensor when its\nparameter\nis annotated with that type, and fp32 otherwise, converted the way the\nlaunchers\ndo: fp16, fp32 and fp64 through the interpreter builder's `get_fp*`, and\nbf16 as\nthe upper 16 bits of the fp32 value, like `extractBF16` in the NVIDIA\nand AMD\n  drivers (which truncates rather than rounds).\n\n## Test plan\n\n- `test_implicit_cvt_float_rounds_to_fp32`: unannotated floats round to\nfp32\n  (the five-value probe from the issue).\n- `test_implicit_cvt_float_follows_annotation`: each float annotation\nselects\n  its dtype.\n- `test_implicit_cvt_bf16_truncates_like_launcher`: a value where\ntruncating and\n  rounding to bf16 differ.\n- `test_float_arg_precision_follows_annotation`: end to end, `1.00000001\n> 1.0`\nis false for an unannotated argument and true for a `tl.float64` one, as\nin\n  compiled kernels.\n- Ran `python/test/unit/runtime/test_interpreter.py` (80 passed) and the\n`make test-interpret` language files (`test_core.py`,\n`test_standard.py`,\n`test_tuple.py`, `test_random.py`) with `TRITON_INTERPRET=1 -m\ninterpreter\n--device=cpu` on CPU: 7156 passed on both this branch and the base\ncommit, so\n  no new failures.\n\nFixes #12580"
+    },
+    {
+      "sha": "2e45f872f7307b16c4ed6ec21518f8cda524cbdf",
+      "comment": "为 tl.range 增加零步长校验（#11242）。零 step 会 lower 成 scf.for 的无限循环，GPU 无报错直接挂死，是较严重的前端可用性问题。实现在 CodeGenerator.visit（循环访问路径）中，_is_constexpr(step) 且 step.value == 0 时抛出 ValueError('range() arg 3 (step) must not be zero')，位置紧接在既有『负常量 step 归一化』逻辑之前，因此不会改变后续对负步长的处理，也不会拦截运行期（非 constexpr）step（运行期由用户保证为正）。仅拦截编译期可判定的常量零值，行为最小化。测试新增 test_err_range_zero_step，通过 constexpr STEP=0 触发编译并断言错误消息包含 'must not be zero'。风险低：抛出的是 ValueError，会由上层包装为 CompilationError，属于新增的编译期拒绝而非语义变更，但注意此检查只在常量步长路径生效，运行期零步长仍不会被拦截。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "frontend",
+        "language"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响（虽然 python/triton/compiler/code_generator.py 位于『必然影响』路径且被 triton-ascend-3.6.0.patch 触及，但本次仅在既有 visit_For/循环访问逻辑中追加 3 行常量 step==0 的检查，未改变 CodeGenerator.__init__ 签名、AST→TTIR 翻译契约或已有语句的上下文结构，补丁可正常应用；Ascend 消费的 tl.range 合法输入（非零常量步长、运行期正步长）行为不变）",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[FRONTEND] Reject zero step in tl.range (#11242)\n\n`tl.range` with 0 step lowers to an `scf.for`, an infinite loop that\nhangs the GPU with no error.\n\n---------\n\nCo-authored-by: Peter Bell <peterbell10@openai.com>",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "python/triton/compiler/code_generator.py"
+        ],
+        "recommend_refresh": true
+      }
+    }
+  ],
+  "architecture_based_on_sha": "1c53e566ef8f719ff9b69132a72ad943e5409492",
+  "architecture_generated_at": "2026-11-15T21:06:50.425498+08:00"
+}

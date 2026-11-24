@@ -1,0 +1,167 @@
+{
+  "date": "2026-11-23",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-11-24T11:32:41.620391+08:00",
+  "daily_summary": "当日变更以 TritonToGraph 的 BlockBatching（块批处理）能力为核心主线，新增了一套完整的 TTIR 级块批处理框架（分析、布局规划、循环调度、重写、守卫证明、运行时派发），并配套了自动选轴/选因子、隔离编译 worker、守卫（guard）运行时证明、launcher ABI v2、autotune/预热适配等基础设施；同时针对 CustomOp flatten 声明做了先加后回退的反复，另有 FP32→FP8 原生饱和转换修复、SelectedBlockScan 规则位联合注册修复，以及一个大规模的 PtrAnalysis 共享指针 lowering 恢复（涉及 TritonToLinalg/TritonToUnstructure 的指针分析重构、边界检查视图、循环偏移重写、原子值布局等）。整体方向是强化 Ascend 后端在块批处理自动调优、指针 lowering 正确性与边界处理方面的能力，改动量大、跨模块广、回归风险偏高。",
+  "test_impact_summary": "当日引入大量需要看护的新测试点：BlockBatching 新增了 C++ 单测（Workspace/EffectProjection/AffineProfiles）、lit 测试（cv.mlir、rejections.mlir、vv-lanes.mlir）以及多个 pytest_ut（compiler/memory/runtime/selection/worker/e2e），并新增 launcher v2 ABI 冲突校验用例；PtrAnalysis 恢复改动补充了大量 Conversion/General 下的 MLIR 回归（边界检查、偏移重写、指针视图放置、原子布局、bool 指针等），并调整了既有测试的 CHECK 顺序/常量类型；FP8 与 SelectedBlockScan 修复更新了既有的 lit/pytest 断言。这些变更不仅需要更新已有测试，还引入新的端到端设备正确性测试（test_block_batching_e2e.py 需真实 NPU），对 CI 覆盖提出更高要求；现有测试策略已在新模块上基本补齐，但 PtrAnalysis 重构涉及的共享指针 lowering 路径与既有测试可能存在覆盖空缺，建议补充针对性回归并确保 native/RTTI/UBsan 等构建变体均能跑通。",
+  "commits": [
+    {
+      "sha": "c569abdaccbf4d6b8024a5b8cd519123df46495c",
+      "comment": "回退 #2085（CustomOp flatten 声明校验与发射）。删除了 custom_op.py 中 _add_optional_flatten_symbols_attr 的实现与调用、test_custom.py 中 flatten 相关用例及 pytestmark，并整体移除 test_custom_flatten_declaration.py。属于功能性回退，意图是撤销 flatten_symbols 声明的校验逻辑，使 flatten_ranks/flatten_symbols 属性不再被发射。风险低，但需确认下游是否有依赖该声明的 pass（hivm-flatten-ops）。",
+      "tags": [
+        "refactor",
+        "low-risk",
+        "custom-op"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "回退删除了 flatten 相关测试文件与用例，需确认对应覆盖是否在其他位置保留，避免测试覆盖缺口。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_custom.py",
+          "third_party/ascend/language/cann/extension/custom_op.py"
+        ]
+      },
+      "message": "Revert \"[CustomOp] Validate and emit flatten implementation declarations (#2085)\" (#3387)\n\nThis reverts commit 9995de76c4907cf7402f2a647e22fa51442c4cdd."
+    },
+    {
+      "sha": "9995de76c4907cf7402f2a647e22fa51442c4cdd",
+      "comment": "为 CustomOp 增加 flatten_symbols 声明校验与属性发射。_add_optional_flatten_symbols_attr 校验 dict 的 rank/symbol 类型与范围，按 rank 排序后发射 flatten_ranks/flatten_symbols 成对属性供 hivm-flatten-ops 读取；配套新增原子性校验单测与真实 builder 打印测试。实现较严谨（类型检查、原子性、转义），但后续被回退，说明该特性在当前阶段存在上线阻力。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "custom-op"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 flatten 声明校验与属性发射逻辑，需要专门单测和 lit 用例验证，已随提交补充。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_custom.py",
+          "third_party/ascend/unittest/pytest_ut/test_custom_flatten_declaration.py"
+        ]
+      },
+      "message": "[CustomOp] Validate and emit flatten implementation declarations (#2085)"
+    },
+    {
+      "sha": "831b75ef277d145a5faaa910940c78f6a73992ba",
+      "comment": "ssbuffer 特性：消除 ub2ub copy。重构 DynamicCVPipeline 中 AddMultiBufferInnerScope 的依赖分析逻辑，将大量内联代码抽到 AddMultiBufferInnerScopeDepAnalysis，将生产者多缓冲从 scf.if+hivm.copy 切换为 arith.select + bufferization.materialize_in_destination；新增 BufferCountManager.getDefaultCount 修复递归调用；更新 ComputeProducerBufferCount 使用模块属性。改动显著改变多缓冲 lowering 形态，涉及大量 MLIR diff 测试更新。风险中高，需重点验证多缓冲正确性与 select 模式的语义等价性。",
+      "tags": [
+        "performance",
+        "bugfix",
+        "high-risk",
+        "dynamic-cv-pipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "多缓冲 lowering 从 scf.if 改为 select + materialize_in_destination，多个 lit 测试的 CHECK 需同步更新为新的 IR 形态。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AllocMultiCache/",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AddControlFlowCondition/"
+        ]
+      },
+      "message": "[ssbuffer](feat) Eliminate ub2ub copy  (#3342)\n\n* [ssbuffer](feat) Eliminate ub2ub copy\n\n* [ssbuffer](feat) switch multi-cache to select mode\n\nSigned-off-by: cxtverygood123 <chenxiaotian12@huawei.com>\n\n[ssbuffer](feat) switch multi-cache to select mode\n\nSigned-off-by: cxtverygood123 <chenxiaotian12@huawei.com>\n\n* [ssbuffer](feat) Eliminate ub to ub copy using materialize_in_destination\n\nSigned-off-by: cxtverygood123 <chenxiaotian12@huawei.com>\n\n* [ssbuffer}(feat) refactor intra-deps\n\nSigned-off-by: fishofnanqi <1074959344@qq.com>\n\n* refractor multi buffer inner dep analysis\n\n* [ssbuffer](feat) remove select\n\n* [ssbuffer](feat) restore select op adapting to scalar bound modification\n\nSigned-off-by: kcanamgal <732270473@qq.com>\n\n---------\n\nSigned-off-by: cxtverygood123 <chenxiaotian12@huawei.com>\nSigned-off-by: fishofnanqi <1074959344@qq.com>\nSigned-off-by: kcanamgal <732270473@qq.com>\nCo-authored-by: fishofnanqi <1074959344@qq.com>\nCo-authored-by: cxtverygood123 <chenxiaotian12@huawei.com>\n\n* [ssbuffer](fix) fix #3274\n\n---------\n\nSigned-off-by: cxtverygood123 <chenxiaotian12@huawei.com>\nSigned-off-by: fishofnanqi <1074959344@qq.com>\nSigned-off-by: kcanamgal <732270473@qq.com>\nCo-authored-by: fishofnanqi <1074959344@qq.com>\nCo-authored-by: cxtverygood123 <chenxiaotian12@huawei.com>\n\n(cherry picked from commit b3d10014f84d5e94f57298fbc23439ac2c21ec42)"
+    },
+    {
+      "sha": "8c38eaca3a46aff016e23f638833e4e9c53b1dc8",
+      "comment": "TritonToGraph 新增 CoalescAtomicLockRemoval 规则：识别 modulo 分组行归约，将原子分组更新收敛到每组一个 program，通过 cap 形式的 program_grid transform 与新 ATOMIC_REMOVE launcher flag 传递 grid 契约，并在 UB 预算内尝试更小列 tile。改动涉及 ascend_ir 序列化 kind、launcher flags/ABI、program_grid 归一化、GraphOptimization 规则注册与新增 CoalescAtomicLockRemovalRule.cpp。实现完整，含结构匹配、sandbox 验证与资源估算。风险中高，launcher ABI 新增 flag 需保证旧运行时兼容。",
+      "tags": [
+        "feature",
+        "high-risk",
+        "triton-to-graph",
+        "launcher"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增规则、launcher flag 与 cap transform 需要新 lit/单测；同时 launcher flag 冲突校验用例需补充。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToGraph/coalesc-atomic-lock-removal.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_launcher_export_api.py"
+        ]
+      },
+      "message": "[TritonToGraph](feat) coalesce private atomic group reductions (#3326)\n\n* [TritonToGraph](feat) coalesce private atomic group reductions\n\nRecognize modulo-grouped row reductions and move their partial updates to a single program per group. Carry the original grid extent through the launch ABI and preserve the per-row partial storage precision. Retry with a smaller column tile within the UB budget only when the two row reductions are independent.\n\nSigned-off-by: zhanwei33 <493694187@qq.com>\n\n* [TritonToGraph](NFC) rename atomic-removal launcher flag\n\nSigned-off-by: zhanwei33 <493694187@qq.com>\n\n* [TritonToGraph](fix) use rule mask alone for atomic lock removal\n\nThe operator enabling the rule owns the buffer and grid preconditions. Use the existing rule-mask opt-in and structural matching, and cover both explicit enablement and the default atomic path in the IR regression.\n\nSigned-off-by: zhanwei33 <493694187@qq.com>\n\n* [TritonToGraph](NFC) avoid repeated grouped grid validation\n\nReuse the normalized grid contract across launch spec construction and validate static cap fields when creating a native plan. Use the graph epoch contract at revalidation, and check reduction independence once when trying smaller column tiles.\n\nSigned-off-by: zhanwei33 <493694187@qq.com>\n\n* [TritonToGraph](NFC) reuse verified matcher invariants\n\nUse the existing single-combiner matcher and the verified SCF and cast shapes when matching a grouped atomic reduction.\n\nSigned-off-by: zhanwei33 <493694187@qq.com>\n\n---------\n\nSigned-off-by: zhanwei33 <493694187@qq.com>\n\n(cherry picked from commit c7fce41db80906b0b39c93da0b757433c607b680)"
+    },
+    {
+      "sha": "cc0ce314ddc7c84c16a61e7cfa95af55b71a86c3",
+      "comment": "修复 FP32→FP8 转换：在 TritonToLinalg 的 FpToFpCanonicalizer 中对 F32→f8E4M3FN/f8E5M2 下转换设置 enable_saturate=true，并新增常量折叠 foldNativeFp8Constant（NaN→0、上溢→最大值），使字面量按原生饱和语义折叠。修复语义正确性，改动小且聚焦。风险低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "triton-to-linalg"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增饱和属性与常量折叠逻辑，需要更新 clamp_fp8/fp_to_fp 的 CHECK 并补充常量折叠用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/fp32_to_fp8_native_constants.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/clamp_fp8.mlir",
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/fp_to_fp_scalar_rtne.mlir"
+        ]
+      },
+      "message": "[TritonToLinalg](fix) Request native saturation for FP32 to FP8 casts (#3328)\n\n* [TritonToLinalg](fix) Request native saturation for FP32 to FP8 casts\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>\n\n* [ascend](test) Use explicit RTNE in verified FP8 downcast IR\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>\n\n* [TritonToLinalg](fix) Fold literal FP32 inputs with native FP8 semantics\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>\n\n---------\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>\n\n(cherry picked from commit e85193b1b7063c1510c2277dbdc9ffbba189f279)"
+    },
+    {
+      "sha": "b0221dce5c3d2a8383282dac3b06d96e4028625b",
+      "comment": "修复 SelectedBlockScan 注册：将 bit16 与 bit17 作为联合契约，仅当两者同时开启时才注册 SelectedBlockScanRule 与 QueryRowBatchingRule；更新 lit/pytest 用例为 65536 与 131072 单独均为 no-op、196608 才重写。逻辑清晰，修正了此前 bit16 单独即可触发的行为。风险低。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "triton-to-graph"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "规则注册条件变更，需要更新 nsa_selected_block_scan.mlir、query-row-batching.mlir 的 RUN 组合与断言，并更新 test_graph_optimize.py。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToGraph/nsa_selected_block_scan.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_graph_optimize.py"
+        ]
+      },
+      "message": "[TritonToGraph](fix) register the selected block scan only when both rule bits are on (#3230)\n\n(cherry picked from commit df1ae20253df8061566c3e63321257bc8f7e29d8)"
+    },
+    {
+      "sha": "931bb6b3be67ec2d504da623709b9ffbc483da2e",
+      "comment": "BlockBatching 主特性落地：新增 backend/block_auto.py（CPU worker 中的 TTIR 选择）、block_batching.py（运行时派发/守卫复用）、block_batching_guard.py（有限域内存证明）、block_batching_worker.py（隔离编译 worker）、block_batching_report.py/vendor.py/source.py；新增 C++ BlockBatching 分析/重写框架（BatchExpr/Affine/LoopSchedule/Layout/MemoryView/Rewrite 等）与 BlockAuto/Analysis.cpp；扩展 launcher ABI v2、ProgramGridTransform v3、compiler add_stages 与 autotune 默认 block_batching_factor；patch 修改 compiler.py/cache.py/runtime autotuner 以支持 compile_bundle 与 bundle 环境冻结。改动量极大、跨编译/运行/调优全链路，是当日核心特性。风险高，需重点看护自动选因子、守卫证明、ABI v2 与 fallback 路径。",
+      "tags": [
+        "feature",
+        "high-risk",
+        "block-batching",
+        "performance",
+        "launcher",
+        "autotune"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "引入全新 BlockBatching 框架，需新增大量 C++/lit/pytest 测试覆盖分析、守卫、worker、自动选择与端到端正确性，已有测试不足以覆盖。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/BlockBatching/",
+          "third_party/ascend/unittest/Conversion/General/BlockBatching/",
+          "third_party/ascend/unittest/pytest_ut/test_block_batching_*.py",
+          "third_party/ascend/unittest/pytest_ut/test_warmup.py"
+        ]
+      },
+      "message": "[TritonToGraph](feat) restore block batching with TTIR selection\n\nRestore VV/CV program batching with TTIR legality checks, automatic\naxis and factor selection, isolated candidate compilation, and an\nunbatched executable for guarded fallback. Integrate the selection state\nand artifact publication with the compiler and JIT.\n\nUse the same TTIR cost model to generate, score and rank candidates on\nA2/A3 and A5, including Ascend 910B. Keep target-specific core counts,\nbackend resource checks and runtime guards. Invalidate prior cached\nselections and persist audited deterministic refusals while keeping\nresource failures, timeouts and unaudited outcomes retryable.\n\nResolve autotune warmup futures after internally managed parallel\ncompilation completes so callers receive compiled kernels and can read\nattributes such as `.asm`. Preserve synchronous and caller-managed\nasynchronous execution and propagate compilation failures.\n\nSource PRs: #3252, #3335\nRelated: https://github.com/triton-lang/triton-ascend/issues/3082\n\nBackport-of: 17f7cfa628b4deff39674284977e01cb0370fbe6\nBackport-of: a091756f245be024bc9357c15b22c4568e827e62\n\nSigned-off-by: zhaojingkai <zhaojingkai4@huawei.com>\nCo-authored-by: Misaka19280hw <xuzhanxiang1@huawei.com>\nCo-authored-by: Cursor <cursoragent@cursor.com>\nCo-authored-by: popeyesxs <popeyesxs@users.noreply.github.com>"
+    },
+    {
+      "sha": "cf85803087878bedd7de12d9497c5664d5eddd9f",
+      "comment": "PtrAnalysis 共享指针 lowering 恢复：将 BlockPtrAnalysis 中 scalar pointer carrier 与 materializePointer 逻辑迁移至新增 MemoryPointer.cpp，TritonToLinalg 改为基于 PointerInfos 的 materializeMemoryPointer/materializeBoundaryCheckedMemoryPointer，新增 OffsetLoopRewrite 与 scalarizeIndirectAccesses，重写 TritonToUnstructure 的 ReplaceArguments 使用公共 PtrAnalysis，新增 checked block view 放置、边界 size 从 GM origin 推导、单例轴 stride、原子值缓冲布局、Ascend950 单用 fill 后缀写等。涉及大量行为变更与 MLIR 回归，改动面广、风险偏高。",
+      "tags": [
+        "refactor",
+        "bugfix",
+        "high-risk",
+        "triton-to-linalg",
+        "triton-to-unstructure"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "指针 lowering 重构改变了大量 IR 形态（视图放置、偏移重写、边界检查、原子布局、bool 指针字节语义），需要更新/新增众多 Conversion 回归用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/",
+          "third_party/ascend/unittest/Conversion/General/TritonToUnstructure/",
+          "third_party/ascend/unittest/Analysis/PtrAnalysisBitcastTest.cpp",
+          "third_party/ascend/unittest/Analysis/LegacyPointerConvertersTest.cpp"
+        ]
+      },
+      "message": "[PtrAnalysis](fix) restore shared pointer lowering\n\nRestore shared pointer analysis in the Ascend lowering passes and keep\nthe legacy TLA entry points. Preserve bounded masks, checked origins,\nposition-embedding row copies and producer-local tensor views.\n\n- Pad initialized load slices once when the consumer proves the slices\n  disjoint and the padding values match. Keep per-row padding for\n  overlapping, fallback and stride-two paths.\n- Place checked block-pointer views at their descriptor when the remapped\n  address inputs dominate it. Derive copy lengths from clamped GM origins,\n  preserve static coordinates and physical pitch on singleton block\n  dimensions, and use zero local offsets for aligned boundary tiles.\n- Give singleton axes in tensor-of-pointers views the natural stride\n  of their statically contiguous inner dimensions so DMA can identify\n  a dense row. Keep the scalar offset and the explicit block pitch,\n  and stop at gaps, unknown strides, empty dimensions or overflow.\n- Use guarded scalar loads for eligible masked numeric singletons. Keep\n  the kernel-argument base for bool bitcasts that lower to the same\n  memref type and reuse carried scalar origins in nested offset loops.\n- Derive atomic value-buffer layouts from the input tensor and retain the\n  dynamic-offset exchange view required by the legacy A2/A3 path.\n- Carry signed element offsets through loops with an invariant pointer\n  base, retaining complete addresses for opaque or changing bases.\n- On Ascend 950, copy active rows into a single-use fill. When the fill has\n  other users, write only the masked suffix into an eligible single-use\n  elementwise result.\n\nPreserve the original regression coverage for pointer and loop lifetimes,\nchecked view offsets and slice bounds, atomic exchange layouts, and\nrow-select destinations.\n\nSource PRs: #3291, #3314, #3336, #3377\n\nBackport-of: a944b3f90b18ee4210cc94a33a802dbaaadc2ed3\nBackport-of: 740c8c6135ea23de0319b4daa034f5cc9b21a669\nBackport-of: 09ae44207d896f0d5b9555c4e2f7cb7f31986c22\nBackport-of: c4c1116d512159aa580622fdce2011ec6ca6ca86\nBackport-of: e5412ac5f69e57d00146c6673a84f7b15066bdd6\nBackport-of: 7a99537c7363c78f60d9a9ba4f8c29971a71a70f\nBackport-of: c14587d18c03751d6013e4872b438b361cddf273\nBackport-of: ea2e359709fb1b80cccc34c202aae037a1eee472\nBackport-of: e6d1afeadf521ad6ca1bbbe61c61ce2ca7e8ac59\nBackport-of: 0009960081709b22ac90b3669e67de35269ff928\nBackport-of: acac300e42ef3f1028e0a0cfa3d7960fe082b358\nBackport-of: 66f7708f83af818f2bb33425e254e98d0d671f08\nBackport-of: 425894058c3ac20a9b14b42da0958f4c4c2461cc\nBackport-of: 86d219eac1c313c5e38487117e75b2eb1aebd6a9\nBackport-of: f8a0e494be21a79f6c52eb1fa5d7e3c303874238\nBackport-of: 57bc17222af9ddc67f70aa84c0f1b25a19b5219f\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\nCo-authored-by: KanuaK <43903351+KanuaK@users.noreply.github.com>"
+    }
+  ],
+  "architecture_based_on_sha": "ee15e295649ccf85b4e4b78316c736d00365c1a5",
+  "architecture_generated_at": "2026-11-15T21:06:50.427270+08:00"
+}

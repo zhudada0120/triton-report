@@ -1,0 +1,73 @@
+{
+  "date": "2026-11-23",
+  "repo": "triton-lang/triton",
+  "branch": "main",
+  "commits": [
+    {
+      "sha": "7d4f88e3c7065f134b598b2832a46549babf4368",
+      "author": {
+        "name": "Siddhant Rajhans",
+        "email": "51508945+siddhant-rajhans@users.noreply.github.com"
+      },
+      "date": "2026-11-23T08:25:31+08:00",
+      "message": "[Interpreter] Convert float arguments the way compiled kernels do (#12620)\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)\n\n---\n\n## Summary\n\n`_implicit_cvt` converts runtime Python scalars into `tl.tensor`\nwrappers so the\ninterpreter sees the same types as a compiled kernel. It had no `float`\nbranch, so\na Python `float` stayed an fp64 Python value and could take a different\nbranch\nfrom a compiled kernel that receives it as fp32 (#12580).\n\nCompiled kernels take a float argument's type from its parameter\nannotation when\nthere is one (`create_function_from_signature` in `jit.py`; the launcher\npasses\n`fp32` as `float` and `fp64` as `double`) and use fp32 otherwise. The\ninterpreter\nnow does the same:\n\n- `GridExecutor` keeps the normalized parameter annotations it already\ncomputes\n  and passes each one to `_implicit_cvt`.\n- A float argument becomes an fp16, bf16, fp32 or fp64 tensor when its\nparameter\nis annotated with that type, and fp32 otherwise, converted the way the\nlaunchers\ndo: fp16, fp32 and fp64 through the interpreter builder's `get_fp*`, and\nbf16 as\nthe upper 16 bits of the fp32 value, like `extractBF16` in the NVIDIA\nand AMD\n  drivers (which truncates rather than rounds).\n\n## Test plan\n\n- `test_implicit_cvt_float_rounds_to_fp32`: unannotated floats round to\nfp32\n  (the five-value probe from the issue).\n- `test_implicit_cvt_float_follows_annotation`: each float annotation\nselects\n  its dtype.\n- `test_implicit_cvt_bf16_truncates_like_launcher`: a value where\ntruncating and\n  rounding to bf16 differ.\n- `test_float_arg_precision_follows_annotation`: end to end, `1.00000001\n> 1.0`\nis false for an unannotated argument and true for a `tl.float64` one, as\nin\n  compiled kernels.\n- Ran `python/test/unit/runtime/test_interpreter.py` (80 passed) and the\n`make test-interpret` language files (`test_core.py`,\n`test_standard.py`,\n`test_tuple.py`, `test_random.py`) with `TRITON_INTERPRET=1 -m\ninterpreter\n--device=cpu` on CPU: 7156 passed on both this branch and the base\ncommit, so\n  no new failures.\n\nFixes #12580",
+      "parents": [
+        "2e45f872f7307b16c4ed6ec21518f8cda524cbdf"
+      ],
+      "stats": {
+        "total_additions": 66,
+        "total_deletions": 4,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "python/test/unit/runtime/test_interpreter.py",
+          "status": "modified",
+          "additions": 50,
+          "deletions": 0,
+          "patch": "@@ -8,6 +8,56 @@ import triton.language as tl\n from triton.runtime import interpreter\n \n \n+@pytest.mark.parametrize(\"value, expected_fp32\", [\n+    (1.0, 1.0),\n+    (1.00000001, 1.0),\n+    (1.0000001, 1.0000001192092896),\n+    (0.99999999, 1.0),\n+    (2.0, 2.0),\n+])\n+def test_implicit_cvt_float_rounds_to_fp32(value, expected_fp32):\n+    result = interpreter._implicit_cvt(value)\n+    assert isinstance(result, tl.tensor)\n+    assert result.dtype == tl.float32\n+    assert result.handle.data.dtype == np.float32\n+    np.testing.assert_equal(result.handle.data[0], np.float32(expected_fp32))\n+\n+\n+@pytest.mark.parametrize(\"annotation, dtype\", [\n+    (\"fp16\", tl.float16),\n+    (\"bf16\", tl.bfloat16),\n+    (\"fp32\", tl.float32),\n+    (\"fp64\", tl.float64),\n+])\n+def test_implicit_cvt_float_follows_annotation(annotation, dtype):\n+    result = interpreter._implicit_cvt(1.00000001, annotation)\n+    assert result.dtype == dtype\n+    assert result.handle.data.dtype == interpreter._get_np_dtype(dtype)\n+\n+\n+def test_implicit_cvt_bf16_truncates_like_launcher():\n+    # fp32 bits 0x3F80C000: keeping the upper half gives 0x3F80 (1.0); rounding would give 0x3F81.\n+    result = interpreter._implicit_cvt(1.005859375, \"bf16\")\n+    assert result.dtype == tl.bfloat16\n+    assert result.handle.data[0] == np.uint16(0x3F80)\n+\n+\n+def test_float_arg_precision_follows_annotation():\n+    import torch\n+\n+    def default_fp32(out, x):\n+        tl.store(out, x > 1.0)\n+\n+    def annotated_fp64(out, x: tl.float64):\n+        tl.store(out, x > 1.0)\n+\n+    out = torch.zeros(2, dtype=torch.int32)\n+    interpreter.InterpretedFunction(default_fp32)[(1, )](out, 1.00000001)\n+    interpreter.InterpretedFunction(annotated_fp64)[(1, )](out[1:], 1.00000001)\n+    # 1.00000001 rounds to 1.0 in fp32 but stays above 1.0 in fp64, as in compiled kernels.\n+    assert out.tolist() == [0, 1]\n+\n+\n def _element_ptrs(array: np.ndarray) -> np.ndarray:\n     base = np.uint64(array.ctypes.data)\n     offsets = np.arange(array.size, dtype=np.uint64) * np.uint64(array.itemsize)"
+        },
+        {
+          "filename": "python/triton/runtime/interpreter.py",
+          "status": "modified",
+          "additions": 16,
+          "deletions": 4,
+          "patch": "@@ -1398,7 +1398,7 @@ def _patch_lang(fn):\n \n \n # TODO: wrap everything in triton tensors\n-def _implicit_cvt(arg):\n+def _implicit_cvt(arg, annotation=None):\n     if isinstance(arg, bool):\n         handle = TensorHandle(np.array([arg], dtype=np.bool_), tl.int1)\n         return tl.tensor(handle, tl.int1)\n@@ -1417,6 +1417,15 @@ def _implicit_cvt(arg):\n             raise ValueError(f\"Unsupported integer value {arg}\")\n         handle = TensorHandle(np.array([arg], dtype=dtype), ty)\n         return tl.tensor(handle, ty)\n+    if isinstance(arg, float):\n+        ty_name = annotation if annotation in (\"fp16\", \"bf16\", \"fp32\", \"fp64\") else \"fp32\"\n+        if ty_name == \"bf16\":\n+            # As the launchers' extractBF16 does: round to fp32, then keep its upper 16 bits.\n+            bits = np.array([arg], dtype=np.float32).view(np.uint32) >> 16\n+            handle = TensorHandle(bits.astype(np.uint16), tl.bfloat16)\n+        else:\n+            handle = getattr(interpreter_builder, f\"get_{ty_name}\")(arg)\n+        return tl.tensor(handle, tl.str_to_ty(ty_name, None))\n     if hasattr(arg, \"data_ptr\"):\n         ty = tl.str_to_ty(triton.runtime.jit.mangle_type(arg), None)\n         handle = TensorHandle(np.array([arg.data_ptr()], dtype=np.uint64), ty)\n@@ -1457,8 +1466,8 @@ class GridExecutor:\n         self.arg_names = arg_names\n         self.grid = grid\n         self.pre_run_hooks = pre_run_hooks\n-        __annotations__ = {name: _normalize_ty(ty) for name, ty in inspect.get_annotations(fn).items()}\n-        self.constexprs = [name for name in arg_names if __annotations__.get(name) == \"constexpr\"]\n+        self.annotations = {name: _normalize_ty(ty) for name, ty in inspect.get_annotations(fn).items()}\n+        self.constexprs = [name for name in arg_names if self.annotations.get(name) == \"constexpr\"]\n \n     def _init_args_hst(self, args_dev, kwargs):\n         storages = {}\n@@ -1545,7 +1554,10 @@ class GridExecutor:\n             # we need to copy arguments to the host for the interpreter\n             # implicitly convert tensor arguments to their base pointers\n             args = inspect.getcallargs(self.fn, *args_hst, **kwargs_hst)\n-            args = {name: arg if name in self.constexprs else _implicit_cvt(arg) for name, arg in args.items()}\n+            args = {\n+                name: arg if name in self.constexprs else _implicit_cvt(arg, self.annotations.get(name))\n+                for name, arg in args.items()\n+            }\n             # iterate through grid\n             assert len(grid) <= 3, \"grid must have at most 3 dimensions\"\n             grid = grid + (1, ) * (3 - len(grid))\n"
+        }
+      ]
+    },
+    {
+      "sha": "2e45f872f7307b16c4ed6ec21518f8cda524cbdf",
+      "author": {
+        "name": "Ali",
+        "email": "alimilhim5@gmail.com"
+      },
+      "date": "2026-11-23T08:04:23+08:00",
+      "message": "[FRONTEND] Reject zero step in tl.range (#11242)\n\n`tl.range` with 0 step lowers to an `scf.for`, an infinite loop that\nhangs the GPU with no error.\n\n---------\n\nCo-authored-by: Peter Bell <peterbell10@openai.com>",
+      "parents": [
+        "59231e1093a6a66fed065821231d488cc881b123"
+      ],
+      "stats": {
+        "total_additions": 19,
+        "total_deletions": 0,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "python/test/unit/language/test_compile_errors.py",
+          "status": "modified",
+          "additions": 16,
+          "deletions": 0,
+          "patch": "@@ -623,3 +623,19 @@ def test_err_histogram_non_32bit_int(ptr_ty):\n             triton.compiler.ASTSource(fn=kernel, signature={\"x_ptr\": ptr_ty, \"z_ptr\": \"*i32\", \"N\": \"constexpr\"},\n                                       constexprs={\"N\": 4}))\n     assert \"histogram only supports 32-bit integer input\" in str(e.value.__cause__)\n+\n+\n+def test_err_range_zero_step():\n+\n+    @triton.jit\n+    def kernel(ptr, STEP: tl.constexpr):\n+        acc = 0\n+        for i in tl.range(0, 10, STEP):\n+            acc += 1\n+        tl.store(ptr, acc)\n+\n+    with pytest.raises(CompilationError) as e:\n+        triton.compile(triton.compiler.ASTSource(fn=kernel, signature={\"ptr\": \"*i32\"}, constexprs={\"STEP\": 0}))\n+\n+    err_msg = format_exception(e.type, value=e.value, tb=e.tb)\n+    assert \"must not be zero\" in err_msg, \"error should explain the zero step\""
+        },
+        {
+          "filename": "python/triton/compiler/code_generator.py",
+          "status": "modified",
+          "additions": 3,
+          "deletions": 0,
+          "patch": "@@ -1303,6 +1303,9 @@ class CodeGenerator(ast.NodeVisitor):\n             step = iter_args[2] if len(iter_args) > 2 else self.visit(ast.Constant(1))\n         else:\n             raise RuntimeError('Only `range` and `static_range` iterators are currently supported')\n+\n+        if _is_constexpr(step) and step.value == 0:\n+            raise ValueError(\"range() arg 3 (step) must not be zero\")\n         # handle negative constant step (not supported by scf.for in MLIR).\n         # Only a constexpr step can be normalized here; a runtime step must be positive.\n         negative_step = False\n"
+        }
+      ]
+    }
+  ]
+}
