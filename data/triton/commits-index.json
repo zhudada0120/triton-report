@@ -1,4 +1,24 @@
 {
+  "5f0fbb9a871761b56b70a0d841ffdcefbe5cda75": {
+    "date": "2026-11-24",
+    "msg": "[GPU] Clarify grouped scan carry routing and cover replicated CTAs (#12934)"
+  },
+  "7fe863030126c5bd7c5a85d7f8602a41863d7c11": {
+    "date": "2026-11-24",
+    "msg": "[CI] Fix the example dialect plugin build and cover it on A100 (#12853)"
+  },
+  "87d50dc81dcdf312b57456cd8fe0cb30fc074f93": {
+    "date": "2026-11-24",
+    "msg": "[NVIDIA] Return unsigned types from libdevice unsigned conversions (#12931)"
+  },
+  "75b2eed44e96ca6d68884481ae606e99dd13007d": {
+    "date": "2026-11-24",
+    "msg": "[Gluon] Keep bulk async copy tests out of frontend suite (#12855)"
+  },
+  "856833f7901e863196b053be3741c3b8c7049dfe": {
+    "date": "2026-11-24",
+    "msg": "[GPU] Route scan carries by logical segment and support scans across CTAs (#12924)"
+  },
   "7d4f88e3c7065f134b598b2832a46549babf4368": {
     "date": "2026-11-23",
     "msg": "[Interpreter] Convert float arguments the way compiled kernels do (#12620)"

@@ -1,0 +1,103 @@
+{
+  "date": "2026-11-24",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-11-25T09:41:14.350406+08:00",
+  "daily_summary": "当日的变更集中在 GPU scan 的 lowering 逻辑与测试组织上：两个连续的 commit 重构了 ScanOpToLLVM 的 grouped/cross-CTA scan 实现（用 layout projection 路由 carry、支持跨 CTA scan、将 scratch 标记为 cross-CTA 以触发 cluster barrier），并配套扩充了 Gluon scan 测试与 lit 测试；另外有一个 NVIDIA libdevice 无符号返回类型的 bugfix（影响 17 个转换函数的结果 dtype）、一个示例 dialect 插件的编译修复与 CI 覆盖、以及一个纯测试文件搬移（把需要后端编译的 Gluon bulk async copy 测试从前端 parse-only 套件移到离线编译套件）。整体方向是完善 GPU 分布式 scan 的正确性并修正若干构建/类型问题，没有触及 Python 后端抽象层接口。",
+  "ascend_impact_summary": "当日四个 commit 对 triton-ascend 均无实质影响。两个 scan 相关 commit 修改的是 lib/Analysis、lib/Conversion/TritonGPUToLLVM 与 include/triton/Analysis 下的 GPU 布局/scan lowering 路径，属于 Ascend 明确不使用的 TritonGPU/GPU→LLVM 路径（Ascend 跳过 TTGIR 与 TritonGPU 布局，直接走自有 TTIR→Linalg/HIVM lowering，scan 由其自有 pass 处理）；libdevice 无符号转换修复仅涉及 third_party/nvidia/language/cuda/libdevice.py 与生成脚本（Ascend 使用自有 cann/libdevice）；示例插件修复与 CI 覆盖属于 examples/CI 范畴；测试搬移仅改动 python/test/gluon 下平台相关的 Gluon 测试。因此 triton-ascend 无需代码或测试调整。",
+  "commits": [
+    {
+      "sha": "5f0fbb9a871761b56b70a0d841ffdcefbe5cda75",
+      "comment": "该 commit 改进了 grouped scan（inter-warp group）carry 的路由方式。原先 storePred 用 free[kLane]/free[kWarp] 手工判断，现改为 gpu::emitRedundantThreadPredicate 并先 free.erase(kBlock)，使冗余线程判定覆盖被复制的 CTA（replicated CTA 各自写自己的 shared memory scratch）。carry 选择从 `owner = consumer & threadBits` + threadSegment 的位运算改为基于 layout 投影：用 scan.invertAndCompose(source) 得到 route，再用 route.sublayout({kReg},{kReg}) 定位 consumer 的 register slot，用 route.sublayout({kReg},{kLane,kWarp}).compose(laneWarpToSegmentOffset) 计算每个 scan register 对应的 consumer segment offset，并引入 isNonBoundaryOffset（只在 boundaryReg 上做边界判断）。这消除了每 register 构造/sort consumer 列表的开销，缩短 register 生命周期，并让 carry 在访问到该 register 的最后一个 consumer offset 时立即应用，而不是按 owner 位模式判定完成。测试新增 cta_warp 布局 case 与 test_grouped_scan_replicated_cta_scratch，用 num_ctas=2 验证每个 replicated CTA 都填充了自己的 scratch。风险点在于 applyLinearLayout/sublayout 的索引推导较为晦涩，若 layout 含非零 block basis 或 reverse 方向时 getConsumerOffset 的正确性依赖 LinearLayout 组合语义；不过已有 lit/gluon 覆盖。属于 GPU scan lowering 的性能与正确性改进，模块为 TritonGPUToLLVM 与 Gluon 测试。",
+      "tags": [
+        "performance",
+        "bugfix",
+        "medium-risk",
+        "tritongpu-lowering",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[GPU] Clarify grouped scan carry routing and cover replicated CTAs (#12934)\n\nThis change uses layout projections to route grouped scan carries and\nadds a test that verifies each replicated CTA populates its own\nshared-memory scratch."
+    },
+    {
+      "sha": "7fe863030126c5bd7c5a85d7f8602a41863d7c11",
+      "comment": "该 commit 修复 nightly wheel 构建开启 extensions 时示例 dialect 插件编译失败的问题：DialectPluginPasses.cpp 使用了 arith::IndexCastOp 但缺少 Arith.h 头文件，普通 PR 构建不编译插件因此错误漏到 main。修复是在插件中将 #include \"mlir/Dialect/Arith/IR/Arith.h\" 显式加入。同时 TritonPlugin.cpp 把已废弃的 FunctionOpInterface::setName 改为 setSymbolName，以适配新版 MLIR API。CI 侧在已有 A100 集成 job 上启用 extensions，使 PR 获得插件编译覆盖。属于构建/CI 修复，仅影响 examples/plugins 与 CI 配置，不涉及编译器核心或后端抽象。风险低，但若上游 MLIR API 继续演进，示例插件需持续同步。",
+      "tags": [
+        "ci",
+        "bugfix",
+        "low-risk",
+        "build"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[CI] Fix the example dialect plugin build and cover it on A100 (#12853)\n\nThe nightly wheel build enables extensions and fails when compiling the\nexample dialect plugin. The lowering uses `arith::IndexCastOp` without\nincluding the Arith operations header. Ordinary PR builds skip the\nplugin, so the error can reach `main`.\n\nInclude `mlir/Dialect/Arith/IR/Arith.h` directly and enable extensions\non the existing A100 integration job. This gives PRs compile coverage\nfor the example plugins."
+    },
+    {
+      "sha": "87d50dc81dcdf312b57456cd8fe0cb30fc074f93",
+      "comment": "该 commit 修正 NVIDIA libdevice 中无符号转换函数返回 int32/int64 而非 uint32/uint64 的问题。build_extern.py 原先仅把名字以 'u' 开头的函数标记为无符号返回，遗漏了 float2uint_*、double2uint_*、float2ull_*、double2ull_*（各 rounding mode）与 float_as_uint 共 17 个函数。修复在 Libdevice.symbol 中新增 `elif \"2uint\" in op_name or \"2ull\" in op_name or \"as_uint\" in op_name: ret_type = to_unsigned(ret_type)`，并同步重新生成 third_party/nvidia/language/cuda/libdevice.py 中的返回 dtype。这是一个语义行为变更：依赖有符号返回类型做符号扩展把值加宽的代码会得到不同结果（如 3e9 之前变为负值）。新增 skipif(is_cuda) 的 test_libdevice_unsigned_conversions，校验返回 dtype 与超过有符号范围的值。变更局限于 NVIDIA libdevice 与生成脚本，属平台特定代码，不影响上游抽象层或其他后端。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "libdevice",
+        "nvidia"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Return unsigned types from libdevice unsigned conversions (#12931)\n\nThe libdevice conversions to unsigned integers return signed types:\n\n```python\ny = libdevice.float2uint_rn(tl.load(X))  # y.dtype is int32, not uint32\ntl.store(Y, y.to(tl.int64))              # 3e9 -> -1294967296\n```\n\nThis affects `float2uint_*`, `double2uint_*`, `float2ull_*`,\n`double2ull_*` (all rounding modes) and `float_as_uint`, 17 functions in\ntotal. The CUDA functions return `unsigned int` / `unsigned long long`,\nbut `build_extern.py` only marks functions whose name starts with `u` as\nunsigned, so these were generated with `int32`/`int64` results.\n\nThis updates that rule and the generated wrappers. It does change the\nresult dtype of these functions, so code that relied on the signed type,\ne.g. sign extension when widening, now gets the unsigned value.\n\nAdded `test_libdevice_unsigned_conversions` to `test_libdevice.py`,\nwhich checks the dtype and a value above the signed range. It fails on\nmain and passes with the change on an RTX A4000; the rest of\n`test_libdevice.py` is unaffected.\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests\n  - [ ] This PR does not need a test because `FILL THIS IN`.\n\n- Select one of the following.\n  - [x] I have not added any `lit` tests.\n- [ ] The `lit` tests I have added follow these [best\npractices](https://mlir.llvm.org/getting_started/TestingGuide/#filecheck-best-practices),\nincluding the \"tests should be minimal\" section. (Usually running Python\ncode\n    and using the instructions it generates is not minimal.)"
+    },
+    {
+      "sha": "75b2eed44e96ca6d68884481ae606e99dd13007d",
+      "comment": "纯测试文件搬移：把 #12806 加入 test_frontend.py 的 test_bulk_async_{load,store}_* 等测试移到 test_core.py，因为前者是 parse-only 前端套件、不应调用 triton.compile 触发后端工具链（macOS 上 make test-nogpu 因无法执行 Linux ptxas 而失败）。test_core.py 本来就是离线编译测试的归宿（沿用 #12004 的约定）。差异为 189 行删除 + 192 行新增（含新导入的 triton 及 HOPPER_TARGET/BLACKWELL_TARGET 常量定义），无断言或导入语义改变。属于测试组织与 CI 稳定性修复，不涉及产品代码。风险低。",
+      "tags": [
+        "test",
+        "ci",
+        "low-risk",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Gluon] Keep bulk async copy tests out of frontend suite (#12855)\n\nFixes #12856 \n\nThe `test_bulk_async_{load,store}_*` tests added in #12806 call\n`triton.compile` from `test_frontend.py`, which breaks `make test-nogpu`\non macOS (Linux `ptxas` cannot be executed).\n\nMove them to `test_core.py` alongside the other offline-compilation\ntests, as established by #12004. The frontend suite is parse-only and\nshould not invoke the backend toolchain.\n\nPure file move: no imports or assertions change."
+    },
+    {
+      "sha": "856833f7901e863196b053be3741c3b8c7049dfe",
+      "comment": "该 commit 是 scan 支持跨 CTA 的核心变更。分两部分：(1) 删除 ScanLoweringHelper::isSupported() 及 ScanOpToLLVM 中『scan axis distributed across CTAs is not supported』的错误路径，同时移除 getScanRegisters/gatherCarry 与『构造并按 scan 顺序排序 consumer 列表』的旧实现，改为基于 layout 投影的直接映射：每个 destination register 只考虑跨线程可变的 segment 位、跳过 scan 边界，carry 在访问到该 register 的最后一个 consumer 时立即应用（selectPrefix 辅助函数），从而缩短 register 生命周期。(2) 采用 #12914 的跨 CTA scan 思路：warpSegmentSize 的 mask 由 {kWarp} 扩展为 {kWarp, kBlock}（CTA 拥有的 axis 位界定 warp-local segment 边界），getSegmentCarries 中把 blockId = targetInfo.getClusterCTAId 代入 applyLinearLayout，使 CTA rank 参与逻辑 segment 索引以选择 carry；buildInterWarpScanLayout 中只有 `sourceLaneMask == totalsLaneMask && source.sublayoutIsZero({kBlock},{axisDim})` 时才用 Grouped 路径，否则退回 Warp/Lane 路径（由 layout conversion 处理 peer CTA）。同时 lib/Analysis/Allocation.cpp 的 hasCrossCTAScratch 新增 ScanOp 分支（getCTASplitNum(...)[axis] > 1 即视为跨 CTA scratch），使编译器在复用 scratch 前插入 cluster barrier；lit 测试 cross-cta.mlir 从期望报错改为验证 memb ar 模式下出现 ttng.cluster_barrier、lowering 后出现 nvvm.cluster.arrive/wait、nvvm.mapa 与 !llvm.ptr<7> 加载。测试方面扩充 cta_major/cta_minor/cta_replicated/cta_registers 布局 case，并按 layout 的 block_bases 数推导 num_ctas、skip_if_unsupported_cluster_size。风险中等：跨 CTA scratch 的 barrier 依赖 Membar 分析正确插桩，若 CTA split 判定与实际 scratch 共享不一致可能产生数据竞争；同时 getClusterCTAId 需要 TargetInfo 支持（非 NVIDIA target 上行为依赖 targetInfo 实现）。属 TritonGPU lowering + Allocation 分析的功能性扩展。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "tritongpu-lowering",
+        "analysis",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[GPU] Route scan carries by logical segment and support scans across CTAs (#12924)\n\nA scan can span multiple CTAs, and neighboring elements can belong to\nCTAs whose ranks differ from scan order. This PR uses the logical\nsegment index to select the preceding prefix in either scan direction.\n\nThe first commit removes `getScanRegisters`. For each destination\nregister, the carry gather considers only segment bits that can vary\nacross threads and skips the scan boundary. The grouped scan maps each\nprefix directly to its consumer and applies the carry as soon as it\nvisits the last consumer for that register. This keeps register\nlifetimes short and removes the need to build and sort lists of\nconsumers.\n\nThe second commit adapts Keren Zhou’s cross-CTA scan support from\n#12914. CTA-owned axis bits bound warp-local segments. The existing\nlayout conversion exchanges segment totals through distributed shared\nmemory, and the CTA rank contributes to the logical index used to select\nthe carry. Marking the scratch reads as cross-CTA lets the compiler\nsynchronize peer CTAs before reusing the allocation.\n\n---------\n\nCo-authored-by: Keren Zhou <robinho364@gmail.com>"
+    }
+  ],
+  "architecture_based_on_sha": "1c53e566ef8f719ff9b69132a72ad943e5409492",
+  "architecture_generated_at": "2026-11-15T21:06:50.425498+08:00"
+}

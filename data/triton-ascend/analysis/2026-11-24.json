@@ -1,0 +1,146 @@
+{
+  "date": "2026-11-24",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-11-25T09:41:34.197074+08:00",
+  "daily_summary": "当日变更集中在 DynamicCVPipeline（ssbuffer）方向：一是修复 AddControlFlowCondition 中 nsa_bwd_dkv 内核与 tensor iter-arg pair 的 flowopt 条件问题，二是扩展 CrossCorePattern 以支持短链、树形、森林、双流水线等多种跨核依赖形态并配套新增 lit 测试，三是修复 custom op 打包时 ViewLikeOpInterface/memory_space_cast 链与 convert_layout 的处理，四是修正 CUBE->VECTOR direct-store 同步点匹配逻辑，五是跳过 tensor.empty 作为 split matmul 输入的误判。另有 TLA 前端大规模接口统一（用 vdup/vmula/vcvt 等替换 vfull/vsplat/vfma/vtruncf，移除 tla.where，新增 tla.load 及 kernel 控制流导出），以及文档/libdevice 示例的批量重构（移除 TRITON_ENABLE_LIBDEVICE_SIMT 环境变量开关，改为基于 _is_a5_target_arch 的设备判断，并补充 SIMD 用例）。整体以 bugfix 与重构为主，风险可控但涉及较多测试与文档文件。",
+  "test_impact_summary": "当日变更对测试看护影响较大但方向明确：DynamicCVPipeline 部分每项修复都伴随新增或修改的 lit 测试（pattern-short-chain/tree/forest/two-pipelines、test_cube_to_vector_direct_store_transparent_yield、test_pack_memref_memory_space_cast 等），且 skip-flowopt-tensor-iter-arg 去掉了 XFAIL，属于测试增强；TLA 重构涉及大量 simd 单测的期望 IR 计数更新（broadcast/pge 数量、vsel 计数）以及删除 vdups、selection、tla.where 相关测试，并新增 test_range、scalar_load、mla kernel 与 conftest 中的 perf/npu fixture，需确保离线 IR 断言与设备用例同步；文档示例改为 import _is_a5_target_arch/NPUUtils 而非环境变量，需在文档 CI 中验证新导入路径可用且 simd 用例能在 A2/A3 上运行。总体看现有测试策略已同步调整，但 lit 的中文形态判定（pattern 识别）与 TLA 的 IR 计数属于脆弱断言，后续修改容易再次触发。",
+  "commits": [
+    {
+      "sha": "5a0947cc96edfdca91b986cb3f82f02cc2e54262",
+      "comment": "在 AddControlFlowConditionPass 的 legacyKernel 白名单中新增 parallel_nsa_compression_bwd_kernel_dkv，使该内核沿用上游控制流条件而不被 normal preload 方案重写。属于针对具体内核的定向放行，改动极小、无逻辑风险；但白名单机制本身依赖内核名硬编码，若后续内核命名变化或新增类似内核需同步维护。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅扩充 legacyKernel 字符串列表，不改变 pass 逻辑，现有 lit 测试无需调整；但该内核在现有测试中若无专门用例，建议后续补充。",
+        "suggested_test_areas": []
+      },
+      "message": "[ssbuffer](feat) fix nsa_bwd_dkv"
+    },
+    {
+      "sha": "c5953fa19713521e1fa538b8272cb8becbb83e2a",
+      "comment": "修复 CustomOpAnalysis 在打包 memref 时对 alloc -> memory_space_cast -> to_tensor -> custom 链及输出 convert_layout 的处理：新增 collectToTensorThroughViewLikeOpInterface 沿非共享 ViewLikeOpInterface 链查找 to_tensor，新增 moveToTensorAfterConvertLayout 把布局转换移到 to_tensor 之前以在 memref 侧完成，避免 bufferization 跨越不可 bufferize 的 tensor 转换。同时 SplitMatmulPattern 中当外层输入来自 tensor.empty 时不再按输入切分。实现思路合理且带注释，新增 lit 用例覆盖；潜在风险在于 moveToTensorAfterConvertLayout 中 clone convert_layout 并重设 operand/type 的 IR 改写较精细，若动态 shape operand 与属性处理有遗漏可能在非测试形态下出问题。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 memory_space_cast 链与共享 cast 不打包的用例，并更新 pack_custom_op_with_convert_layout 期望 IR（convert_layout 移到 to_tensor 前），属于必要的测试同步。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/StandardizeOp/test_pack_memref_memory_space_cast.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/StandardizeOp/test_pack_memref.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/StandardizeOp/SplitMatmulPattern 相关测试"
+        ]
+      },
+      "message": "[ssbuffer](fix) consider alloc && its ViewLikeOp (#3169)\n\nCo-authored-by: shaoyiyang <shaoyiyang1@huawei.com>\n\nStage3-Profile: b8b8e96550e073ffb0ab017b9c98e7bf0131f9bc585b41a33ae047f334c61c7e\n\nStage3-Original: 5534c0546674b3c4bcfce0a0d4aa05dae0d47af6\nStage3-Main: c569abdaccbf4d6b8024a5b8cd519123df46495c"
+    },
+    {
+      "sha": "b91a35aee762a64eb9024dbd967401437af4f22f",
+      "comment": "在 UpdateConditionInfoPassLegacy::setFlowOptCondition 中新增 isTensorIterArgIfPair 判断，当 source/current if 属于同一 tensorIterArgDepsMap 中的 producer/consumer 对时跳过 flowopt 条件，与 normal preload 路径的行为对齐；同时移除 skip-flowopt-tensor-iter-arg.mlir 的 XFAIL。修复方向正确，补齐了 legacy 路径与上游实现的行为差异；风险较低，但依赖 tensorIterArgDepsMap 在 legacy 路径下已被正确填充，若 map 为空则修复不生效。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "DynamicCVPipeline",
+        "test"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "去掉了 skip-flowopt-tensor-iter-arg.mlir 的 XFAIL 并保留 wildcard 注释，测试从预期失败转为预期通过，需确保 CI 中该用例在 legacy 路径下真实通过。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AddControlFlowCondition/skip-flowopt-tensor-iter-arg.mlir"
+        ]
+      },
+      "message": "[ssbuffer](fix) Tensor iter-arg pairs not add flowopt cond (#3236)\n\nCo-authored-by: sxm <sunxianmiao@h-partners.com>\n\nStage3-Profile: b8b8e96550e073ffb0ab017b9c98e7bf0131f9bc585b41a33ae047f334c61c7e\n\nStage3-Original: d96710012d6eccea167be54b11a795f89326ba4f\nStage3-Main: c569abdaccbf4d6b8024a5b8cd519123df46495c"
+    },
+    {
+      "sha": "5fdb36d42c0cfdadacccc728eef5d1a89c3cd701",
+      "comment": "重构 CUBE->VECTOR direct-store 同步匹配：不再以 scf.for/while/if 为锚点遍历 yield 查找带 tightly_coupled_buffer 的 VECTOR to_tensor，而是从带 kTransferId 的 VECTOR to_tensor 出发沿透明操作（tensor.reshape、zero-add、ViewLike）与 SCF 控制流 iter-arg/yield 前向遍历，找到 store 并用 getCommonLevelProducerConsumer 计算公共层级的 producer/consumer 作为 sync set/wait 插入点；同时删除 VectorToTensorInfo 及 tightlyCoupledBufferId 字段。新增 test_cube_to_vector_direct_store_transparent_yield.mlir 校验 flag=2 的 set/wait 位置。改动逻辑复杂，公共层级计算依赖 parent region 比较，若 SCF 嵌套形态超出现有测试覆盖，可能出现 set/wait 插入点错误或漏加同步。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增透明 yield 场景的 lit 测试，且同步点从 SCF op 改为 producer/consumer 公共层级，原有 direct-store 测试的期望位置可能需重新核对。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow/test_cube_to_vector_direct_store_transparent_yield.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/SplitDataflow/ 下既有 direct-store 测试"
+        ]
+      },
+      "message": "[ssbuffer](fix) reshape skip (#3264)\n\nStage3-Profile: b8b8e96550e073ffb0ab017b9c98e7bf0131f9bc585b41a33ae047f334c61c7e\n\nStage3-Original: b92693adc660b83d1c2fb236175ed2adf9eb7eb8\nStage3-Main: c569abdaccbf4d6b8024a5b8cd519123df46495c"
+    },
+    {
+      "sha": "06df44469bee5f924df1a1d03e64750c2db0868d",
+      "comment": "大幅扩展 CrossCorePattern：引入 CrossCoreShape 枚举（LinearChain/TwoChains/ShortChain/Tree/ShortChainForest），并新增 areIndependentChains/isShortChain/isTreePipeline/isShortChainForest/collectChainsOf 等判定，AddControlFlowConditionPass 据此选择 corePairMainLoop 或 mainLoopPairs==2 的匹配条件；同时更新 AscendNPU-IR submodule 指针。该改动把原先仅支持单条 4/5 块线性链的正则识别扩展到多形态，并新增 6 个 lit 测试覆盖短链/树/森林/双流水线。风险在于形态判定阈值硬编码（kTreeTransfers=6、kForestChains=4 等），对形态稍有差异的内核可能误判或漏判，需依赖新增测试与真实内核回归验证。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 pattern-short-chain/tree/tree-double-transfer/forest/two-pipelines 等 lit 测试，并更新 pattern-two-chains 注释与期望；submodule 指针变更也可能影响编译产物，需要回归。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AddControlFlowCondition/pattern-short-chain-kernel-conditions.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AddControlFlowCondition/pattern-tree-kernel-conditions.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AddControlFlowCondition/pattern-tree-double-transfer-kernel-conditions.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AddControlFlowCondition/pattern-forest-kernel-conditions.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AddControlFlowCondition/pattern-two-pipelines-kernel-conditions.mlir",
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/AddControlFlowCondition/pattern-two-chains-kernel-conditions.mlir"
+        ]
+      },
+      "message": "[ssbuffer](feat) Add pattern for scalar bound path (#3348)\n\n* [ssbuffer](feat) add pattern for scalar bound\n\n* [ssbuffer](feat) add pattern for short chain\n\nThe hstu attention pipeline is a chain of three computation blocks that\nalternates the cores: cube block 4 -> vector block 11 -> cube block 6. It\nholds two transfers, so it carries four tightly coupled buffers. The blocks\nthat carry a condition are the three blocks of the chain and one more block\nthat takes part in no cross core transfer, so the kernel holds four of them.\n\nThe shape is recognized on three conditions, so that no other kernel matches\nit by accident: the chain has to be a linear chain, every transfer has to\ncarry two tightly coupled buffers and the chain has to carry four buffers of\nits own, and the kernel has to hold exactly four blocks that carry a\ncondition, three of them cross core.\n\nStage3-Profile: b8b8e96550e073ffb0ab017b9c98e7bf0131f9bc585b41a33ae047f334c61c7e\n\nStage3-Original: af2017755ab76b490a594172391460add4aa2fe5\nStage3-Main: c569abdaccbf4d6b8024a5b8cd519123df46495c"
+    },
+    {
+      "sha": "8e906e9d6854629f9ea5b0f9efc44b1e22885203",
+      "comment": "TLA 前端接口统一：__init__.py 导出 constexpr/program_id/range/static_assert/static_range 与 tla.load，移除 tla.where（selection.py 整体删除）；simd.py 用 vdup 取代 vsplat/vfull、vmula 取代 vfma、vcvt 取代 vtruncf、vcadd 取代 vreduce_sum、vdupv 取代 vreduce_max/vbroadcast，并新增 vcvt/vmula/vcadd；scalar.py 新增 tla.load 仅允许 address space 1 的标量 GM 指针并校验元素类型字节可寻址；math.py 改用 vdup/vmula/vadds/vmuls。配套新增 test_range、scalar_load、mla kernel 与 conftest 中 perf_output/npu_runtime fixture，并批量更新 simd 单测。重构幅度大，删除了多个公开 API（vfma/vsplat/vfull/vtruncf/vreduce_sum/vreduce_max/vbroadcast/tla.where），属破坏性变更，需确认仓库内所有调用点已迁移。",
+      "tags": [
+        "refactor",
+        "feature",
+        "medium-risk",
+        "language/tla"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "大量 simd 单测的 IR 计数期望改变（broadcast 数量、pge 数量、vsel 数量），vdups.py 与 selection 相关测试删除，新增 test_range、scalar_load、mla 与 conftest fixture；需核对所有旧 API 调用点已迁移且新计数断言正确。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/simd/（vdup/vdups/vmula_vmadd/pset/pset/tail_mask/vcmps/vexpdif/vsqrt 等）",
+          "third_party/ascend/unittest/tla_ut/simd_frontend_contract.py",
+          "third_party/ascend/unittest/tla_ut/test_range.py",
+          "third_party/ascend/unittest/tla_ut/dma/scalar_load.py",
+          "third_party/ascend/unittest/tla_ut/kernels/mla/",
+          "third_party/ascend/unittest/tla_ut/vector/（norm_forward/topk_gate/rope）"
+        ]
+      },
+      "message": "[TLA](feat) Consolidate kernel interfaces and add scalar GM load (#3364)\n\n* [TLA](feat) Export Triton loop iterators\n\nAssisted-by: AI\nSigned-off-by: liupengcheng2012 <liupengcheng38@huawei.com>\n\n* [TLA](feat) Use TLA kernel control-flow names in DSA\n\nAssisted-by: AI\nSigned-off-by: liupengcheng2012 <liupengcheng38@huawei.com>\n\n* [TLA](refactor) Use canonical SIMD operations\n\nAssisted-by: AI\nSigned-off-by: liupengcheng2012 <liupengcheng38@huawei.com>\n\n* [TLA](refactor) Remove the redundant where API\n\nAssisted-by: AI\nSigned-off-by: liupengcheng2012 <liupengcheng38@huawei.com>\n\n* [TLA](test) Add explicit L0 paged MLA coverage\n\nPort a152f9d5647b48a9f4c62d2e5f61b2b60eee7548 onto the canonical TLA interfaces.\n\nAssisted-by: AI\nSigned-off-by: liupengcheng2012 <liupengcheng38@huawei.com>\n\n* [TLA](feat) Add scalar global memory load\n\nAssisted-by: AI\nSigned-off-by: liupengcheng2012 <liupengcheng38@huawei.com>\n\n---------\n\nSigned-off-by: liupengcheng2012 <liupengcheng38@huawei.com>\nCo-authored-by: liupengcheng2012 <liupengcheng38@huawei.com>\n\nStage3-Profile: b8b8e96550e073ffb0ab017b9c98e7bf0131f9bc585b41a33ae047f334c61c7e\n\nStage3-Original: 51b4e01ca5f6ec35304765856e6c9ce006e095cf\nStage3-Main: c569abdaccbf4d6b8024a5b8cd519123df46495c"
+    },
+    {
+      "sha": "a16defe6b673acfa00288929c0f691193a128e23",
+      "comment": "文档与 libdevice 示例批量重构：所有 libdevice 文档示例移除 TRITON_ENABLE_LIBDEVICE_SIMT 环境变量与 triton_enable_libdevice_simt 依赖，改用 _is_a5_target_arch(NPUUtils().get_arch()) 判断设备，并新增 test_*_simd 用例；_ascend_constraints.py 为多数 libdevice 接口补充 Atlas A2/A3 支持 SIMD 的描述并格式化 example 字段；CI 文档工作流支持 .tar.gz 形式的 Bisheng 包安装并校验 bishengir-compile 存在。改动面极广（171 文件）但基本为模板化文本替换，风险集中在 _is_a5_target_arch 与 NPUUtils 的导入在各示例脚本下能否解析，以及 tar.gz 解包路径是否符合预期。",
+      "tags": [
+        "docs",
+        "low-risk",
+        "ci",
+        "language/cann-libdevice"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "示例脚本本身即文档测试用例，移除了环境变量开关并新增 simd 用例，需在 CI 中验证新导入路径与 simd 分支在 A2/A3 上可运行；新增 tar.gz 安装分支需文档流水线验证。",
+        "suggested_test_areas": [
+          ".github/workflows/ascend-documentation.yml",
+          "docs/zh/python-api/_examples/triton.language.extra.cann.libdevice.*.py",
+          "docs/zh/python-api/_ascend_constraints.py"
+        ]
+      },
+      "message": "[Docs](fix) Fix the document test issue and update libdevice document (#3388)\n\n* update docs\n\n* add simd case\n\n* delete triton_enable_libdevice_simt\n\n* fix yapf check\n\n* delete simd testcase\n\n* Fix the issue of installing the npuir package in the document test\n\n---------\n\nCo-authored-by: lijiarong <lijiarong17@huawei.com>\nCo-authored-by: Jiahao Su <damow890@gmail.com>"
+    }
+  ],
+  "architecture_based_on_sha": "ee15e295649ccf85b4e4b78316c736d00365c1a5",
+  "architecture_generated_at": "2026-11-15T21:06:50.427270+08:00"
+}

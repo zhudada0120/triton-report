@@ -1,4 +1,32 @@
 {
+  "5a0947cc96edfdca91b986cb3f82f02cc2e54262": {
+    "date": "2026-11-24",
+    "msg": "[ssbuffer](feat) fix nsa_bwd_dkv"
+  },
+  "c5953fa19713521e1fa538b8272cb8becbb83e2a": {
+    "date": "2026-11-24",
+    "msg": "[ssbuffer](fix) consider alloc && its ViewLikeOp (#3169)"
+  },
+  "b91a35aee762a64eb9024dbd967401437af4f22f": {
+    "date": "2026-11-24",
+    "msg": "[ssbuffer](fix) Tensor iter-arg pairs not add flowopt cond (#3236)"
+  },
+  "5fdb36d42c0cfdadacccc728eef5d1a89c3cd701": {
+    "date": "2026-11-24",
+    "msg": "[ssbuffer](fix) reshape skip (#3264)"
+  },
+  "06df44469bee5f924df1a1d03e64750c2db0868d": {
+    "date": "2026-11-24",
+    "msg": "[ssbuffer](feat) Add pattern for scalar bound path (#3348)"
+  },
+  "8e906e9d6854629f9ea5b0f9efc44b1e22885203": {
+    "date": "2026-11-24",
+    "msg": "[TLA](feat) Consolidate kernel interfaces and add scalar GM load (#3364)"
+  },
+  "a16defe6b673acfa00288929c0f691193a128e23": {
+    "date": "2026-11-24",
+    "msg": "[Docs](fix) Fix the document test issue and update libdevice document (#3388)"
+  },
   "c569abdaccbf4d6b8024a5b8cd519123df46495c": {
     "date": "2026-11-23",
     "msg": "Revert \"[CustomOp] Validate and emit flatten implementation declarations (#2085)\" (#3387)"
