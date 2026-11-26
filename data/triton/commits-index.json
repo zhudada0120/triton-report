@@ -1,4 +1,44 @@
 {
+  "3fcc9fbeb43628741e73e4e99c547258a61fcc4e": {
+    "date": "2026-11-25",
+    "msg": "[Gluon] Fix warpgroup_mma with explicit None arguments (#12481)"
+  },
+  "24667335dc5a6e0a0f94c68834d8e6cf5b0455dd": {
+    "date": "2026-11-25",
+    "msg": "[AMD][gfx1250] Extend the TDM copy reorder to non-scaled dots (#12880)"
+  },
+  "1601d160cb78c90b527be9832729afa1333359d1": {
+    "date": "2026-11-25",
+    "msg": "[BC-Breaking][NVIDIA] Tighten buffer shape verifier for TMA copies (#12721)"
+  },
+  "c632609f290f089e7e72acf80eb4923cd037f34f": {
+    "date": "2026-11-25",
+    "msg": "[AMD] Apply target CPU and features to bundled device libraries before linking (#12928)"
+  },
+  "8096bbaf5678fa43151612c137c2643ebb7711f1": {
+    "date": "2026-11-25",
+    "msg": "[ConSan] Match each multicast replica to its completion barrier (#12872)"
+  },
+  "00718bd873d1f56956d4e5be00f33260ccc8c563": {
+    "date": "2026-11-25",
+    "msg": "[ConSan] Track the latest bulk or TMA load until each CTA acquires it (#12871)"
+  },
+  "7134a4516cd4c59e7c6c8aabbfaf201e3786d5ba": {
+    "date": "2026-11-25",
+    "msg": "[ConSan] Use the shared-memory layout to check each CTA's accesses (#12870)"
+  },
+  "a02631ce996f10d9117d352db011faf11b5bdd25": {
+    "date": "2026-11-25",
+    "msg": "[ConSan] Use actual CTA targets for indexed shared-memory accesses (#12869)"
+  },
+  "70f54437e853fe9d9432ecfa75ac5ab7db7b0e48": {
+    "date": "2026-11-25",
+    "msg": "[GSan] Track memory reads from TMA im2col loads (#12874)"
+  },
+  "17effa72808cb240db2775d25f8e90a0ffb2fccd": {
+    "date": "2026-11-25",
+    "msg": "[NVIDIA] Check TMEM row compatibility for tcgen05 MMA (#12939)"
+  },
   "5f0fbb9a871761b56b70a0d841ffdcefbe5cda75": {
     "date": "2026-11-24",
     "msg": "[GPU] Clarify grouped scan carry routing and cover replicated CTAs (#12934)"

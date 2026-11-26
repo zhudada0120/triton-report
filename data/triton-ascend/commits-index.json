@@ -1,4 +1,36 @@
 {
+  "339e2cbe0b70bf3a486653945d73eb899255921c": {
+    "date": "2026-11-25",
+    "msg": "[docs](feat) Add Triton operator performance tuning guide for NPU (#3370)"
+  },
+  "5ccc1bfb63e89ce0292f75be45a6601b8dade4e6": {
+    "date": "2026-11-25",
+    "msg": "[dtype](fix) dtype check (#3426)"
+  },
+  "dbfa47d8d9cf370947c994cc58d600b5a128921f": {
+    "date": "2026-11-25",
+    "msg": "[dtype](fix) dtype check (#3369)"
+  },
+  "ef6e1199841a26b5432879c7a7c746e42efc5aac": {
+    "date": "2026-11-25",
+    "msg": "[TritonToGraph](feat) enable atomic lock removal by default (#3409)"
+  },
+  "e7d3fe5710f603ee683c6274d362dc5e01c5b670": {
+    "date": "2026-11-25",
+    "msg": "Combine PR #3407 with test isolation fix #3403"
+  },
+  "21082a90116030374bb001cdeb1b6f4501920376": {
+    "date": "2026-11-25",
+    "msg": "[ssbuffer](fix) remove useless option (#3303)"
+  },
+  "6083fcf62be912ee1e083838e2afcbdcdbed588e": {
+    "date": "2026-11-25",
+    "msg": "[ascend](NFC) remove redundant tla.simd.pge and migrate tests to pset (#3395)"
+  },
+  "8481af79b1c60fabc652c4ab79cfa8eb85e51c07": {
+    "date": "2026-11-25",
+    "msg": "[TLA](feat) Add scalar load and store for GM and UB buffers (#3398)"
+  },
   "5a0947cc96edfdca91b986cb3f82f02cc2e54262": {
     "date": "2026-11-24",
     "msg": "[ssbuffer](feat) fix nsa_bwd_dkv"

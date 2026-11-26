@@ -1,0 +1,203 @@
+{
+  "date": "2026-11-25",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-11-26T09:15:05.056257+08:00",
+  "daily_summary": "当日变更集中在 ConSan/GSan 并发与内存安全插桩能力（多播 barrier 归属、TMA im2col 读取追踪、共享内存 layout 寻址、gather/scatter CTA 目标精确化），并强化了 NVIDIA TMA 描述符形状校验与 tcgen05 MMA 的 TMEM 行布局兼容性检查；另有 Gluon warpgroup_mma 显式 None 参数修复与 AMD TDM 调度放宽、AMD 设备库 target 属性链接修复。整体偏向正确的并发语义建模与硬件约束收紧，属高质量 bugfix/约束增强类改动。",
+  "ascend_impact_summary": "当日全部 9 个 commit 均不影响 triton-ascend：其中 7 个仅涉及 NVIDIA 专属路径（Gluon hopper warpgroup_mma、TMA 描述符 verifier、TritonNvidiaGPU 方言/tcgen05、ConSan/GSan 的 NVIDIA 目标 hooks），2 个仅涉及 AMD 后端（TDM pipeliner 调度、OCML/OCKL bitcode 链接属性）。虽然部分改动触及 TTIR 的 verifyDescriptorLoadStoreOp（lib/Dialect/Triton/IR/Ops.cpp）与 python/src 的 llvm 绑定，但前者仅影响 tt.descriptor_load/store/reduce 与 ttng.async_tma_* 的 shape 校验，Ascend 不使用 descriptor 路径；后者仅为 llvm.cc 中 link_extern_libs 的新增关键字参数（默认值保持兼容），Ascend 的 bishengir codegen 不经过该链接路径。因此无需任何功能或测试适配。",
+  "commits": [
+    {
+      "sha": "3fcc9fbeb43628741e73e4e99c547258a61fcc4e",
+      "comment": "修复 Gluon hopper.warpgroup_mma 在显式传入 None 时编译失败的问题。根因是 jit 函数中的字面 None 以 constexpr(None) 形式到达 builtin，而代码在 _unwrap_if_constexpr 之前就做 `is None` 判断，导致 precision 走 _str_to_dot_input_precision 时触发 AttributeError、max_num_imprecise_acc 走 NoneType>int 比较时报 TypeError。修复方式是把两处 unwrap 提前到默认值判断之前，与 tl.dot 现有顺序一致，行为等价于省略参数。变更极小且语义安全，并新增 test_warpgroup_mma_explicit_none 通过 FileCheck 验证两个 ttng.warp_group_dot 的 attr 一致。属于纯 NVIDIA Gluon 前端修复。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "gluon"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[Gluon] Fix warpgroup_mma with explicit None arguments (#12481)\n\npassing an explicit `None` to `hopper.warpgroup_mma` inside a\n`@gluon.jit` kernel fails to compile, even though `None` is the\ndocumented default for both `precision` and `max_num_imprecise_acc`:\n\n- `max_num_imprecise_acc=None` with fp8 operands: `TypeError: '>' not\nsupported between instances of 'NoneType' and 'int'`\n- `max_num_imprecise_acc=None` with other operands: `TypeError:\ncreate_warpgroup_mma(): incompatible function arguments`\n- `precision=None`: `AttributeError: 'NoneType' object has no attribute\n'lower'`\n\na literal `None` in a jit function reaches builtins as\n`constexpr(None)`, so the `is None` checks that pick the defaults never\nmatch it; the value was only unwrapped after those checks. this unwraps\nboth arguments first, the same order `tl.dot` already uses for\n`max_num_imprecise_acc`, so passing `None` now gives the same\n`ttng.warp_group_dot` as leaving the argument out.\n\nthe new `test_warpgroup_mma_explicit_none` in\n`python/test/gluon/test_frontend.py` builds an fp8 kernel that passes\n`None` for both and checks it gets the sm_90 defaults. it fails before\nthis change and passes after; i ran it against the 3.8.0 wheel with this\npatch applied (the function is unchanged on main), along with the rest\nof the 3.8.0 `test_frontend.py` (287 passed).\n\n# New contributor declaration\n- [x] I am not making a trivial change, such as fixing a typo in a\ncomment.\n\n- [x] I have written a PR description following these\n  [rules](https://cbea.ms/git-commit/#why-not-how).\n\n- [x] I have run `pre-commit run --from-ref origin/main --to-ref HEAD`.\n\n- Select one of the following.\n  - [x] I have added tests.\n    - `/test` for `lit` tests\n    - `/unittest` for C++ tests\n    - `/python/test` for end-to-end tests"
+    },
+    {
+      "sha": "24667335dc5a6e0a0f94c68834d8e6cf5b0455dd",
+      "comment": "AMD gfx1250 上把 TDM copy 重排（先全部 TDM copy、单次 wait、再 local_loads 与 dot）的门槛从“循环中含 tt.dot_scaled”放宽为任意含 TDM load 的单 dot 调度，删除 hasScaledDot 形参与 forOp.walk 扫描。实现上纯属删除一个过度保守的门控条件，注释同步更新；测试改写了 amd-pipeline-tdm.mlir 的 CHECK 顺序以证明 num_stages=2 下 body 先出现两个 copy，随后单次 async_tdm_wait，再 tt.dot。风险在于该调度对非 scaled dot 的通用性只在 42 个 fp16/bf16 GEMM 配置上验证（geomean 1.10x，min 0.956x），存在少量回退配置，但改动面局部，属 AMD 后端内部。",
+      "tags": [
+        "performance",
+        "low-risk",
+        "amd"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][gfx1250] Extend the TDM copy reorder to non-scaled dots (#12880)\n\nThe reorder -- TDM copies, then a single wait, then the local_loads and\nthe dot -- was gated on the loop containing a tt.dot_scaled. Nothing\nabout it is specific to scaled dots, so drop the gate.\n\nOn gfx1250 at num_stages=2 over 42 fp16/bf16 GEMM configs: geomean\n1.10x, min 0.956x, max 1.504x."
+    },
+    {
+      "sha": "1601d160cb78c90b527be9832729afa1333359d1",
+      "comment": "BC-breaking 收紧 TMA copy 的 buffer shape verifier。原先 verifyDescriptorLoadStoreOp 只比较 block 与 tensor 的 numel（源自 #9112 的放宽），对 TMA 消息按 shared buffer shape 分片、box 由 descriptor 决定的 lowering 语义并不成立，会出现 mbarrier 挂起、消息重叠甚至越界写。修复改为：允许 block 去掉前导单位维后与 tensor shape 严格相等，否则报错并同时打印两个 shape。该 helper 被 tt.descriptor_load/store/reduce 与 ttng.async_tma_* 共用，实际上把 #9112 的放宽回退。附带删除 test_core.py 中依赖隐式 reshape 的 fp6 TMA store 用例，并在 Triton/TritonNvidiaGPU/gsan 测试中同步更新期望（gsan.mlir 的 8x8x32 描述符改成 1x64x32 以符合新规则），以及新增 4 条 invalid.mlir 反例与 1 条“去掉前导单位维仍合法”的正例。对 Gluon NVIDIA TMA 用户是行为破坏，需要在源码中显式 reshape。",
+      "tags": [
+        "bugfix",
+        "high-risk",
+        "triton-ir",
+        "nvidia"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[BC-Breaking][NVIDIA] Tighten buffer shape verifier for TMA copies (#12721)\n\nIn the TMA lowering, the `cp.async.bulk.tensor` messages are tiled by\nthe shared buffer shape, but each message moves the box in the tensor\nmap, which is derived from the descriptor.\n\nThe verifier currently only checks the number of elements, not the exact\nshapes. This relaxation came from #9112 (“Relax rank-reduce verifier to\nallow non-unit leading dims as long as numels remains the same”) and is\nnot sound in general.\n\nA few examples (verified on H100): \n\n```python\n@gluon.jit\ndef tma_copies(desc, smem_shape: gl.constexpr, smem_layout: gl.constexpr):\n    # smem_shape is defined independently of desc\n    smem = gl.allocate_shared_memory(desc.dtype, smem_shape, smem_layout)\n    bar = gl.allocate_shared_memory(gl.int64, [1], mbarrier.MBarrierLayout())\n    mbarrier.init(bar, count=1)\n    mbarrier.expect(bar, desc.block_type.nbytes)\n    tma.async_load(desc, [0] * len(desc.block_type.shape), bar, smem)\n    mbarrier.wait(bar, 0)\n\n# box shape: each dim clamped to 256, last dim clamped to swizzle width\n#\n# assuming f16 elements, 128B swizzle\n#\n# 1. desc [64,128] -> smem [128,64] : mbarrier hang\n#  box shape (smem):    1 x [128,64]\n#  box shape (desc):    [64,64] = 8K\n#  m0        g[0:64, 0:64] -> s[0K,8K)\n#  8K arrive, 16K expected, and s[8K,16K) is never written.\n#\n# 2. desc [2,256,64] -> smem [512,64] : overlapping messages & overflow\n#  box shape (smem):    2 x [256,64], 32K apart\n#  box shape (desc):    [2,256,64] = 64K\n#  m0        g[0:2,   0:256, 0:64] -> s[ 0K,64K)\n#  m1        g[0:2, 256:512, 0:64] -> s[32K,96K)\n#  m0 and m1 both write s[32K,64K), and m1 writes 32K past the 64K buffer.\n#  -> CUDA illegal memory access\n#\n# 3. desc [2,128,64] -> smem [256,64] : correct by accident\n#  box shape (smem):    1 x [256,64]\n#  box shape (desc):    [2,128,64] = 32K\n#  m0        g[0:2, 0:128, 0:64] -> s[0K,32K)\n#  32K arrive, 32K expected, and the box lands exactly as the block reshaped to\n#  [256,64].\n```\n\nThere might be existing Gluon kernels that silently assume this implicit\nreshape is correct. I think the sound way is to always write out the\nreshape explicitly, as the exact condition is hard to state cleanly and\ndepends on lowering details.\n\n```python\n# Accidentally correct cases like 3 above are now rejected, but can be expressed\n# as an explicit reshape\ntma.async_load(desc, [0] * len(desc.block_type.shape), bar, smem.reshape(desc.block_type.shape))\n```\n\nThe fix is to make `verifyDescriptorLoadStoreOp` check that the shapes\nare equal up to leading unit dims, effectively reverting the relaxation\nin #9112. This helper is shared by `tt.descriptor_load/store/reduce` and\n`ttng.async_tma_*` ops. The Triton frontend always emits a matching\nshape, and `RankedReduceDescriptorLoads` in `Combine.cpp` only drops\nleading unit dims, so in practice this change affects the Gluon NVIDIA\nTMA path only.",
+      "architecture_impact": {
+        "affects_architecture": true,
+        "affected_interfaces": [
+          "lib/Dialect/Triton/"
+        ],
+        "recommend_refresh": true
+      }
+    },
+    {
+      "sha": "c632609f290f089e7e72acf80eb4923cd037f34f",
+      "comment": "修复 AMD 在禁用 packed-fp32-ops 时 bundled OCML/OCKL 无法内联导致的严重性能回退。llvm.cc 的 link_extern_libs 新增仅关键字参数 target_cpu/target_features，并在链接前对库内非 intrinsic 函数打上 target-cpu 与合并后的 target-features（库自身的 settings 追加在后以保证其优先级，符合 LLVM 的顺序依赖语义）；同时新增 Function.get_fn_attr pybind。HIPBackend.make_llir 从 kernel 的 fn attr 与 options.llvm_fn_attrs 推导最终 target 设置，仅当库路径确为 Triton 自带的 ocml.bc/ockl.bc 时才打标，其它 extern lib 保持原样（避免破坏用户替换库的 target 属性）。测试新增 third_party/amd/python/test/test_extern_lib_target_attrs.py，覆盖 pybind 行为、compile-only 下 ocml/ockl 继承 kernel 设置、以及替换库保留自身设置三类场景。改动接口为 kw_only 且有默认空值，对现有调用方向后兼容。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "medium-risk",
+        "amd",
+        "llvm"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。python/src/llvm.cc 中 link_extern_libs 的新增参数均为 key-only 且默认空串，原有按位置调用方式行为不变；且 Ascend 后端最终 codegen 由 bishengir 完成，不经过该 LLVM 链接路径。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Apply target CPU and features to bundled device libraries before linking (#12928)\n\nDisabling packed FP32 operations on gfx950 can prevent bundled\ndevice-library functions from inlining. The kernel carries\n`-packed-fp32-ops`, but generic library functions retain CPU-default\nfeatures. LLVM correctly rejects inlining across this mismatch after\nhttps://github.com/llvm/llvm-project/pull/209345 went in. In the\naffected FP8 MQA kernel, the surviving OCKL call introduces descriptor\nwaterfalls, additional VALU instructions, and register spills that\nsignificantly impact performance.\n\nCompile bundled OCML/OCKL functions with the destination CPU and kernel\nfeature settings so that generic library code reflects the requested\ncompilation target. This restores inlining compatibility without\nweakening LLVM’s safety checks. Explicit library feature settings retain\nprecedence, including LLVM’s order-dependent feature semantics.\nAutomatic specialization is limited to the bundled libraries.\n\nMeasured using aiter’s [gfx950 Gluon FP8 MQA logits\nkernel](https://github.com/ROCm/aiter/blob/6d8351b9398febebf4738e9dd01603067287ddb1/aiter/ops/triton/_gluon_kernels/gfx950/attention/fp8_mqa_logits.py)\non MI350X, with packed FP32 operations disabled.\n\n| Metric | Previous linking behavior | This PR |\n|---|---:|---:|\n| Median kernel latency | 2065.6 µs | 1580.4 µs |\n| Loop VALU instructions | 146 | 89 |\n| Loop MFMA instructions | 4 | 4 |\n| Loop `v_readfirstlane_b32` instructions | 28 | 0 |\n| Loop 64-bit equality comparisons | 14 | 0 |\n| Register spills | 8 | 0 |"
+    },
+    {
+      "sha": "8096bbaf5678fa43151612c137c2643ebb7711f1",
+      "comment": "修复 ConSan 在多播 TMA/bulk load 场景下的完成 barrier 归属错误：原实现把每个 replica 与所有被 signal 的 barrier 关联，导致等待本地 barrier 就能授权后续多播覆盖 peer 的 replica。实现上给 getMulticastBarrierRecipientCTAs 增加 perPayload 参数，对多播 load 按目标 CTA 的 varying bits 计算每个 payload 对应的 barrier（cta_group::2 下目的地决定 pair、barrier 地址决定 pair 内成员），createCTASetMask 支持 ctas 为张量（按 dim 0 广播），ConcurrencySanitizer 中将 track_barrier_write_for_buffer / track_proxy_accesses_for_buffer / track_visible_accesses 的 recipient 换成 per-payload 版本。附带同步文档与 consan.mlir 的 CHECK，并扩充 test_multicast_load_reuse 的 race 维度和 phase 语义。属于 NVIDIA ConSan 工具链的正确性修复。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "trition-instrument",
+        "nvidia",
+        "concurrency"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ConSan] Match each multicast replica to its completion barrier (#12872)\n\nA multicast can signal a separate mbarrier for each destination CTA.\nConSan currently associates every replica with every signaled barrier.\nWaiting on the local barrier can then authorize a second multicast to\noverwrite a peer's replica before the issuer has acquired its\ncompletion.\n\nUse the multicast recipient calculation to select the completion barrier\nfor each physical destination. For `cta_group::2`, the destination\nselects the pair and the barrier address selects the member within that\npair. A wait then publishes only the payloads that signal that barrier."
+    },
+    {
+      "sha": "00718bd873d1f56956d4e5be00f33260ccc8c563",
+      "comment": "修复 ConSan 漏检“多播覆盖 peer 未完成读取”的 write-before-read race：原先新写入记在 issuer 的 visibility entry，peer 首次使用时看到空 entry、复用时只看到旧的 load 权限。方案是为 cluster 内每个共享内存 region 增加独立的 load 写入槽（WriteSlot::AsyncLoad），issue 时清空所有 observer 的两个槽与 barrier 快照，barrier wait 时把可见性授予等待线程及其 peer，普通写保留 load 槽以支持 scatter 的每个 CTA 各自 acquire。实现涉及 Utility.h 的 AuxDataMap 注释与 tracksLoadSeparately 声明、FunctionBuilder.cpp 的 broadcastWriteRows/selectWriteSlot 系列辅助与多个 create*Call 的 slot 化改造（含 publish_write_visibility 新增 asyncLoad specialization 参数）、Utility.cpp 的 createInitStateTensor 支持多初始值（对 2 槽用 -1 表示无 outstanding load）、ConcurrencySanitizer 的 fence_proxy_accesses 按普通写槽切片。测试修改较大，重写 test_multicast_load_reuse 并补充 cluster barrier 前置以避免误判。是较深的并发语义变更，风险主要集中在 ConSan 插桩正确性。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "triton-instrument",
+        "nvidia",
+        "concurrency"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ConSan] Track the latest bulk or TMA load until each CTA acquires it (#12871)\n\nA multicast can overwrite a buffer before a peer finishes reading its\nprevious contents. ConSan records the new write in the issuer's\nvisibility entry, so the peer can still see an empty entry on first use\nor permissions from an earlier load on reuse. Peter Bell identified this\nmissed write-before-read race in #12847.\n\nTrack the latest bulk or TMA load in a separate write slot for each\nshared-memory region in a cluster. Issuing a load clears visibility for\nevery observer of its destination. Waiting on the completion barrier\ngrants visibility to the waiting thread and its peers. Keeping the\nload's barrier snapshot across ordinary writes lets each CTA\ncontributing to a scatter acquire the preceding load independently."
+    },
+    {
+      "sha": "7134a4516cd4c59e7c6c8aabbfaf201e3786d5ba",
+      "comment": "让 ConSan 按“issuer 实际映射到的 shared memory 物理地址”而非整个 descriptor 去检查跨 CTA 访问，避免 CGA layout 把同一 descriptor 的不同部分分给不同 CTA 时误报冲突。核心是 BufferRegion.h 新增 BufferRegionView::getAccessAddresses（带 LinearLayout conversion 与 issuer 参数）、getMemDescAddresses 支持 IssuerAccess 以便用 conversion 的 in-dim 替代标准 out-dim 并显式吸收 issuer 位；BufferStatePlan 增加 laneAddresses 以支持按地址相交选 lane。Utility 中把 TMA 访问区域计算统一为 getSharedMemoryAccess（对 TMA 由 messageToShared × 每消息内元素 layout 组合，对 local_load/store/async_shared_store/local_alloc 由 invertAndCompose 得到 conversion），ConcurrencySanitizer 删除重复的 getLocalLoadStoreConversion/TMA 特判并在 getMemEffectCTAs 中复用。getBufferAccessState 改为按 laneAddresses 交集返回 mask（返回类型从 const& 改为值）。新增 test_sharded_accesses_to_replicated_shared_memory。属 ConSan 精度提升，涉及 lib/Analysis/BufferRegion 与 TritonInstrument 多处。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "triton-instrument",
+        "analysis",
+        "nvidia"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。改动位于 lib/Analysis/BufferRegion.cpp 与 TritonInstrument 对 BufferRegionAnalysis 的消费侧，属于 NVIDIA ConSan 路径；Ascend 虽复用 lib/Analysis 的部分分析，但不经过 shared-memory BufferRegion 的 cluster 语义。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ConSan] Use the shared-memory layout to check each CTA's accesses (#12870)\n\nA register layout can assign each CTA a different part of the same\nshared-memory descriptor. Checking the whole descriptor for each issuer\ncan report a conflict between a read of one part and a write to disjoint\nbytes.\n\nMap each issuer's elements to physical addresses and intersect those\naddresses with ConSan's existing tracked regions. Use the same\ncalculation for TMA by combining the message layout from lowering with\nthe element offsets within each message. This removes the separate\nreconstruction of TMA gather rows."
+    },
+    {
+      "sha": "a02631ce996f10d9117d352db011faf11b5bdd25",
+      "comment": "让 ConSan 对 indexed shared-memory 访问（local_gather/scatter/atomic_scatter_rmw）使用真实索引计算可达 CTA，而非把 index 的 layout basis 全部展开成保守集合。例如 CTA 内 `i ^ 1` 不再被误认为跨 CTA。实现上抽公共 helper getGatherScatterLayout 到 lib/Tools/LayoutUtils.cpp（替换 ConcurrencySanitizer、TritonGPUToLLVM/Utility.cpp 与 MBarrierUtilities.cpp 中三份重复实现），新增 TTI 方言 op tti.experimental_gather_scatter_cta_masks 及其到 LLVM 的 lowering（按 thread 计算目标 CTA 位并 OR），FunctionBuilder 增加 createGatherScatterCTAMask：多 warp 时用 CTA 私有 global scratch + barrier 做 warp 间归约；无 mask 且 index 不影响 CTA 时仍走静态精确路径；并对 LocalAtomicScatterRMWOp 在 ConSanNVIDIA 中额外处理 replicated CTA 的 issuer mask。测试更新 consan.mlir 与 gluon test_consan.py 的参数化（local/peer/synchronized 三种访问）。属于插桩精度与性能改进，新增方言 op 会影响 TritonInstrument 的 IR 接口。",
+      "tags": [
+        "bugfix",
+        "performance",
+        "medium-risk",
+        "triton-instrument",
+        "nvidia",
+        "layout"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。新增的 TTI op 与 lib/Tools/LayoutUtils 的 getGatherScatterLayout 仅被 NVIDIA ConSan 与 TritonGPUToLLVM lowering 路径使用，Ascend 不使用 TritonGPU/ConSan 链路。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ConSan] Use actual CTA targets for indexed shared-memory accesses (#12869)\n\nA gather along a sharded axis can stay entirely within the issuing CTA.\nFor example, with 128 consecutive elements per CTA, `i ^ 1` swaps\nneighbors locally and `i ^ 128` reads from the peer. ConSan treats both\nindex patterns as potential peer accesses and can reject a subsequent\nlocal store after the neighbor swap.\n\nUse the offsets computed by gather and scatter lowering to identify the\nCTAs reached by active indices. Combine the target bits across the\nissuing partition and account for masked and redundant atomic issuers."
+    },
+    {
+      "sha": "70f54437e853fe9d9432ecfa75ac5ab7db7b0e48",
+      "comment": "为 GSan 增加 TMA im2col load 的读字节追踪（此前直接跳过）。实现分三层：(1) TTI 方言 ExperimentalGSanTensorDescAccessOp 增加 offsets 与 result memdesc 操作数，GlobalSanitizer 不再跳过 im2col，并对多播取 leader pred；(2) GSanToLLVM 新增 __triton_gsan_load_im2col_tensor_desc runtime fn（11 参数），按 getTMAMessageLayouts(...).messageToPackedOffset 逐 message 累加 W/C 偏移后调用，rank 3~5 分别校验 coords/offsets 长度；(3) 运行时 TMA.cuh 新增 forEachIm2ColRow，解码 tensor map 的 elementStride、im2col 上下角、elementType（B4x16P64/B6x16P32）以处理 FP4 padded 与 FP6 位宽，按 warp 分片遍历像素盒并在越界时跳过；GSanLibrary.cu/AllocationProfile.cu 分别实现 race 检测与 allocation profiling 两个版本。测试新增 test_tma_im2col_gsan_load（rank 3/4/5 × pred × 4 种 cga_layout，25 例）与 FP4 padded 用例，并补充 3~5D 的 lit 测试。属大型但自洽的 GSan 功能补齐，集中在 NVIDIA 路径。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "gsan",
+        "triton-instrument",
+        "nvidia"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。所有改动位于 TritonInstrument GSan 路径、TritonNvidiaGPU TMAUtils 消费侧与 GSan CUDA runtime；Ascend 不使用 GSan 的 TMA im2col 追踪。",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[GSan] Track memory reads from TMA im2col loads (#12874)\n\nGSan previously skipped TMA im2col loads. This change instruments each\nTMA message and decodes its tensor map so the race detector and\nallocation profiler can track the bytes read, including for predicated,\nmulticast, and FP4-padded loads.\n\nGPU tests compare the loaded values against an independent reference and\ncheck read metadata at selected source addresses. All 25 cases passed on\nGB200, along with both affected compiler tests."
+    },
+    {
+      "sha": "17effa72808cb240db2775d25f8e90a0ffb2fccd",
+      "comment": "修复 tcgen05 MMA 把 LHS 提升到 TMEM 时的行对齐缺陷：单 CTA 64×512 累加器第二个 N tile 从 TMEM row 16 起，而 A 两个 tile 都在 row 0，导致第二条 tcgen05.mma 地址未对齐。方案是把行对齐规则提炼为 areTMemRowsAligned（四条判据：A 的 row16 不动、A 与 D 的 row16 基相同、row64 选择相同 M 位、blockM=64 时 allocation layout 的 row64 分量不随 K 变化），同时用于 PromoteLHSToTMem 决策与 impl::verifyMMAv5Op 校验；两 CTA + blockM=64 时把 A 的 blockN 设为 2*K 并在 allocation layout 中检查复制，TensorMemoryAllocation 删除原先排除 blockM=64 多块场景的 assert，TensorMemoryEncodingAttr::verify 新增两 CTA blockM=64 要求 blockN>=2（并以 kMaxTMemBlockN 常量替换魔法数 512）。测试覆盖 invalid.mlir 五类反例、promotion lit 两条正/负例、gluon test_core 中扩展的 projected tmem layout 参数组合，以及 test_matmul 新增 (64,512) 配置断言 A 留在 smem。是 NVIDIA 硬件约束的正确性修正，接口层面新增导出的 areTMemRowsAligned 与 kMaxTMemBlockN。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "triton-nvidia-gpu",
+        "tcgen05"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[NVIDIA] Check TMEM row compatibility for tcgen05 MMA (#12939)\n\nFor a one-CTA `64 × 512` accumulator, the second N tile starts at TMEM\nrow 16. Promoting A to TMEM leaves A at row 0 for both tiles, so the\nsecond `tcgen05.mma` faults with a misaligned address.\n\nShare `areTMemRowsAligned` between LHS promotion and the MMA verifier.\nKeep A in shared memory when K or N would switch the 16-row half\nindependently. Allow A and D to switch halves together as M advances.\n\nFor two-CTA MMA with `blockM=64`, each 64-row half needs the full K\nvector. Set A’s `blockN` to `2 * K` during promotion and check\nduplication in the allocation layout, since a K slice can hide a row\nbit. Reject two-CTA `block=(64, 1)` and remove the allocator assertion\nthat ruled out valid `blockM=64` layouts using all 128 rows.\n\nCloses #10320\nCloses #12699\n\n---------\n\nCo-authored-by: Nick Riasanovsky <njriasan@meta.com>"
+    }
+  ],
+  "architecture_based_on_sha": "1c53e566ef8f719ff9b69132a72ad943e5409492",
+  "architecture_generated_at": "2026-11-15T21:06:50.425498+08:00"
+}

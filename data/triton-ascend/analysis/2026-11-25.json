@@ -1,0 +1,152 @@
+{
+  "date": "2026-11-25",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-11-26T09:15:40.484194+08:00",
+  "daily_summary": "当日变更集中于三方面：(1) 文档建设——新增约 2100 行的《Triton 算子性能调优指南》，系统梳理 GPU→NPU 迁移心智模型（Grid/核绑定、UB 约束、CV 流水线、Mask 优化、图优化 pass 行为），并同步 codespell 白名单；(2) dtype 前端校验体系重构——dtype_guard.py 引入 whitelist 模式（supported 无 unsupported 时按白名单拦截），op_dtype_config.py 将架构桶 a2 重命名为 a2a3、fp8e4/fp8e5 改名 fp8e4m3/fp8e5m2，并把所有 blacklist 规则补齐显式 supported 支持表用于错误提示，同时激活大量此前注释掉的操作规则；(3) 图优化与 block batching 健壮性——atomic lock removal 规则纳入默认 rule mask（3071→265215），block batching worker 将候选编译失败从抛出异常改为结构化降级回退 baseline，并补齐失败诊断透传；此外清理了 ssbuffer 的废弃选项别名、删除 TLA 中冗余的 simd.pge 并迁移到 pset、TLA 新增 GM/UB 单元素 buffer 的 scalar load/store。整体看是文档+编译器前端校验+图优化默认策略三线推进，并伴随若干 API 精简与 TLA 前端能力补全。",
+  "test_impact_summary": "当日变更对测试看护影响显著且方向分散：dtype 校验重构是高风险点——白名单/黑名单双模式切换、架构桶改名、fp8 token 改名、大量规则从注释态激活，直接改变前端拦截行为，虽然配套删除了旧的 fp8 dot frontend 测试但其覆盖的区域需要新测试守护；图优化默认 rule mask 从 3071 变为 265215 会改变所有 kernel 的默认编译行为，涉及多处 static_assert、mlir RUN 行和 pytest 断言同步更新，测试脚本本身已改但需关注默认开启 lock removal 后对含 atomic 的算子端到端正确性；block batching 的失败降级语义变更把异常路径改为返回值路径，相关 worker/selection 测试已大规模重写，需确认原有 '抛异常' 契约已无其它调用方依赖；TLA 的 pge 删除与 load→load_scalar 重命名属于破坏性 API 变更，45 个测试文件已迁移，但黑名单内的 psel.py 及外部用户脚本需注意；新增 scalar store 能力覆盖了 GM/UB 双路径与类型转换矩阵，测试补充较完整。性能调优文档本身无测试影响，但其中描述的图优化 pass 行为（如 11.5/11.6 各 pattern 的默认开关）应与代码实际默认值保持一致性看护。总体建议对 dtype_guard、graph_optimize 默认 mask、block_batching 失败回退三条主线做重点回归，并对 TLA API 变更做兼容性排查。",
+  "commits": [
+    {
+      "sha": "339e2cbe0b70bf3a486653945d73eb899255921c",
+      "comment": "新增 docs/zh/programming_guide/performance.md（2115 行）《Triton 算子性能调优指南》，系统整理 GPU 与 NPU 微架构差异（SIMT vs SIMD、Grid 与物理核强绑定、UB 由编译器管理）、性能剖析方法（torch_npu.profiler/msprof/PipeUtilization 指标）、Grid 映射与分核策略（Persistent Kernel、自适应分核、SPLIT_K、Sorted Round-Robin）、Tiling 与 UB 预算、Autotune 策略、CV 流水线优化（指令重排、break_vf、七参数配置、Scale 融合）、存算并行（multibuffer、循环展开、指针依赖消除、preload）、算子融合（多 kernel 融合、Two-Pass→Single-Pass、维度融合、Vector→Cube 升级）、Mask 优化、内存访问优化，以及新增的第 11 章『编译器图优化』——按 pattern 分类介绍 ConvertModuloToMask/LoadStoreTranspose/StoreCoalescing/MergeConcatLoadBuffer/StridedAxisCoalescing/ChunkCoalescing/StridedLoadStoreRewrite/AutoBlockifyV2（IAT/PTSM/RowCoalescing/QueryRowBatching）的触发模式、改写、收益与约束，并列出图优化开关表。同时补充 codespell.whitelist.json 中的 SIMD/simt 及大量领域术语。风险点：文档中描述的图优化默认开关与 rule mask 数值（如 default mask）需与代码实际保持一致，否则会误导用户；文档引用的 API（如 compile_hint、extension.parallel、vf_fusion_mode）如后续变更需同步维护。该 commit 无代码逻辑变更，纯文档。",
+      "tags": [
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "纯文档与 codespell 白名单变更，不涉及任何代码路径，无需新增或修改测试。",
+        "suggested_test_areas": []
+      },
+      "message": "[docs](feat) Add Triton operator performance tuning guide for NPU (#3370)\n\n* [docs](feat) Add Triton operator performance tuning guide for NPU\n\n* [docs](feat) Add QueryRowBatching (11.6.4) to performance tuning guide (#20)\n\nSigned-off-by: liuyang <45717192+lyyyyy-18@users.noreply.github.com>\n\n* [docs](fix) Sync performance guide with API changes\n\n* fix coding error\n\n* [docs](fix) update code example to english\n\n---------\n\nSigned-off-by: liuyang <45717192+lyyyyy-18@users.noreply.github.com>\nCo-authored-by: ly <45717192+lyyyyy-18@users.noreply.github.com>"
+    },
+    {
+      "sha": "5ccc1bfb63e89ce0292f75be45a6601b8dade4e6",
+      "comment": "在 op_dtype_config.py 中修正三条规则的 dtype 列表：(1) histogram 与 reduce_or 的 unsupported 列表移除 'bool'，意味着 bool 不再被前端拦截（改为由 supported 列表或后端行为决定）；(2) static_assert 的 a5 unsupported 从 [fp64, fp8e4m3, fp8e5m2] 收窄为 [fp64]，即 a5 上 static_assert 对 fp8 不再报不支持。此变更与后续 dbfa47d8 的 dtype 体系重构同一方向（规则收敛到与实际能力一致），属于前端 dtype 校验的错误修正——此前把 bool/fp8 误列为不支持会导致本可编译的 kernel 被前端拒掉。风险：放宽拦截后若后端实际不支持会在更晚阶段失败，错误信息不如前端友好；需确认 histogram/reduce_or 的 bool 与 a5 static_assert 的 fp8 确实已被后端支持。",
+      "tags": [
+        "bugfix",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "放开 dtype 拦截改变了前端校验行为，应有测试覆盖 histogram/reduce_or 的 bool 以及 a5 上 static_assert+fp8 不再报错且能编过。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/ 下 dtype guard 相关测试",
+          "third_party/ascend/backend/op_dtype_config.py 对应规则的单测"
+        ]
+      },
+      "message": "[dtype](fix) dtype check (#3426)"
+    },
+    {
+      "sha": "dbfa47d8d9cf370947c994cc58d600b5a128921f",
+      "comment": "dtype 前端校验体系的大规模重构，涉及三个文件：(1) dtype_guard.py——arch_bucket 将 'a2' 桶改名 'a2a3'（与 a2/a3 共用规则一致），并支持 arch 为空时从 driver.active.get_current_target() 动态获取；DTYPE_DISPLAY_NAMES 中 fp8e4/fp8e5 改为 fp8e4m3/fp8e5m2，int1 显示名由 'bool' 改为 'int1'；新增 _whitelist_tokens 实现『supported 无 unsupported 时按白名单拒绝』模式（对应 math.py 中带 @_check_dtype 白名单的 exp/sqrt 等算子），validate 逻辑由纯 blacklist 改为 blocked/allowed 双模式；(2) op_dtype_config.py——将此前被注释掉的约 60 条操作规则全部激活并补齐显式 supported 列表（作为错误提示的来源，拦截仍走统一 unsupported baseline），fp8 token 改名，新增 arange/device_assert/device_print/exp/exp2/log/log2/div_rn/erf/floor/ceil/umulhi 等此前缺失的规则，dot 规则保留自有非均匀 blacklist（int8 参数级约束），dot_scaled 保留显式 supported 例外；(3) test_compiler.py——删除 test_fp8_dot_frontend_options 测试（对应前端 fp8 dot 逻辑已变化）。实现方式清晰（先判断 unsupported 存在则 blacklist 模式，否则查 supported 白名单），但风险较高：架构桶改名 a2→a2a3 是跨文件契约变更，所有引用 'a2' 桶的地方都需同步；fp8 token 改名影响 FP8E4_DTYPES/FP8E5_DTYPES 及 _canonical_token；大量规则从注释态激活意味着大量算子突然开始被前端拦截，可能与现网 kernel 冲突。",
+      "tags": [
+        "refactor",
+        "bugfix",
+        "high-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "校验语义从纯 blacklist 扩展为 blacklist+whitelist 双模式，bucket 名与 fp8 token 改名，且数十条规则首次生效，直接改变前端拦截面；已删除 fp8 dot 前端测试，需要为新的 whitelist 模式（exp/sqrt 等 math 算子）、新激活规则、a2a3 桶命名补齐单测，并回归所有依赖 dtype guard 的算子。",
+        "suggested_test_areas": [
+          "third_party/ascend/backend/dtype_guard.py 单测（arch_bucket/validate/whitelist 模式）",
+          "third_party/ascend/backend/op_dtype_config.py 规则完整性校验测试",
+          "third_party/ascend/unittest/pytest_ut/ 下 kernel 编译回归（尤其 math 算子白名单）"
+        ]
+      },
+      "message": "[dtype](fix) dtype check (#3369)\n\n* [dtype](fix) dtype check\n\n* dtype\n\n* [dtype](fix) dtype check\n\n* [dtype](fix) dtype check\n\nStage3-Profile: b8b8e96550e073ffb0ab017b9c98e7bf0131f9bc585b41a33ae047f334c61c7e\n\nStage3-Original: 8f8921af5be0cf0b0d5f4e429004996036834fa6\nStage3-Main: 5a0947cc96edfdca91b986cb3f82f02cc2e54262"
+    },
+    {
+      "sha": "ef6e1199841a26b5432879c7a7c746e42efc5aac",
+      "comment": "将 TritonToGraph 的 CoalescAtomicLockRemoval 规则从固定默认关闭转为默认启用：program_grid.py 新增 COALESC_ATOMIC_LOCK_REMOVAL_RULE_BIT (1<<18)，DEFAULT_GRAPH_OPTIMIZATION_RULE_MASK 由 3071 变为 3071|262144=265215；GraphOptimization.h 把该 bit 从 kFixedDefaultOffGraphOptimizationRuleMask 移到 kDefaultEligible，static_assert 断言从 3071 改为 265215；Passes.td 的 ruleMask 默认值同步更新并补充说明『需要私有且清零的 lock/count buffer』；utils.py 更新废弃选项提示文案（不再硬编码 3071）；相应 mlir 测试的 RUN 行与 pytest 断言同步（默认走 lock removal、显式 rule-mask=3071 才回到旧行为），测试函数重命名为 ..._enables_iat_ptsm_and_atomic_lock_removal。风险中等：默认开启一条改写规则会改变所有含原子 CAS 循环 kernel 的默认编译产物，若用户未提供私有清零的 lock/count buffer 可能导致行为变化或正确性问题，虽然规则本身应有前置校验，但默认开启放大了暴露面；同时 default mask 数值是跨 Python/C++ 双层的契约常量，需保持同步。",
+      "tags": [
+        "feature",
+        "performance",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "默认 rule mask 变更需要更新所有硬编码 3071 的断言与 RUN 行（本 commit 已改），更重要的是需要新增/回归覆盖默认路径下 atomic lock removal 被触发的算子端到端正确性，以及未提供私有 buffer 时的拒绝路径。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToGraph/coalesc-atomic-lock-removal.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_graph_optimize.py",
+          "third_party/ascend/unittest/pytest_ut/ 中含 atomic 操作的 kernel 回归"
+        ]
+      },
+      "message": "[TritonToGraph](feat) enable atomic lock removal by default (#3409)\n\n* [TritonToGraph](feat) enable lock removal in the Ascend LayerNorm tutorial\n\nSigned-off-by: zhanwei33 <493694187@qq.com>\n\n* [TritonToGraph](feat) enable atomic lock removal by default\n\nSigned-off-by: zhanwei33 <493694187@qq.com>\n\n---------\n\nSigned-off-by: zhanwei33 <493694187@qq.com>\n\nStage3-Profile: b8b8e96550e073ffb0ab017b9c98e7bf0131f9bc585b41a33ae047f334c61c7e\n\nStage3-Original: 6bb01710ec6c35015878d11121fcc11c35f61551\nStage3-Main: 5a0947cc96edfdca91b986cb3f82f02cc2e54262"
+    },
+    {
+      "sha": "e7d3fe5710f603ee683c6274d362dc5e01c5b670",
+      "comment": "合并 PR #3407（block batching 候选编译失败回退）与 #3403（测试隔离修复）：(1) block_auto.py 在候选被拒时把 block_batching 中的 stage/failure_kind/backend_diagnostic 一并透传到 declines；(2) block_batching_worker.py 重构 CandidateCompiler.compile——把候选编译与 artifact 绑定整体包入 try/except BatchCompileError，捕获后释放 pending 私有产物与缓存锁，构造 reason='CANDIDATE_COMPILATION_FAILED' 的 decline 并返回 rejected_bundle 回退 baseline，而非向上抛异常；rejected_bundle 新增从 decline 透传 failure_kind；(3) 测试侧 TestRankedRecovery 新增 setUp 进入 knobs.compilation.scope() 并关闭 always_compile 以隔离全局状态，decline 参数支持 dict 形式，新增 test_candidate_failure_preserves_diagnostics_without_caching_selection（验证失败不缓存选择、不 restore TTIR）与 test_baseline_failure_is_not_a_candidate_fallback（baseline 自身失败仍抛出）；test_block_batching_worker.py 大量重写：非静态失败不再抛异常而返回 baseline bundle 并携带 failure_kind，新增 test_failed_candidate_cleans_up_and_runs_baseline（参数化 5 种 kind × cached_only）、test_candidate_recovery_does_not_swallow_parent_errors（RuntimeError/KeyboardInterrupt/SystemExit 必须继续上抛）、test_a3_mixed_ub_and_fusion_failure_falls_back（vendor 诊断不识别时降级为 InternalError 并回退）。设计合理：区分『候选失败可回退』与『baseline/父进程错误不可吞』，并保证失败路径清理暂存目录。风险：错误吞并边界若不精确可能掩盖真正的编译问题（通过 failure_kind/stage 透传缓解）；listener 错误仍显式上抛已由测试保证。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "行为契约从『候选编译失败抛 BatchCompileError』改为『返回 baseline bundle + 结构化 failure_kind』，属于对外可观察语义变更，相关 worker/selection 测试本 commit 已重写，但仍需排查其它调用方是否依赖旧抛异常契约；新增的 failure_kind 透传字段也需在 block_auto 报告链路中验证。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_block_batching_worker.py",
+          "third_party/ascend/unittest/pytest_ut/test_block_batching_selection.py",
+          "third_party/ascend/backend/block_auto.py 与 block_batching_worker.py 集成测试"
+        ]
+      },
+      "message": "Combine PR #3407 with test isolation fix #3403\n\nStage3-Main: 5a0947cc96edfdca91b986cb3f82f02cc2e54262\nStage3-Profile: b8b8e96550e073ffb0ab017b9c98e7bf0131f9bc585b41a33ae047f334c61c7e\nStage3-PR: 3407\nStage3-PR: 3403\nStage3-Original: 8afd995dfed626724379486326a28fbefb43f650\nStage3-Source-Replay: e3329a5cef126d12d7a419477d28005f78fd5fef\nStage3-Original: c0f41b9df4b038efc296cf6f9f0d827d8980867c\nStage3-Source-Replay: 70890e19f69fc42dbe0de41c10f987b4b89d46b3"
+    },
+    {
+      "sha": "21082a90116030374bb001cdeb1b6f4501920376",
+      "comment": "移除 ssbuffer 相关的无用选项别名 intra_cache_num/inter_cache_num：utils.py 中从 _DEPRECATED_NPU_OPTION_ALIASES 删除两条重命名映射，改为注册进 _DEPRECATED_NPU_OPTION_DETAILS 作为『忽略并提示用 buf_slot_num_of_veccore/crosscore』；ttadapter_test_source.py 去掉别名映射逻辑；test_compiler.py 删除对应的 3 组参数化用例。意图是清理不再有意义的兼容别名（可能因这两个选项在 bishengir 侧已无实际消费）。风险低，但属破坏性变更：仍在使用旧选项名的用户会从『静默重命名生效』变为『被忽略并给出警告』，行为变化需在 release note 中说明。",
+      "tags": [
+        "chore",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "删除了旧的选项别名参数化用例，需确认现有测试仍覆盖 '废弃选项被忽略并产生提示' 的路径（deprecated option details 的通用测试），避免别名移除后无测试守护新行为。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_compiler.py 的 deprecated option 测试",
+          "third_party/ascend/backend/utils.py 的选项规范化单测"
+        ]
+      },
+      "message": "[ssbuffer](fix) remove useless option (#3303)\n\nSigned-off-by: zhuxinguang33 <1074959344@qq.com>\n\nStage3-Profile: b8b8e96550e073ffb0ab017b9c98e7bf0131f9bc585b41a33ae047f334c61c7e\n\nStage3-Original: 898d8ae9ae99e39cb5ef3e2baa8d12fbcc89ab4a\nStage3-Main: 5a0947cc96edfdca91b986cb3f82f02cc2e54262"
+    },
+    {
+      "sha": "6083fcf62be912ee1e083838e2afcbdcdbed588e",
+      "comment": "NFC（无功能变更）移除 TLA 中冗余的 simd.pge 接口：pge(n, lanes) 与 pset(2048//lanes, PAT.VLn) 等价（最终都调 builder.create_simd_pge），规格已删除 pge，故实现侧去掉 simd.py 中的 def pge 及 __all__ 条目，并把 45 个文件中的调用迁移到 pset：字面量 k 的 7 处直接内联 PAT.VLk，ACTIVE/TAIL 的 82 处把图样提到 Python 侧作为 MASKPAT/TAILPAT constexpr 参数传入（避免 JIT 内对 constexpr 字符串化）。同时更新 simd_frontend_contract.py 的公开名断言及 hardware_spec.py/elementwise.py 的过时注释。迁移面广但语义等价，IR 与设备行为不变，风险低；主要风险是遗漏某处调用导致 NameError，以及新增 kernel 参数改变了测试函数签名（constexprs() 需同步补 MASKPAT/TAILPAT，本 commit 已全部处理）。psel.py 虽在黑名单中也一并迁移，属前瞻性维护。",
+      "tags": [
+        "refactor",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "45 个 TLA 测试文件已同步迁移，需确认无遗漏的 pge 调用（可全仓 grep 验证）以及 simd_frontend_contract 的公开名白名单与文档一致性；NFC 声明要求 IR 前后完全等价，最好做一次迁移前后 IR diff 对比。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/simd/ 全量",
+          "third_party/ascend/unittest/tla_ut/simd_frontend_contract.py",
+          "third_party/ascend/unittest/tla_ut/kernels/dsa、kernels/mla、vector/cast_back.py"
+        ]
+      },
+      "message": "[ascend](NFC) remove redundant tla.simd.pge and migrate tests to pset (#3395)\n\npge(n, lanes) 只是 pset(2048 // lanes, PAT.VLn) 的另一种写法：两者最终都调用\nbuilder.create_simd_pge(pattern, lanes)。规格已按评审结论删除 tla.simd.pge\n(tla-spec 339e6ec)，这里把实现侧的重复入口一并去掉，IR 与设备行为不变。\n\n- 删除 simd.py 的 def pge 与 __all__ 中的 \"pge\"。\n- tla.simd.pge(k, L) 统一改写为 pset(2048 // L, PAT.VLk)：\n  * k 为字面量的 7 处直接内联 PAT.VLk（32/N、32/BLK、64/128、32/64）；\n  * k 为 ACTIVE / TAIL 的 82 处把图样提到 Python 侧，由与 ACTIVE / TAIL\n    相同的 constexpr 表达式算出 \"VL<k>\"，经新增 kernel 参数 MASKPAT /\n    TAILPAT 传入，避免在 JIT 内对 tl.constexpr 做字符串化。\n- 覆盖 43 个用例文件，含 kernels/dsa 与 vector/cast_back；psel.py 虽在\n  blacklist 中一并迁移，避免解除黑名单后引用不存在的接口。\n- simd_frontend_contract.py 的公开名字断言去掉 \"pge\"，并同步\n  hardware_spec.py / elementwise.py 中过时的 pge(32, 64) 注释。\n\nCo-authored-by: xiwei <xiwei4@huawei.com>\n\nStage3-Profile: b8b8e96550e073ffb0ab017b9c98e7bf0131f9bc585b41a33ae047f334c61c7e\n\nStage3-Original: c8011c390bc81b074d08d177e897f7391b589bb1\nStage3-Main: 5a0947cc96edfdca91b986cb3f82f02cc2e54262"
+    },
+    {
+      "sha": "8481af79b1c60fabc652c4ab79cfa8eb85e51c07",
+      "comment": "TLA 新增 GM/UB 单元素 buffer 的 scalar load/store 能力，替换原 tla.load（仅支持 GM 指针）接口：(1) scalar.py 将 load 重命名为 load_scalar 并新增 store_scalar，二者接受 shape 全为 1、空间为 gm/ub、元素类型字节可寻址（非 fp8、非 i1、位宽 8 的倍数）的 tla.buffer，且禁止在 SIMD VF 内使用；抽出 _check_scalar_type/_check_scalar_buffer 统一校验并支持 bfloat16 白名单；store_scalar 在类型不匹配时复用 tla.cast 做数值转换（继承 fp64 narrowing/bfloat16 限制）；(2) builder.py 与 tla_builder.cc 新增 create_tla_load_scalar/create_tla_store_scalar，直接 lower 为 memref.load/store（索引全 0）；(3) view.py 新增 GM 指针 address_space==1 校验、对无符号整型 index 先 cast 到 int64（规避原生 index cast 按有符号扩展的问题）；(4) compiler.py 的 check_ttadapter 允许列表加入 tt.store；(5) 迁移 DSA/MLA kernel 调用，并大幅扩充 scalar_load.py 测试（IR 断言 memref.load/store 计数、无 tt.load/alloc；设备侧覆盖 8 种 dtype GM/UB roundtrip、stride/offset subview、uint8 索引 cast 产生 arith.extui）。设计清晰：用单元素 buffer 统一 GM/UB 访问语义，index 符号扩展修复有实际价值。破坏性变更：load→load_scalar 重命名、旧 load 删除，外部 TLA 用户脚本需迁移。风险中等：store 类型转换路径复用了 tla.cast 的全部限制，错误信息以 'tla.cast ...' 前缀呈现，可发现性略差。",
+      "tags": [
+        "feature",
+        "medium-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 store_scalar 与 buffer 形态的 load/store，测试已补充 IR 与设备侧用例；但接口重命名是破坏性变更，需排查仓库内所有 tla.load(调用是否已迁移（blacklist 中的 psel.py 类文件、docs/示例），并补充 UB 空间 store、SIMD 内使用被拒等边界用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/dma/scalar_load.py",
+          "third_party/ascend/unittest/tla_ut/scalar/scalar_frontend_contract.py",
+          "third_party/ascend/unittest/tla_ut/kernels/dsa、kernels/mla"
+        ]
+      },
+      "message": "[TLA](feat) Add scalar load and store for GM and UB buffers (#3398)\n\nUse single-element buffers for scalar memory access and lower reads and\nwrites directly to memref operations. Migrate DSA and MLA callers and\ncover GM and UB accesses in regression tests.\n\nCo-authored-by: lbqg <songyaofei2@huawei.com>\n\nStage3-Profile: b8b8e96550e073ffb0ab017b9c98e7bf0131f9bc585b41a33ae047f334c61c7e\n\nStage3-Original: 2d57943e026c218568aa98d16d90b16bd4f073a0\nStage3-Main: 5a0947cc96edfdca91b986cb3f82f02cc2e54262"
+    }
+  ],
+  "architecture_based_on_sha": "ee15e295649ccf85b4e4b78316c736d00365c1a5",
+  "architecture_generated_at": "2026-11-15T21:06:50.427270+08:00"
+}
