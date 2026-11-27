@@ -1,0 +1,183 @@
+{
+  "date": "2026-11-26",
+  "repo": "triton-lang/triton",
+  "branch": "main",
+  "commits": [
+    {
+      "sha": "116ce1aa1d1f79c707ff43ffa3cb36419f2231a1",
+      "author": {
+        "name": "Shotsan",
+        "email": "12378904+shotsan@users.noreply.github.com"
+      },
+      "date": "2026-11-26T04:55:09+08:00",
+      "message": "[AMD] Fix signed tl.atomic_max/min in intra-wave reduction (#12948)\n\nFixes #12945.\n\nIn `AtomicRMWEmitter::atomicIntraWaveReduce`, `performOp` mapped signed\n`LLVM::AtomicBinOp::max` and `min` to `b.umax` and `b.umin`.\n\nFor negative or mixed-sign integer inputs, the unsigned compare treated\nnegative numbers as large unsigned values (e.g. `-1` as `0xFFFFFFFF =\n4294967295`), leading to silent numerical corruption where the leader\nlane selects a negative value over a positive value during\n`tl.atomic_max` (and vice-versa for `tl.atomic_min`).\n\n- Map `LLVM::AtomicBinOp::max` to `b.smax(v, res)` and\n`LLVM::AtomicBinOp::min` to `b.smin(v, res)`.\n- Preserve `b.umax` and `b.umin` for unsigned `LLVM::AtomicBinOp::umax`\nand `LLVM::AtomicBinOp::umin`.\n- Added regression tests in `test/Conversion/amd/tritongpu_to_llvm.mlir`\ncovering signed max and min under intra-wave reduction.\n\n---------\n\nCo-authored-by: shotsan <shotsan@users.noreply.github.com>",
+      "parents": [
+        "b96b9571fb3e8dd615113c93052d95a970dc3b7e"
+      ],
+      "stats": {
+        "total_additions": 18,
+        "total_deletions": 0,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": "test/Conversion/amd/tritongpu_to_llvm.mlir",
+          "status": "modified",
+          "additions": 16,
+          "deletions": 0,
+          "patch": "@@ -675,6 +675,22 @@ module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 1 : i32, \"ttg.thr\n     %0 = tt.atomic_rmw fadd, relaxed, gpu, %arg0, %arg2 {allocation.offset = 0 : i32} : (tensor<64x!tt.ptr<f32>, #blocked5>, tensor<64xf32, #blocked5>) -> tensor<64xf32, #blocked5>\n     tt.return\n   }\n+\n+  // CHECK-LABEL: atomic_runtime_lds_reduction_signed_max\n+  tt.func @atomic_runtime_lds_reduction_signed_max(%arg0 : tensor<64x!tt.ptr<i32>, #blocked5>, %arg2 : tensor<64xi32, #blocked5>) {\n+    // CHECK: llvm.intr.smax\n+    // CHECK: llvm.atomicrmw max\n+    %0 = tt.atomic_rmw max, relaxed, gpu, %arg0, %arg2 {allocation.offset = 0 : i32} : (tensor<64x!tt.ptr<i32>, #blocked5>, tensor<64xi32, #blocked5>) -> tensor<64xi32, #blocked5>\n+    tt.return\n+  }\n+\n+  // CHECK-LABEL: atomic_runtime_lds_reduction_signed_min\n+  tt.func @atomic_runtime_lds_reduction_signed_min(%arg0 : tensor<64x!tt.ptr<i32>, #blocked5>, %arg2 : tensor<64xi32, #blocked5>) {\n+    // CHECK: llvm.intr.smin\n+    // CHECK: llvm.atomicrmw min\n+    %0 = tt.atomic_rmw min, relaxed, gpu, %arg0, %arg2 {allocation.offset = 0 : i32} : (tensor<64x!tt.ptr<i32>, #blocked5>, tensor<64xi32, #blocked5>) -> tensor<64xi32, #blocked5>\n+    tt.return\n+  }\n }\n \n // -----"
+        },
+        {
+          "filename": "third_party/amd/lib/TritonAMDGPUToLLVM/AtomicRMWOpsEmitter.cpp",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 0,
+          "patch": "@@ -461,9 +461,11 @@ Value AtomicRMWEmitter::atomicIntraWaveReduce(RewriterBase &rewriter,\n     case LLVM::AtomicBinOp::fadd:\n       return b.fadd(res, v);\n     case LLVM::AtomicBinOp::max:\n+      return b.smax(v, res);\n     case LLVM::AtomicBinOp::umax:\n       return b.umax(v, res);\n     case LLVM::AtomicBinOp::min:\n+      return b.smin(v, res);\n     case LLVM::AtomicBinOp::umin:\n       return b.umin(v, res);\n     case LLVM::AtomicBinOp::xchg:\n"
+        }
+      ]
+    },
+    {
+      "sha": "b96b9571fb3e8dd615113c93052d95a970dc3b7e",
+      "author": {
+        "name": "peterbell10",
+        "email": "peterbell10@openai.com"
+      },
+      "date": "2026-11-26T02:39:16+08:00",
+      "message": "[ConSan] Use normal region simplification (#12843)\n\nUse normal region simplification with ConSan to address a compile-time\nregression caused by aggressive region simplification.",
+      "parents": [
+        "2f590a43cc64881f1165ac920bff18e9f11569e3"
+      ],
+      "stats": {
+        "total_additions": 93,
+        "total_deletions": 30,
+        "files_changed": 11
+      },
+      "files": [
+        {
+          "filename": "include/triton/Conversion/TritonGPUToLLVM/Passes.td",
+          "status": "modified",
+          "additions": 4,
+          "deletions": 0,
+          "patch": "@@ -49,6 +49,10 @@ def TritonGPUAllocateWarpGroups : Pass<\"tritongpu-allocate-warp-groups\", \"mlir::\n \n def CanonicalizeLLVMIR : Pass<\"canonicalize-llvm-ir\", \"mlir::LLVM::LLVMFuncOp\"> {\n   let summary = \"Canonicalize LLVM IR\";\n+  let options = [\n+    Option<\"conSan\", \"consan\", \"bool\", /*default*/\"false\",\n+           \"Use normal region simplification for ConSan-instrumented IR\">\n+  ];\n }\n \n #endif"
+        },
+        {
+          "filename": "lib/Conversion/TritonGPUToLLVM/CanonicalizeLLVMIR.cpp",
+          "status": "modified",
+          "additions": 7,
+          "deletions": 1,
+          "patch": "@@ -5,6 +5,7 @@\n #include \"mlir/Pass/Pass.h\"\n #include \"mlir/Transforms/GreedyPatternRewriteDriver.h\"\n #include \"third_party/nvidia/include/Dialect/NVGPU/IR/Dialect.h\"\n+#include \"triton/Conversion/TritonGPUToLLVM/Passes.h\"\n #include \"triton/Dialect/TritonGPU/IR/Dialect.h\"\n #include \"llvm/Support/MathExtras.h\"\n \n@@ -80,6 +81,8 @@ namespace {\n struct CanonicalizeLLVMIR\n     : public mlir::triton::gpu::impl::CanonicalizeLLVMIRBase<\n           CanonicalizeLLVMIR> {\n+  using CanonicalizeLLVMIRBase::CanonicalizeLLVMIRBase;\n+\n   void runOnOperation() override {\n     LLVM::LLVMFuncOp func = getOperation();\n     MLIRContext *context = func.getContext();\n@@ -101,7 +104,10 @@ struct CanonicalizeLLVMIR\n     }\n     triton::gpu::WarpIdOp::getCanonicalizationPatterns(patterns, context);\n \n-    (void)applyPatternsGreedily(func, std::move(patterns));\n+    GreedyRewriteConfig config;\n+    if (conSan)\n+      config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);\n+    (void)applyPatternsGreedily(func, std::move(patterns), config);\n   }\n };\n } // namespace"
+        },
+        {
+          "filename": "python/src/passes.cc",
+          "status": "modified",
+          "additions": 7,
+          "deletions": 3,
+          "patch": "@@ -110,9 +110,13 @@ void init_triton_passes_ttgpuir(py::module_ &m) {\n                             createTritonInstrumentFpSanitizer, bool);\n   ADD_PASS_WRAPPER_0(\"add_optimize_partition_warps\",\n                      createTritonGPUOptimizePartitionWarps);\n-  m.def(\"add_canonicalize_llvm_ir\", [](mlir::PassManager &pm) {\n-    pm.addNestedPass<mlir::LLVM::LLVMFuncOp>(createCanonicalizeLLVMIR());\n-  });\n+  m.def(\n+      \"add_canonicalize_llvm_ir\",\n+      [](mlir::PassManager &pm, bool conSan) {\n+        pm.addNestedPass<mlir::LLVM::LLVMFuncOp>(\n+            createCanonicalizeLLVMIR(CanonicalizeLLVMIROptions{conSan}));\n+      },\n+      py::arg(\"pm\"), py::arg(\"consan\") = false);\n }\n \n void init_plugin_passes(py::module_ &m) {"
+        },
+        {
+          "filename": "test/Conversion/tritoninstrument_to_llvm.mlir",
+          "status": "modified",
+          "additions": 26,
+          "deletions": 0,
+          "patch": "@@ -1,5 +1,11 @@\n // RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-gpu-to-llvm | FileCheck %s --dump-input-context 20 --implicit-check-not=tti.\n // RUN: split-file %s %t\n+// RUN: triton-opt %t/region-simplification.mlir --convert-nv-gpu-to-llvm | FileCheck %s --check-prefix=MERGED\n+// RUN: triton-opt %t/region-simplification.mlir --convert-nv-gpu-to-llvm=consan | FileCheck %s --check-prefix=NORMAL\n+// RUN: triton-opt %t/region-simplification.mlir --convert-triton-gpu-to-llvm | FileCheck %s --check-prefix=MERGED\n+// RUN: triton-opt %t/region-simplification.mlir --convert-triton-gpu-to-llvm=consan | FileCheck %s --check-prefix=NORMAL\n+// RUN: triton-opt %t/region-simplification.mlir --pass-pipeline='builtin.module(llvm.func(canonicalize-llvm-ir))' | FileCheck %s --check-prefix=MERGED\n+// RUN: triton-opt %t/region-simplification.mlir --pass-pipeline='builtin.module(llvm.func(canonicalize-llvm-ir{consan}))' | FileCheck %s --check-prefix=NORMAL\n // RUN: triton-opt %t/lock-acquire.mlir --allocate-shared-memory --convert-triton-gpu-to-llvm='compute-capability=90 ptx-version=83' --convert-nv-gpu-to-llvm | mlir-translate --mlir-to-llvmir | opt -O3 -S | llc -mtriple nvptx64-nvidia-cuda -mcpu=sm_90 -mattr=+ptx83 | FileCheck %s --check-prefix=PTX\n \n #blocked = #ttg.blocked<{sizePerThread = [2], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>\n@@ -233,3 +239,23 @@ module attributes {\"ttg.num-ctas\" = 1 : i32, \"ttg.num-warps\" = 4 : i32, \"ttg.thr\n     tt.return\n   }\n }\n+\n+// -----\n+\n+//--- region-simplification.mlir\n+module attributes {\"ttg.num-warps\" = 4 : i32, ttg.target = \"cuda:90\"} {\n+  // MERGED-LABEL: llvm.func @repeated_blocks\n+  // MERGED: llvm.store\n+  // MERGED-NOT: llvm.store\n+  // NORMAL-LABEL: llvm.func @repeated_blocks\n+  // NORMAL-COUNT-2: llvm.store\n+  llvm.func @repeated_blocks(%pred: i1, %ptr: !llvm.ptr, %val: i32) {\n+    llvm.cond_br %pred, ^left, ^right\n+  ^left:\n+    llvm.store %val, %ptr : i32, !llvm.ptr\n+    llvm.return\n+  ^right:\n+    llvm.store %val, %ptr : i32, !llvm.ptr\n+    llvm.return\n+  }\n+}"
+        },
+        {
+          "filename": "third_party/nvidia/backend/compiler.py",
+          "status": "modified",
+          "additions": 9,
+          "deletions": 8,
+          "patch": "@@ -422,6 +422,7 @@ class CUDABackend(BaseBackend):\n     def make_llir(self, src, metadata, options, capability):\n         ptx_version = get_ptx_version_from_options(options, self.target.arch)\n \n+        consan = is_enabled(options, \"consan\")\n         mod = src\n         # TritonGPU -> LLVM-IR (MLIR)\n         pm = ir.pass_manager(mod.context)\n@@ -432,11 +433,11 @@ class CUDABackend(BaseBackend):\n             passes.ttgpuir.add_global_sanitizer(pm)\n \n         passes.ttgpuir.add_combine_tensor_select_and_if(pm)\n-        passes.ttgpuir.add_allocate_warp_groups(pm, is_enabled(options, \"consan\"))\n-        if not any(is_enabled(options, mode) for mode in (\"gsan\", \"consan\")):\n+        passes.ttgpuir.add_allocate_warp_groups(pm, consan)\n+        if not consan and not is_enabled(options, \"gsan\"):\n             passes.ttgpuir.add_optimize_thread_regions(pm)\n         passes.convert.add_scf_to_cf(pm)\n-        if is_enabled(options, \"consan\"):\n+        if consan:\n             passes.ttgpuir.add_prepare_consan_captures(pm, \"nvidia\")\n         passes.gluon.add_inliner(pm)\n         nvidia.passes.ttgpuir.add_allocate_shared_memory_nv(pm, capability, ptx_version)\n@@ -445,20 +446,20 @@ class CUDABackend(BaseBackend):\n         instrument(pm, point=\"ttgpuir-to-llvmir\", context=mod.context)\n         nvidia.passes.ttnvgpuir.add_proxy_fence_insertion(pm, capability)\n         nvidia.passes.ttgpuir.add_membar(pm, capability, ptx_version)\n-        if is_enabled(options, \"consan\"):\n+        if consan:\n             passes.ttgpuir.add_concurrency_sanitizer(pm)\n             passes.gluon.add_canonicalizer(pm)\n             passes.common.add_cse(pm)\n         nvidia.passes.ttnvgpuir.add_cluster_barrier_mbar_allocator(pm)\n         passes.ttgpuir.add_allocate_global_scratch_memory(pm)\n-        nvidia.passes.ttgpuir.add_to_llvmir(pm, capability, ptx_version)\n+        nvidia.passes.ttgpuir.add_to_llvmir(pm, capability, ptx_version, consan)\n         nvidia.passes.ttnvgpuir.add_initialize_ws_cluster_barriers(pm, capability, ptx_version)\n-        passes.ttgpuir.add_canonicalize_llvm_ir(pm)\n+        passes.ttgpuir.add_canonicalize_llvm_ir(pm, consan)\n         passes.common.add_cse(pm)\n         # Lower Proton segment values before warp specialization captures partition operands.\n         instrument(pm, point=\"llvmir-to-llvm\", context=mod.context)\n         nvidia.passes.ttnvgpuir.add_warp_specialize_to_llvm(pm)\n-        nvidia.passes.ttnvgpuir.add_nvgpu_to_llvm(pm)\n+        nvidia.passes.ttnvgpuir.add_nvgpu_to_llvm(pm, consan)\n         passes.common.add_canonicalizer(pm)\n         passes.common.add_cse(pm)\n         passes.common.add_symbol_dce(pm)\n@@ -519,7 +520,7 @@ class CUDABackend(BaseBackend):\n             expand_masked_div_rem=True,\n             nvptx_compute_capability=0 if use_slp_vectorizer else capability,\n             enable_nvptx_tti=True,\n-            merge_nvptx_assert_blocks=is_enabled(options, \"consan\"),\n+            merge_nvptx_assert_blocks=consan,\n         )\n \n         # Get some metadata"
+        },
+        {
+          "filename": "third_party/nvidia/include/NVGPUToLLVM/Passes.td",
+          "status": "modified",
+          "additions": 4,
+          "deletions": 0,
+          "patch": "@@ -5,6 +5,10 @@ include \"mlir/Pass/PassBase.td\"\n \n def ConvertNVGPUToLLVM : Pass<\"convert-nv-gpu-to-llvm\", \"mlir::ModuleOp\"> {\n     let summary = \"Convert NVGPU to LLVM\";\n+    let options = [\n+        Option<\"conSan\", \"consan\", \"bool\", /*default*/\"false\",\n+               \"Use normal region simplification for ConSan-instrumented IR\">\n+    ];\n     let description = [{\n \n     }];"
+        },
+        {
+          "filename": "third_party/nvidia/include/TritonNVIDIAGPUToLLVM/Passes.h",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 1,
+          "patch": "@@ -21,7 +21,8 @@ std::unique_ptr<OperationPass<ModuleOp>> createConvertTritonGPUToLLVMPass();\n std::unique_ptr<OperationPass<ModuleOp>>\n createConvertTritonGPUToLLVMPass(int32_t computeCapability);\n std::unique_ptr<OperationPass<ModuleOp>>\n-createConvertTritonGPUToLLVMPass(int32_t computeCapability, int32_t ptxVersion);\n+createConvertTritonGPUToLLVMPass(int32_t computeCapability, int32_t ptxVersion,\n+                                 bool conSan = false);\n std::unique_ptr<OperationPass<ModuleOp>>\n createAllocateSharedMemoryNvPass(int32_t computeCapability, int32_t ptxVersion);\n "
+        },
+        {
+          "filename": "third_party/nvidia/include/TritonNVIDIAGPUToLLVM/Passes.td",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 0,
+          "patch": "@@ -44,6 +44,8 @@ def ConvertTritonGPUToLLVM : Pass<\"convert-triton-gpu-to-llvm\", \"mlir::ModuleOp\"\n         Option<\"ptxVersion\", \"ptx-version\",\n                \"int32_t\", /*default*/\"80\",\n                \"PTX version\">,\n+        Option<\"conSan\", \"consan\", \"bool\", /*default*/\"false\",\n+               \"Use normal region simplification for ConSan-instrumented IR\">,\n     ];\n }\n "
+        },
+        {
+          "filename": "third_party/nvidia/lib/NVGPUToLLVM/NVGPUToLLVMPass.cpp",
+          "status": "modified",
+          "additions": 4,
+          "deletions": 1,
+          "patch": "@@ -685,7 +685,10 @@ public:\n     patterns.add<ClusterCTAIdOpPattern, WGMMAOpPattern, LoadAcquireOpPattern,\n                  WGMMAWaitGroupOpPattern, WarpIdOpPattern>(context);\n \n-    if (applyPatternsGreedily(mod, std::move(patterns)).failed())\n+    GreedyRewriteConfig config;\n+    if (conSan)\n+      config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);\n+    if (applyPatternsGreedily(mod, std::move(patterns), config).failed())\n       signalPassFailure();\n \n     lowerTensorMemoryAlloc(mod);"
+        },
+        {
+          "filename": "third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/TritonGPUToLLVM.cpp",
+          "status": "modified",
+          "additions": 12,
+          "deletions": 9,
+          "patch": "@@ -146,8 +146,9 @@ struct ConvertTritonGPUToLLVM\n \n   ConvertTritonGPUToLLVM(int32_t computeCapability)\n       : ConvertTritonGPUToLLVMBase({computeCapability}) {}\n-  ConvertTritonGPUToLLVM(int32_t computeCapability, int32_t ptxVersion)\n-      : ConvertTritonGPUToLLVMBase({computeCapability, ptxVersion}) {}\n+  ConvertTritonGPUToLLVM(int32_t computeCapability, int32_t ptxVersion,\n+                         bool conSan)\n+      : ConvertTritonGPUToLLVMBase({computeCapability, ptxVersion, conSan}) {}\n   void runOnOperation() override;\n \n private:\n@@ -197,9 +198,11 @@ void ConvertTritonGPUToLLVM::runOnOperation() {\n   // these large struct types. The normal verifier still checks the cleaned IR.\n   RewritePatternSet patterns(mod.getContext());\n   LLVM::InsertValueOp::getCanonicalizationPatterns(patterns, mod.getContext());\n-  (void)applyPatternsGreedily(\n-      mod, std::move(patterns),\n-      GreedyRewriteConfig().setUseTopDownTraversal(true));\n+  GreedyRewriteConfig config;\n+  config.setUseTopDownTraversal(true);\n+  if (conSan)\n+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);\n+  (void)applyPatternsGreedily(mod, std::move(patterns), config);\n }\n \n LogicalResult ConvertTritonGPUToLLVM::lowerFunctions(\n@@ -331,10 +334,10 @@ createConvertTritonGPUToLLVMPass(int32_t computeCapability) {\n   return std::make_unique<ConvertTritonGPUToLLVM>(computeCapability);\n }\n std::unique_ptr<OperationPass<ModuleOp>>\n-createConvertTritonGPUToLLVMPass(int32_t computeCapability,\n-                                 int32_t ptxVersion) {\n-  return std::make_unique<ConvertTritonGPUToLLVM>(computeCapability,\n-                                                  ptxVersion);\n+createConvertTritonGPUToLLVMPass(int32_t computeCapability, int32_t ptxVersion,\n+                                 bool conSan) {\n+  return std::make_unique<ConvertTritonGPUToLLVM>(computeCapability, ptxVersion,\n+                                                  conSan);\n }\n \n } // namespace mlir::triton"
+        },
+        {
+          "filename": "third_party/nvidia/triton_nvidia.cc",
+          "status": "modified",
+          "additions": 16,
+          "deletions": 7,
+          "patch": "@@ -139,11 +139,15 @@ void init_triton_nvidia_passes_ttgpuir(py::module_ &m) {\n   ADD_PASS_OPTION_WRAPPER_2(\"add_membar\",\n                             mlir::triton::createTritonNvidiaGPUMembar, int32_t,\n                             int32_t);\n-  m.def(\"add_to_llvmir\",\n-        [](mlir::PassManager &pm, int32_t capability, int32_t ptxVersion) {\n-          pm.addPass(mlir::triton::createConvertTritonGPUToLLVMPass(\n-              capability, ptxVersion));\n-        });\n+  m.def(\n+      \"add_to_llvmir\",\n+      [](mlir::PassManager &pm, int32_t capability, int32_t ptxVersion,\n+         bool conSan) {\n+        pm.addPass(mlir::triton::createConvertTritonGPUToLLVMPass(\n+            capability, ptxVersion, conSan));\n+      },\n+      py::arg(\"pm\"), py::arg(\"capability\"), py::arg(\"ptx_version\"),\n+      py::arg(\"consan\") = false);\n }\n \n std::unique_ptr<mlir::Pass>\n@@ -196,8 +200,13 @@ void init_triton_nvidia_passes_ttnvgpuir(py::module_ &m) {\n                      ttng::createTritonNvidiaGPURemoveTMEMTokensPass);\n   ADD_PASS_WRAPPER_0(\"add_check_matmul_two_cta\",\n                      ttng::createTritonNvidiaGPUCheckMatmulTwoCTAPass);\n-  ADD_PASS_WRAPPER_0(\"add_nvgpu_to_llvm\",\n-                     mlir::triton::createConvertNVGPUToLLVM);\n+  m.def(\n+      \"add_nvgpu_to_llvm\",\n+      [](mlir::PassManager &pm, bool conSan) {\n+        pm.addPass(mlir::triton::createConvertNVGPUToLLVM(\n+            mlir::triton::ConvertNVGPUToLLVMOptions{conSan}));\n+      },\n+      py::arg(\"pm\"), py::arg(\"consan\") = false);\n   ADD_PASS_WRAPPER_2(\"add_initialize_ws_cluster_barriers\",\n                      createInitializeWSClusterBarriersWrapper, int32_t,\n                      int32_t);\n"
+        }
+      ]
+    },
+    {
+      "sha": "2f590a43cc64881f1165ac920bff18e9f11569e3",
+      "author": {
+        "name": "Keren Zhou",
+        "email": "kerenzhou@openai.com"
+      },
+      "date": "2026-11-26T02:38:43+08:00",
+      "message": "[GPU] Reuse lane and warp offsets across grouped scan registers (#12935)\n\nStacked on #12934. Grouped scan lowering now computes the lane and warp\ncontribution to a shared-memory address once per layout and reuses it\nacross registers for both stores and loads.\n\n### Performance\n\nCompared the head of #12934 (`b06f94a206`) with this change\n(`8c861fdcd1`). The lowering columns measure the\n`ConvertTritonGPUToLLVM` pass per scan function. The kernel columns\nmeasure execution on an NVIDIA GB200.\n\n| Carry | Scan direction | Lowering, parent (ms) | Lowering, this PR\n(ms) | Lowering time saved | Kernel, parent (µs) | Kernel, this PR (µs)\n|\n|---|---|---:|---:|---:|---:|---:|\n| Inclusive | Forward | 15.79 | 13.99 | 11.4% | 49.05 | 49.02 |\n| Inclusive | Reverse | 15.55 | 13.98 | 10.1% | 50.09 | 50.08 |\n| Exclusive | Forward | 5.11 | 4.84 | 5.3% | 26.29 | 26.30 |\n| Exclusive | Reverse | 5.18 | 4.88 | 5.9% | 26.09 | 26.10 |\n\nBoth benchmarks used 128 × 32 tiles and four warps. For lowering, each\nmodule contained eight copies of the grouped scan fixture (f32 and i64\noperands). Timings are medians of 12 measured runs per build after two\nwarmups, alternating build order on one Neoverse-V2 CPU core with MLIR\nthreading disabled.\n\nFor GPU timing, each kernel scanned four i32 fields across 1,024 tiles.\nEach time is the median of 21 paired CUDA graph samples with 32 launches\nper sample. All four kernels matched the reference output and had\nbyte-identical machine instructions across builds. The measured gain is\nin compilation.\n\nThe scan lowering lit test and 53 targeted GPU tests passed.",
+      "parents": [
+        "3fcc9fbeb43628741e73e4e99c547258a61fcc4e"
+      ],
+      "stats": {
+        "total_additions": 28,
+        "total_deletions": 12,
+        "files_changed": 4
+      },
+      "files": [
+        {
+          "filename": "include/triton/Conversion/TritonGPUToLLVM/Utility.h",
+          "status": "modified",
+          "additions": 7,
+          "deletions": 0,
+          "patch": "@@ -645,6 +645,13 @@ applyLinearLayout(Location loc, RewriterBase &rewriter,\n                   const LinearLayout &layout,\n                   ArrayRef<std::pair<StringAttr, Value>> indices);\n \n+// Apply a layout to several registers with the same thread coordinates.\n+SmallVector<SmallVector<std::pair<StringAttr, Value>>>\n+applyLinearLayoutVec(Location loc, RewriterBase &rewriter,\n+                     const LinearLayout &layout,\n+                     ArrayRef<std::pair<StringAttr, Value>> indices,\n+                     ArrayRef<uint32_t> registers);\n+\n SmallVector<SmallVector<unsigned>> emitOffsetForLayout(Attribute layout,\n                                                        RankedTensorType type);\n "
+        },
+        {
+          "filename": "lib/Conversion/TritonGPUToLLVM/ScanOpToLLVM.cpp",
+          "status": "modified",
+          "additions": 14,
+          "deletions": 11,
+          "patch": "@@ -369,14 +369,15 @@ private:\n           b.gep(smem.getType(), i8_ty, smem, b.i32_val(scratch.offsets[i])));\n       types.push_back(getTypeConverter()->convertType(type));\n     }\n-    auto getOffset = [&](const LinearLayout &layout, unsigned reg) {\n-      return applyLinearLayout(loc, rewriter, layout,\n-                               {{kReg, b.i32_val(reg)},\n-                                {kLane, laneId},\n-                                {kWarp, warpId},\n-                                {kBlock, b.i32_val(0)}})\n-          .front()\n-          .second;\n+    auto getOffsets = [&](const LinearLayout &layout) {\n+      auto regs =\n+          llvm::to_vector(llvm::seq<uint32_t>(layout.getInDimSize(kReg)));\n+      return applyLinearLayoutVec(loc, rewriter, layout,\n+                                  {{kReg, b.i32_val(0)},\n+                                   {kLane, laneId},\n+                                   {kWarp, warpId},\n+                                   {kBlock, b.i32_val(0)}},\n+                                  regs);\n     };\n     auto free = source.getFreeVariableMasks();\n     free.erase(kBlock);\n@@ -384,8 +385,9 @@ private:\n         gpu::emitRedundantThreadPredicate(free, rewriter, loc, targetInfo);\n     if (!storePred)\n       storePred = b.true_val();\n+    auto storeOffsets = getOffsets(storeLayout);\n     for (auto [r, total] : llvm::enumerate(totals)) {\n-      Value offset = getOffset(storeLayout, r);\n+      Value offset = storeOffsets[r].front().second;\n       for (unsigned i = 0; i < total.size(); ++i) {\n         Value ptr = b.gep(smem.getType(), types[i], bases[i], offset);\n         targetInfo.storeDShared(rewriter, loc, ptr, Value(), total[i],\n@@ -423,14 +425,15 @@ private:\n         b.icmp_ne(segmentOffset, b.i32_val(getConsumerOffset(boundary)));\n     ScanValues carries(totals.size());\n \n-    unsigned numScans = independentScans.getInDimSize(kReg);\n+    auto loadOffsets = getOffsets(loadLayout);\n+    unsigned numScans = loadOffsets.size();\n     for (unsigned n = 0; n < numScans; ++n) {\n       unsigned scanIndex = reverse ? numScans - 1 - n : n;\n       unsigned boundaryReg =\n           dstReg.apply({{kReg, scanIndex * numTotals + boundary}})\n               .front()\n               .second;\n-      Value base = getOffset(loadLayout, scanIndex);\n+      Value base = loadOffsets[scanIndex].front().second;\n       SmallVector<Value> acc;\n       for (unsigned i = 0; i < numTotals; ++i) {\n         unsigned segment = reverse ? numTotals - 1 - i : i;"
+        },
+        {
+          "filename": "lib/Conversion/TritonGPUToLLVM/Utility.cpp",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "patch": "@@ -494,7 +494,7 @@ Value getLaneId(OpBuilder &rewriter, Location loc) {\n }\n \n // Helper function: applies linear layout vectorized over register indices\n-static SmallVector<SmallVector<std::pair<StringAttr, Value>>>\n+SmallVector<SmallVector<std::pair<StringAttr, Value>>>\n applyLinearLayoutVec(Location loc, RewriterBase &rewriter,\n                      const LinearLayout &layout,\n                      ArrayRef<std::pair<StringAttr, Value>> indices,"
+        },
+        {
+          "filename": "test/Conversion/scan_to_llvm.mlir",
+          "status": "modified",
+          "additions": 6,
+          "deletions": 0,
+          "patch": "@@ -8,6 +8,7 @@\n \n // RUN: triton-opt %t/shuffle-offsets.mlir --allocate-shared-memory --convert-triton-gpu-to-llvm --canonicalize | FileCheck %s --check-prefix=OFFSETS\n // RUN: triton-opt %t/shuffle-offsets.mlir --allocate-amdgpu-shared-memory=arch=gfx1250 --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1250 --canonicalize | FileCheck %s --check-prefix=AMD-OFFSETS\n+// RUN: triton-opt %t/interwarp-groups.mlir --allocate-shared-memory --convert-triton-gpu-to-llvm | FileCheck %s --check-prefix=GROUPED-OFFSETS\n // RUN: triton-opt %t/interwarp-groups.mlir --allocate-shared-memory --convert-triton-gpu-to-llvm --canonicalize | FileCheck %s --check-prefix=INTERWARP-GROUPS\n // RUN: triton-opt %t/interwarp-groups.mlir --allocate-amdgpu-shared-memory=arch=gfx1250 --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1250 --canonicalize | FileCheck %s --check-prefix=AMD-INTERWARP-GROUPS\n // RUN: triton-opt %t/gfx90a.mlir --allocate-amdgpu-shared-memory=arch=gfx90a --convert-triton-amdgpu-to-llvm=gfx-arch=gfx90a --canonicalize | FileCheck %s --check-prefix=GFX90A\n@@ -310,6 +311,11 @@ tt.func private @test_scan_shuffle_down_gapped(%arg: tensor<4x8xi32, #gapped>) -\n //--- interwarp-groups.mlir\n \n #columns = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [0, 1]}>\n+// The register stores share the lane/warp address calculation before CSE.\n+// GROUPED-OFFSETS-LABEL: llvm.func {{.*}}@test_scan_interwarp_groups(\n+// GROUPED-OFFSETS: llvm.store\n+// GROUPED-OFFSETS-NOT: llvm.shl\n+// GROUPED-OFFSETS: nvvm.barrier\n // Both operands share one store-to-load barrier and retain their complete table.\n // INTERWARP-GROUPS: ttg.shared = 49152 : i32\n // INTERWARP-GROUPS-LABEL: llvm.func {{.*}}@test_scan_interwarp_groups(\n"
+        }
+      ]
+    }
+  ]
+}

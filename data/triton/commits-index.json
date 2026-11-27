@@ -1,4 +1,16 @@
 {
+  "116ce1aa1d1f79c707ff43ffa3cb36419f2231a1": {
+    "date": "2026-11-26",
+    "msg": "[AMD] Fix signed tl.atomic_max/min in intra-wave reduction (#12948)"
+  },
+  "b96b9571fb3e8dd615113c93052d95a970dc3b7e": {
+    "date": "2026-11-26",
+    "msg": "[ConSan] Use normal region simplification (#12843)"
+  },
+  "2f590a43cc64881f1165ac920bff18e9f11569e3": {
+    "date": "2026-11-26",
+    "msg": "[GPU] Reuse lane and warp offsets across grouped scan registers (#12935)"
+  },
   "3fcc9fbeb43628741e73e4e99c547258a61fcc4e": {
     "date": "2026-11-25",
     "msg": "[Gluon] Fix warpgroup_mma with explicit None arguments (#12481)"

@@ -1,4 +1,44 @@
 {
+  "7f49aeafd2e330b9ac0a58710dc2cbfb45fedbd9": {
+    "date": "2026-11-26",
+    "msg": "[docs](fix) optimize the document structure issue (#3451)"
+  },
+  "a703f1c265f01e19756522deabc09308ad2f8c89": {
+    "date": "2026-11-26",
+    "msg": "[ssbuffer](feat) mrege consecutive matmul in mergeCube (#3421)"
+  },
+  "081a7a358a9045736e72b69e0caf5d1f90da54e0": {
+    "date": "2026-11-26",
+    "msg": "[Proton](fix) Skip A5 instrumentation for kernels without records (#3312)"
+  },
+  "04ef3921876a75fb0ac299071b014a0d42bdc8eb": {
+    "date": "2026-11-26",
+    "msg": "[TritonToLinalg](fix) Saturate FP16 and BF16 downcasts to FP8 (#3363)"
+  },
+  "69fab60634b2e20f33e0cea6fa68af785f76dfce": {
+    "date": "2026-11-26",
+    "msg": "[AOT](fix) Keep per-kernel launch metadata in the generated stub (#3386)"
+  },
+  "de54d2bc51b5e0417015f13fb87f5310eaa699c7": {
+    "date": "2026-11-26",
+    "msg": "[ascend](fix) do not rewrite unchanged block batching cache entries (#3425)"
+  },
+  "3a52d6707a8b85b6733abd14cd59b017f7680c20": {
+    "date": "2026-11-26",
+    "msg": "[runtime](fix) import torch_npu explicitly in libentry (#3378)"
+  },
+  "0d1684df7e7431511117c9c3cd5aceeea51f8103": {
+    "date": "2026-11-26",
+    "msg": "[docs](fix) correct Ascend compile option reference (#3397)"
+  },
+  "5ec6e9e07dcada98a5d0b6b47d9a379b011af724": {
+    "date": "2026-11-26",
+    "msg": "[docs](fix) fix docs error (#3283)"
+  },
+  "1ca7871948b9e8c9a0c7bace911466cff612d668": {
+    "date": "2026-11-26",
+    "msg": "[Docs](feat) Add AOT usage guide (#3371)"
+  },
   "339e2cbe0b70bf3a486653945d73eb899255921c": {
     "date": "2026-11-25",
     "msg": "[docs](feat) Add Triton operator performance tuning guide for NPU (#3370)"

@@ -1,0 +1,190 @@
+{
+  "date": "2026-11-26",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-11-27T09:13:43.028164+08:00",
+  "daily_summary": "当日变更以修复类为主，覆盖文档与测试数据校正、DynamicCVPipeline 的 cube 合并策略扩展、Proton A5 性能采集的健壮性增强、FP8 下溢饱和处理、AOT 每 kernel 启动元数据保留、block batching 缓存条目幂等写入，以及 libentry 显式导入 torch_npu 等多方面。核心代码变更集中在 third_party/ascend 的 lowering 与运行时层：MergeCubeBlock 引入 chained matmul 合并并修复 BlockDependencyGraph 合并时的自环问题；Proton 通过 metadata 中的 proton_collection 控制是否插桩，避免无 proton.record 的 kernel 被误插桩并支持缓存 kernel 重启会话后继续采集；TritonToLinalg 的 fp_to_fp canonicalizer 将 fp16/bf16→fp8 下溢也纳入 saturate，避免溢出为 inf/NaN；AOT launcher 从单一 triton_launch_kernel 改为 create/run plan 模式并以每个 stub 内嵌 spec/types 实现多 kernel 共用 launcher；block_batching 的 manifest/snapshot/decline 写入改为幂等，避免严格 AOT 缓存清单误判脏数据导致重编译。文档方面新增 AOT 使用指南、修正 Ascend 编译选项参考与 Python API 约束表。整体看是稳定性修复与 AOT/Proton 场景完善，没有引入新的后端抽象接口变更。",
+  "test_impact_summary": "当日多个 commit 都伴随了针对性测试：MergeCubeBlock 新增 6 个 MLIR diff 用例覆盖 chained matmul、vector 中间值、cycle、vector user 与 same-depth 等分支；Proton 新增 restart 与 no-records 用例并扩展了既有 A5 插桩用例；FP8 用例新增 bf16/fp16 的 saturate 与 NaN/Inf 检查；AOT 新增多 kernel 独立编译、顺序无关的双 kernel 启动与每 kernel launch spec 符号检查；block batching 新增幂等写入的 mtime/inode 断言。AOT 与 Proton 的测试强依赖真实 NPU 环境，CI 若无设备可能无法覆盖，建议确认设备测试流水线；其余 pytest/MLIR 用例可在 CPUs 环境下运行。libentry 的 torch_npu 显式导入暂无直接测试，建议补充一个在 TORCH_DEVICE_BACKEND_AUTOLOAD=0 下导入 libentry 的轻量用例；文档类 commit 仅需保证构建期文档渲染与 codespell 白名单通过，无需功能测试更新。",
+  "commits": [
+    {
+      "sha": "7f49aeafd2e330b9ac0a58710dc2cbfb45fedbd9",
+      "comment": "纯文档/格式修正：统一 README、CODE_OF_CONDUCT、docker/OVERVIEW 与 CONTRIBUTING_zh 中的撇号字符、大小写（FlagGems/GitCode）、中英文空格、标点与 markdown 标题层级（H1→H2/###），并调整文档结构以通过 AIDD 检查。变更不涉及任何代码语义、编译流水线或运行时行为，仅影响仓库文档呈现与协作说明。",
+      "tags": [
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅修改文档文件，无代码逻辑变化，不影响任何功能测试或编译流水线行为。",
+        "suggested_test_areas": []
+      },
+      "message": "[docs](fix) optimize the document structure issue (#3451)\n\n* fix AIDD issue\n\n* Update docker/OVERVIEW.md\n\nCo-authored-by: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>\n\n* Apply suggestion from @github-actions[bot]\n\nCo-authored-by: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>\n\n* fix AIDD issue\n\n* fix AIDD issue\n\n* fix AIDD issue\n\n* Update docker/OVERVIEW.md\n\nCo-authored-by: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>\n\n* fix AIDD issue\n\n---------\n\nCo-authored-by: liujiaxin02 <liujiaxin108@h-partners.com>\nCo-authored-by: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"
+    },
+    {
+      "sha": "a703f1c265f01e19756522deabc09308ad2f8c89",
+      "comment": "扩展 DynamicCVPipeline 的 MergeCubeBlock 判定策略：原先只允许具有公共输入/输出且同深度的 cube 块合并，现在新增 feedsMatmul 分析，允许通过 SSA 追溯到 producer matmul 的 chained matmul 合并（consumer 的 matmul 输入可追溯到 producer block 中的 matmul，且 producer matmul 无 vector user）。同时修复 BlockDependencyGraph::rebuildAfterMerge 在重新连边时未判断 pred/succ 是否为 target 导致的自环污染问题，改为条件插入并同步更新 predecessors/successors。实现上通过 DenseSet 防重复遍历、使用 blockId 判定操作归属，并在 producer matmul 有 vector user 时拒绝合并，避免破坏向量块依赖。风险在于 feedsMatmul 只沿 SSA 定义回溯且限定同 block，若 producer matmul 被链式运算包裹可能识别不到；合并后 blockId 统一为 target 需要验证下游 dynamic pipeline 生成的正确性，新增 MLIR diff 用例已覆盖主要分支。",
+      "tags": [
+        "feature",
+        "bugfix",
+        "medium-risk",
+        "third_party/ascend/lib/DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 chained matmul 合并规则与 BlockDependencyGraph 自环修复都需要回归看护，commit 已新增 6 个 MLIR FileCheck 用例，覆盖可合并、vector 中间值、cycle、vector user 与 same-depth 共享输入等分支。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/merge_cube_block_chained_matmuls.mlir",
+          "third_party/ascend/unittest/DynamicCVPipeline_ut/",
+          "third_party/ascend/lib/DynamicCVPipeline/Common/BlockDependencyGraph.cpp"
+        ]
+      },
+      "message": "[ssbuffer](feat) mrege consecutive matmul in mergeCube (#3421)\n\n* [ssbuffer](feat) mrege consecutive matmul in mergeCube\n\nSigned-off-by: zhuxinguang33 <1074959344@qq.com>\n\n* [ssbuffer](fix) cannot merge cube if fixpipe to l1 and ub\n\nSigned-off-by: zhuxinguang33 <1074959344@qq.com>\n\n---------\n\nSigned-off-by: zhuxinguang33 <1074959344@qq.com>\n\nStage3-Profile: b8b8e96550e073ffb0ab017b9c98e7bf0131f9bc585b41a33ae047f334c61c7e\n\nStage3-Original: 4c95692a1029655aab525ac73a7eec0519858ffc\nStage3-Main: 339e2cbe0b70bf3a486653945d73eb899255921c"
+    },
+    {
+      "sha": "081a7a358a9045736e72b69e0caf5d1f90da54e0",
+      "comment": "修复 Proton A5 插桩的两个问题：(1) 只有包含 proton.record 的 kernel 才应启用 perf_monitor 采集，compiler.py 在 ttir_to_linalg 阶段通过 _has_proton_records 遍历 module 判断，否则 metadata.proton_collection 置 'none'；(2) session 重启后命中缓存的 kernel 之前因缺少 proton_collection 信息而不再采集，NPULauncher 在 __init__ 中缓存 metadata.proton_collection，并在 __call__ 中写回 args[6]._proton_collection，使 instrumentation hook 能识别。patch 文件同步重构：删除原来基于 _perf_monitor_functions 集合的判定，改为在 enter/exit 时读取 metadata._proton_collection，并将 warmup 环境变量的解析移到 enter 中惰性执行，同时引入 _PERF_MONITOR_COLLECTIONS 常量。风险在于 args[6] 的位置假设依赖 launcher 参数约定，若 launcher 签名变化需同步；patch 文件与上游 proton 的同步需保持，若上游改动 instrumentation.py 结构可能冲突。",
+      "tags": [
+        "bugfix",
+        "medium-risk",
+        "third_party/ascend/backend",
+        "third_party/ascend/patch"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增了“无 proton.record 的 kernel 不插桩”和“缓存 kernel 重启会话后仍采集”两个行为，需要测试看护；commit 已补充 test_restart_with_loaded_kernel 与 test_kernel_without_records，并扩展 test_ascend_instrumentation_a5 夹杂 plain kernel，pytest_ut 的 launcher 测试补 _proton_collection 字段。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/proton_ut/test_ascend_instrumentation_a5.py",
+          "third_party/ascend/unittest/pytest_ut/test_launcher_plan.py",
+          "third_party/ascend/patch/proton_patch.patch"
+        ]
+      },
+      "message": "[Proton](fix) Skip A5 instrumentation for kernels without records (#3312)\n\n* [Proton](fix) Skip A5 instrumentation for kernels without records\n\n* [Proton](fix) Profile cached A5 kernels after session restart\n\nStage3-Profile: b8b8e96550e073ffb0ab017b9c98e7bf0131f9bc585b41a33ae047f334c61c7e\n\nStage3-Original: 23d534ecea95ae12ac899cef8e56acb30e8c06bf\nStage3-Main: 339e2cbe0b70bf3a486653945d73eb899255921c"
+    },
+    {
+      "sha": "04ef3921876a75fb0ac299071b014a0d42bdc8eb",
+      "comment": "修复 FpToFpCanonicalizer 的下溢饱和策略：原逻辑仅对 f32→f8 启用 enable_saturate，导致 f16/bf16→f8 在大值下可能产生 inf/NaN；改为 isa<Float16Type, BFloat16Type, Float32Type>(srcElemType) && isa<Float8E4M3FNType, Float8E5M2Type>(dstElemType)，统一走 arith.truncf 的 saturate=true。属于 TritonToLinalg 的精度语义修正，影响 tt.fp_to_fp 标量与张量下转换。风险在于 saturate 会改变 bf16/fp16 到 fp8 的边界值行为（例如 bf16 inf→448），需确认与社区/硬件预期一致；既有 fp32→fp8 路径不受影响，测试更新了 CHECK 并新增 NaN/Inf 边界用例。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "third_party/ascend/lib/TritonToLinalg"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "下溢饱和行为从仅 f32 扩展到 f16/bf16，已有 CHECK 断言需同步更新，且新增 bf16→f8e4m3fn、fp16 NaN→f8e5m2、bf16 Inf→f8e4m3fn 边界用例。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/fp_to_fp_scalar_rtne.mlir"
+        ]
+      },
+      "message": "[TritonToLinalg](fix) Saturate FP16 and BF16 downcasts to FP8 (#3363)\n\n* [TritonToLinalg](fix) Saturate FP16 and BF16 downcasts to FP8\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>\n\n* [ascend](test) Restore the community FP8 downcast test\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>\n\n---------\n\nSigned-off-by: Misaka19280hw <xuzhanxiang1@huawei.com>\n\nStage3-Profile: b8b8e96550e073ffb0ab017b9c98e7bf0131f9bc585b41a33ae047f334c61c7e\n\nStage3-Original: 018070838df4daa4436693ca6da90567a2730315\nStage3-Main: 339e2cbe0b70bf3a486653945d73eb899255921c"
+    },
+    {
+      "sha": "69fab60634b2e20f33e0cea6fa68af785f76dfce",
+      "comment": "重构 AOT C 启动器：原先所有 stub 通过 npuAotLaunch 调用 launcher_export.so 的单一 triton_launch_kernel，无法携带每个 kernel 的 launch spec（如 profile_scratch_size、mix_ratio、coalesce 等），导致多 kernel 同目录时启动策略丢失。新方案在 launcher_cann.h 中定义 npu_aot_launch_spec_t / npu_aot_arg_type_t，与 launcher_abi.h 的 TritonNpuLaunchSpecV1 / TritonNpuArgTypeV1 对齐；compile.c 为每个 stub 生成静态 spec/types 并传给 npuAotLaunch；launcher_export.cpp 新增 triton_launch_kernel_create / triton_launch_kernel_run 两个 C 导出，内部通过 SharedRuntime 复用 triton_npu_create_plan_v1 / triton_npu_launch_v1，并用链表按 (spec, types, num_types) 缓存 plan。aot.py 填充 launch_spec_fields、launch_types_init、num_types 模板参数。风险在于 ABI 结构体字段顺序必须与 launcher_abi.h 保持严格一致，否则跨版本二进制不兼容；npuAotLaunch 使用静态链表未加锁，多线程首次 launch 可能重复创建 plan，但 create/run 本身为纯 C 调用影响有限；无类型 kernel 用 {0, -1} 占位需确保 num_types=0 时 runtime 不读取 types。测试已覆盖多 kernel 独立编译、符号导出和双 kernel 顺序无关启动。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "medium-risk",
+        "third_party/ascend/backend",
+        "third_party/ascend/tools/npu"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "AOT launcher 的 C ABI 与符号从 triton_launch_kernel 扩展为 create/run，且每个 stub 内嵌独立 spec/types，需要验证多 kernel 共用 launcher_export.so 时各自策略正确；commit 已新增 test_aot_per_kernel_launcher_metadata 与 test_aot_two_kernels_independent/test_aot_two_kernels_both_launch。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_aot.py",
+          "third_party/ascend/backend/launcher_src/launcher_cann.h",
+          "third_party/ascend/backend/launcher_src/launcher_export.cpp"
+        ]
+      },
+      "message": "[AOT](fix) Keep per-kernel launch metadata in the generated stub (#3386)\n\nStage3-Profile: b8b8e96550e073ffb0ab017b9c98e7bf0131f9bc585b41a33ae047f334c61c7e\n\nStage3-Original: 8a11a70800010d6dbb302d679f9cec678e9b7c71\nStage3-Main: 339e2cbe0b70bf3a486653945d73eb899255921c"
+    },
+    {
+      "sha": "de54d2bc51b5e0417015f13fb87f5310eaa699c7",
+      "comment": "修复 block batching 的三个缓存发布点在内容未变化时仍重写文件的问题：FileCacheManager.put() 用 os.replace 换入临时文件导致 inode/mtime 变化，严格 AOT 缓存清单比较 (size, mtime_ns) 会误判为脏并触发重编译。改动：(1) BatchKernel.publish_manifest 在写 block_batching.bundle.json 前先 get_file 判断是否已存在，因为 identity 即 manifest 的 sha256；(2) _freeze_source 的 fingerprint 摘要了 snapshot 本身，已存在则复用 get_file 返回路径；(3) _remember_decline 通过 _cached_decline 读取已有记录，仅当记录缺失或不同才写；同时测试用假 Cache 增加 get_file。实现上 publish_manifest 使用 CacheManager 契约的 get_file 而非 FileCacheManager.has_file，以兼容 CUSTOM_CACHE_NOT_SUPPORTED 拒绝路径仍走自定义 manager 的情况。风险较小，但需注意 get_file 在自定义 CacheManager 实现中必须返回 None/路径语义一致；cache 命中路径现在多一次读取，性能影响可忽略。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "third_party/ascend/backend"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "幂等写入的行为通过 mtime/inode 是否变化来断言，需要新增测试；commit 已添加 test_frozen_snapshot_is_written_once_per_fingerprint、test_republished_manifest_keeps_the_stored_entry_byte_identical、test_rememembering_a_known_decline_leaves_the_record_untouched，并更新 block_batching_test_utils 的假 Cache。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/pytest_ut/test_block_batching_worker.py",
+          "third_party/ascend/unittest/pytest_ut/block_batching_test_utils.py"
+        ]
+      },
+      "message": "[ascend](fix) do not rewrite unchanged block batching cache entries (#3425)\n\nThree block batching publishers rewrote cache entries that had not\nchanged. FileCacheManager.put() swaps a freshly written temp file into\nplace with os.replace() without comparing content, so each publication\nminted a new inode and mtime for an identical file. Strict AOT cache\ninventories compare (size, mtime_ns), read those entries as modified\nartifacts, report the cache as dirty, and force a recompile even though\nno kernel or cache content changed.\n\nBatchKernel.publish_manifest() stores block_batching.bundle.json under a\ndigest of the manifest, and runs on cache hits rather than only after a\ncompile, so every cached-kernel initialization restamped the sidecar.\n_freeze_source() stores block_batching.original.ttir under a fingerprint\nthat digests the snapshot itself, and restamped it on every freeze.\nReplaying a pointwise kernel in a second process reproduced the latter.\nBoth keys digest the bytes being written, so an entry already present is\nbyte-identical; skip the write when the key already holds one.\n\n_remember_decline() is reached from _compile_selected() on the cached\nselection path, so replaying a selection re-reported identical declines.\nIts key does not digest the payload, so this one compares the stored\nrecord through the existing _cached_decline() reader and writes only when\nthe record is absent or genuinely different.\n\nThis matches the _get_or_build_npu_artifact() convention already used for\nNPU artifacts. publish_manifest() uses get_file() from the CacheManager\ncontract rather than FileCacheManager.has_file(), because compile_bundle()\nroutes a CUSTOM_CACHE_NOT_SUPPORTED refusal into rejected_bundle(), which\nstill publishes through the configured manager. _freeze_source() has\nalready proven its manager is a FileCacheManager.\n\nCo-authored-by: popeyesxs <popeyesxs@users.noreply.github.com>\nCo-authored-by: Cursor <cursoragent@cursor.com>\n\nStage3-Profile: b8b8e96550e073ffb0ab017b9c98e7bf0131f9bc585b41a33ae047f334c61c7e\n\nStage3-Original: f4c913a610311c9613260cafdfcfdaec77d03b15\nStage3-Main: 339e2cbe0b70bf3a486653945d73eb899255921c"
+    },
+    {
+      "sha": "3a52d6707a8b85b6733abd14cd59b017f7680c20",
+      "comment": "在 python/triton/runtime/libentry.py 顶部显式 import torch_npu，以兼容 torch >= 2.8 在 TORCH_DEVICE_BACKEND_AUTOLOAD=0 时不会自动加载 out-of-tree 设备后端、导致 torch.npu 未注册从而 import libentry 报 AttributeError 的问题。与 3.2.2.post1 版本行为对齐。注意该文件位于上游 triton 路径，triton-ascend 通过 patch 维护上游差异；此修改若未同步进 triton-ascend-3.6.0.patch，rebuild 时可能被 checkout 还原。缺少 try/except 或延迟导入，在无 torch_npu 的纯 CUDA/AMD 环境导入 libentry 会失败，但本仓库以 Ascend 为主，风险可接受。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "python/triton/runtime"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "该修复针对 TORCH_DEVICE_BACKEND_AUTOLOAD=0 下导入 libentry 的失败场景，现有测试未覆盖该环境变量组合，建议补充一个在禁用自动加载时 import triton.runtime.libentry 的轻量用例；同时需确认该改动已被纳入 patch 文件，避免构建期被还原。",
+        "suggested_test_areas": [
+          "python/test/unit/runtime/test_libentry.py（或新建）",
+          "third_party/ascend/patch/triton-ascend-3.6.0.patch"
+        ]
+      },
+      "message": "[runtime](fix) import torch_npu explicitly in libentry (#3378)\n\ntorch >= 2.8 skips loading out-of-tree device backends when\nTORCH_DEVICE_BACKEND_AUTOLOAD=0, so torch.npu is never registered and\nimporting triton.runtime.libentry fails with\n\"AttributeError: module 'torch' has no attribute 'npu'\".\nImport torch_npu explicitly before accessing torch.npu, matching the\nbehavior of the 3.2.2.post1 release.\n\nStage3-Profile: b8b8e96550e073ffb0ab017b9c98e7bf0131f9bc585b41a33ae047f334c61c7e\n\nStage3-Original: 07ecaefd8f9347730fe60e393033af6b1ae9f3a1\nStage3-Main: 339e2cbe0b70bf3a486653945d73eb899255921c"
+    },
+    {
+      "sha": "0d1684df7e7431511117c9c3cd5aceeea51f8103",
+      "comment": "文档修正：中英文 environment_variable_and_compiler_options_reference 对齐当前 Ascend 后端与 BiShengIR 约束。主要修正包括：USE_IR_LOC 明确仅支持 ttir（ttadapter/npubin 不支持）、TRITON_ENABLE_SANITIZER 补充 mssanitizer 启动方式、TRITON_COMPILE_ONLY 补充 y/on/yes 及大小写不敏感、新增 ASCEND_HOME_PATH 条目、default_fp_fusion 说明仅 NVIDIA/AMD 生效而 Ascend 的 enable_fp_fusion 为兼容字段、auto_vectorize_v2_max_fused_ops_num/prevec_max_fused_ops_num/shared_mem_dynamic_size/superblock_factor 的取值范围与语义细化。属于文档与实现对齐，无代码变更。",
+      "tags": [
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅文档内容修正，不改变后端行为；文档中描述的选项语义应已有对应实现，无需新增测试。",
+        "suggested_test_areas": []
+      },
+      "message": "[docs](fix) correct Ascend compile option reference (#3397)\n\n* [docs](fix) correct Ascend compile option reference\n\nAlign environment variable and compiler option descriptions with the current Ascend backend and BiShengIR constraints in both reference pages.\n\nSigned-off-by: zhanwei33 <493694187@qq.com>\n\n* [docs](fix) name enable_fp_fusion in the Ascend reference\n\nSigned-off-by: zhanwei33 <493694187@qq.com>\n\n* [docs](fix) keep TRITON_ENABLE_LIBDEVICE reference\n\nSigned-off-by: zhanwei33 <493694187@qq.com>\n\n* [docs](fix) spell out Triton-Ascend in the toolkit reference\n\nSigned-off-by: zhanwei33 <493694187@qq.com>\n\n* Update docs/zh/environment_variable_and_compiler_options_reference.md\n\nCo-authored-by: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>\n\n* Update docs/zh/environment_variable_and_compiler_options_reference.md\n\nCo-authored-by: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>\n\n* [docs](fix) spell out Atlas product names in sanitizer references\n\nSigned-off-by: zhanwei33 <493694187@qq.com>\n\n---------\n\nSigned-off-by: zhanwei33 <493694187@qq.com>\nCo-authored-by: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"
+    },
+    {
+      "sha": "5ec6e9e07dcada98a5d0b6b47d9a379b011af724",
+      "comment": "修正 docs/zh/python-api/_ascend_constraints.py 中 Python API 约束表：将 Atlas A2/A3 上 uint16/uint32/uint64 从 × 改为 √，并修正 flip 等算子在 Ascend 950PR&950DT 上 uint64 的支持标记；同时修正 2000+ 行处 uint64 的笔误 'v'→'√'。该文件是生成文档的约束数据源，直接影响文档中 dtype 支持矩阵的准确性。变更本身为文档数据修正，但若与后端实际支持不一致，可能误导用户；建议与 TritonToLinalg/后端 dtype 实现交叉验证。",
+      "tags": [
+        "docs",
+        "low-risk"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅修正文档约束表数据，不改变代码行为；若需保证文档与实现一致，可在相应 dtype 算子测试中已有覆盖。",
+        "suggested_test_areas": [
+          "docs/zh/python-api/_ascend_constraints.py"
+        ]
+      },
+      "message": "[docs](fix) fix docs error (#3283)\n\n* [docs](fix) fix docs error\n\n* [dtype](fix) Adjustment of the dtype in the not operator A3"
+    },
+    {
+      "sha": "1ca7871948b9e8c9a0c7bace911466cff612d668",
+      "comment": "新增 AOT 编译使用指南（中英文各 400+ 行）并接入 docs index，覆盖 kernel 编写、compile.py 特化签名语法、link.py 分发器、C/C++ 调用程序构建、aot_flags.sh 生成、精度比对脚本、运行环境部署、多 kernel 打包共享库及约束。同时修正 docs/zh/python-api/_examples/triton.language.atomic_xchg.py 示例：去掉 n_elements 与 mask，改为按 grid 切分 BLOCK_SIZE 且直接对整 tensor 做 atomic_xchg，并修正断言逻辑；codespell 白名单加入 npubin/dlopen/dloped。文档中新描述的多 kernel 分别 link、launcher_export.so 共用、npu_utils.so 部署布局等需与 69fab606 的 AOT 重构保持一致。atomic_xchg 示例修改属于示例正确性修复，降低了示例复杂度但改变了语义（去 mask 后要求 shape 能被 ncore 整除），需确认与约束表一致。",
+      "tags": [
+        "docs",
+        "test",
+        "low-risk",
+        "third_party/ascend/tools/npu"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "主要为新增 AOT 文档与索引调整；atomic_xchg 示例修改为文档示例代码，不参与自动化测试，但应与 test_aot.py 中多 kernel 用例的构建方式保持一致，若有文档构建校验（codespell）已更新白名单。",
+        "suggested_test_areas": [
+          "docs/en/aot_guide.md",
+          "docs/zh/aot_guide.md",
+          "docs/zh/python-api/_examples/triton.language.atomic_xchg.py",
+          ".github/docs-ci/codespell.whitelist.json"
+        ]
+      },
+      "message": "[Docs](feat) Add AOT usage guide (#3371)"
+    }
+  ],
+  "architecture_based_on_sha": "ee15e295649ccf85b4e4b78316c736d00365c1a5",
+  "architecture_generated_at": "2026-11-15T21:06:50.427270+08:00"
+}

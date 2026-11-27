@@ -1,0 +1,67 @@
+{
+  "date": "2026-11-26",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-11-27T09:13:08.622171+08:00",
+  "daily_summary": "当日合入三个变更，均偏向修正与编译性能：① AMD 后端修复 intra-wave reduction 中 signed atomic_max/min 被错误映射为 unsigned umax/umin 导致的数值错误；② ConSan（并发安全检查）路径下为多个 GPU→LLVM lowering 的 greedy rewrite 增加 conSan 选项以使用 Normal 级 region simplification，修复激进 region 合并导致的编译时间回归；③ 通用 grouped scan lowering 通过新增公开的 applyLinearLayoutVec 按 layout 一次性计算 lane/warp 偏移并在多个寄存器间复用，节省约 5%–11% 的 ConvertTritonGPUToLLVM 编译时间（生成指令字节级一致）。整体看是两条 GPU 后端正确性/编译期性能修复 + 一条通用 lowering 编译性能优化，无跨后端的接口契约变更。",
+  "ascend_impact_summary": "三个 commit 均不触及 triton-ascend 依赖的上游接口面：commit 1 只改 AMD 后端专属的 AtomicRMWOpsEmitter 与 AMD 测试；commit 2 改动集中在 NVIDIA 专属 lowering/Passes 及 TritonGPUToLLVM 的 CanonicalizeLLVMIR pass 选项，而 Ascend 不经过 TritonGPUToLLVM/GPU→LLVM 路径（由 bishengir 完成 codegen），且未修改 BaseBackend/DriverBase/后端发现/code_generator/tt 方言等必然影响路径；commit 3 的 ScanOpToLLVM 与 Utility 属于 GPU→LLVM 通用 lowering，Ascend 不使用，新增的 applyLinearLayoutVec 导出仅是签名导出化，不影响 Ascend 后端。故当日变更对 triton-ascend 无功能或测试影响。",
+  "commits": [
+    {
+      "sha": "116ce1aa1d1f79c707ff43ffa3cb36419f2231a1",
+      "comment": "修复 AMD 后端 intra-wave reduction 中 signed atomic_max/min 的语义 bug。原先 `AtomicRMWEmitter::atomicIntraWaveReduce` 的 `performOp` 同时处理 max/umax、min/umin 四个分支，却统一落到 `b.umax`/`b.umin`，导致负值或混合符号整数在 leader lane 选出错误结果（如 -1 被当作 0xFFFFFFFF 的大无符号数）。变更将 max 改为 `b.smax(v, res)`、min 改为 `b.smin(v, res)`，保留 umax/umin 走原有 unsigned 路径；同时在 `test/Conversion/amd/tritongpu_to_llvm.mlir` 增加两个回归用例分别断言 `llvm.intr.smax` + `llvm.atomicrmw max` 与 `llvm.intr.smin` + `llvm.atomicrmw min`。改动范围极小、语义明确，属于典型的正确性修复；风险在于仅覆盖 i32 场景且未补充无符号路径的回归断言（但原有 unsigned 分支未被改动，风险较低）。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "third_party/amd",
+        "lowering"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响",
+        "testing": "无影响",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD] Fix signed tl.atomic_max/min in intra-wave reduction (#12948)\n\nFixes #12945.\n\nIn `AtomicRMWEmitter::atomicIntraWaveReduce`, `performOp` mapped signed\n`LLVM::AtomicBinOp::max` and `min` to `b.umax` and `b.umin`.\n\nFor negative or mixed-sign integer inputs, the unsigned compare treated\nnegative numbers as large unsigned values (e.g. `-1` as `0xFFFFFFFF =\n4294967295`), leading to silent numerical corruption where the leader\nlane selects a negative value over a positive value during\n`tl.atomic_max` (and vice-versa for `tl.atomic_min`).\n\n- Map `LLVM::AtomicBinOp::max` to `b.smax(v, res)` and\n`LLVM::AtomicBinOp::min` to `b.smin(v, res)`.\n- Preserve `b.umax` and `b.umin` for unsigned `LLVM::AtomicBinOp::umax`\nand `LLVM::AtomicBinOp::umin`.\n- Added regression tests in `test/Conversion/amd/tritongpu_to_llvm.mlir`\ncovering signed max and min under intra-wave reduction.\n\n---------\n\nCo-authored-by: shotsan <shotsan@users.noreply.github.com>"
+    },
+    {
+      "sha": "b96b9571fb3e8dd615113c93052d95a970dc3b7e",
+      "comment": "为 ConSan（并发安全检查）instrument 后的 IR 引入更保守的 region simplification，修复激进合并导致的编译时间回归。做法是给 `CanonicalizeLLVMIR`、`ConvertNVGPUToLLVM`、`ConvertTritonGPUToLLVM` 三个 pass 增加 `conSan` 选项，在启用时把 `GreedyRewriteConfig::setRegionSimplificationLevel` 设为 `GreedySimplifyRegionLevel::Normal`（默认仍为原先的激进级别），并由 `CUDABackend.make_llir` 将 `is_enabled(options, \"consan\")` 贯穿到 `add_to_llvmir`/`add_canonicalize_llvm_ir`/`add_nvgpu_to_llvm`。同时重构了 make_llir 中重复的 `is_enabled(options, \"consan\")` 调用为局部变量 `consan`。测试侧在 `tritoninstrument_to_llvm.mlir` 新增 `region-simplification.mlir`，用同一段含两个相同 `llvm.store` 的 cf 分支验证 MERGED（合并为一次）与 NORMAL（保留两次）两种行为，分别通过 pass-pipeline 选项与 `--convert-triton-gpu-to-llvm=consan`/`--convert-nv-gpu-to-llvm=consan` 触发。变更引入了若干 API 签名变更（`createConvertTritonGPUToLLVMPass` 增加默认参数 bool、`add_to_llvmir`/`add_canonicalize_llvm_ir`/`add_nvgpu_to_llvm` 新增 pybind 参数），但均带默认值、向后兼容。所谓回归修复只在 NVIDIA 路径与 ConSan 场景生效，非 ConSan 用户行为不变，风险较低。",
+      "tags": [
+        "performance",
+        "bugfix",
+        "low-risk",
+        "third_party/nvidia",
+        "canonicalization"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更文件为 TritonGPUToLLVM 的 CanonicalizeLLVMIR pass（GPU→LLVM 路径）、NVIDIA 后端 Passes.td/Passes/TritonGPUToLLVM.cpp/NVGPUToLLVM.cpp/triton_nvidia.cc 与 CUDABackend.make_llir。Ascend 后端不经过 TritonGPUToLLVM/GPU→LLVM lowering（由 bishengir 完成 codegen），也不使用 third_party/nvidia 的 pass 与 CUDABackend；python/src/passes.cc 中改动的仅是 `add_canonicalize_llvm_ir` 这一 GPU 专用 pass 的 pybind 包装签名（新增带默认值的 consan 参数），不涉及 Ascend 使用的 ir/passes 通用绑定契约。",
+        "testing": "无影响。新增测试位于 test/Conversion/tritoninstrument_to_llvm.mlir（ConSan/GPU 专用 lit 测试），Ascend 不参与。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[ConSan] Use normal region simplification (#12843)\n\nUse normal region simplification with ConSan to address a compile-time\nregression caused by aggressive region simplification."
+    },
+    {
+      "sha": "2f590a43cc64881f1165ac920bff18e9f11569e3",
+      "comment": "优化 grouped scan 的 lowering 编译时间。原 `ScanOpToLLVM` 中每个寄存器分别调用 `applyLinearLayout` 计算共享内存地址（lane/warp 部分对同一 layout 是常量），造成重复 IR 构造与 CSE 压力。变更把该 lambda 改为 `getOffsets(layout)`：对 layout 的 kReg 维度取全部寄存器索引，调用 `applyLinearLayoutVec` 一次性向量化计算，store 与 load 两处分别在循环外计算 `storeOffsets`/`loadOffsets` 再按索引取用；`numScans` 也改为直接取 `loadOffsets.size()`。配套把 `Utility.cpp` 中原本 static 的 `applyLinearLayoutVec` 提升为导出符号并在 `Utility.h` 中声明（新增 `ArrayRef<uint32_t> registers` 参数的公共 API）。作者给出的数据是 lowering 时间下降 5%–11%，生成机器指令字节级一致，说明是纯编译期优化、不改变 kernel 语义与运行性能。测试在 `scan_to_llvm.mlir` 新增 `GROUPED-OFFSETS` 断言：store 前只应有一份 `llvm.shl` 地址计算（`GROUPED-OFFSETS-NOT: llvm.shl`），确保跨寄存器复用生效。风险点在于 `applyLinearLayoutVec` 从文件内 static 变为公共符号，属于新增导出而非修改现有签名，兼容性良好。",
+      "tags": [
+        "performance",
+        "refactor",
+        "low-risk",
+        "lowering",
+        "scan"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。变更位于 lib/Conversion/TritonGPUToLLVM/ScanOpToLLVM.cpp 与 Utility.{h,cpp}，属于 GPU→LLVM 通用 lowering 框架；Ascend 后端跳过 TritonGPU 布局阶段、不使用 GPU→LLVM lowering（最终由 bishengir 生成设备二进制），且不引用 `applyLinearLayout`/`applyLinearLayoutVec`。新增的 `applyLinearLayoutVec` 头声明仅为导出既有 static 函数，不改变任何 Ascend 依赖的 BaseBackend/DriverBase/后端发现/tt 方言/code_generator 契约。",
+        "testing": "无影响。新增断言位于 test/Conversion/scan_to_llvm.mlir（GPU scan lowering lit 测试），Ascend 不参与。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[GPU] Reuse lane and warp offsets across grouped scan registers (#12935)\n\nStacked on #12934. Grouped scan lowering now computes the lane and warp\ncontribution to a shared-memory address once per layout and reuses it\nacross registers for both stores and loads.\n\n### Performance\n\nCompared the head of #12934 (`b06f94a206`) with this change\n(`8c861fdcd1`). The lowering columns measure the\n`ConvertTritonGPUToLLVM` pass per scan function. The kernel columns\nmeasure execution on an NVIDIA GB200.\n\n| Carry | Scan direction | Lowering, parent (ms) | Lowering, this PR\n(ms) | Lowering time saved | Kernel, parent (µs) | Kernel, this PR (µs)\n|\n|---|---|---:|---:|---:|---:|---:|\n| Inclusive | Forward | 15.79 | 13.99 | 11.4% | 49.05 | 49.02 |\n| Inclusive | Reverse | 15.55 | 13.98 | 10.1% | 50.09 | 50.08 |\n| Exclusive | Forward | 5.11 | 4.84 | 5.3% | 26.29 | 26.30 |\n| Exclusive | Reverse | 5.18 | 4.88 | 5.9% | 26.09 | 26.10 |\n\nBoth benchmarks used 128 × 32 tiles and four warps. For lowering, each\nmodule contained eight copies of the grouped scan fixture (f32 and i64\noperands). Timings are medians of 12 measured runs per build after two\nwarmups, alternating build order on one Neoverse-V2 CPU core with MLIR\nthreading disabled.\n\nFor GPU timing, each kernel scanned four i32 fields across 1,024 tiles.\nEach time is the median of 21 paired CUDA graph samples with 32 launches\nper sample. All four kernels matched the reference output and had\nbyte-identical machine instructions across builds. The measured gain is\nin compilation.\n\nThe scan lowering lit test and 53 targeted GPU tests passed."
+    }
+  ],
+  "architecture_based_on_sha": "1c53e566ef8f719ff9b69132a72ad943e5409492",
+  "architecture_generated_at": "2026-11-15T21:06:50.425498+08:00"
+}
