@@ -1,4 +1,40 @@
 {
+  "544205858d8afe729b1dc2d49a719ba257edd176": {
+    "date": "2026-11-27",
+    "msg": "[PtrAnalysis](fix) Support runtime-aligned pointer bitcasts (#3432)"
+  },
+  "8d6c5bc76129bb3b95541ce643f714c588f9953b": {
+    "date": "2026-11-27",
+    "msg": "[DynamicCVPipeline] fix: add fallback for dynamic split-if placeholders (#3423)"
+  },
+  "7a3ff2ea50c9628380475cd52fca092335892ca6": {
+    "date": "2026-11-27",
+    "msg": "[dtype](feat) hifloat8 support (#3452)"
+  },
+  "7154567477fe6805443012f1fa41173f07aa2b5a": {
+    "date": "2026-11-27",
+    "msg": "[TLA](feat) simd interfaces (#3160)"
+  },
+  "bcd788eecdcec66f68246def268dfba0821889e2": {
+    "date": "2026-11-27",
+    "msg": "[Template](feat) optimize PR Template and Issue Label (#3478)"
+  },
+  "cad80450e969110cbd9859084eb00f5242b67dc6": {
+    "date": "2026-11-27",
+    "msg": "[Docs](feat) update maintainers and governance (#3430)"
+  },
+  "bc4b126da825a9a0d03cfc0874de381a11a795e0": {
+    "date": "2026-11-27",
+    "msg": "[Docs](feat) Document Conv1D padding behavior (#2610)"
+  },
+  "bc213ecaa16dd3607c7221c74197e6222c520111": {
+    "date": "2026-11-27",
+    "msg": "[Docs](fix) Document tl.where pointer tensor restriction on Ascend (#3436)"
+  },
+  "353e30aacd4dfcc43fefddd59908942f5c4165fe": {
+    "date": "2026-11-27",
+    "msg": "[docs](fix) correct DynamicCV buffer option migration (#3485)"
+  },
   "7f49aeafd2e330b9ac0a58710dc2cbfb45fedbd9": {
     "date": "2026-11-26",
     "msg": "[docs](fix) optimize the document structure issue (#3451)"

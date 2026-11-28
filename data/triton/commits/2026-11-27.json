@@ -1,0 +1,40 @@
+{
+  "date": "2026-11-27",
+  "repo": "triton-lang/triton",
+  "branch": "main",
+  "commits": [
+    {
+      "sha": "d11dc0bed715a4e07d4c201858f70aa1830f26ad",
+      "author": {
+        "name": "Alexander Weinrauch",
+        "email": "alexander.weinrauch@amd.com"
+      },
+      "date": "2026-11-27T06:43:06+08:00",
+      "message": "[AMD][BUILD] Add missing amd build script for `dev-install-llvm` (#12937)\n\nhttps://github.com/triton-lang/triton/pull/12356 was missing the actual\nbuild script to build the amd codegen llvm pin locally. This PR adds the\nmissing file and adds the build artifacats to gitignore. The source\nfolder is already ignored from an existing wildcard entry.",
+      "parents": [
+        "116ce1aa1d1f79c707ff43ffa3cb36419f2231a1"
+      ],
+      "stats": {
+        "total_additions": 65,
+        "total_deletions": 0,
+        "files_changed": 2
+      },
+      "files": [
+        {
+          "filename": ".gitignore",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 0,
+          "patch": "@@ -5,6 +5,7 @@ build-*/\n llvm-project/\n llvm-project-*/\n .llvm-project/\n+.llvm-project-*/\n \n # Triton Python module builds\n python/build/"
+        },
+        {
+          "filename": "scripts/build-amd-llvm.sh",
+          "status": "added",
+          "additions": 64,
+          "deletions": 0,
+          "patch": "new file mode 100755\n@@ -0,0 +1,64 @@\n+#!/usr/bin/env bash\n+set -euo pipefail\n+\n+REPO_ROOT=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")/..\" && pwd)\"\n+AMD_LLVM_BUILD_INFO=\"$REPO_ROOT/cmake/amd-llvm-build-info.json\"\n+LLVM_COMMIT_HASH=\"$(jq -er '.llvm_hash' \"$AMD_LLVM_BUILD_INFO\")\"\n+LLVM_REPOSITORY=\"$(jq -er '.repository' \"$AMD_LLVM_BUILD_INFO\")\"\n+LLVM_BUILD_NUMBER=\"$(jq -er '.build_number' \"$AMD_LLVM_BUILD_INFO\")\"\n+\n+LLVM_PROJECT_PATH=\"${AMD_LLVM_PROJECT_PATH:-\"$REPO_ROOT/llvm-project-amd\"}\"\n+LLVM_BUILD_PATH=\"${AMD_LLVM_BUILD_PATH:-\"$REPO_ROOT/.llvm-project-amd/build\"}\"\n+AMD_BACKEND_PATH=\"$REPO_ROOT/third_party/amd/backend\"\n+\n+if [[ ! -e \"$LLVM_PROJECT_PATH/.git\" ]]; then\n+    git init --quiet \"$LLVM_PROJECT_PATH\"\n+fi\n+if ! git -C \"$LLVM_PROJECT_PATH\" cat-file -e \"$LLVM_COMMIT_HASH^{commit}\" 2>/dev/null; then\n+    git -C \"$LLVM_PROJECT_PATH\" fetch --depth=1 \"https://github.com/$LLVM_REPOSITORY.git\" \"$LLVM_COMMIT_HASH\"\n+fi\n+git -C \"$LLVM_PROJECT_PATH\" checkout --detach \"$LLVM_COMMIT_HASH\"\n+\n+mkdir -p \"$LLVM_BUILD_PATH\"\n+LLVM_BUILD_PATH=\"$(cd \"$LLVM_BUILD_PATH\" && pwd)\"\n+LLVM_INSTALL_PATH=\"$LLVM_BUILD_PATH/install\"\n+\n+# Build+link with clang+lld only when explicitly requested (the macOS toolchain\n+# does not ship lld). Otherwise fall back to the default compiler and linker.\n+CLANG_LLD_ARGS=()\n+CLANG_ARGS=()\n+case \"$(printf '%s' \"${TRITON_BUILD_WITH_CLANG_LLD:-}\" | tr '[:upper:]' '[:lower:]')\" in\n+    1 | on | true) TRITON_BUILD_WITH_CLANG_LLD=1 ;;\n+esac\n+if [ \"${TRITON_BUILD_WITH_CLANG_LLD:-}\" = \"1\" ]; then\n+    CLANG_ARGS=(\n+        -DCMAKE_C_COMPILER=clang\n+        -DCMAKE_CXX_COMPILER=clang++\n+    )\n+    CLANG_LLD_ARGS=(\"${CLANG_ARGS[@]}\" -DLLVM_ENABLE_LLD=ON)\n+fi\n+\n+cmake -G Ninja -S \"$LLVM_PROJECT_PATH/llvm\" -B \"$LLVM_BUILD_PATH\" \\\n+    \"${CLANG_LLD_ARGS[@]}\" \\\n+    -DCMAKE_BUILD_TYPE=Release \\\n+    -DCMAKE_INSTALL_PREFIX=\"$LLVM_INSTALL_PATH\" \\\n+    -DCMAKE_INSTALL_LIBDIR=lib \\\n+    -DLLVM_TARGETS_TO_BUILD=AMDGPU \\\n+    -DLLVM_ENABLE_ASSERTIONS=ON \\\n+    -DLLVM_INCLUDE_TESTS=OFF \\\n+    -DLLVM_ENABLE_PIC=ON \\\n+    -DBUILD_SHARED_LIBS=OFF \\\n+    -DLLVM_BUILD_LLVM_DYLIB=OFF \\\n+    -DLLVM_LINK_LLVM_DYLIB=OFF \\\n+    -DLLVM_ENABLE_ZSTD=OFF \\\n+    -DLLVM_ENABLE_LZMA=OFF \\\n+    '-DLLVM_DISTRIBUTION_COMPONENTS=llvm-headers;llvm-libraries;cmake-exports'\n+cmake --build \"$LLVM_BUILD_PATH\" --target install-distribution\n+\n+cmake -G Ninja -S \"$AMD_BACKEND_PATH/codegen\" -B \"$LLVM_BUILD_PATH/codegen\" \\\n+    \"${CLANG_ARGS[@]}\" \\\n+    -DCMAKE_BUILD_TYPE=Release \\\n+    -DLLVM_DIR=\"$LLVM_INSTALL_PATH/lib/cmake/llvm\" \\\n+    -DCMAKE_INSTALL_PREFIX=\"$AMD_BACKEND_PATH\" \\\n+    -DTRITON_AMD_LLVM_REVISION=\"$LLVM_COMMIT_HASH-$LLVM_BUILD_NUMBER\"\n+cmake --build \"$LLVM_BUILD_PATH/codegen\" --target install\n"
+        }
+      ]
+    }
+  ]
+}

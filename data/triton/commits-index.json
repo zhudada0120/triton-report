@@ -1,4 +1,8 @@
 {
+  "d11dc0bed715a4e07d4c201858f70aa1830f26ad": {
+    "date": "2026-11-27",
+    "msg": "[AMD][BUILD] Add missing amd build script for `dev-install-llvm` (#12937)"
+  },
   "116ce1aa1d1f79c707ff43ffa3cb36419f2231a1": {
     "date": "2026-11-26",
     "msg": "[AMD] Fix signed tl.atomic_max/min in intra-wave reduction (#12948)"

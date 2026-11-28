@@ -1,0 +1,181 @@
+{
+  "date": "2026-11-27",
+  "repo": "triton-lang/triton-ascend",
+  "generated_at": "2026-11-28T08:46:54.228191+08:00",
+  "daily_summary": "当日变更覆盖 TLA SIMD 新接口（carry/compaction、predicate pack/unpack、vselr、group reduce、vld2/vgatherb/vscatter、vshrs）、HiFloat8 dtype 全链路接入（MLIR 内置类型 patch、Triton 前端 dtype、semantic、降级 pass、bishengir 版本升级与 submodule 更新）、PtrAnalysis 对运行时对齐指针 bitcast 的支持放宽、DynamicCVPipeline split-if placeholder 对动态 shape 的 fallback、以及若干文档/CI/治理类改动（PR 模板与 issue 标签、maintainers 与治理规则、conv1d/tl.where 约束文档、DynamicCV buffer 选项迁移文档）。核心方向是扩展 Ascend 专属硬件能力表达（TLA/HiF8）并修正指针分析边界，同时完善社区与文档流程。",
+  "test_impact_summary": "本次变更显著扩展了需要设备看护的测试面：TLA SIMD 新增大量算子（vaddcs/vsubcs/vcpadd/vsqz/vusqz/ppack/punpack/pintlv/pdintlv/vselr/vcgadd/vcgmax/vcgmin/vld2/vgatherb/vscatter/vshrs）均新增 tla_ut 单测并区分 IR/COMPILE/RUN 三段；HiFloat8 引入新的 MLIR 类型与前端 dtype，新增 arith_hifloat8.mlir lit 测试与 test_hifloat8.py 设备测试，且补丁改动了 LLVM/MLIR 上游文件，需要确认构建与 lit 回归；PtrAnalysis bitcast 放宽后原“拒绝未知单位”用例被改为“接受 runtime 对齐”，测试语义反转，需关注是否引入未对齐 UB 的风险；DynamicCVPipeline 对动态 shape placeholder 走 fallback，新增 else_placeholder_fill.mlir 用例。文档与治理类改动不引入测试点。整体看，现有测试策略已通过新增 tla_ut/pytest_ut/lit 覆盖主要新接口，但 HiFloat8 依赖外部 bishengir 版本与 patch、以及 TLA 新算子仅在 A5/950 上可用，需注意 CI 硬件矩阵与版本锁定的一致性。",
+  "commits": [
+    {
+      "sha": "544205858d8afe729b1dc2d49a719ba257edd176",
+      "comment": "PtrAnalysis 放宽对跨元素宽度指针 bitcast 的处理：移除了 widenElement 时要求完整位移可整除的硬失败检查，改为由调用方保证运行时可整除；同时让 base 与 op.getSrc() 相同场景复用 bitcast 结果作为 per-lane base，避免重复构造 bitcast。TritonOpConverter 删除未匹配位宽时的 emitError（改为静默跳过），TritonToUnstructure 移除 canonicalizeSupportedPointerBitcasts 专用重写，让 Unstructure 走正常路径。Utils.cpp 的 divideDecomposition 在存在结构化分解时也允许 scalarOffset 整除。整体意图是支持运行期才可证明对齐的指针 bitcast，减少过度保守的编译失败。风险在于：把整除性从编译期证明转为运行期契约，若用户输入不满足对齐会生成语义错误的 IR；删除错误诊断会降低可调试性；改动触及 PtrAnalysis/Unstructure/TritonToLinalg 三个紧密耦合 pass，需要确认后续 lowering 在非整除情况下仍能正确表达字节缓冲视图。",
+      "tags": [
+        "bugfix",
+        "refactor",
+        "medium-risk",
+        "TritonMemoryAccess",
+        "TritonToLinalg",
+        "TritonToUnstructure"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "测试语义发生反转：原 WideningKeepsProvenColumnsAndRejectsUnknownUnits 用例被改为接受 runtime 对齐的动态 offset，并新增 unaligned bitcast 断言分析成功；新增 RetypedPerLaneBaseIsStable C++ 单测；pointer_bitcast_byte_buffer.mlir 的 UNSTRUCTURE/SIMT 检查从期望 divsi+ptr_to_int 改为保留 tt.bitcast 形态；新增 widen_dynamic_origin 场景与 pytest test_pointer_bitcast_runtime_offsets。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Analysis/PtrAnalysisBitcastTest.cpp",
+          "third_party/ascend/unittest/Conversion/General/TritonToLinalg/pointer_bitcast_byte_buffer.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_pointer_bitcast_byte_buffer.py"
+        ]
+      },
+      "message": "[PtrAnalysis](fix) Support runtime-aligned pointer bitcasts (#3432)\n\n* [PtrAnalysis](fix) support runtime-aligned pointer bitcasts\n\nScale the complete per-lane displacement when widening pointer tensors. Keep proven strides and allow the runtime input to supply divisibility. Use the shared address calculation for byte-buffer views so offsets on both sides of a splat contribute to the quotient.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* [Test] Bound bitcast absence checks to each kernel\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* [PtrAnalysis] Keep this change scoped to code and tests\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* [TritonToLinalg] Simplify pointer bitcast canonicalization\n\nLeave addptr in its original element units. Move pointer bitcasts through splat and combine adjacent casts across pointee widths. Reuse the original SSA value when the round trip restores its type.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* [TritonToLinalg] Keep the bitcast change to the width diagnostic\n\nSkip cross-width pointer casts quietly and keep the existing equal-width canonicalization. Drop the round-trip optimization and its dedicated check from the runtime-offset change.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n* [PtrAnalysis] Bypass the dedicated byte-buffer bitcast rewrite\n\nLet Unstructure and the later lowering consume cross-width pointers through the normal path. Check the source byte displacements and the pointers used by loads and stores in both modes, alongside the final word offsets.\n\nSigned-off-by: KanuaK <yihan_z@qq.com>\n\n---------\n\nSigned-off-by: KanuaK <yihan_z@qq.com>"
+    },
+    {
+      "sha": "8d6c5bc76129bb3b95541ce643f714c588f9953b",
+      "comment": "DynamicCVPipeline 的 SplitIfByBlockId 在创建 tensor.empty 作为 split-if placeholder 前增加 hasStaticShape 检查，动态 shape 时返回 failure，从而回退保留原始 scf.if 条件结构。这是对动态 shape 场景的保守 fallback，避免用无法确定 sizes 的动态类型构造 empty。实现极小（两处 guard），风险低；但意味着动态 shape 的 split-if 优化将被跳过，可能带来性能回退而不影响正确性。",
+      "tags": [
+        "bugfix",
+        "low-risk",
+        "DynamicCVPipeline"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 else_placeholder_fill.mlir 两个动态 shape 用例（dynamic_placeholder / dynamic_matmul_placeholder），检查 scf.if 结构被保留且不生成 placeholder，属于对 fallback 行为的回归看护。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/General/DynamicCVPipeline/ComputeBlockOpt/SplitIfByBlockId/else_placeholder_fill.mlir"
+        ]
+      },
+      "message": "[DynamicCVPipeline] fix: add fallback for dynamic split-if placeholders (#3423)\n\nSigned-off-by: Vincentius Janssen <janssen.vincentius@huawei.com>"
+    },
+    {
+      "sha": "7a3ff2ea50c9628380475cd52fca092335892ca6",
+      "comment": "重新合入 HiFloat8（hif8）dtype 支持：通过 triton-ascend-3.6.0.patch 与 llvm_patch_f6ded0b.patch 向 LLVM/MLIR 增加 Builtin_HiFloat8 类型、f8HIF 语法、FloatType::getWidth、CommonTypeConstraints HiF8、AsmPrinter 打印，并在 arith ExtF/TruncF/Bitcast fold、Triton FpToFp fold、ReorderBroadcast 中保留 HiFloat8 转换以避免 APFloat 语义缺失导致崩溃；Python 侧新增 tl.hifloat8 dtype、str_to_ty、BITWIDTH_DICT、semantic cast/full/dot 特殊处理（仅允许 hif8×hif8→fp32 且 rta/hybrid 舍入）；TritonToHFusion/TritonToLinalg 对 HiFloat8 放行；bisheng 版本与 AscendNPU-IR submodule 同步升级。改动面很大且依赖外部 submodule 与 patch，风险集中在：HiFloat8Type::getFloatSemantics 直接 report_fatal_error，任何上游 pass 误用会导致编译崩溃；patch 与上游 LLVM 版本强耦合，revert 后重提说明稳定性仍需观察；前端 tl.hifloat8 暴露给用户但仅 A5 支持，需文档与检查。",
+      "tags": [
+        "feature",
+        "high-risk",
+        "Dialect/Triton",
+        "language",
+        "TritonToHFusion",
+        "TritonToLinalg",
+        "patch"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 arith_hifloat8.mlir lit 测试验证 canonicalize 保留 HiFloat8 转换、fp16 fold 正常；新增 test_hifloat8.py 设备测试（tl.full 与 decode，A5 跳过非 950）；补丁改动涉及上游 MLIR 文件，需确认构建后 lit 回归与 CUDA/NVIDIA 无关路径不受影响。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/Conversion/LLVM20Compat/OpCompat/arith_hifloat8.mlir",
+          "third_party/ascend/unittest/pytest_ut/test_hifloat8.py",
+          "third_party/ascend/patch/triton-ascend-3.6.0.patch",
+          "third_party/ascend/patch/llvm_patch_f6ded0b.patch"
+        ]
+      },
+      "message": "[dtype](feat) hifloat8 support (#3452)\n\nReapply the exact changes from #3394 after its revert in #3446.\n\nSigned-off-by: 1801ZDL <44502978+1801ZDL@users.noreply.github.com>\nSigned-off-by: wodelt <1241272204@qq.com>"
+    },
+    {
+      "sha": "7154567477fe6805443012f1fa41173f07aa2b5a",
+      "comment": "TLA SIMD 大规模接口扩展：simd.py 新增 vaddcs/vsubcs（64 lane i32 carry/borrow 链）、vcpadd、vsqz/vusqz（含 SQUEEZE_STORE 枚举）、vshrs、ppack/punpack/pintlv/pdintlv、vselr、vcgadd/vcgmax/vcgmin、vld2、vgatherb、vscatter，并重构 vshls 为共享 _shift_scalar、vcadd 改为直接调 vreduce；tla_builder.cc 增加对应 hivmave op 绑定与严格参数校验（lane 数、mask 类型、carry 类型、索引范围）；builder.py 注册新 create_simd_*。同时新增大量 tla_ut 用例并升级为 IR→COMPILE→RUN 全链路，新增 tla_test_utils.compile_native_kernel。风险：新算子仅在 Ascend950 可用（group reduce/vld2 等），未在非 A5 路径 fallback；vscatter 要求 active 目标互异、vgatherb 要求 4 字节对齐，运行时约束依赖用户遵守；tla_builder.cc 用异常抛错，错误信息进入编译期需测试覆盖；新增 API 面广，需确认文档与 __all__/签名契约同步。",
+      "tags": [
+        "feature",
+        "medium-risk",
+        "TLA",
+        "language/tla",
+        "tla_builder"
+      ],
+      "test_impact": {
+        "needs_test_update": true,
+        "reason": "新增 8 个 tla_ut 测试文件（carry.py、group_reduce.py、memory_completion.py、predicate_ops.py、vcpadd.py、vselr.py、vshrs.py、vsqz.py、vusqz.py），并修改 simd_frontend_contract.py 与 tla_test_utils.py；测试从纯 IR 检查升级为编译+设备运行，需保证 CI 具备 Ascend950 环境或按 skip 处理。",
+        "suggested_test_areas": [
+          "third_party/ascend/unittest/tla_ut/simd/carry.py",
+          "third_party/ascend/unittest/tla_ut/simd/group_reduce.py",
+          "third_party/ascend/unittest/tla_ut/simd/memory_completion.py",
+          "third_party/ascend/unittest/tla_ut/simd/predicate_ops.py",
+          "third_party/ascend/unittest/tla_ut/simd/vcpadd.py",
+          "third_party/ascend/unittest/tla_ut/simd/vselr.py",
+          "third_party/ascend/unittest/tla_ut/simd/vshrs.py",
+          "third_party/ascend/unittest/tla_ut/simd/vsqz.py",
+          "third_party/ascend/unittest/tla_ut/simd/vusqz.py",
+          "third_party/ascend/unittest/tla_ut/simd_frontend_contract.py",
+          "third_party/ascend/unittest/tla_ut/utils/tla_test_utils.py"
+        ]
+      },
+      "message": "[TLA](feat) simd interfaces (#3160)\n\n* [ascend](feat) add TLA SIMD carry and compaction ops\n\nAdd vaddcs/vsubcs/vcpadd/vsqz/vusqz frontend and builder bindings. Keep vsubc out because NPUIR no longer provides VsubcOp.\n\n* [ascend](test) run TLA SIMD carry/compaction UTs on device\n\nUpgrade the carry/vcpadd/vsqz/vusqz unit tests from IR-only checks to the\nfull IR -> compile -> run pipeline, matching the other tla_ut SIMD cases:\n\n- add _launch() helpers that issue one real kernel launch on NPU;\n- add test_compile() using check_compile_artifacts() to assert a .npubin/.o\n  artifact was produced in TRITON_CACHE_DIR;\n- drive all three stages from __main__ via get_stages();\n- vusqz: drop the hand-rolled bishengir-compile subprocess/LLVM-IR check\n  (~36 lines) in favour of the shared launch + artifact check.\n\nValidated on Ascend950PR_9589 (test machine, CANN 9.2.0-beta.2) with\ntriton_ascend 3.6.0.dev0+gitd5027f39: carry/vcpadd/vsqz/vusqz all pass\nIR, COMPILE and RUN.\n\n* [ascend](feat) add AVE register and indexed memory APIs\n\nAdd ppack, punpack, pintlv, pdintlv, vselr and vcgadd/max/min through AVE.\nComplete vcadd and vld2 by composing existing reduction, load and\ndeinterleave operations; expose AVE block gather and indexed scatter.\nExpose vshrs through the existing AVE scalar right-shift op and share\nscalar-shift validation with vshls. Export the API and test signed and\nunsigned 8/16/32-bit data, masks and constexpr/runtime shift amounts.\nPin NPU-IR to bd88eea996b4, which contains the register/indexed-memory\nimplementation and the unchanged utility/carry patch from MR 4749.\n\nGroup reductions support Ascend950 only. All vselr indices must be in\nrange, including inactive lanes. vld2 supports contiguous 1D UB buffers\nwith matching DINTLV_B16/B32 distributions. vgatherb and vscatter initially\nsupport 32-bit UB data and uint32 indices. Block offsets are byte offsets\naligned to four bytes; scatter indices are element offsets and active\ndestinations must be distinct. Dependent vector accesses require the\ndocumented barriers. Broader dtypes, distributions and address-update\nmodes remain deferred; MR 4749's new operations are not exposed here.\nScalar shifts keep the existing mode contract: MERGING uses a zero source,\nso inactive lanes are zero rather than preserving a previous destination.\n\nValidation used main-dev b51a67e7e6e5 as the TLA baseline. The remote TLA\ncheckout was 66b1f9be1 with this source patch and the amended NPU-IR sources\noverlaid; its gitlink was overridden for the joint build. NPU-IR LLVM19\ntools and the TLA LLVM22 extension built successfully. On Ascend950PR_9579\nwith CANN 9.2 beta2 and BISHENG_BACKEND=process, the final implementation\npassed 989 joint checks and nine focused NPU-IR lit files before the vshrs\naddition. With vshrs added, the TLA extension rebuilt successfully and\n204 new checks passed (12 IR and 192 device), along with 190 frontend\ncontract checks. Four existing shift checks failed in CPU reference\ngeneration because this PyTorch build lacks uint16/uint32 torch.where;\nthe reference-adapted rerun timed out and is not counted as passing.\n\nThe existing build harness reused 35 template bitcode files and the\ndocumented no-vendor-header workaround. Native mode, Ascend960, performance\nand MR 4749's new operations on hardware were not tested.\n\n* [ascend](style): apply yapf to vcpadd/vsqz TLA UTs\n\nKeep the two kernel launches on one line; both fit column_limit=120\n(116 and 114 columns), which is what the repo yapf hook expects now that\nthe calls were split manually.\n\n---------\n\nCo-authored-by: xiwei <xiwei4@huawei.com>\nCo-authored-by: wzy_00889928 <1322947566@qq.com>"
+    },
+    {
+      "sha": "bcd788eecdcec66f68246def268dfba0821889e2",
+      "comment": "CI/社区流程优化：bug issue 模板自动加 TA-BUG 标签并在 issue-labeler 与 auto-labeling workflow 中定义规则；PR 模板新增 Related issue 选择与 Checklist 段；README/docs 中 DeepWiki 徽章换成 shields.io 自定义样式。纯流程与展示层改动，无编译/运行逻辑影响，风险极低。",
+      "tags": [
+        "chore",
+        "ci",
+        "docs",
+        "low-risk",
+        "community"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅修改 GitHub 模板、labeler 配置与文档徽章，不影响代码或测试行为，无需新增/更新测试。",
+        "suggested_test_areas": []
+      },
+      "message": "[Template](feat) optimize PR Template and Issue Label (#3478)\n\n* [PR-Template](fix) add issue checklist on pr template\n\n* [Issue](feat) add TA-BUG auto later for issue\n\n* [docs](fix) update deepwiki-ask-ai logo\n\n* [docs](fix) fix comment\n\n* fix doc format"
+    },
+    {
+      "sha": "cad80450e969110cbd9859084eb00f5242b67dc6",
+      "comment": "治理与维护者信息更新：MAINTAINERS 拆分为 Active/Emeritus 并补全 TLA 相关 CODEOWNERS 条目；GOVERNANCE 增加可量化选举指标（活跃时长、review 数、PR 数/代码行、设计文档）与提名材料模板。纯文档与流程变更，不影响代码与测试，风险极低。",
+      "tags": [
+        "docs",
+        "chore",
+        "low-risk",
+        "community"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅修改 maintainers、governance、CODEOWNERS 等文档，不涉及代码路径。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](feat) update maintainers and governance (#3430)\n\n* [Docs](feat) update maintainers and governance\n\n* [docs](fix) fix comment\n\n* update codeowners"
+    },
+    {
+      "sha": "bc4b126da825a9a0d03cfc0874de381a11a795e0",
+      "comment": "为 cann.extension.conv1d 补充约束文档与示例：说明 padding=None 等价 0、整数/二元序列/valid/same 语义、same 要求 stride=1 且奇数补零放右侧、padding_size 改名报错、不支持 1:2 cube:vector 模式；新增可运行示例 conv1d_kernel。文档改动与实现语义对齐，无运行逻辑变更；示例依赖 NPU 设备，作为文档示例不纳入 CI 自动执行。",
+      "tags": [
+        "docs",
+        "low-risk",
+        "language/extra/cann"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅新增文档约束与示例脚本，不改动 conv1d 实现；示例可作为人工验证参考，但不在现有测试套件中执行。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](feat) Document Conv1D padding behavior (#2610)"
+    },
+    {
+      "sha": "bc213ecaa16dd3607c7221c74197e6222c520111",
+      "comment": "文档补充 tl.where 在 Ascend 上不允许 x/y 为指针 tensor 的约束，属于对既有后端限制的显式说明。单行约束更新，无代码逻辑变化，风险极低。",
+      "tags": [
+        "docs",
+        "low-risk",
+        "language"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅更新约束文档字符串，不涉及实现或测试用例。",
+        "suggested_test_areas": []
+      },
+      "message": "[Docs](fix) Document tl.where pointer tensor restriction on Ascend (#3436)"
+    },
+    {
+      "sha": "353e30aacd4dfcc43fefddd59908942f5c4165fe",
+      "comment": "修正 DynamicCV buffer 相关编译选项迁移文档：将 inter_cache_num/intra_cache_num 从“重命名映射”表移到“已移除、需直接设置 buf_slot_num_of_crosscore/buf_slot_num_of_veccore”表，中英文同步。文档纠错，无代码变更；说明后端实际已不接受旧名，仅文档此前误导。",
+      "tags": [
+        "docs",
+        "low-risk",
+        "backend/compiler-options"
+      ],
+      "test_impact": {
+        "needs_test_update": false,
+        "reason": "仅修正文档中选项迁移描述，不涉及后端实现或测试。",
+        "suggested_test_areas": []
+      },
+      "message": "[docs](fix) correct DynamicCV buffer option migration (#3485)\n\n* [docs](fix) clarify buffer option migration and batch matmul\n\nSigned-off-by: zhanwei33 <493694187@qq.com>\n\n* [docs](fix) shorten batch matmul option description\n\nSigned-off-by: zhanwei33 <493694187@qq.com>\n\n* [docs](fix) align batch matmul path labels\n\nSigned-off-by: zhanwei33 <493694187@qq.com>\n\n* [docs](fix) restore A2/A3 batch matmul documentation\n\nSigned-off-by: zhanwei33 <493694187@qq.com>\n\n---------\n\nSigned-off-by: zhanwei33 <493694187@qq.com>"
+    }
+  ],
+  "architecture_based_on_sha": "ee15e295649ccf85b4e4b78316c736d00365c1a5",
+  "architecture_generated_at": "2026-11-15T21:06:50.427270+08:00"
+}

@@ -1,0 +1,30 @@
+{
+  "date": "2026-11-27",
+  "repo": "triton-lang/triton",
+  "generated_at": "2026-11-28T08:46:33.721897+08:00",
+  "daily_summary": "当日仅有一处变更：为 AMD 后端补充了此前 PR #12356 遗漏的本地构建脚本 scripts/build-amd-llvm.sh（用于在本地构建 AMD codegen 所使用的 LLVM pin 版本），并在 .gitignore 中增加了 .llvm-project-*/ 目录的忽略规则。该变更是纯粹的构建/CI 辅助改动，不涉及 Triton 的 Python 后端抽象、语言前端、编译流水线或 MLIR 方言，对编译器功能零影响。",
+  "ascend_impact_summary": "当日变更完全属于 AMD 平台专属的构建脚本与 .gitignore 规则，未触及 python/triton/backends/、python/triton/compiler/、python/triton/language/、runtime/、include 与 lib 下的任何接口或实现，因此对 triton-ascend 项目无任何功能、ABI、测试层面的影响，triton-ascend 无需做任何适配或测试更新。",
+  "commits": [
+    {
+      "sha": "d11dc0bed715a4e07d4c201858f70aa1830f26ad",
+      "comment": "补提交上一 PR（#12356）中遗漏的本地构建脚本。新增 scripts/build-amd-llvm.sh：从 cmake/amd-llvm-build-info.json 读取 LLVM 提交哈希、仓库与构建号，在 llvm-project-amd 目录下以 depth=1 fetch 并 checkout 指定 commit，随后用 CMake+Ninja 以 Release 构建仅含 AMDGPU target 的 LLVM 与 lld（TRITON_BUILD_WITH_CLANG_LLD=1 时启用 clang/lld），安装到 build/install，再配置 third_party/amd/backend/codegen 并注入 TRITON_AMD_LLVM_REVISION 后 install。同时在 .gitignore 增加 '.llvm-project-*/' 以忽略该源目录。变更仅服务 AMD 后端的开发环境搭建（dev-install-llvm），不修改任何编译器/运行时逻辑，属纯构建脚本与仓库配置维护，风险极低。",
+      "tags": [
+        "chore",
+        "ci",
+        "low-risk",
+        "amd",
+        "build"
+      ],
+      "ascend_impact": {
+        "ascend_affected": false,
+        "functionality": "无影响。脚本仅用于构建 AMD codegen 所依赖的 LLVM pin（third_party/amd/backend/codegen），未改动 python/triton/backends/、compiler/、language/、runtime/ 或 C++ IR/lowering 的任何接口与实现，AscendBackend/NPUDriver 等 Ascend 继承的抽象契约保持不变。",
+        "testing": "无影响。新增脚本与 .gitignore 规则不涉及测试代码与测试运行路径。",
+        "needs_test_update": false,
+        "suggested_test_areas": []
+      },
+      "message": "[AMD][BUILD] Add missing amd build script for `dev-install-llvm` (#12937)\n\nhttps://github.com/triton-lang/triton/pull/12356 was missing the actual\nbuild script to build the amd codegen llvm pin locally. This PR adds the\nmissing file and adds the build artifacats to gitignore. The source\nfolder is already ignored from an existing wildcard entry."
+    }
+  ],
+  "architecture_based_on_sha": "1c53e566ef8f719ff9b69132a72ad943e5409492",
+  "architecture_generated_at": "2026-11-15T21:06:50.425498+08:00"
+}
